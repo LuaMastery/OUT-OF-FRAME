@@ -32,20 +32,16 @@ const DESKTOP_ITEMS: DesktopItemDef[] = [
     label: 'out_of_frame.exe',
     glyph: '+-------+\n| [EXE] |\n+-------+',
   },
+];
+
+const START_MENU_ITEMS: Array<{ id: DesktopItemId; label: string }> = [
   {
-    id: 'terminal',
-    label: 'terminal',
-    glyph: '+-------+\n|  >_   |\n+-------+',
-  },
-  {
-    id: 'notas',
-    label: 'notas.txt',
-    glyph: '+-------+\n| [TXT] |\n+-------+',
+    id: 'out_of_frame',
+    label: 'out_of_frame.exe',
   },
   {
     id: 'desligar',
     label: 'desligar',
-    glyph: '+-------+\n|  (I)  |\n+-------+',
   },
 ];
 
@@ -286,7 +282,7 @@ export class TerminalBootController {
 
   private renderStartMenu(): void {
     this.startPopupEl.innerHTML = '';
-    DESKTOP_ITEMS.forEach((item, idx) => {
+    START_MENU_ITEMS.forEach((item, idx) => {
       if (item.id === 'desligar' && idx > 0) {
         const div = document.createElement('div');
         div.className = 'tui-start-divider';
@@ -483,17 +479,21 @@ export class TerminalBootController {
         // Navegação por teclado nos ícones da área de trabalho
         if (e.key === 'ArrowDown' || e.key === 'ArrowRight') {
           e.preventDefault();
-          this.selectedIconIndex =
-            (this.selectedIconIndex + 1) % DESKTOP_ITEMS.length;
-          this.syncIconSelection();
-          this.sound.menuMove();
+          if (DESKTOP_ITEMS.length > 1) {
+            this.selectedIconIndex =
+              (this.selectedIconIndex + 1) % DESKTOP_ITEMS.length;
+            this.syncIconSelection();
+            this.sound.menuMove();
+          }
         } else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') {
           e.preventDefault();
-          this.selectedIconIndex =
-            (this.selectedIconIndex - 1 + DESKTOP_ITEMS.length) %
-            DESKTOP_ITEMS.length;
-          this.syncIconSelection();
-          this.sound.menuMove();
+          if (DESKTOP_ITEMS.length > 1) {
+            this.selectedIconIndex =
+              (this.selectedIconIndex - 1 + DESKTOP_ITEMS.length) %
+              DESKTOP_ITEMS.length;
+            this.syncIconSelection();
+            this.sound.menuMove();
+          }
         } else if (e.key === 'Enter') {
           e.preventDefault();
           this.closeStartMenu();
