@@ -31,7 +31,7 @@ export interface DoomMazeResult {
  * - 'P' : Ponto inicial do jogador
  * - '.' : Corredor / sala aberta
  */
-const LABYRINTH_MAP: string[] = [
+export const LABYRINTH_MAP: string[] = [
   '###L#####L#####',
   '#P..A...#.....#',
   '###.###.#.###.#',
@@ -49,14 +49,42 @@ const LABYRINTH_MAP: string[] = [
   'BBBLBBBLBBBLBBB',
 ];
 
-const CELL_SIZE = 3.0;
-const WALL_HEIGHT = 3.2;
+export const CELL_SIZE = 3.0;
+export const WALL_HEIGHT = 3.2;
 
-function isSolidCell(grid: string[], gx: number, gz: number): boolean {
+export function isSolidCell(grid: string[], gx: number, gz: number): boolean {
   if (gz < 0 || gz >= grid.length) return true;
   if (gx < 0 || gx >= grid[gz].length) return true;
   const ch = grid[gz][gx];
   return ch === '#' || ch === 'B' || ch === 'M' || ch === 'L';
+}
+
+export function isArchCell(grid: string[], gx: number, gz: number): boolean {
+  if (gz < 0 || gz >= grid.length) return false;
+  if (gx < 0 || gx >= grid[gz].length) return false;
+  return grid[gz][gx] === 'A';
+}
+
+export function gridCellToWorld(gx: number, gz: number): { x: number; z: number } {
+  const rows = LABYRINTH_MAP.length;
+  const cols = LABYRINTH_MAP[0].length;
+  const halfW = cols * CELL_SIZE * 0.5;
+  const halfD = rows * CELL_SIZE * 0.5;
+  return {
+    x: (gx + 0.5) * CELL_SIZE - halfW,
+    z: (gz + 0.5) * CELL_SIZE - halfD,
+  };
+}
+
+export function worldToGridCell(wx: number, wz: number): { gx: number; gz: number } {
+  const rows = LABYRINTH_MAP.length;
+  const cols = LABYRINTH_MAP[0].length;
+  const halfW = cols * CELL_SIZE * 0.5;
+  const halfD = rows * CELL_SIZE * 0.5;
+  return {
+    gx: Math.floor((wx + halfW) / CELL_SIZE),
+    gz: Math.floor((wz + halfD) / CELL_SIZE),
+  };
 }
 
 export function buildDoomLabyrinth(

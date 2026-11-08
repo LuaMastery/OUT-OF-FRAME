@@ -195,6 +195,249 @@ export function createDoomSurfaceMaterial(
 }
 
 /**
+ * Material UV-mapped quantizado em COLORMAP para objetos 3D coletáveis,
+ * sinalizadores e fios de teia de aranha (com suporte a recorte alpha nítido).
+ */
+export function createDoomPropMaterial(
+  texture: THREE.Texture,
+  shared: DoomSharedUniforms,
+  options?: {
+    baseLight?: number;
+    alphaTest?: number;
+    doubleSided?: boolean;
+    emissiveBoost?: number;
+    tint?: THREE.Color;
+  }
+): THREE.ShaderMaterial {
+  const baseLight = options?.baseLight ?? 0.55;
+  const alphaTest = options?.alphaTest ?? 0.0;
+  const emissiveBoost = options?.emissiveBoost ?? 0.0;
+  const tint = options?.tint ?? new THREE.Color(1, 1, 1);
+
+  return new THREE.ShaderMaterial({
+    side: options?.doubleSided ? THREE.DoubleSide : THREE.FrontSide,
+    transparent: false,
+    uniforms: {
+      uMap: { value: texture },
+      uBaseLight: { value: baseLight },
+      uAlphaTest: { value: alphaTest },
+      uEmissiveBoost: { value: emissiveBoost },
+      uTint: { value: tint },
+      uLightPositions: shared.uLightPositions,
+      uLightIntensities: shared.uLightIntensities,
+      uLightCount: shared.uLightCount,
+      uFlashlightPos: shared.uFlashlightPos,
+      uFlashlightDir: shared.uFlashlightDir,
+      uFlashlightIntensity: shared.uFlashlightIntensity,
+    },
+    vertexShader: /* glsl */ `
+      varying vec2 vUv;
+      varying vec3 vWorldPos;
+      varying vec3 vWorldNormal;
+      varying float vViewDist;
+
+      void main() {
+        vUv = uv;
+        vec4 worldPos = modelMatrix * vec4(position, 1.0);
+        vWorldPos = worldPos.xyz;
+        vWorldNormal = normalize(mat3(modelMatrix) * normal);
+        vec4 viewPos = viewMatrix * worldPos;
+        vViewDist = abs(viewPos.z);
+        gl_Position = projectionMatrix * viewPos;
+      }
+    `,
+    fragmentShader: /* glsl */ `
+      #define MAX_LIGHTS ${MAX_DOOM_LIGHTS}
+
+      uniform sampler2D uMap;
+      uniform float uBaseLight;
+      uniform float uAlphaTest;
+      uniform float uEmissiveBoost;
+      uniform vec3 uTint;
+      uniform vec3 uLightPositions[MAX_LIGHTS];
+      uniform float uLightIntensities[MAX_LIGHTS];
+      uniform int uLightCount;
+      uniform vec3 uFlashlightPos;
+      uniform vec3 uFlashlightDir;
+      uniform float uFlashlightIntensity;
+
+      varying vec2 vUv;
+      varying vec3 vWorldPos;
+      varying vec3 vWorldNormal;
+      varying float vViewDist;
+
+      void main() {
+        vec4 texel = texture2D(uMap, vUv);
+        if (uAlphaTest > 0.0 && texel.a < uAlphaTest) {
+          discard;
+        }
+
+        float sectorLight = uBaseLight;
+        for (int i = 0; i < MAX_LIGHTS; i++) {
+          if (i >= uLightCount) break;
+          float d = distance(vWorldPos, uLightPositions[i]);
+          float atten = clamp(1.0 - d / 8.5, 0.0, 1.0);
+          sectorLight += atten * atten * uLightIntensities[i];
+        }
+        sectorLight = clamp(sectorLight, 0.08, 1.0);
+
+        float nearBoost = clamp((5.2 - vViewDist) * 0.065, 0.0, 0.26);
+        float distFalloff = clamp(1.08 - vViewDist * 0.048, 0.0, 1.0);
+
+        float flashContribution = 0.0;
+        if (uFlashlightIntensity > 0.01) {
+          vec3 toFrag = vWorldPos - uFlashlightPos;
+          float flashDist = length(toFrag);
+          vec3 fragDir = toFrag / max(0.0001, flashDist);
+          float cosCone = dot(fragDir, normalize(uFlashlightDir));
+
+          float coreSpot = smoothstep(0.92, 0.985, cosCone);
+          float outerHalo = smoothstep(0.76, 0.93, cosCone) * 0.45;
+          float distAtten = clamp(1.0 - flashDist / 21.0, 0.0, 1.0);
+
+          flashContribution =
+            (coreSpot + outerHalo) *
+            distAtten *
+            uFlashlightIntensity *
+            0.95;
+        }
+
+        float rawShade = clamp(
+          (sectorLight * distFalloff) + nearBoost + flashContribution + uEmissiveBoost,
+          0.0,
+          1.15
+        );
+        float colormapBand = floor(rawShade * 24.0) / 24.0;
+
+        vec3 shaded = texel.rgb * uTint * colormapBand;
+        if (flashContribution > 0.02) {
+          float warmMix = clamp(flashContribution * 0.5, 0.0, 0.32);
+          shaded *= mix(vec3(1.0), vec3(1.08, 1.03, 0.90), warmMix);
+        }
+
+        gl_FragColor = vec4(shaded, 1.0);
+      }
+    `,
+  });
+}
+
+/**
+ * Material quitinoso negro/ósseo dedicado à Aranha Procedural (Evil Crawling Thing):
+ * - Suporta cores por vértice (corpo negro brilhante -> pontas ósseas pálidas)
+ * - Reflexo especular frio de carapaça úmida quando atingido pela lanterna ou luz próxima
+ * - Quantização em bandas discretas COLORMAP fiel ao mundo 3D do jogo
+ */
+export function createSpiderChitinMaterial(
+  shared: DoomSharedUniforms
+): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    vertexColors: true,
+    side: THREE.DoubleSide,
+    uniforms: {
+      uRageGlow: { value: 0.0 },
+      uLightPositions: shared.uLightPositions,
+      uLightIntensities: shared.uLightIntensities,
+      uLightCount: shared.uLightCount,
+      uFlashlightPos: shared.uFlashlightPos,
+      uFlashlightDir: shared.uFlashlightDir,
+      uFlashlightIntensity: shared.uFlashlightIntensity,
+    },
+    vertexShader: /* glsl */ `
+      varying vec3 vColor;
+      varying vec3 vWorldPos;
+      varying vec3 vWorldNormal;
+      varying vec3 vViewDir;
+      varying float vViewDist;
+
+      void main() {
+        vColor = color;
+        vec4 worldPos = modelMatrix * vec4(position, 1.0);
+        vWorldPos = worldPos.xyz;
+        vWorldNormal = normalize(mat3(modelMatrix) * normal);
+
+        vec4 viewPos = viewMatrix * worldPos;
+        vViewDist = abs(viewPos.z);
+        vViewDir = normalize(cameraPosition - worldPos.xyz);
+
+        gl_Position = projectionMatrix * viewPos;
+      }
+    `,
+    fragmentShader: /* glsl */ `
+      #define MAX_LIGHTS ${MAX_DOOM_LIGHTS}
+
+      uniform float uRageGlow;
+      uniform vec3 uLightPositions[MAX_LIGHTS];
+      uniform float uLightIntensities[MAX_LIGHTS];
+      uniform int uLightCount;
+      uniform vec3 uFlashlightPos;
+      uniform vec3 uFlashlightDir;
+      uniform float uFlashlightIntensity;
+
+      varying vec3 vColor;
+      varying vec3 vWorldPos;
+      varying vec3 vWorldNormal;
+      varying vec3 vViewDir;
+      varying float vViewDist;
+
+      void main() {
+        vec3 nrm = normalize(vWorldNormal);
+        if (!gl_FrontFacing) nrm = -nrm;
+
+        float sectorLight = 0.28;
+        for (int i = 0; i < MAX_LIGHTS; i++) {
+          if (i >= uLightCount) break;
+          float d = distance(vWorldPos, uLightPositions[i]);
+          float atten = clamp(1.0 - d / 9.0, 0.0, 1.0);
+          sectorLight += atten * atten * uLightIntensities[i] * 1.1;
+        }
+        sectorLight = clamp(sectorLight, 0.08, 1.0);
+
+        float distFalloff = clamp(1.10 - vViewDist * 0.044, 0.0, 1.0);
+        float rim = pow(1.0 - clamp(abs(dot(nrm, normalize(vViewDir))), 0.0, 1.0), 2.4);
+
+        float flashContribution = 0.0;
+        float chitinSpec = 0.0;
+        if (uFlashlightIntensity > 0.01) {
+          vec3 toFrag = vWorldPos - uFlashlightPos;
+          float flashDist = length(toFrag);
+          vec3 fragDir = toFrag / max(0.0001, flashDist);
+          float cosCone = dot(fragDir, normalize(uFlashlightDir));
+
+          float coreSpot = smoothstep(0.92, 0.985, cosCone);
+          float outerHalo = smoothstep(0.75, 0.93, cosCone) * 0.48;
+          float distAtten = clamp(1.0 - flashDist / 22.0, 0.0, 1.0);
+
+          flashContribution = (coreSpot + outerHalo) * distAtten * uFlashlightIntensity;
+
+          // Brilho úmido na carapaça preta quando iluminada pela lanterna
+          vec3 halfVec = normalize(-fragDir + normalize(vViewDir));
+          float spec = pow(max(dot(nrm, halfVec), 0.0), 14.0);
+          chitinSpec = spec * flashContribution * 0.26 + rim * flashContribution * 0.16;
+        } else {
+          chitinSpec = rim * sectorLight * distFalloff * 0.08;
+        }
+
+        float rawShade = clamp(
+          sectorLight * distFalloff + flashContribution * 1.05,
+          0.06,
+          1.15
+        );
+        float band = floor(rawShade * 24.0) / 24.0;
+
+        vec3 baseCol = vColor * band + vec3(0.82, 0.85, 0.90) * floor(chitinSpec * 20.0) / 20.0;
+
+        // Sutil reflexo rubro nas pontas/olhos durante frenesi de perseguição
+        if (uRageGlow > 0.01) {
+          baseCol += vec3(0.14, 0.015, 0.01) * uRageGlow * rim;
+        }
+
+        gl_FragColor = vec4(clamp(baseCol, 0.0, 1.0), 1.0);
+      }
+    `,
+  });
+}
+
+/**
  * Pipeline de pós-processamento Low-Res estilo DOOM DOS (250p NearestFilter + Bayer 4x4 + PLAYPAL),
  * com suporte a renderização da cena em 1ª pessoa (lanterna) sem atravessar paredes!
  */

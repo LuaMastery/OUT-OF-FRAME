@@ -195,6 +195,10 @@ export class DoomFlashlight {
     this.viewCamera.updateProjectionMatrix();
   }
 
+  get isEquipped(): boolean {
+    return this.equipped;
+  }
+
   /**
    * Alterna a lanterna ao pressionar F:
    * - Se guardada: inicia animação de saque + liga o foco.
@@ -229,7 +233,8 @@ export class DoomFlashlight {
     bobPhase: number,
     planarSpeed: number,
     onSwitchClickOn: () => void,
-    crouchAmount = 0
+    crouchAmount = 0,
+    batteryPercent = 100
   ): {
     beamIntensity: number;
     aimYawOffset: number;
@@ -259,12 +264,19 @@ export class DoomFlashlight {
     this.switchMesh.position.z = -0.068 - this.switchProgress * 0.014;
     this.switchMesh.position.y = 0.043 - this.switchProgress * 0.0025;
 
-    // 3. Aquecimento rápido de filamento halógeno ao ligar (~65ms)
+    // 3. Aquecimento rápido de filamento halógeno ao ligar (~65ms) + carga da bateria
     let beamIntensity = 0;
-    if (this.lightActive) {
+    if (this.lightActive && batteryPercent > 0.2) {
       this.flickerWarmup = Math.min(1, this.flickerWarmup + dt * 15);
-      beamIntensity =
+      const baseBeam =
         this.flickerWarmup < 0.45 ? 0.55 : this.flickerWarmup;
+      if (batteryPercent < 15) {
+        const lowScale = 0.35 + (batteryPercent / 15) * 0.65;
+        const sputter = Math.random() < 0.08 ? 0.35 : 1.0;
+        beamIntensity = baseBeam * lowScale * sputter;
+      } else {
+        beamIntensity = baseBeam;
+      }
     }
 
     // Atualiza cor da lente interna

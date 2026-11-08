@@ -1,5 +1,6 @@
 import './style.css';
 import './terminal/terminal.css';
+import './doom/inventory.css';
 import { DoomGameApp } from './doom/DoomGameApp';
 import { SoundEngine } from './engine/audio/SoundEngine';
 import { TerminalBootController } from './terminal/TerminalBoot';

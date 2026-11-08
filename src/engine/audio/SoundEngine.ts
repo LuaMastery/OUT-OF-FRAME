@@ -36,6 +36,8 @@ export class SoundEngine {
   private lastWallThudMs = 0;
   private lastCrouchMs = 0;
   private lastSparkMs = 0;
+  private lastSpiderStepMs = 0;
+  private lastHeartbeatMs = 0;
 
   unlock(): void {
     if (!this.ctx) {
@@ -1112,6 +1114,521 @@ export class SoundEngine {
         0.028 * proximity,
         true
       );
+    }
+  }
+
+  // ==========================================================================
+  // 4. INVENTÁRIO DE TERROR (ESTILO AMNESIA) & ITENS COLETÁVEIS
+  // ==========================================================================
+
+  /** Abrir / fechar a bolsa do inventário (Tecla Tab): couro pesado + fecho escuro */
+  playInventoryToggle(opening: boolean): void {
+    if (!this.isRunning() || !this.ctx || !this.terminalBus) return;
+    const now = this.ctx.currentTime;
+
+    // Roçar grave de tecido/couro desgastado
+    this.triggerFilteredNoise(
+      this.terminalBus,
+      now,
+      0.16,
+      opening ? 480 : 360,
+      0.95,
+      0.11,
+      false,
+      this.reverbSend ?? undefined
+    );
+
+    // Estalo metálico abafado da fivela
+    const clasp = this.ctx.createOscillator();
+    const claspGain = this.ctx.createGain();
+    clasp.type = 'triangle';
+    clasp.frequency.setValueAtTime(opening ? 240 : 340, now + 0.03);
+    clasp.frequency.exponentialRampToValueAtTime(
+      opening ? 390 : 175,
+      now + 0.085
+    );
+    claspGain.gain.setValueAtTime(0.055, now + 0.03);
+    claspGain.gain.exponentialRampToValueAtTime(0.0008, now + 0.095);
+
+    clasp.connect(claspGain);
+    claspGain.connect(this.terminalBus);
+    clasp.start(now + 0.03);
+    clasp.stop(now + 0.1);
+  }
+
+  /** Toque seco e sutil ao selecionar/passar por um slot do inventário */
+  playInventorySelect(heavy = false): void {
+    if (!this.isRunning() || !this.ctx || !this.terminalBus) return;
+    const now = this.ctx.currentTime;
+
+    this.triggerFilteredNoise(
+      this.terminalBus,
+      now,
+      heavy ? 0.024 : 0.012,
+      heavy ? 1450 : 2100,
+      2.2,
+      heavy ? 0.085 : 0.045,
+      false
+    );
+
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(heavy ? 310 : 520, now);
+    osc.frequency.exponentialRampToValueAtTime(heavy ? 165 : 330, now + 0.035);
+    gain.gain.setValueAtTime(heavy ? 0.065 : 0.032, now);
+    gain.gain.exponentialRampToValueAtTime(0.0008, now + 0.038);
+
+    osc.connect(gain);
+    gain.connect(this.terminalBus);
+    osc.start(now);
+    osc.stop(now + 0.04);
+  }
+
+  /** Guardar objeto coletado no labirinto dentro da bolsa */
+  playItemPickup(): void {
+    if (
+      !this.isRunning() ||
+      !this.ctx ||
+      !this.worldDryBus ||
+      !this.reverbSend
+    ) {
+      return;
+    }
+    const now = this.ctx.currentTime;
+
+    // Pegada rápida no objeto + acomodação na bolsa
+    this.triggerFilteredNoise(
+      this.worldDryBus,
+      now,
+      0.09,
+      920,
+      1.3,
+      0.13,
+      false,
+      this.reverbSend
+    );
+    this.triggerFilteredNoise(
+      this.worldDryBus,
+      now + 0.055,
+      0.11,
+      460,
+      1.0,
+      0.1,
+      false
+    );
+
+    const notes = [295, 440];
+    notes.forEach((f, idx) => {
+      if (!this.ctx || !this.worldDryBus) return;
+      const t = now + idx * 0.045;
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(f, t);
+      osc.frequency.exponentialRampToValueAtTime(f * 0.85, t + 0.075);
+      gain.gain.setValueAtTime(0.055, t);
+      gain.gain.exponentialRampToValueAtTime(0.0008, t + 0.08);
+      osc.connect(gain);
+      gain.connect(this.worldDryBus);
+      osc.start(t);
+      osc.stop(t + 0.085);
+    });
+  }
+
+  /** Efeito sonoro de uso de item dentro do inventário */
+  playItemUse(kind: 'heal' | 'battery' | 'flare' | 'note' | 'blade'): void {
+    if (!this.isRunning() || !this.ctx || !this.worldDryBus) return;
+    const now = this.ctx.currentTime;
+
+    if (kind === 'heal') {
+      // Rasgo de gaze / rolha de frasco + suspiro grave de alívio
+      this.triggerFilteredNoise(
+        this.worldDryBus,
+        now,
+        0.18,
+        1250,
+        1.4,
+        0.12,
+        false
+      );
+      const warm = this.ctx.createOscillator();
+      const g = this.ctx.createGain();
+      warm.type = 'sine';
+      warm.frequency.setValueAtTime(196, now + 0.05);
+      warm.frequency.exponentialRampToValueAtTime(293.66, now + 0.34);
+      g.gain.setValueAtTime(0.07, now + 0.05);
+      g.gain.exponentialRampToValueAtTime(0.0008, now + 0.42);
+      warm.connect(g);
+      g.connect(this.worldDryBus);
+      warm.start(now + 0.05);
+      warm.stop(now + 0.44);
+    } else if (kind === 'battery') {
+      // Encaixe metálico de pilha + carga sutil de capacitor
+      this.triggerFilteredNoise(
+        this.worldDryBus,
+        now,
+        0.025,
+        2900,
+        2.5,
+        0.13,
+        false
+      );
+      const cap = this.ctx.createOscillator();
+      const g = this.ctx.createGain();
+      cap.type = 'sine';
+      cap.frequency.setValueAtTime(420, now + 0.02);
+      cap.frequency.exponentialRampToValueAtTime(1280, now + 0.24);
+      g.gain.setValueAtTime(0.05, now + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0008, now + 0.26);
+      cap.connect(g);
+      g.connect(this.worldDryBus);
+      cap.start(now + 0.02);
+      cap.stop(now + 0.28);
+    } else if (kind === 'flare') {
+      // Riscar ignitor + chiado intenso de magnésio
+      this.triggerFilteredNoise(
+        this.worldDryBus,
+        now,
+        0.04,
+        3400,
+        2.0,
+        0.18,
+        true,
+        this.reverbSend ?? undefined
+      );
+      this.triggerFilteredNoise(
+        this.worldDryBus,
+        now + 0.035,
+        0.48,
+        1950,
+        0.85,
+        0.16,
+        true,
+        this.reverbSend ?? undefined
+      );
+    } else if (kind === 'blade') {
+      // Lâmina cortando teia pegajosa
+      this.triggerFilteredNoise(
+        this.worldDryBus,
+        now,
+        0.075,
+        3800,
+        3.2,
+        0.16,
+        false,
+        this.reverbSend ?? undefined
+      );
+    } else {
+      // Papel antigo desdobrando
+      this.triggerFilteredNoise(
+        this.worldDryBus,
+        now,
+        0.14,
+        1750,
+        1.2,
+        0.09,
+        false
+      );
+    }
+  }
+
+  // ==========================================================================
+  // 5. ARANHA PROCEDURAL (EVIL CRAWLER) & ARMADILHAS DE TEIA
+  // ==========================================================================
+
+  /**
+   * Passo quitinoso pontiagudo da aranha (no chão, parede ou grade metálica do teto),
+   * espacializado em estéreo conforme a direção e distância ao jogador.
+   */
+  playSpiderFootstep(
+    pan: number,
+    distance: number,
+    frantic: boolean,
+    onMetalOrCeiling: boolean
+  ): void {
+    const nowMs = performance.now();
+    const minGap = frantic ? 28 : 55;
+    if (nowMs - this.lastSpiderStepMs < minGap) return;
+    this.lastSpiderStepMs = nowMs;
+
+    if (
+      !this.isRunning() ||
+      !this.ctx ||
+      !this.worldDryBus ||
+      !this.reverbSend ||
+      distance > 22
+    ) {
+      return;
+    }
+
+    const now = this.ctx.currentTime;
+    const atten = Math.pow(Math.max(0, 1 - distance / 22), 1.65);
+    const vol = atten * (frantic ? 0.22 : 0.11);
+    if (vol < 0.004) return;
+
+    const panner = this.ctx.createStereoPanner();
+    panner.pan.value = Math.max(-0.95, Math.min(0.95, pan));
+    panner.connect(this.worldDryBus);
+    panner.connect(this.reverbSend);
+
+    const jitter = 0.88 + Math.random() * 0.26;
+
+    // Estalo agudo de ponta óssea/quitina tocando pedra ou grade do teto
+    this.triggerFilteredNoise(
+      panner,
+      now,
+      frantic ? 0.026 : 0.034,
+      (onMetalOrCeiling ? 2750 : 1850) * jitter * (frantic ? 1.15 : 1.0),
+      onMetalOrCeiling ? 3.8 : 2.6,
+      vol,
+      true
+    );
+
+    // Ressonância seca de articulação aracnídea
+    const click = this.ctx.createOscillator();
+    const clickGain = this.ctx.createGain();
+    click.type = onMetalOrCeiling ? 'triangle' : 'sine';
+    const f0 = (onMetalOrCeiling ? 360 : 210) * jitter;
+    click.frequency.setValueAtTime(f0, now);
+    click.frequency.exponentialRampToValueAtTime(58, now + 0.038);
+
+    clickGain.gain.setValueAtTime(vol * 0.85, now);
+    clickGain.gain.exponentialRampToValueAtTime(0.0008, now + 0.042);
+
+    click.connect(clickGain);
+    clickGain.connect(panner);
+    click.start(now);
+    click.stop(now + 0.045);
+  }
+
+  /**
+   * Guincho/sibilo aterrorizante da aranha ao avistar o jogador ou sentir vibração na teia,
+   * anunciando a disparada em velocidade absurda!
+   */
+  playSpiderScream(pan: number, distance: number): void {
+    if (
+      !this.isRunning() ||
+      !this.ctx ||
+      !this.worldDryBus ||
+      !this.reverbSend
+    ) {
+      return;
+    }
+    const now = this.ctx.currentTime;
+    const atten = Math.max(0.22, Math.pow(Math.max(0, 1 - distance / 30), 1.2));
+
+    const panner = this.ctx.createStereoPanner();
+    panner.pan.value = Math.max(-0.92, Math.min(0.92, pan));
+    panner.connect(this.worldDryBus);
+    panner.connect(this.reverbSend);
+
+    // Sibilo gutural rasgado
+    this.triggerFilteredNoise(
+      panner,
+      now,
+      0.62,
+      1650,
+      1.6,
+      0.24 * atten,
+      true
+    );
+
+    // Duas vozes dissonantes moduladas (grito orgânico aracnídeo)
+    const freqs: Array<[number, number, number]> = [
+      [640, 1180, 290],
+      [685, 1310, 245],
+    ];
+    freqs.forEach(([fStart, fPeak, fEnd], idx) => {
+      if (!this.ctx) return;
+      const osc = this.ctx.createOscillator();
+      const filter = this.ctx.createBiquadFilter();
+      const g = this.ctx.createGain();
+
+      osc.type = idx === 0 ? 'sawtooth' : 'square';
+      osc.frequency.setValueAtTime(fStart, now);
+      osc.frequency.exponentialRampToValueAtTime(fPeak, now + 0.11);
+      osc.frequency.exponentialRampToValueAtTime(fEnd, now + 0.58);
+
+      filter.type = 'bandpass';
+      filter.frequency.setValueAtTime(1350, now);
+      filter.frequency.exponentialRampToValueAtTime(620, now + 0.58);
+      filter.Q.value = 2.4;
+
+      g.gain.setValueAtTime(0.001, now);
+      g.gain.linearRampToValueAtTime(0.14 * atten, now + 0.04);
+      g.gain.exponentialRampToValueAtTime(0.0008, now + 0.62);
+
+      osc.connect(filter);
+      filter.connect(g);
+      g.connect(panner);
+      osc.start(now);
+      osc.stop(now + 0.64);
+    });
+  }
+
+  /** Som úmido/tenso de fiandeiras tecendo armadilha de teia no corredor */
+  playSpiderWebSpin(pan: number, distance: number): void {
+    if (
+      !this.isRunning() ||
+      !this.ctx ||
+      !this.worldDryBus ||
+      !this.reverbSend ||
+      distance > 18
+    ) {
+      return;
+    }
+    const now = this.ctx.currentTime;
+    const atten = Math.pow(Math.max(0, 1 - distance / 18), 1.5);
+    if (atten < 0.04) return;
+
+    const panner = this.ctx.createStereoPanner();
+    panner.pan.value = Math.max(-0.9, Math.min(0.9, pan));
+    panner.connect(this.worldDryBus);
+    panner.connect(this.reverbSend);
+
+    this.triggerFilteredNoise(
+      panner,
+      now,
+      0.14,
+      2400,
+      3.4,
+      0.085 * atten,
+      false
+    );
+  }
+
+  /** Estalo viscoso quando o jogador pisa e fica preso numa armadilha de teia! */
+  playWebTrapSnap(): void {
+    if (
+      !this.isRunning() ||
+      !this.ctx ||
+      !this.worldDryBus ||
+      !this.reverbSend
+    ) {
+      return;
+    }
+    const now = this.ctx.currentTime;
+
+    // Fio tenso vibrando como corda + aderência pegajosa
+    const twang = this.ctx.createOscillator();
+    const twangGain = this.ctx.createGain();
+    twang.type = 'triangle';
+    twang.frequency.setValueAtTime(280, now);
+    twang.frequency.exponentialRampToValueAtTime(92, now + 0.24);
+    twangGain.gain.setValueAtTime(0.2, now);
+    twangGain.gain.exponentialRampToValueAtTime(0.0008, now + 0.26);
+    twang.connect(twangGain);
+    twangGain.connect(this.worldDryBus);
+    twangGain.connect(this.reverbSend);
+    twang.start(now);
+    twang.stop(now + 0.28);
+
+    this.triggerFilteredNoise(
+      this.worldDryBus,
+      now,
+      0.22,
+      1450,
+      1.5,
+      0.18,
+      true,
+      this.reverbSend
+    );
+  }
+
+  /** Bote e aperto das patas longas da aranha capturando o jogador */
+  playSpiderCaptureImpact(): void {
+    if (
+      !this.isRunning() ||
+      !this.ctx ||
+      !this.worldDryBus ||
+      !this.reverbSend
+    ) {
+      return;
+    }
+    const now = this.ctx.currentTime;
+
+    const sub = this.ctx.createOscillator();
+    const subGain = this.ctx.createGain();
+    sub.type = 'sawtooth';
+    sub.frequency.setValueAtTime(115, now);
+    sub.frequency.exponentialRampToValueAtTime(32, now + 0.36);
+
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 380;
+
+    subGain.gain.setValueAtTime(0.28, now);
+    subGain.gain.exponentialRampToValueAtTime(0.0008, now + 0.38);
+
+    sub.connect(lp);
+    lp.connect(subGain);
+    subGain.connect(this.worldDryBus);
+    subGain.connect(this.reverbSend);
+    sub.start(now);
+    sub.stop(now + 0.4);
+
+    this.triggerFilteredNoise(
+      this.worldDryBus,
+      now,
+      0.26,
+      980,
+      1.3,
+      0.22,
+      true,
+      this.reverbSend
+    );
+  }
+
+  /** Esforço físico ao se debater contra a teia ou contra o abraço da aranha */
+  playStruggleEffort(): void {
+    if (!this.isRunning() || !this.ctx || !this.worldDryBus) return;
+    const now = this.ctx.currentTime;
+    this.triggerFilteredNoise(
+      this.worldDryBus,
+      now,
+      0.075,
+      780 + Math.random() * 420,
+      1.4,
+      0.11,
+      true,
+      this.reverbSend ?? undefined
+    );
+  }
+
+  /** Batimento cardíaco abafado e discreto durante perseguição intensa ou saúde crítica */
+  playTensionHeartbeat(intensity: number): void {
+    const clamped = Math.max(0, Math.min(1, intensity));
+    if (clamped < 0.12) return;
+
+    const nowMs = performance.now();
+    const beatIntervalMs = 920 - clamped * 470; // ~65 BPM -> ~133 BPM em pânico extremo
+    if (nowMs - this.lastHeartbeatMs < beatIntervalMs) return;
+    this.lastHeartbeatMs = nowMs;
+
+    if (!this.isRunning() || !this.ctx || !this.worldDryBus) return;
+    const now = this.ctx.currentTime;
+
+    // Duplo pulso cardíaco ("lub-dub") bem abafado para não poluir o áudio
+    const pulses: Array<[number, number, number]> = [
+      [0, 62, 0.11 * clamped],
+      [0.16, 52, 0.075 * clamped],
+    ];
+    for (const [delay, freq, vol] of pulses) {
+      const t = now + delay;
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, t);
+      osc.frequency.exponentialRampToValueAtTime(28, t + 0.11);
+
+      gain.gain.setValueAtTime(vol, t);
+      gain.gain.exponentialRampToValueAtTime(0.0008, t + 0.12);
+
+      osc.connect(gain);
+      gain.connect(this.worldDryBus);
+      osc.start(t);
+      osc.stop(t + 0.13);
     }
   }
 

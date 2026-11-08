@@ -5,6 +5,7 @@ import {
   StaticColliderBox,
 } from '../engine/physics/SpatialSweep';
 import { DoomFlashlight } from './DoomFlashlight';
+import { DoomInventory } from './DoomInventory';
 import {
   buildDoomLabyrinth,
   DoomLightSource,
@@ -13,14 +14,22 @@ import {
   createDoomSharedUniforms,
   DoomRetroCompositor,
   DoomSharedUniforms,
+  MAX_DOOM_LIGHTS,
 } from './DoomShader';
+import { DoomSpider } from './DoomSpider';
+import { DoomSpiderWebManager } from './DoomSpiderWebs';
 import { createDoomTextures } from './DoomTextures';
+import { DoomWorldItems } from './DoomWorldItems';
 
 /**
- * Aplicação 3D do Labirinto estilo DOOM Clássico integrada ao SoundEngine unificado
- * e à lanterna 3D simples acionada pela tecla F.
+ * Aplicação 3D do Labirinto estilo DOOM Clássico integrada a:
+ * - Lanterna 3D simples (Tecla F)
+ * - Agachamento furtivo contínuo (Segurar Ctrl)
+ * - Inventário sombrio estilo Amnesia (Tecla Tab) + Objetos 3D coletáveis (E / Clique / Aproximação)
+ * - Aranha Procedural (Evil Crawling Thing) escalando chão, paredes e teto + Armadilhas de Teia!
  */
 export class DoomGameApp {
+  private readonly viewportEl: HTMLElement;
   private readonly canvas: HTMLCanvasElement;
   private readonly renderer: THREE.WebGLRenderer;
   private readonly scene: THREE.Scene;
@@ -28,10 +37,16 @@ export class DoomGameApp {
   private readonly compositor: DoomRetroCompositor;
   private readonly sharedUniforms: DoomSharedUniforms;
   private readonly flashlight: DoomFlashlight;
+  private readonly inventory: DoomInventory;
+  private readonly worldItems: DoomWorldItems;
+  private readonly webManager: DoomSpiderWebManager;
+  private readonly spider: DoomSpider;
 
   private colliders: StaticColliderBox[] = [];
   private lights: DoomLightSource[] = [];
   private prevLightDimState: boolean[] = [];
+  private spawnPosition = new THREE.Vector3();
+  private spawnYaw = 0;
 
   private readonly position = new THREE.Vector3();
   private readonly velocity = new THREE.Vector3();
@@ -48,7 +63,16 @@ export class DoomGameApp {
   private crouchAmount = 0;
   private wasCrouching = false;
 
+  // Sinais vitais e equipamentos (visíveis no Inventário [Tab] estilo Amnesia)
+  private playerHealth = 100;
+  private playerSanity = 100;
+  private lanternBattery = 100;
+  private playerBleeding = false;
+  private cameraShake = 0;
+
   private keys = new Set<string>();
+  private interactQueued = false;
+  private struggleQueued = false;
   private engaged = false;
   private pointerLocked = false;
   private isDragging = false;
@@ -58,6 +82,7 @@ export class DoomGameApp {
   private lastRaf = performance.now();
 
   constructor(private readonly sound: SoundEngine) {
+    this.viewportEl = document.getElementById('game-viewport') as HTMLElement;
     this.canvas = document.getElementById('webgl-canvas') as HTMLCanvasElement;
 
     this.renderer = new THREE.WebGLRenderer({
@@ -92,8 +117,56 @@ export class DoomGameApp {
     this.colliders = maze.colliders;
     this.lights = maze.lights;
     this.prevLightDimState = maze.lights.map(() => false);
+    this.spawnPosition.copy(maze.spawnPosition);
+    this.spawnYaw = maze.spawnYaw;
     this.position.copy(maze.spawnPosition);
     this.yaw = maze.spawnYaw;
+
+    this.worldItems = new DoomWorldItems(this.scene, this.sharedUniforms);
+    this.webManager = new DoomSpiderWebManager(this.scene, this.sharedUniforms);
+    this.spider = new DoomSpider(
+      this.scene,
+      this.sharedUniforms,
+      this.colliders,
+      this.webManager,
+      this.sound
+    );
+
+    this.inventory = new DoomInventory(this.viewportEl, this.sound, {
+      onToggleFlashlightFromUI: () => {
+        const equipping = this.flashlight.toggle();
+        this.sound.playFlashlightMotion(equipping);
+        if (!equipping) {
+          this.sound.playFlashlightClick(false);
+        }
+      },
+      onUseHeal: (healAmount, calmAmount) => {
+        if (this.playerHealth >= 99.5 && !this.playerBleeding && this.playerSanity >= 96) {
+          return false;
+        }
+        this.playerHealth = Math.min(100, this.playerHealth + healAmount);
+        this.playerSanity = Math.min(100, this.playerSanity + calmAmount);
+        this.playerBleeding = false;
+        this.syncInventoryVitals();
+        return true;
+      },
+      onUseBattery: (chargeAmount) => {
+        if (this.lanternBattery >= 99.5) return false;
+        this.lanternBattery = Math.min(100, this.lanternBattery + chargeAmount);
+        this.syncInventoryVitals();
+        return true;
+      },
+      onUseFlare: () => {
+        this.worldItems.spawnLitFlare(this.position, this.yaw);
+        return true;
+      },
+      onCloseRequest: () => {
+        this.closeInventoryAndLock();
+      },
+      onRespawnAfterCapture: () => {
+        this.respawnPlayer();
+      },
+    });
 
     this.syncCamera(0);
     this.bindInput();
@@ -115,7 +188,29 @@ export class DoomGameApp {
     );
   }
 
+  private closeInventoryAndLock(): void {
+    this.inventory.setOpen(false);
+    this.keys.clear();
+    this.tryPointerLock();
+  }
+
+  private respawnPlayer(): void {
+    this.playerHealth = 100;
+    this.playerSanity = 100;
+    this.playerBleeding = false;
+    this.lanternBattery = Math.max(60, this.lanternBattery);
+    this.position.copy(this.spawnPosition);
+    this.velocity.set(0, 0, 0);
+    this.yaw = this.spawnYaw;
+    this.pitch = 0;
+    this.webManager.clearEnsnarement();
+    this.spider.respawnFarFromPlayer();
+    this.syncInventoryVitals();
+    this.tryPointerLock();
+  }
+
   private tryPointerLock(): void {
+    if (this.inventory.open || this.inventory.gameOverVisible) return;
     try {
       const maybe = this.canvas.requestPointerLock?.() as
         | Promise<void>
@@ -123,15 +218,14 @@ export class DoomGameApp {
       if (maybe && typeof maybe.catch === 'function') {
         maybe.catch(() => {});
       }
-      // Quando suportado pelo navegador, reserva teclas de movimento para evitar atalhos com Ctrl
       const kb = (
         navigator as Navigator & {
           keyboard?: { lock?: (codes?: string[]) => Promise<void> };
         }
       ).keyboard;
-      kb?.lock?.(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ControlLeft'])?.catch(
-        () => {}
-      );
+      kb
+        ?.lock?.(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ControlLeft', 'Tab'])
+        ?.catch(() => {});
     } catch {
       // Fallback por setas ou arrasto permanece disponível
     }
@@ -143,7 +237,10 @@ export class DoomGameApp {
       'KeyA',
       'KeyS',
       'KeyD',
+      'KeyE',
       'KeyF',
+      'Tab',
+      'Space',
       'ControlLeft',
       'ControlRight',
       'ShiftLeft',
@@ -155,13 +252,65 @@ export class DoomGameApp {
     ]);
 
     window.addEventListener('keydown', (e) => {
-      if (this.engaged && gameCodes.has(e.code)) {
+      if (!this.engaged) return;
+
+      if (gameCodes.has(e.code)) {
         e.preventDefault();
       }
-      this.keys.add(e.code);
       this.sound.unlock();
 
-      if (this.engaged && e.code === 'KeyF' && !e.repeat) {
+      if (this.inventory.gameOverVisible) {
+        if (e.code === 'Enter' || e.code === 'Space') {
+          this.inventory.hideGameOver();
+          this.respawnPlayer();
+        }
+        return;
+      }
+
+      // Alterna Inventário estilo Amnesia na tecla Tab!
+      if (e.code === 'Tab' && !e.repeat) {
+        const opened = this.inventory.toggle();
+        this.keys.clear();
+        this.isDragging = false;
+        if (opened) {
+          try {
+            document.exitPointerLock?.();
+          } catch {
+            // ignorar
+          }
+        } else {
+          this.tryPointerLock();
+        }
+        return;
+      }
+
+      if (e.code === 'Escape' && this.inventory.open && !e.repeat) {
+        this.closeInventoryAndLock();
+        return;
+      }
+
+      if (this.inventory.open) {
+        return;
+      }
+
+      this.keys.add(e.code);
+
+      if (e.code === 'KeyE' && !e.repeat) {
+        this.interactQueued = true;
+        this.struggleQueued = true;
+      }
+      if (
+        (e.code === 'Space' ||
+          e.code === 'KeyA' ||
+          e.code === 'KeyD' ||
+          e.code === 'KeyW' ||
+          e.code === 'KeyS') &&
+        !e.repeat
+      ) {
+        this.struggleQueued = true;
+      }
+
+      if (e.code === 'KeyF' && !e.repeat) {
         const equipping = this.flashlight.toggle();
         this.sound.playFlashlightMotion(equipping);
         if (!equipping) {
@@ -191,9 +340,14 @@ export class DoomGameApp {
     });
 
     this.canvas.addEventListener('mousedown', (e) => {
+      if (this.inventory.open || this.inventory.gameOverVisible) return;
       this.sound.unlock();
       if (!this.pointerLocked) {
         this.tryPointerLock();
+      }
+      if (e.button === 0) {
+        this.interactQueued = true;
+        this.struggleQueued = true;
       }
       this.isDragging = true;
       this.lastMouseX = e.clientX;
@@ -205,14 +359,18 @@ export class DoomGameApp {
     });
 
     window.addEventListener('mousemove', (e) => {
+      if (this.inventory.open || this.inventory.gameOverVisible) return;
+
       const sens = 0.0022;
+      // Permite olhar bem para o alto (teto) e para baixo (armadilhas de teia no piso)!
+      const maxPitch = 1.12;
       if (this.pointerLocked) {
         const dYaw = -e.movementX * sens;
         const prevPitch = this.pitch;
         this.yaw += dYaw;
         this.pitch = Math.max(
-          -0.38,
-          Math.min(0.38, this.pitch - e.movementY * sens * 0.7)
+          -maxPitch,
+          Math.min(maxPitch, this.pitch - e.movementY * sens * 0.78)
         );
         this.flashlight.addLookImpulse(dYaw, this.pitch - prevPitch);
       } else if (this.isDragging) {
@@ -224,8 +382,8 @@ export class DoomGameApp {
         const prevPitch = this.pitch;
         this.yaw += dYaw;
         this.pitch = Math.max(
-          -0.38,
-          Math.min(0.38, this.pitch - dy * sens * 0.8)
+          -maxPitch,
+          Math.min(maxPitch, this.pitch - dy * sens * 0.85)
         );
         this.flashlight.addLookImpulse(dYaw, this.pitch - prevPitch);
       }
@@ -262,7 +420,21 @@ export class DoomGameApp {
   }
 
   private update(dt: number): void {
+    if (!this.engaged) return;
+
+    // Pausa o mundo de jogo enquanto o jogador inspeciona o Inventário [Tab] ou tela de morte
+    if (this.inventory.open || this.inventory.gameOverVisible) {
+      this.interactQueued = false;
+      this.struggleQueued = false;
+      return;
+    }
+
     this.elapsed += dt;
+
+    const interactPressed = this.interactQueued;
+    const strugglePressed = this.struggleQueued;
+    this.interactQueued = false;
+    this.struggleQueued = false;
 
     const turnSpeed = 2.35;
     if (this.keys.has('ArrowLeft')) {
@@ -301,7 +473,7 @@ export class DoomGameApp {
     const isCrouching =
       holdingCtrl || (this.wasCrouching && !this.canStandUp());
 
-    if (this.engaged && isCrouching !== this.wasCrouching) {
+    if (isCrouching !== this.wasCrouching) {
       this.sound.playCrouchMovement(isCrouching);
       this.wasCrouching = isCrouching;
     }
@@ -310,10 +482,30 @@ export class DoomGameApp {
     this.crouchAmount +=
       (crouchTarget - this.crouchAmount) * (1 - Math.exp(-12.5 * dt));
 
+    const hasKnife = this.inventory.hasItem('rusty_knife');
+
+    // Verifica armadilhas de teia no corredor!
+    const webState = this.webManager.update(
+      dt,
+      this.position,
+      strugglePressed,
+      hasKnife,
+      this.sound,
+      (trapPos) => {
+        this.spider.alertToWebTrap(trapPos, this.position);
+      }
+    );
+
     const sprinting =
       !isCrouching &&
+      !this.webManager.isPlayerEnsnared &&
+      !this.spider.isCapturingPlayer &&
       (this.keys.has('ShiftLeft') || this.keys.has('ShiftRight'));
-    const maxSpeed = isCrouching ? 2.65 : sprinting ? 8.6 : 6.2;
+
+    const baseMaxSpeed = isCrouching ? 2.65 : sprinting ? 8.6 : 6.2;
+    const maxSpeed = this.spider.isCapturingPlayer
+      ? 0.35
+      : baseMaxSpeed * webState.speedMultiplier;
 
     const accel = wish.lengthSq() > 0 ? 18.0 : 12.0;
     const blend = 1 - Math.exp(-accel * dt);
@@ -348,7 +540,7 @@ export class DoomGameApp {
 
     const planarSpeed = Math.hypot(this.velocity.x, this.velocity.z);
     let bobOffset = 0;
-    if (planarSpeed > 0.28) {
+    if (planarSpeed > 0.28 && !this.spider.isCapturingPlayer) {
       const bobRate = isCrouching
         ? 4.6 + planarSpeed * 0.9
         : 7.5 + planarSpeed * 0.75;
@@ -375,7 +567,10 @@ export class DoomGameApp {
       this.lastBobHalfCycle = 0;
     }
 
-    this.syncCamera(bobOffset);
+    // Consumo suave da bateria quando a lanterna está ligada
+    if (this.flashlight.isEquipped && this.lanternBattery > 0) {
+      this.lanternBattery = Math.max(0, this.lanternBattery - dt * 0.62);
+    }
 
     // Atualiza modelagem/animação da lanterna (F) e projeta seu feixe no mundo 3D
     const fl = this.flashlight.update(
@@ -385,12 +580,72 @@ export class DoomGameApp {
       () => {
         this.sound.playFlashlightClick(true);
       },
-      this.crouchAmount
+      this.crouchAmount,
+      this.lanternBattery
+    );
+
+    // Atualiza a Aranha Procedural (Evil Crawling Thing)!
+    const spiderOut = this.spider.update(
+      dt,
+      this.elapsed,
+      this.position,
+      this.yaw,
+      sprinting,
+      isCrouching,
+      fl.beamIntensity > 0.05,
+      this.sharedUniforms.uFlashlightDir.value,
+      hasKnife,
+      strugglePressed,
+      this.worldItems.getActiveFlares(),
+      (damage, causeBleeding) => {
+        this.applySpiderDamage(damage, causeBleeding);
+      }
+    );
+
+    if (spiderOut.capturePullTarget) {
+      this.position.lerp(spiderOut.capturePullTarget, Math.min(1, dt * 8));
+      resolveCylinderWorldCollisions(
+        this.position,
+        this.velocity,
+        this.playerRadius,
+        currentHeight,
+        this.colliders
+      );
+      // Vira suavemente o olhar na direção da aranha durante o bote!
+      const desiredYaw = Math.atan2(
+        -(this.spider.position.x - this.position.x),
+        -(this.spider.position.z - this.position.z)
+      );
+      let diff = desiredYaw - this.yaw;
+      while (diff > Math.PI) diff -= Math.PI * 2;
+      while (diff < -Math.PI) diff += Math.PI * 2;
+      this.yaw += diff * Math.min(1, dt * 7);
+      this.pitch += (-0.12 - this.pitch) * Math.min(1, dt * 6);
+    }
+
+    this.cameraShake = Math.max(
+      this.cameraShake * Math.exp(-8 * dt),
+      spiderOut.cameraShakeAmount
+    );
+
+    this.syncCamera(bobOffset);
+
+    // Atualiza coleta de objetos 3D e sinalizadores no labirinto
+    const camForward = new THREE.Vector3(0, 0, -1).applyQuaternion(
+      this.camera.quaternion
+    );
+    this.worldItems.updateAndCheckPickups(
+      dt,
+      this.elapsed,
+      this.position,
+      this.camera.position,
+      camForward,
+      interactPressed,
+      this.inventory
     );
 
     this.sharedUniforms.uFlashlightIntensity.value = fl.beamIntensity;
     if (fl.beamIntensity > 0.005) {
-      // Origem do feixe levemente à direita/abaixo da câmera (posição da mão)
       const camRight = new THREE.Vector3(1, 0, 0).applyQuaternion(
         this.camera.quaternion
       );
@@ -414,7 +669,71 @@ export class DoomGameApp {
         .normalize();
     }
 
+    // Atualiza evolução de sangramento, nervos/sanidade e batimentos cardíacos
+    this.updateSurvivalVitals(dt, spiderOut.playerDistance, fl.beamIntensity > 0.05);
     this.updateFlickeringLightsAndAudio();
+  }
+
+  private applySpiderDamage(damage: number, causeBleeding: boolean): void {
+    this.playerHealth = Math.max(0, this.playerHealth - damage);
+    this.playerSanity = Math.max(0, this.playerSanity - 26);
+    if (causeBleeding && this.playerHealth > 0) {
+      this.playerBleeding = true;
+    }
+    this.cameraShake = 0.095;
+    this.syncInventoryVitals();
+
+    if (this.playerHealth <= 0) {
+      try {
+        document.exitPointerLock?.();
+      } catch {
+        // ignorar
+      }
+      this.inventory.showGameOver();
+    }
+  }
+
+  private updateSurvivalVitals(
+    dt: number,
+    spiderDist: number,
+    flashlightOn: boolean
+  ): void {
+    // Sangramento drena saúde lentamente até um piso crítico (16%) até usar bandagem/analgésico
+    if (this.playerBleeding && this.playerHealth > 16) {
+      this.playerHealth = Math.max(16, this.playerHealth - dt * 0.75);
+    }
+
+    // Sanidade / Nervos caem na perseguição ou no escuro perto da aranha, e recuperam em segurança
+    if (this.spider.isChasingOrAlert || this.webManager.isPlayerEnsnared) {
+      this.playerSanity = Math.max(6, this.playerSanity - dt * 7.5);
+    } else if (!flashlightOn && spiderDist < 11) {
+      this.playerSanity = Math.max(24, this.playerSanity - dt * 2.4);
+    } else {
+      this.playerSanity = Math.min(100, this.playerSanity + dt * 2.2);
+    }
+
+    // Batimento cardíaco abafado proporcional ao perigo/ferimento
+    const dangerChase = this.spider.isChasingOrAlert
+      ? Math.max(0.35, 1 - spiderDist / 16)
+      : 0;
+    const dangerInjury = Math.max(0, (55 - this.playerHealth) / 55);
+    const heartIntensity = Math.max(dangerChase, dangerInjury);
+    this.sound.playTensionHeartbeat(heartIntensity);
+
+    this.syncInventoryVitals();
+  }
+
+  private syncInventoryVitals(): void {
+    this.inventory.updateVitalsAndDiegeticFX({
+      health: this.playerHealth,
+      sanity: this.playerSanity,
+      battery: this.lanternBattery,
+      flashlightEquipped: this.flashlight.isEquipped,
+      trappedInWeb: this.webManager.isPlayerEnsnared,
+      bleeding: this.playerBleeding,
+      crouching: this.wasCrouching,
+      beingChased: this.spider.isChasingOrAlert,
+    });
   }
 
   private canStandUp(): boolean {
@@ -424,7 +743,6 @@ export class DoomGameApp {
 
     for (const col of this.colliders) {
       const b = col.box;
-      // Só impede levantar se houver obstáculo suspenso entre a cabeça agachada e a altura em pé
       if (b.min.y < crouchTop - 0.02 || b.min.y >= standTop) continue;
       const closestX = Math.max(b.min.x, Math.min(this.position.x, b.max.x));
       const closestZ = Math.max(b.min.z, Math.min(this.position.z, b.max.z));
@@ -441,9 +759,19 @@ export class DoomGameApp {
     const currentEyeHeight =
       this.standingEyeHeight +
       (this.crouchEyeHeight - this.standingEyeHeight) * this.crouchAmount;
+
+    const shakeX =
+      this.cameraShake > 0.001
+        ? (Math.random() - 0.5) * 2 * this.cameraShake
+        : 0;
+    const shakeY =
+      this.cameraShake > 0.001
+        ? (Math.random() - 0.5) * 2 * this.cameraShake
+        : 0;
+
     this.camera.position.set(
-      this.position.x,
-      currentEyeHeight + bobOffset,
+      this.position.x + shakeX,
+      currentEyeHeight + bobOffset + shakeY,
       this.position.z
     );
     const euler = new THREE.Euler(this.pitch, this.yaw, 0, 'YXZ');
@@ -456,7 +784,8 @@ export class DoomGameApp {
     let nearestDist = Infinity;
     let nearestJustFlickered = false;
 
-    for (let i = 0; i < this.lights.length; i++) {
+    const baseCount = Math.min(this.lights.length, MAX_DOOM_LIGHTS);
+    for (let i = 0; i < baseCount; i++) {
       const src = this.lights[i];
       let isDim = false;
 
@@ -484,6 +813,20 @@ export class DoomGameApp {
         nearestJustFlickered = justFlickered;
       }
     }
+
+    // Injeta a luz quente dos Sinalizadores de Magnésio acesos no chão nos slots livres do shader!
+    const flares = this.worldItems.getActiveFlares();
+    let totalLights = baseCount;
+    for (let f = 0; f < flares.length && totalLights < MAX_DOOM_LIGHTS; f++) {
+      const fl = flares[f];
+      const fade = Math.min(1, fl.remainingSec / 2.5);
+      const jitter = 0.84 + 0.16 * Math.sin(this.elapsed * 31 + f * 2);
+      this.sharedUniforms.uLightPositions.value[totalLights].copy(fl.position);
+      this.sharedUniforms.uLightIntensities.value[totalLights] =
+        0.92 * fade * jitter;
+      totalLights++;
+    }
+    this.sharedUniforms.uLightCount.value = totalLights;
 
     this.sound.updateSpatialLampAudio(
       this.position,
