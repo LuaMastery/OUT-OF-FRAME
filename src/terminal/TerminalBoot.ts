@@ -167,6 +167,9 @@ export class TerminalBootController {
     this.desktopEl.id = 'terminal-desktop';
     this.desktopEl.innerHTML = `
       <div class="tui-workspace">
+        <div class="tui-desktop-watermark" aria-hidden="true">
+          <img src="/system-logo.svg" alt="" />
+        </div>
         <div class="tui-icon-grid"></div>
         <div class="tui-start-popup"></div>
       </div>
@@ -342,11 +345,11 @@ export class TerminalBootController {
             this.menuIndex = box.index;
             this.sound.menuMove();
           }
-          this.canvasEl.style.cursor = 'pointer';
+          this.canvasEl.classList.add('cursor-pointer');
           return;
         }
       }
-      this.canvasEl.style.cursor = 'default';
+      this.canvasEl.classList.remove('cursor-pointer');
     });
 
     // Movimento de arrasto de janelas TUI
@@ -547,6 +550,12 @@ export class TerminalBootController {
     this.bootLayerEl.classList.remove('hidden');
     this.desktopEl.classList.remove('active');
     this.bootLayerEl.innerHTML = '';
+
+    const bootLogo = document.createElement('img');
+    bootLogo.src = '/system-logo.svg';
+    bootLogo.alt = 'OUT-OF-FRAME';
+    bootLogo.className = 'tui-boot-logo';
+    this.bootLayerEl.appendChild(bootLogo);
 
     this.schedule(() => {
       this.appendBootLine('Iniciando terminal...');
@@ -917,7 +926,7 @@ export class TerminalBootController {
     cancelAnimationFrame(this.rafId);
     this.sound.stopCoalesceDrone();
     this.canvasEl.classList.remove('active');
-    this.canvasEl.style.cursor = 'default';
+    this.canvasEl.classList.remove('cursor-pointer');
     this.phase = 'desktop';
     this.sound.keyBackspace();
     if (this.focusedWindowId === 'terminal') {

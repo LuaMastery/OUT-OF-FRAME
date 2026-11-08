@@ -1,3 +1,10 @@
+:root {
+  --cursor-default: url('/cursors/cursor-arrow.png') 2 1, default;
+  --cursor-pointer: url('/cursors/cursor-pointer.png') 6 4, pointer;
+  --cursor-move: url('/cursors/cursor-move.png') 11 11, move;
+  --cursor-text: url('/cursors/cursor-text.png') 11 11, text;
+}
+
 * {
   box-sizing: border-box;
   margin: 0;
@@ -12,6 +19,7 @@ body,
   overflow: hidden;
   background: #000000;
   color: #e5e5e5;
+  cursor: var(--cursor-default);
 }
 
 #game-viewport {
@@ -19,6 +27,7 @@ body,
   width: 100%;
   height: 100%;
   background: #000000;
+  cursor: var(--cursor-default);
 }
 
 #game-viewport.dormant {
@@ -31,4 +40,5 @@ body,
   height: 100%;
   image-rendering: pixelated;
   image-rendering: crisp-edges;
+  cursor: var(--cursor-default);
 }

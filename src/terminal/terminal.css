@@ -9,13 +9,14 @@
   line-height: 1.5;
   overflow: hidden;
   user-select: none;
+  cursor: var(--cursor-default);
 }
 
 #terminal-root.hidden {
   display: none;
 }
 
-/* Camada 1: Tela simples de carregamento inicial do terminal */
+/* Camada 1: Tela inicial de carregamento do sistema */
 #terminal-boot-layer {
   padding: 36px 42px;
   max-width: 760px;
@@ -24,6 +25,16 @@
 
 #terminal-boot-layer.hidden {
   display: none;
+}
+
+.tui-boot-logo {
+  display: block;
+  width: 300px;
+  max-width: 82vw;
+  height: auto;
+  margin-bottom: 22px;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
 }
 
 /* Camada 2: Área de Trabalho versão Terminal (TUI Desktop) */
@@ -46,8 +57,30 @@
   overflow: hidden;
 }
 
+/* Marca oficial sutil do Sistema/Jogo ao fundo da área de trabalho */
+.tui-desktop-watermark {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.tui-desktop-watermark img {
+  width: 360px;
+  max-width: 68vw;
+  height: auto;
+  opacity: 0.16;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
+
 /* Coluna de ícones em estilo terminal puro */
 .tui-icon-grid {
+  position: relative;
+  z-index: 2;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
@@ -61,7 +94,7 @@
   align-items: center;
   width: 148px;
   padding: 6px 8px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer);
   color: #e5e5e5;
   border: 1px solid transparent;
 }
@@ -111,7 +144,7 @@
   border-bottom: 1px solid #a8a8a8;
   background: #000000;
   color: #e5e5e5;
-  cursor: move;
+  cursor: var(--cursor-move);
   font-size: 14px;
 }
 
@@ -128,7 +161,7 @@
   font-family: inherit;
   font-size: 14px;
   font-weight: 700;
-  cursor: pointer;
+  cursor: var(--cursor-pointer);
   padding: 0 4px;
 }
 
@@ -147,7 +180,7 @@
 }
 
 .tui-cmd-body {
-  cursor: text;
+  cursor: var(--cursor-text);
 }
 
 .term-prompt-row {
@@ -206,7 +239,7 @@
 
 .tui-start-item {
   padding: 6px 12px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer);
   font-size: 14px;
   color: #e5e5e5;
   display: flex;
@@ -250,7 +283,7 @@
   font-family: inherit;
   font-size: 13px;
   padding: 2px 10px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer);
 }
 
 .tui-task-btn:hover,
@@ -287,6 +320,11 @@
   display: none;
   background: #000000;
   z-index: 80;
+  cursor: var(--cursor-default);
+}
+
+#binary-ui-canvas.cursor-pointer {
+  cursor: var(--cursor-pointer);
 }
 
 #binary-ui-canvas.active {
