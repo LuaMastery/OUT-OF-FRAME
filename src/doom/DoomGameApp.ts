@@ -108,6 +108,7 @@ export class DoomGameApp {
   private isDragging = false;
   private lastMouseX = 0;
   private lastMouseY = 0;
+  private lastWheelSelectMs = 0;
   private elapsed = 0;
   private lastRaf = performance.now();
   private rafId = 0;
@@ -242,6 +243,19 @@ export class DoomGameApp {
       },
       onToggleRadar: () => {
         return this.toggleRadarHud();
+      },
+      onOpenRequest: () => {
+        if (this.activeSequence !== 'NONE' || this.inventory.gameOverVisible) {
+          return;
+        }
+        this.inventory.setOpen(true);
+        this.keys.clear();
+        this.isDragging = false;
+        try {
+          document.exitPointerLock?.();
+        } catch {
+          // ignorar
+        }
       },
       onCloseRequest: () => {
         this.closeInventoryAndLock();
@@ -413,6 +427,12 @@ export class DoomGameApp {
           return;
         }
 
+        // Tecla [Q]: aciona imediatamente o atalho destacado na HUB inferior
+        if (e.code === 'KeyQ' && !e.repeat) {
+          this.inventory.useSelectedQuickSlot();
+          return;
+        }
+
         this.keys.add(e.code);
 
         if (e.code === 'KeyE' && !e.repeat) {
@@ -436,18 +456,44 @@ export class DoomGameApp {
           if (!equipping) {
             this.sound.playFlashlightClick(false);
           }
+          this.syncInventoryVitals();
+          this.inventory.notifyEquipmentShortcutUsed('lantern', equipping);
         }
 
         if (e.code === 'KeyM' && !e.repeat && this.radar.hasRadar) {
-          this.toggleRadarHud();
+          const nowActive = this.toggleRadarHud();
+          this.inventory.notifyEquipmentShortcutUsed('radar', nowActive);
         }
 
         if (e.code === 'KeyN' && !e.repeat && this.radar.isActive) {
           this.radar.cycleScaleMode();
           this.sound.playRadarPing(true);
+          this.inventory.notifyEquipmentShortcutUsed('radar_zoom', true);
         }
       },
       { capture: true, passive: false, signal: this.abortCtrl.signal }
+    );
+
+    // Roda do mouse seleciona/percorre os atalhos [1]–[3] na HUB inferior, tornando-a bem visível!
+    window.addEventListener(
+      'wheel',
+      (e) => {
+        if (
+          !this.engaged ||
+          this.inventory.open ||
+          this.inventory.gameOverVisible ||
+          this.activeSequence !== 'NONE'
+        ) {
+          return;
+        }
+        if (Math.abs(e.deltaY) < 1) return;
+        const now = performance.now();
+        if (now - this.lastWheelSelectMs < 75) return;
+        this.lastWheelSelectMs = now;
+        this.sound.unlock();
+        this.inventory.cycleQuickSlotSelection(e.deltaY > 0 ? 1 : -1);
+      },
+      { passive: true, signal: this.abortCtrl.signal }
     );
 
     window.addEventListener(

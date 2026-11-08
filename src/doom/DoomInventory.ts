@@ -60,12 +60,56 @@ export interface DoomInventoryCallbacks {
   onUseKnife: () => { cutWeb: boolean };
   onUseKey?: () => void;
   onToggleRadar?: () => boolean;
+  onOpenRequest?: () => void;
   onCloseRequest: () => void;
   onPermanentDeathTerminate: () => void;
 }
 
 const TOTAL_SLOTS = 12;
 export const QUICK_SLOT_COUNT = 3;
+
+export type ShortcutsHubVisibilityTier =
+  | 'hidden'
+  | 'unconfigured'
+  | 'configured-idle'
+  | 'active';
+
+export interface ShortcutsHubStateInput {
+  inventoryOpen: boolean;
+  gameOver: boolean;
+  cinematicHidden: boolean;
+  hasConfiguredSlots: boolean;
+  isHovered: boolean;
+  activeUntilMs: number;
+  nowMs: number;
+}
+
+export interface ShortcutsHubVisualState {
+  tier: ShortcutsHubVisibilityTier;
+  opacity: number;
+}
+
+/**
+ * Calcula a visibilidade/transparência da HUB minimizada de atalhos no centro inferior:
+ * - Oculta quando o inventário [Tab], Game Over ou desmaio/sequestro estiver ativo;
+ * - Mais transparente (0.34) quando o jogador ainda não configurou atalhos e está ocioso;
+ * - Semi-transparente discreta (0.52) quando configurada mas em repouso durante a exploração;
+ * - Bem visível e nítida (0.96) assim que o jogador começa a selecionar, rolar, passar o mouse ou acionar!
+ */
+export function computeShortcutsHubState(
+  input: ShortcutsHubStateInput
+): ShortcutsHubVisualState {
+  if (input.inventoryOpen || input.gameOver || input.cinematicHidden) {
+    return { tier: 'hidden', opacity: 0 };
+  }
+  if (input.isHovered || input.nowMs < input.activeUntilMs) {
+    return { tier: 'active', opacity: 0.96 };
+  }
+  if (input.hasConfiguredSlots) {
+    return { tier: 'configured-idle', opacity: 0.52 };
+  }
+  return { tier: 'unconfigured', opacity: 0.34 };
+}
 
 export const ITEM_CATALOG: Record<string, InventoryItemDef> = {
   tactical_lantern: {
@@ -1405,6 +1449,9 @@ export class DoomInventory {
   private readonly eyelidTopEl: HTMLElement;
   private readonly eyelidBottomEl: HTMLElement;
   private readonly blackoutVeilEl: HTMLElement;
+  private readonly shortcutsHubEl: HTMLElement;
+  private readonly hubCaptionEl: HTMLElement;
+  private readonly hubBarEl: HTMLElement;
   private readonly gameOverEl: HTMLElement;
 
   private readonly anatomyCanvas: HTMLCanvasElement;
@@ -1443,6 +1490,17 @@ export class DoomInventory {
   private pickupFlashTimer = 0;
   private animRafId = 0;
   private lastPlateTick = -1;
+
+  // Estado da HUB minimizada de atalhos no centro inferior da tela
+  private selectedQuickSlot: number | null = null;
+  private triggeredHubSlotKey: string | null = null;
+  private hubHovered = false;
+  private hubActiveUntilMs = 0;
+  private hubActiveCaption = '';
+  private hubCinematicHidden = false;
+  private hubDecayTimerId = 0;
+  private hubTriggerTimerId = 0;
+  private lastHubRenderSignature = '';
 
   private webSnareAmount = 0;
   private webCocoonAmount = 0;
@@ -1583,6 +1641,32 @@ export class DoomInventory {
       </div>
     `;
     parentViewport.appendChild(this.overlayEl);
+
+    // 2.5 HUB Minimizada de Atalhos (centro inferior da tela — compacta e semi-transparente em repouso)
+    this.shortcutsHubEl = document.createElement('div');
+    this.shortcutsHubEl.id = 'doom-shortcuts-hub';
+    this.shortcutsHubEl.dataset.hubTier = 'unconfigured';
+    this.shortcutsHubEl.innerHTML = `
+      <div class="hub-caption" data-hub-caption></div>
+      <div class="hub-bar" data-hub-bar role="toolbar" aria-label="Atalhos rápidos"></div>
+    `;
+    parentViewport.appendChild(this.shortcutsHubEl);
+
+    this.hubCaptionEl = this.shortcutsHubEl.querySelector(
+      '[data-hub-caption]'
+    ) as HTMLElement;
+    this.hubBarEl = this.shortcutsHubEl.querySelector(
+      '[data-hub-bar]'
+    ) as HTMLElement;
+
+    this.shortcutsHubEl.addEventListener('mouseenter', () => {
+      this.hubHovered = true;
+      this.syncShortcutsHubVisibility();
+    });
+    this.shortcutsHubEl.addEventListener('mouseleave', () => {
+      this.hubHovered = false;
+      this.syncShortcutsHubVisibility();
+    });
 
     // 3. Tela de Morte Permanente
     this.gameOverEl = document.createElement('div');
@@ -1736,6 +1820,8 @@ export class DoomInventory {
     this.renderGrid();
     this.renderInspector();
     this.renderVitals();
+    this.renderShortcutsHub(true);
+    this.syncShortcutsHubVisibility();
   }
 
   private collectInteractiveRects(): ProximityTargetRect[] {
@@ -1794,7 +1880,12 @@ export class DoomInventory {
     } else {
       this.overlayEl.classList.remove('open');
       this.stopAnatomyLoop();
+      if (this.hasConfiguredShortcuts()) {
+        this.wakeShortcutsHub(3000, 'Atalhos configurados · [1–3] ou roda do mouse');
+      }
     }
+    this.renderShortcutsHub(true);
+    this.syncShortcutsHubVisibility();
     this.sound.playInventoryToggle(next);
   }
 
@@ -1825,11 +1916,13 @@ export class DoomInventory {
     this.setOpen(false);
     this.isGameOver = true;
     this.gameOverEl.classList.add('visible');
+    this.syncShortcutsHubVisibility();
   }
 
   hideGameOver(): void {
     this.isGameOver = false;
     this.gameOverEl.classList.remove('visible');
+    this.syncShortcutsHubVisibility();
   }
 
   setAbductionScreenFX(
@@ -1863,6 +1956,12 @@ export class DoomInventory {
       0,
       Math.min(1, blackoutOpacity)
     ).toFixed(3);
+
+    const nextCinematicHidden = lid > 0.08 || blackoutOpacity > 0.08;
+    if (nextCinematicHidden !== this.hubCinematicHidden) {
+      this.hubCinematicHidden = nextCinematicHidden;
+      this.syncShortcutsHubVisibility();
+    }
   }
 
   /**
@@ -1948,6 +2047,143 @@ export class DoomInventory {
     return this.quickSlots.indexOf(itemId);
   }
 
+  hasConfiguredShortcuts(): boolean {
+    return this.quickSlots.some((id) => id !== null);
+  }
+
+  getSelectedQuickSlot(): number | null {
+    return this.selectedQuickSlot;
+  }
+
+  /**
+   * Acorda temporariamente a HUB minimizada (deixando-a nítida e visível) quando o jogador
+   * seleciona, rola a roda do mouse, aciona um atalho ou coleta um equipamento.
+   */
+  wakeShortcutsHub(durationMs = 3400, caption = ''): void {
+    const now = performance.now();
+    this.hubActiveUntilMs = Math.max(this.hubActiveUntilMs, now + durationMs);
+    if (caption) {
+      this.hubActiveCaption = caption;
+    }
+    this.syncShortcutsHubVisibility();
+
+    if (this.hubDecayTimerId) {
+      window.clearTimeout(this.hubDecayTimerId);
+    }
+    this.hubDecayTimerId = window.setTimeout(() => {
+      this.hubDecayTimerId = 0;
+      if (!this.hubHovered && performance.now() >= this.hubActiveUntilMs - 16) {
+        this.selectedQuickSlot = null;
+        this.hubActiveCaption = '';
+        this.renderShortcutsHub();
+      }
+      this.syncShortcutsHubVisibility();
+    }, durationMs + 40);
+  }
+
+  private pulseHubSlotTrigger(slotKey: string): void {
+    this.triggeredHubSlotKey = slotKey;
+    this.renderShortcutsHub(true);
+    if (this.hubTriggerTimerId) {
+      window.clearTimeout(this.hubTriggerTimerId);
+    }
+    this.hubTriggerTimerId = window.setTimeout(() => {
+      this.hubTriggerTimerId = 0;
+      this.triggeredHubSlotKey = null;
+      this.renderShortcutsHub(true);
+    }, 220);
+  }
+
+  private syncShortcutsHubVisibility(): void {
+    const state = computeShortcutsHubState({
+      inventoryOpen: this.isOpen,
+      gameOver: this.isGameOver,
+      cinematicHidden: this.hubCinematicHidden,
+      hasConfiguredSlots: this.hasConfiguredShortcuts(),
+      isHovered: this.hubHovered,
+      activeUntilMs: this.hubActiveUntilMs,
+      nowMs: performance.now(),
+    });
+
+    this.shortcutsHubEl.dataset.hubTier = state.tier;
+
+    if (state.tier === 'active' && this.hubActiveCaption) {
+      this.hubCaptionEl.textContent = this.hubActiveCaption;
+      this.hubCaptionEl.className = 'hub-caption has-text';
+    } else if (state.tier === 'unconfigured') {
+      this.hubCaptionEl.textContent = '[Tab] configurar atalhos';
+      this.hubCaptionEl.className = 'hub-caption has-hint';
+    } else {
+      this.hubCaptionEl.textContent = '';
+      this.hubCaptionEl.className = 'hub-caption';
+    }
+  }
+
+  /**
+   * Seleciona/percorre os atalhos [1]–[3] na HUB inferior (ex.: pela roda do mouse)
+   * tornando a HUB imediatamente visível e mostrando o item selecionado sem gastá-lo!
+   */
+  cycleQuickSlotSelection(direction: 1 | -1): number {
+    if (this.selectedQuickSlot === null) {
+      this.selectedQuickSlot = direction > 0 ? 0 : QUICK_SLOT_COUNT - 1;
+    } else {
+      this.selectedQuickSlot =
+        (this.selectedQuickSlot + direction + QUICK_SLOT_COUNT) %
+        QUICK_SLOT_COUNT;
+    }
+
+    const q = this.selectedQuickSlot;
+    const itemId = this.quickSlots[q];
+    const slotIdx = itemId
+      ? this.slots.findIndex((s) => s !== null && s.def.id === itemId)
+      : -1;
+    const entry = slotIdx >= 0 ? this.slots[slotIdx] : null;
+
+    const caption = entry
+      ? `[${q + 1}] ${entry.def.name}${
+          entry.quantity > 1 ? ` ×${entry.quantity}` : ''
+        } · [Q] ou [${q + 1}] usar`
+      : `[${q + 1}] Vazio · aperte [Tab] p/ configurar`;
+
+    this.sound.playInventorySelect(false);
+    this.renderShortcutsHub(true);
+    this.wakeShortcutsHub(3800, caption);
+    return q;
+  }
+
+  /**
+   * Usa o atalho atualmente destacado na HUB inferior (tecla [Q]), ou o atalho [1] por padrão.
+   */
+  useSelectedQuickSlot(): boolean {
+    const target = this.selectedQuickSlot ?? 0;
+    return this.useQuickSlot(target);
+  }
+
+  /**
+   * Notifica a HUB quando o jogador aciona Lanterna [F] ou Radar [M]/[N], destacando o slot!
+   */
+  notifyEquipmentShortcutUsed(
+    gear: 'lantern' | 'radar' | 'radar_zoom',
+    isActive: boolean
+  ): void {
+    if (gear === 'lantern') {
+      this.pulseHubSlotTrigger('F');
+      this.wakeShortcutsHub(
+        2600,
+        isActive ? '[F] Lanterna acesa' : '[F] Lanterna guardada'
+      );
+    } else if (gear === 'radar') {
+      this.pulseHubSlotTrigger('M');
+      this.wakeShortcutsHub(
+        2600,
+        isActive ? '[M] Radar topográfico ativo · [N] zoom' : '[M] Radar oculto'
+      );
+    } else {
+      this.pulseHubSlotTrigger('M');
+      this.wakeShortcutsHub(2200, '[N] Escala do radar alternada');
+    }
+  }
+
   /**
    * Atribui (ou limpa) um item utilizável a um dos 3 atalhos rápidos [1], [2] ou [3].
    * Caso o item já estivesse em outro atalho, troca de posição de forma limpa sem duplicar.
@@ -1962,6 +2198,8 @@ export class DoomInventory {
         this.renderGrid();
         this.renderInspector();
       }
+      this.renderShortcutsHub(true);
+      this.syncShortcutsHubVisibility();
       return true;
     }
 
@@ -1981,6 +2219,8 @@ export class DoomInventory {
       this.renderGrid();
       this.renderInspector();
     }
+    this.renderShortcutsHub(true);
+    this.syncShortcutsHubVisibility();
     return true;
   }
 
@@ -2018,8 +2258,15 @@ export class DoomInventory {
    */
   useQuickSlot(quickIndex: number): boolean {
     if (quickIndex < 0 || quickIndex >= QUICK_SLOT_COUNT) return false;
+    this.selectedQuickSlot = quickIndex;
+    this.pulseHubSlotTrigger(String(quickIndex));
+
     const itemId = this.quickSlots[quickIndex];
     if (!itemId) {
+      this.wakeShortcutsHub(
+        2800,
+        `[${quickIndex + 1}] Vazio · aperte [Tab] p/ atribuir`
+      );
       this.sound.invalidInput();
       return false;
     }
@@ -2029,16 +2276,38 @@ export class DoomInventory {
     );
     if (slotIdx < 0) {
       this.quickSlots[quickIndex] = null;
+      this.renderShortcutsHub(true);
+      this.wakeShortcutsHub(
+        2800,
+        `[${quickIndex + 1}] Esgotado · aperte [Tab] p/ atribuir`
+      );
       this.sound.invalidInput();
       return false;
     }
 
-    return this.activateSlotItem(slotIdx, true);
+    const itemName = this.slots[slotIdx]!.def.name;
+    const activated = this.activateSlotItem(slotIdx, true);
+    this.renderShortcutsHub(true);
+    this.wakeShortcutsHub(
+      3000,
+      activated
+        ? `[${quickIndex + 1}] ${itemName}`
+        : `[${quickIndex + 1}] ${itemName} · sem efeito agora`
+    );
+    return activated;
   }
 
   private autoBindQuickSlotIfAvailable(def: InventoryItemDef): void {
     // Auto-preenche atalhos livres com suprimentos/ferramentas de emergência (faca, gaze, etc.)
-    if (!def.usable || def.kind === 'lantern' || def.kind === 'key') return;
+    // Lanterna [F] e Radar [M] já possuem seus próprios botões dedicados na HUB!
+    if (
+      !def.usable ||
+      def.kind === 'lantern' ||
+      def.kind === 'key' ||
+      def.kind === 'radar'
+    ) {
+      return;
+    }
     if (this.quickSlots.includes(def.id)) return;
     const freeQuick = this.quickSlots.findIndex((q) => q === null);
     if (freeQuick >= 0) {
@@ -2057,9 +2326,17 @@ export class DoomInventory {
       if (existingIdx >= 0) {
         this.slots[existingIdx]!.quantity += amount;
         this.autoBindQuickSlotIfAvailable(def);
+        this.renderShortcutsHub(true);
         if (!silent) {
           this.triggerPickupGlint();
           this.sound.playItemPickup();
+          const boundIdx = this.getShortcutForItem(def.id);
+          if (boundIdx >= 0) {
+            this.wakeShortcutsHub(
+              3200,
+              `[${boundIdx + 1}] ${def.name} ×${this.slots[existingIdx]!.quantity}`
+            );
+          }
         }
         if (this.isOpen) {
           this.renderQuickSlots();
@@ -2080,10 +2357,21 @@ export class DoomInventory {
       this.selectedIndex = freeIdx;
     }
     this.autoBindQuickSlotIfAvailable(def);
+    this.renderShortcutsHub(true);
+    this.syncShortcutsHubVisibility();
 
     if (!silent) {
       this.triggerPickupGlint();
       this.sound.playItemPickup();
+      const boundIdx = this.getShortcutForItem(def.id);
+      if (boundIdx >= 0) {
+        this.wakeShortcutsHub(
+          3400,
+          `[${boundIdx + 1}] ${def.name} pronto no atalho`
+        );
+      } else if (def.kind === 'radar') {
+        this.wakeShortcutsHub(3600, '[M] Radar topográfico disponível');
+      }
     }
     if (this.isOpen) {
       this.renderQuickSlots();
@@ -2119,6 +2407,9 @@ export class DoomInventory {
     } else {
       this.refreshWebOverlayCanvas();
     }
+
+    this.renderShortcutsHub();
+    this.syncShortcutsHubVisibility();
 
     if (this.isOpen) {
       this.renderVitals();
@@ -2571,6 +2862,187 @@ export class DoomInventory {
     return false;
   }
 
+  /**
+   * Renderiza a HUB minimizada de atalhos no centro inferior da tela somente quando seu
+   * estado muda, mantendo 60fps liso e cliques/hover responsivos em cada célula.
+   */
+  private renderShortcutsHub(force = false): void {
+    const bat = Math.max(0, Math.min(100, this.latestVitals.battery));
+    const litFive = bat <= 0.5 ? 0 : Math.max(1, Math.round(bat / 20));
+    const lowBat = bat > 0 && bat <= 22;
+    const hasRadar = this.hasItem('field_radar');
+    const radarOn = Boolean(this.latestVitals.radarActive);
+    const lanternOn = Boolean(this.latestVitals.flashlightEquipped) && bat > 0.5;
+
+    const quickSigParts: string[] = [];
+    for (let q = 0; q < QUICK_SLOT_COUNT; q++) {
+      const id = this.quickSlots[q];
+      const slotIdx = id
+        ? this.slots.findIndex((s) => s !== null && s.def.id === id)
+        : -1;
+      const qty = slotIdx >= 0 ? this.slots[slotIdx]!.quantity : 0;
+      quickSigParts.push(`${id ?? '-'}:${qty}`);
+    }
+
+    const sig = `${lanternOn ? 1 : 0}|${litFive}|${lowBat ? 1 : 0}|${
+      hasRadar ? 1 : 0
+    }|${radarOn ? 1 : 0}|${this.selectedQuickSlot ?? -1}|${
+      this.triggeredHubSlotKey ?? '-'
+    }|${quickSigParts.join(',')}`;
+
+    if (!force && sig === this.lastHubRenderSignature) return;
+    this.lastHubRenderSignature = sig;
+
+    this.hubBarEl.innerHTML = '';
+
+    // 1. Atalho fixo [F] Lanterna (sempre presente, com medidor discreto de 5 células na base)
+    const lanternCell = document.createElement('div');
+    lanternCell.className = `hub-slot fixed-gear${
+      this.triggeredHubSlotKey === 'F' ? ' triggered' : ''
+    }`;
+    lanternCell.title = `[F] Lanterna de bolso (${lanternOn ? 'acesa' : 'guardada'})`;
+    let miniSegs = '';
+    for (let c = 0; c < 5; c++) {
+      const lit = c < litFive;
+      miniSegs += `<span class="hub-mini-seg${lit ? ' lit' : ''}${
+        lit && lowBat ? ' low' : ''
+      }"></span>`;
+    }
+    lanternCell.innerHTML = `
+      <span class="hub-slot-key">[F]</span>
+      <span class="hub-slot-dot${lanternOn ? ' on-amber' : ''}"></span>
+      <img class="hub-slot-sprite" src="${this.icons.lantern}" alt="Lanterna" />
+      <div class="hub-mini-cells">${miniSegs}</div>
+    `;
+    lanternCell.addEventListener('mouseenter', () => {
+      this.wakeShortcutsHub(
+        2600,
+        `[F] Lanterna de bolso · ${lanternOn ? 'acesa' : 'guardada'}`
+      );
+    });
+    lanternCell.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.callbacks.onToggleFlashlightFromUI();
+      this.notifyEquipmentShortcutUsed(
+        'lantern',
+        this.latestVitals.flashlightEquipped
+      );
+    });
+    this.hubBarEl.appendChild(lanternCell);
+
+    // 2. Atalho fixo [M] Radar Topográfico (exibido assim que coletado no complexo)
+    if (hasRadar) {
+      const radarCell = document.createElement('div');
+      radarCell.className = `hub-slot fixed-gear${
+        this.triggeredHubSlotKey === 'M' ? ' triggered' : ''
+      }`;
+      radarCell.title = `[M] Radar topográfico (${
+        radarOn ? 'ativo · [N] zoom' : 'oculto'
+      })`;
+      radarCell.innerHTML = `
+        <span class="hub-slot-key">[M]</span>
+        <span class="hub-slot-dot${radarOn ? ' on-green' : ''}"></span>
+        <img class="hub-slot-sprite" src="${this.icons.radar}" alt="Radar" />
+        ${radarOn ? `<span class="hub-slot-subkey">[N]</span>` : ''}
+      `;
+      radarCell.addEventListener('mouseenter', () => {
+        this.wakeShortcutsHub(
+          2600,
+          radarOn
+            ? '[M] Radar topográfico · [N] alternar zoom'
+            : '[M] Radar topográfico · desligado'
+        );
+      });
+      radarCell.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const nextActive = this.callbacks.onToggleRadar?.() ?? false;
+        this.notifyEquipmentShortcutUsed('radar', nextActive);
+      });
+      this.hubBarEl.appendChild(radarCell);
+    }
+
+    // Separador vertical tático entre equipamentos fixos e atalhos configuráveis [1–3]
+    const sep = document.createElement('div');
+    sep.className = 'hub-sep';
+    this.hubBarEl.appendChild(sep);
+
+    // 3. Atalhos rápidos configuráveis [1], [2], [3]
+    for (let q = 0; q < QUICK_SLOT_COUNT; q++) {
+      const itemId = this.quickSlots[q];
+      const slotIdx = itemId
+        ? this.slots.findIndex((s) => s !== null && s.def.id === itemId)
+        : -1;
+      const entry = slotIdx >= 0 ? this.slots[slotIdx] : null;
+      const isSelected = this.selectedQuickSlot === q;
+      const isTriggered = this.triggeredHubSlotKey === String(q);
+
+      const cell = document.createElement('div');
+      cell.className = `hub-slot${entry ? ' bound' : ''}${
+        isSelected ? ' selected' : ''
+      }${isTriggered ? ' triggered' : ''}`;
+      cell.dataset.hubQuick = String(q);
+
+      if (entry) {
+        const iconSrc = this.icons[entry.def.kind];
+        cell.title = `[${q + 1}] ${entry.def.name} — aperte ${q + 1} ou clique para usar`;
+        cell.innerHTML = `
+          <span class="hub-slot-key">[${q + 1}]</span>
+          <img class="hub-slot-sprite" src="${iconSrc}" alt="${entry.def.name}" />
+          ${
+            entry.quantity > 1
+              ? `<span class="hub-slot-qty">×${entry.quantity}</span>`
+              : ''
+          }
+        `;
+      } else {
+        cell.title = `Atalho [${q + 1}] vazio — abra [Tab] para atribuir`;
+        cell.innerHTML = `
+          <span class="hub-slot-key">[${q + 1}]</span>
+          <span class="hub-slot-empty">—</span>
+        `;
+      }
+
+      cell.addEventListener('mouseenter', () => {
+        this.selectedQuickSlot = q;
+        this.renderShortcutsHub(true);
+        this.wakeShortcutsHub(
+          3000,
+          entry
+            ? `[${q + 1}] ${entry.def.name}${
+                entry.quantity > 1 ? ` ×${entry.quantity}` : ''
+              }`
+            : `[${q + 1}] Vazio · aperte [Tab] p/ configurar`
+        );
+      });
+
+      cell.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (entry) {
+          this.useQuickSlot(q);
+        } else {
+          this.callbacks.onOpenRequest?.();
+        }
+      });
+
+      this.hubBarEl.appendChild(cell);
+    }
+
+    // 4. Botão compacto [Tab] na lateral direita para abrir configuração rapidamente
+    const tabBtn = document.createElement('button');
+    tabBtn.type = 'button';
+    tabBtn.className = 'hub-tab-btn';
+    tabBtn.title = 'Abrir inventário e configurar atalhos [Tab]';
+    tabBtn.innerHTML = `<span>[Tab]</span><span>bolsos</span>`;
+    tabBtn.addEventListener('mouseenter', () => {
+      this.wakeShortcutsHub(2600, '[Tab] Abrir bolsos e configurar atalhos [1–3]');
+    });
+    tabBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.callbacks.onOpenRequest?.();
+    });
+    this.hubBarEl.appendChild(tabBtn);
+  }
+
   private consumeAt(slotIndex: number, count: number): void {
     const entry = this.slots[slotIndex];
     if (!entry) return;
@@ -2592,13 +3064,19 @@ export class DoomInventory {
     this.renderGrid();
     this.renderInspector();
     this.renderVitals();
+    this.renderShortcutsHub(true);
+    this.syncShortcutsHubVisibility();
   }
 
   destroy(): void {
     this.stopAnatomyLoop();
+    if (this.pickupFlashTimer) window.clearTimeout(this.pickupFlashTimer);
+    if (this.hubDecayTimerId) window.clearTimeout(this.hubDecayTimerId);
+    if (this.hubTriggerTimerId) window.clearTimeout(this.hubTriggerTimerId);
     this.keyNavAbort.abort();
     this.proximityFX.destroy();
     this.overlayEl.remove();
+    this.shortcutsHubEl.remove();
     this.diegeticEl.remove();
     this.gameOverEl.remove();
   }

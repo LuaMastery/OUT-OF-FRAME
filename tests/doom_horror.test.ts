@@ -6,6 +6,7 @@ import {
 } from '../src/doom/DoomAstronaut';
 import { DoomFlashlight, QuickHandheldKind } from '../src/doom/DoomFlashlight';
 import {
+  computeShortcutsHubState,
   ITEM_CATALOG,
   QUICK_SLOT_COUNT,
   renderFirstPersonWebOverlay,
@@ -1232,5 +1233,68 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
         expect(p.getY(i)).toBeLessThanOrEqual(WALL_HEIGHT + 0.005);
       }
     }
+  });
+
+  it('mantém a HUB minimizada de atalhos semi-transparente quando não configurada e mais visível ao selecionar ou interagir', () => {
+    const unconfiguredIdle = computeShortcutsHubState({
+      inventoryOpen: false,
+      gameOver: false,
+      cinematicHidden: false,
+      hasConfiguredSlots: false,
+      isHovered: false,
+      activeUntilMs: 0,
+      nowMs: 1000,
+    });
+    expect(unconfiguredIdle.tier).toBe('unconfigured');
+    expect(unconfiguredIdle.opacity).toBeCloseTo(0.34, 2);
+
+    const configuredIdle = computeShortcutsHubState({
+      inventoryOpen: false,
+      gameOver: false,
+      cinematicHidden: false,
+      hasConfiguredSlots: true,
+      isHovered: false,
+      activeUntilMs: 500,
+      nowMs: 1000,
+    });
+    expect(configuredIdle.tier).toBe('configured-idle');
+    expect(configuredIdle.opacity).toBeGreaterThan(unconfiguredIdle.opacity);
+    expect(configuredIdle.opacity).toBeLessThan(0.7);
+
+    const selectingByWheelOrKey = computeShortcutsHubState({
+      inventoryOpen: false,
+      gameOver: false,
+      cinematicHidden: false,
+      hasConfiguredSlots: false,
+      isHovered: false,
+      activeUntilMs: 4200,
+      nowMs: 1500,
+    });
+    expect(selectingByWheelOrKey.tier).toBe('active');
+    expect(selectingByWheelOrKey.opacity).toBeGreaterThan(0.9);
+
+    const hoveredState = computeShortcutsHubState({
+      inventoryOpen: false,
+      gameOver: false,
+      cinematicHidden: false,
+      hasConfiguredSlots: true,
+      isHovered: true,
+      activeUntilMs: 0,
+      nowMs: 5000,
+    });
+    expect(hoveredState.tier).toBe('active');
+    expect(hoveredState.opacity).toBeGreaterThan(configuredIdle.opacity);
+
+    const hiddenWhenTabOpen = computeShortcutsHubState({
+      inventoryOpen: true,
+      gameOver: false,
+      cinematicHidden: false,
+      hasConfiguredSlots: true,
+      isHovered: true,
+      activeUntilMs: 9999,
+      nowMs: 1000,
+    });
+    expect(hiddenWhenTabOpen.tier).toBe('hidden');
+    expect(hiddenWhenTabOpen.opacity).toBe(0);
   });
 });

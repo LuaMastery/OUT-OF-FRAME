@@ -44,6 +44,7 @@ const GAMEPLAY_CODES = new Set<string>([
   'KeyA',
   'KeyS',
   'KeyD',
+  'KeyQ',
   'KeyE',
   'KeyF',
   'KeyC',
