@@ -3,6 +3,7 @@ import './terminal/terminal.css';
 import './doom/inventory.css';
 import { DoomGameApp } from './doom/DoomGameApp';
 import { SoundEngine } from './engine/audio/SoundEngine';
+import { acquireFullscreenAndKeyboardLock } from './engine/input/BrowserShortcutGuard';
 import { TerminalBootController } from './terminal/TerminalBoot';
 
 const appRoot = document.getElementById('app') as HTMLElement;
@@ -15,6 +16,12 @@ function createTerminalController(skipBootToDesktop: boolean): void {
   const terminal = new TerminalBootController(appRoot, {
     sound: soundEngine,
     onLaunchImmediateGesture: () => {
+      // Solicita Tela Cheia + Keyboard Lock no primeiro microssegundo do gesto do usuário
+      // para que o navegador capture Ctrl+W diretamente para o jogo sem fechar a aba!
+      acquireFullscreenAndKeyboardLock(() => {
+        doomApp?.reacquirePointerLockAfterFullscreen();
+      });
+
       gameViewport.classList.remove('dormant');
       if (!doomApp) {
         doomApp = new DoomGameApp(soundEngine, () => {

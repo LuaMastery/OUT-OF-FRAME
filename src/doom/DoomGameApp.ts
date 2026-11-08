@@ -1,6 +1,13 @@
 import * as THREE from 'three';
 import { SoundEngine } from '../engine/audio/SoundEngine';
 import {
+  acquireFullscreenAndKeyboardLock,
+  installSessionTabGuard,
+  lockSystemKeyboardKeys,
+  shouldPreventBrowserShortcut,
+  unlockSystemKeyboardKeys,
+} from '../engine/input/BrowserShortcutGuard';
+import {
   resolveCylinderWorldCollisions,
   StaticColliderBox,
 } from '../engine/physics/SpatialSweep';
@@ -208,7 +215,7 @@ export class DoomGameApp {
     this.onResize();
     this.sound.unlock();
     this.sound.enterDoomLabyrinth();
-    this.tryPointerLock();
+    this.tryPointerLock(true);
     this.compositor.render(
       this.renderer,
       this.scene,
@@ -216,6 +223,11 @@ export class DoomGameApp {
       this.flashlight.viewScene,
       this.flashlight.viewCamera
     );
+  }
+
+  reacquirePointerLockAfterFullscreen(): void {
+    if (!this.engaged || this.disposed) return;
+    this.requestCanvasPointerLockOnly();
   }
 
   private finalizePermanentDeath(): void {
@@ -230,10 +242,10 @@ export class DoomGameApp {
   private closeInventoryAndLock(): void {
     this.inventory.setOpen(false);
     this.keys.clear();
-    this.tryPointerLock();
+    this.tryPointerLock(true);
   }
 
-  private tryPointerLock(): void {
+  private requestCanvasPointerLockOnly(): void {
     if (
       this.inventory.open ||
       this.inventory.gameOverVisible ||
@@ -248,47 +260,51 @@ export class DoomGameApp {
       if (maybe && typeof maybe.catch === 'function') {
         maybe.catch(() => {});
       }
-      const kb = (
-        navigator as Navigator & {
-          keyboard?: { lock?: (codes?: string[]) => Promise<void> };
-        }
-      ).keyboard;
-      kb
-        ?.lock?.(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ControlLeft', 'Tab'])
-        ?.catch(() => {});
+      lockSystemKeyboardKeys();
     } catch {
       // Fallback por setas ou arrasto permanece disponível
     }
   }
 
+  private tryPointerLock(fromUserGesture = false): void {
+    if (
+      this.inventory.open ||
+      this.inventory.gameOverVisible ||
+      this.activeSequence !== 'NONE'
+    ) {
+      return;
+    }
+    if (fromUserGesture) {
+      acquireFullscreenAndKeyboardLock(() => {
+        this.requestCanvasPointerLockOnly();
+      });
+    }
+    this.requestCanvasPointerLockOnly();
+  }
+
   private bindInput(): void {
     const sig = { signal: this.abortCtrl.signal };
-    const gameCodes = new Set([
-      'KeyW',
-      'KeyA',
-      'KeyS',
-      'KeyD',
-      'KeyE',
-      'KeyF',
-      'Tab',
-      'Space',
-      'ControlLeft',
-      'ControlRight',
-      'ShiftLeft',
-      'ShiftRight',
-      'ArrowUp',
-      'ArrowDown',
-      'ArrowLeft',
-      'ArrowRight',
-    ]);
+
+    // Proteção máxima contra fechamento acidental por Ctrl+W fora ou dentro de Tela Cheia
+    installSessionTabGuard(
+      () =>
+        this.engaged &&
+        !this.disposed &&
+        !this.inventory.gameOverVisible &&
+        this.activeSequence !== 'DEAD_TERMINATED',
+      this.abortCtrl.signal
+    );
 
     window.addEventListener(
       'keydown',
       (e) => {
         if (!this.engaged || this.disposed) return;
 
-        if (gameCodes.has(e.code)) {
+        if (shouldPreventBrowserShortcut(e)) {
           e.preventDefault();
+          if (!this.inventory.open) {
+            e.stopPropagation();
+          }
         }
         this.sound.unlock();
 
@@ -315,7 +331,7 @@ export class DoomGameApp {
               // ignorar
             }
           } else {
-            this.tryPointerLock();
+            this.tryPointerLock(true);
           }
           return;
         }
@@ -354,7 +370,7 @@ export class DoomGameApp {
           }
         }
       },
-      sig
+      { capture: true, passive: false, signal: this.abortCtrl.signal }
     );
 
     window.addEventListener(
@@ -404,8 +420,8 @@ export class DoomGameApp {
           return;
         }
         this.sound.unlock();
-        if (!this.pointerLocked) {
-          this.tryPointerLock();
+        if (!this.pointerLocked || !document.fullscreenElement) {
+          this.tryPointerLock(true);
         }
         if (e.button === 0) {
           this.interactQueued = true;
@@ -929,7 +945,9 @@ export class DoomGameApp {
     if (wish.lengthSq() > 0) wish.normalize();
 
     const holdingCtrl =
-      this.keys.has('ControlLeft') || this.keys.has('ControlRight');
+      this.keys.has('ControlLeft') ||
+      this.keys.has('ControlRight') ||
+      this.keys.has('KeyC');
     const isCrouching =
       holdingCtrl || (this.wasCrouching && !this.canStandUp());
 
@@ -1279,6 +1297,7 @@ export class DoomGameApp {
     }
     cancelAnimationFrame(this.rafId);
     this.abortCtrl.abort();
+    unlockSystemKeyboardKeys();
     this.inventory.destroy();
     this.compositor.dispose();
     this.renderer.dispose();

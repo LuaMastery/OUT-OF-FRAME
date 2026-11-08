@@ -7,6 +7,10 @@ import {
   reprojectTransformFromFrame,
 } from '../src/engine/math/SubFrustum';
 import { sweepSegmentVsBox, sweepSegmentVsSphere } from '../src/engine/physics/SpatialSweep';
+import {
+  LOCKED_KEYBOARD_CODES,
+  shouldPreventBrowserShortcut,
+} from '../src/engine/input/BrowserShortcutGuard';
 import { ChronoKernel } from '../src/engine/time/ChronoKernel';
 
 const CompA = defineComponent<{ value: number }>('TestA');
@@ -144,5 +148,29 @@ describe('SpatialSweep CCD', () => {
       0.5
     );
     expect(sphereHit).not.toBeNull();
+  });
+});
+
+describe('BrowserShortcutGuard (Proteção contra Ctrl+W)', () => {
+  it('inclui ControlLeft/Right e KeyW na lista de Keyboard Lock e bloqueia combinações críticas do navegador', () => {
+    expect(LOCKED_KEYBOARD_CODES).toContain('KeyW');
+    expect(LOCKED_KEYBOARD_CODES).toContain('ControlLeft');
+    expect(LOCKED_KEYBOARD_CODES).toContain('ControlRight');
+
+    expect(
+      shouldPreventBrowserShortcut({ code: 'KeyW', key: 'w', ctrlKey: true })
+    ).toBe(true);
+    expect(
+      shouldPreventBrowserShortcut({ code: 'KeyS', key: 's', ctrlKey: true })
+    ).toBe(true);
+    expect(
+      shouldPreventBrowserShortcut({ code: 'KeyD', key: 'd', ctrlKey: true })
+    ).toBe(true);
+    expect(
+      shouldPreventBrowserShortcut({ code: 'KeyF', key: 'f', ctrlKey: true })
+    ).toBe(true);
+    expect(
+      shouldPreventBrowserShortcut({ code: 'KeyW', key: 'w', metaKey: true })
+    ).toBe(true);
   });
 });
