@@ -1297,4 +1297,132 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
     expect(hiddenWhenTabOpen.tier).toBe('hidden');
     expect(hiddenWhenTabOpen.opacity).toBe(0);
   });
+
+  it('escala paredes e contorna quinas de 90° sem jamais travar no ar nem apoiar garras no vazio', () => {
+    const scene = new THREE.Scene();
+    const shared = createDoomSharedUniforms();
+    const textures = createDoomTextures();
+    const { colliders } = buildDoomLabyrinth(scene, textures, shared);
+    const mockSound = {
+      playSpiderFootstep: () => {},
+      playSpiderScream: () => {},
+      playSpiderWebSpin: () => {},
+    } as unknown as SoundEngine;
+    const webs = new DoomSpiderWebManager(scene, shared);
+    const spider = new DoomSpider(scene, shared, colliders, webs, mockSound);
+
+    const spiderInternal = spider as unknown as {
+      placeAtCell: (
+        wx: number,
+        wz: number,
+        mode: 'FLOOR' | 'WALL' | 'CEILING'
+      ) => void;
+      buildGridPathTo: (tx: number, tz: number) => void;
+      surfaceMode: 'FLOOR' | 'WALL' | 'CEILING';
+      surfaceDecisionTimer: number;
+      webCooldownTimer: number;
+      limbs: Array<{
+        stepping: boolean;
+        footWorld: THREE.Vector3;
+      }>;
+    };
+
+    const isFootOnPhysicalSurface = (foot: THREE.Vector3): boolean => {
+      // Piso ou teto reais
+      if (foot.y <= 0.09 || foot.y >= WALL_HEIGHT - 0.09) return true;
+      // Ou encostada na face de algum bloco sólido de parede real!
+      for (let i = 0; i < colliders.length; i++) {
+        const b = colliders[i].box;
+        if (foot.y < b.min.y - 0.08 || foot.y > b.max.y + 0.08) continue;
+        const dx = Math.max(b.min.x - foot.x, 0, foot.x - b.max.x);
+        const dz = Math.max(b.min.z - foot.z, 0, foot.z - b.max.z);
+        if (Math.hypot(dx, dz) <= 0.12) return true;
+      }
+      return false;
+    };
+
+    // Encontra um corredor com curvas em L reais no mapa para testar escalada em parede + quina de 90°
+    const findOpenCellNear = (cgx: number, cgz: number) => {
+      for (let r = 0; r <= 4; r++) {
+        for (let dz = -r; dz <= r; dz++) {
+          for (let dx = -r; dx <= r; dx++) {
+            const gx = cgx + dx;
+            const gz = cgz + dz;
+            if (!isSolidCell(LABYRINTH_MAP, gx, gz)) {
+              return gridCellToWorld(gx, gz);
+            }
+          }
+        }
+      }
+      return gridCellToWorld(1, 1);
+    };
+
+    const startCell = findOpenCellNear(1, 1);
+    const goalCell = findOpenCellNear(15, 11);
+    spiderInternal.placeAtCell(startCell.x, startCell.z, 'FLOOR');
+    spiderInternal.buildGridPathTo(goalCell.x, goalCell.z);
+    spiderInternal.surfaceMode = 'WALL';
+    spiderInternal.surfaceDecisionTimer = 999;
+    spiderInternal.webCooldownTimer = 999;
+
+    const farPlayer = new THREE.Vector3(999, 1.7, 999);
+    const flashDir = new THREE.Vector3(0, 0, -1);
+    const dt = 1 / 60;
+    let elapsed = 0;
+    let cumulativeTravel = 0;
+    const prevPos = spider.position.clone();
+    let windowTravel = 0;
+
+    for (let step = 0; step < 900; step++) {
+      elapsed += dt;
+      // Força tentativa recorrente de escalar parede a cada 1.2s (inclusive bem em cima de curvas e cruzamentos!)
+      if (step % 72 === 0) {
+        spiderInternal.surfaceMode = 'WALL';
+      }
+      spiderInternal.surfaceDecisionTimer = 999;
+      spiderInternal.webCooldownTimer = 999;
+
+      spider.update(
+        dt,
+        elapsed,
+        farPlayer,
+        0,
+        false,
+        false,
+        false,
+        flashDir,
+        [],
+        () => {}
+      );
+
+      const dStep = Math.hypot(
+        spider.position.x - prevPos.x,
+        spider.position.z - prevPos.z
+      );
+      cumulativeTravel += dStep;
+      windowTravel += dStep;
+      prevPos.copy(spider.position);
+
+      // A cada 1 segundo (60 frames), enquanto ainda não chegou ao destino, garante avanço real (nunca presa no ar!)
+      if ((step + 1) % 60 === 0) {
+        const distToGoal = Math.hypot(
+          spider.position.x - goalCell.x,
+          spider.position.z - goalCell.z
+        );
+        if (distToGoal > 1.2) {
+          expect(windowTravel).toBeGreaterThan(0.45);
+        }
+        windowTravel = 0;
+      }
+
+      // Garante que TODA pata plantada toca chão, teto ou face real de parede (jamais suspensa no ar do corredor!)
+      for (const limb of spiderInternal.limbs) {
+        if (!limb.stepping) {
+          expect(isFootOnPhysicalSurface(limb.footWorld)).toBe(true);
+        }
+      }
+    }
+
+    expect(cumulativeTravel).toBeGreaterThan(14.0);
+  });
 });

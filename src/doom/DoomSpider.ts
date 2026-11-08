@@ -238,6 +238,13 @@ export class DoomSpider {
   private pathRepathTimer = 0;
   private readonly lastKnownPlayerPos = new THREE.Vector3();
 
+  // Controle físico de escalada lateral em paredes + anti-travamento em cantos
+  private readonly climbedWallNormal = new THREE.Vector3();
+  private climbedWallFaceCoord = 0;
+  private readonly desiredMoveDir = new THREE.Vector3(0, 0, -1);
+  private commandedSpeed = 0;
+  private stuckTimer = 0;
+
   private readonly tmpA = new THREE.Vector3();
   private readonly tmpB = new THREE.Vector3();
   private readonly tmpC = new THREE.Vector3();
@@ -263,6 +270,10 @@ export class DoomSpider {
 
   get currentState(): SpiderBehaviorState {
     return this.state;
+  }
+
+  get currentSurfaceMode(): SpiderSurfaceMode {
+    return this.surfaceMode;
   }
 
   get isChasingOrAlert(): boolean {
@@ -314,6 +325,10 @@ export class DoomSpider {
     this.cinematicMode = null;
     this.lastCinematicMode = null;
     this.surfaceMode = mode;
+    this.climbedWallNormal.set(0, 0, 0);
+    this.climbedWallFaceCoord = 0;
+    this.commandedSpeed = 0;
+    this.stuckTimer = 0;
     const initY = mode === 'CEILING' ? WALL_HEIGHT - 1.08 : 1.42;
     this.bodyPos.set(wx, initY, wz);
     this.prevBodyPos.copy(this.bodyPos);
@@ -321,6 +336,7 @@ export class DoomSpider {
     this.currentUp.set(0, mode === 'CEILING' ? -1 : 1, 0);
     this.targetUp.copy(this.currentUp);
     this.currentForward.set(0, 0, -1);
+    this.desiredMoveDir.set(0, 0, -1);
 
     this.state = 'STALK_PATROL';
     this.stateTimer = 0;
@@ -434,6 +450,9 @@ export class DoomSpider {
 
     this.state = 'CINEMATIC_SEQUENCE';
     this.surfaceMode = 'FLOOR';
+    this.climbedWallNormal.set(0, 0, 0);
+    this.commandedSpeed = 0;
+    this.stuckTimer = 0;
     this.cinematicMode = mode;
     this.lastCinematicMode = mode;
     this.cinematicProgress = progress;
@@ -932,8 +951,12 @@ export class DoomSpider {
     }
 
     let cameraShakeAmount = 0;
+    this.commandedSpeed = 0;
+    const prevMoveX = this.bodyPos.x;
+    const prevMoveZ = this.bodyPos.z;
 
     if (this.state === 'FLEE_RETREAT') {
+      this.commandedSpeed = 7.6;
       this.moveAlongPath(dt, 7.6);
       if (this.stateTimer > 5.8) {
         this.state = 'STALK_PATROL';
@@ -965,7 +988,10 @@ export class DoomSpider {
       }
 
       const chaseSpeed = this.webManager.isPlayerEnsnared ? 10.2 : 9.35;
+      this.commandedSpeed = chaseSpeed;
       if (canSeePlayer && distToPlayer < 5.8) {
+        this.surfaceMode = 'FLOOR';
+        this.climbedWallNormal.set(0, 0, 0);
         this.moveDirectlyToward(playerPos.x, playerPos.z, dt, chaseSpeed);
       } else {
         this.moveAlongPath(dt, chaseSpeed);
@@ -1029,6 +1055,7 @@ export class DoomSpider {
         if (this.pathWaypoints.length === 0) {
           this.pickRandomPatrolPath();
         }
+        this.commandedSpeed = 1.18;
         this.moveAlongPath(dt, 1.18);
 
         this.surfaceDecisionTimer -= dt;
@@ -1061,6 +1088,42 @@ export class DoomSpider {
     }
 
     this.updateSurfaceAttachment(dt, elapsed);
+
+    // Guarda anti-travamento em cantos/quinas: se comandada a andar mas bloqueada, desce da parede e realinha ao corredor!
+    if (this.commandedSpeed > 0.5 && dt > 1e-4) {
+      const planarMoved = Math.hypot(
+        this.bodyPos.x - prevMoveX,
+        this.bodyPos.z - prevMoveZ
+      );
+      if (planarMoved < this.commandedSpeed * dt * 0.22) {
+        this.stuckTimer += dt;
+        if (this.stuckTimer > 0.28) {
+          this.stuckTimer = 0;
+          this.surfaceMode = 'FLOOR';
+          this.climbedWallNormal.set(0, 0, 0);
+          const { gx, gz } = worldToGridCell(this.bodyPos.x, this.bodyPos.z);
+          if (!isSolidCell(LABYRINTH_MAP, gx, gz)) {
+            const cw = gridCellToWorld(gx, gz);
+            this.bodyPos.x += (cw.x - this.bodyPos.x) * 0.35;
+            this.bodyPos.z += (cw.z - this.bodyPos.z) * 0.35;
+            if (
+              this.pathWaypoints.length > 0 &&
+              Math.hypot(cw.x - this.bodyPos.x, cw.z - this.bodyPos.z) > 0.25
+            ) {
+              this.pathWaypoints.unshift({ x: cw.x, z: cw.z });
+            } else if (this.state === 'STALK_PATROL') {
+              this.pickRandomPatrolPath();
+            } else if (this.state === 'FRENZY_CHASE') {
+              this.pathRepathTimer = 0;
+            }
+          }
+        }
+      } else {
+        this.stuckTimer = Math.max(0, this.stuckTimer - dt * 3.0);
+      }
+    } else {
+      this.stuckTimer = 0;
+    }
 
     this.tmpA
       .subVectors(this.bodyPos, this.prevBodyPos)
@@ -1287,18 +1350,221 @@ export class DoomSpider {
     this.buildGridPathTo(bestWorld.x, bestWorld.z);
   }
 
-  private moveAlongPath(dt: number, speed: number): void {
-    if (this.pathWaypoints.length === 0) return;
-    const wp = this.pathWaypoints[0];
-    const dist = Math.hypot(wp.x - this.bodyPos.x, wp.z - this.bodyPos.z);
-
-    if (dist < 0.52) {
-      this.pathWaypoints.shift();
-      if (this.pathWaypoints.length === 0) return;
+  /**
+   * Avalia se existe uma parede LATERAL contínua e segura para escalar na célula atual,
+   * sem puxar a aranha contra cantos frontais/traseiros nem prendê-la em curvas de 90°.
+   */
+  private resolveLateralWallForMovement(
+    gx: number,
+    gz: number,
+    moveDirX: number,
+    moveDirZ: number,
+    turningCornerSoon: boolean
+  ): boolean {
+    if (
+      turningCornerSoon ||
+      isArchCell(LABYRINTH_MAP, gx, gz) ||
+      isSolidCell(LABYRINTH_MAP, gx, gz)
+    ) {
+      this.climbedWallNormal.set(0, 0, 0);
+      return false;
     }
 
-    const next = this.pathWaypoints[0];
-    this.moveDirectlyToward(next.x, next.z, dt, speed);
+    const wallDirs: Array<[number, number, number, number]> = [
+      [-1, 0, 1, 0],
+      [1, 0, -1, 0],
+      [0, -1, 0, 1],
+      [0, 1, 0, -1],
+    ];
+
+    const cellWorld = gridCellToWorld(gx, gz);
+    const stepGx = Math.abs(moveDirX) > 0.45 ? Math.sign(moveDirX) : 0;
+    const stepGz = Math.abs(moveDirZ) > 0.45 ? Math.sign(moveDirZ) : 0;
+    // Se já passou do centro da célula rumo à próxima, exige que a parede continue na célula seguinte!
+    const progressInCell =
+      (this.bodyPos.x - cellWorld.x) * moveDirX +
+      (this.bodyPos.z - cellWorld.z) * moveDirZ;
+
+    let bestScore = -Infinity;
+    let bestNx = 0;
+    let bestNz = 0;
+    let bestFaceCoord = 0;
+
+    for (const [ogx, ogz, nx, nz] of wallDirs) {
+      if (!isSolidCell(LABYRINTH_MAP, gx + ogx, gz + ogz)) continue;
+
+      // A parede PRECISA ser lateral ao deslocamento (normal perpendicular a moveDir)!
+      const dotMove = Math.abs(nx * moveDirX + nz * moveDirZ);
+      if (dotMove > 0.38) continue;
+
+      // Se a parede lateral acaba logo à frente (esquina externa / abertura), solta antes de flutuar no vazio!
+      if (
+        progressInCell > 0.15 &&
+        (stepGx !== 0 || stepGz !== 0) &&
+        !isSolidCell(LABYRINTH_MAP, gx + stepGx + ogx, gz + stepGz + ogz)
+      ) {
+        continue;
+      }
+
+      const faceCoord =
+        ogx !== 0
+          ? cellWorld.x + ogx * (CELL_SIZE * 0.5)
+          : cellWorld.z + ogz * (CELL_SIZE * 0.5);
+      const distToFace =
+        ogx !== 0
+          ? Math.abs(this.bodyPos.x - faceCoord)
+          : Math.abs(this.bodyPos.z - faceCoord);
+
+      // Forte histerese para manter a mesma parede já escalada sem oscilar de um lado ao outro do corredor
+      const sameAsCurrent =
+        this.climbedWallNormal.x === nx && this.climbedWallNormal.z === nz
+          ? 2.5
+          : 0;
+      const score = sameAsCurrent - distToFace;
+      if (score > bestScore) {
+        bestScore = score;
+        bestNx = nx;
+        bestNz = nz;
+        bestFaceCoord = faceCoord;
+      }
+    }
+
+    if (bestScore === -Infinity) {
+      this.climbedWallNormal.set(0, 0, 0);
+      return false;
+    }
+
+    this.climbedWallNormal.set(bestNx, 0, bestNz);
+    this.climbedWallFaceCoord = bestFaceCoord;
+    return true;
+  }
+
+  private computeCorridorMoveContext(gx: number, gz: number): {
+    dirX: number;
+    dirZ: number;
+    turningCornerSoon: boolean;
+  } {
+    const cellCenter = gridCellToWorld(gx, gz);
+    if (this.pathWaypoints.length > 0) {
+      const wp0 = this.pathWaypoints[0];
+      let dx = wp0.x - cellCenter.x;
+      let dz = wp0.z - cellCenter.z;
+      let len = Math.hypot(dx, dz);
+
+      if (len < 0.25 && this.pathWaypoints.length >= 2) {
+        dx = this.pathWaypoints[1].x - wp0.x;
+        dz = this.pathWaypoints[1].z - wp0.z;
+        len = Math.hypot(dx, dz);
+      }
+      if (len < 0.05) {
+        dx = wp0.x - this.bodyPos.x;
+        dz = wp0.z - this.bodyPos.z;
+        len = Math.hypot(dx, dz);
+      }
+
+      const dirX = len > 1e-4 ? dx / len : this.currentForward.x;
+      const dirZ = len > 1e-4 ? dz / len : this.currentForward.z;
+
+      let turningCornerSoon = false;
+      if (this.pathWaypoints.length >= 2) {
+        const wp1 = this.pathWaypoints[1];
+        const s1x = wp1.x - wp0.x;
+        const s1z = wp1.z - wp0.z;
+        const s1Len = Math.hypot(s1x, s1z);
+        if (s1Len > 0.2) {
+          const dotTurn = (dirX * s1x + dirZ * s1z) / s1Len;
+          const distToTurn = Math.hypot(
+            wp0.x - this.bodyPos.x,
+            wp0.z - this.bodyPos.z
+          );
+          if (dotTurn < 0.5 && distToTurn < 2.05) {
+            turningCornerSoon = true;
+          }
+        }
+      }
+
+      return { dirX, dirZ, turningCornerSoon };
+    }
+
+    const fLen = Math.hypot(this.currentForward.x, this.currentForward.z);
+    return {
+      dirX: fLen > 1e-4 ? this.currentForward.x / fLen : 0,
+      dirZ: fLen > 1e-4 ? this.currentForward.z / fLen : -1,
+      turningCornerSoon: false,
+    };
+  }
+
+  private computeSurfaceAdjustedAim(wp: { x: number; z: number }): {
+    x: number;
+    z: number;
+  } {
+    if (
+      this.surfaceMode === 'WALL' &&
+      this.climbedWallNormal.lengthSq() > 0.5
+    ) {
+      const wallStandOff = 0.62;
+      if (this.climbedWallNormal.x !== 0) {
+        return {
+          x: this.climbedWallFaceCoord + this.climbedWallNormal.x * wallStandOff,
+          z: wp.z,
+        };
+      }
+      return {
+        x: wp.x,
+        z: this.climbedWallFaceCoord + this.climbedWallNormal.z * wallStandOff,
+      };
+    }
+    return wp;
+  }
+
+  private moveAlongPath(dt: number, speed: number): void {
+    if (this.pathWaypoints.length === 0) return;
+
+    const { gx, gz } = worldToGridCell(this.bodyPos.x, this.bodyPos.z);
+    let ctx = this.computeCorridorMoveContext(gx, gz);
+    this.desiredMoveDir.set(ctx.dirX, 0, ctx.dirZ);
+
+    if (this.surfaceMode === 'WALL') {
+      const canClimb = this.resolveLateralWallForMovement(
+        gx,
+        gz,
+        ctx.dirX,
+        ctx.dirZ,
+        ctx.turningCornerSoon
+      );
+      if (!canClimb) {
+        // Transiciona suavemente para chão ou teto ao dobrar esquinas ou sair de paredes!
+        this.surfaceMode = this.currentUp.y < -0.15 ? 'CEILING' : 'FLOOR';
+      }
+    } else {
+      this.climbedWallNormal.set(0, 0, 0);
+    }
+
+    let aim = this.computeSurfaceAdjustedAim(this.pathWaypoints[0]);
+    const dist = Math.hypot(aim.x - this.bodyPos.x, aim.z - this.bodyPos.z);
+
+    if (dist < 0.56) {
+      this.pathWaypoints.shift();
+      if (this.pathWaypoints.length === 0) return;
+
+      ctx = this.computeCorridorMoveContext(gx, gz);
+      this.desiredMoveDir.set(ctx.dirX, 0, ctx.dirZ);
+      if (this.surfaceMode === 'WALL') {
+        const canClimb = this.resolveLateralWallForMovement(
+          gx,
+          gz,
+          ctx.dirX,
+          ctx.dirZ,
+          ctx.turningCornerSoon
+        );
+        if (!canClimb) {
+          this.surfaceMode = this.currentUp.y < -0.15 ? 'CEILING' : 'FLOOR';
+        }
+      }
+      aim = this.computeSurfaceAdjustedAim(this.pathWaypoints[0]);
+    }
+
+    this.moveDirectlyToward(aim.x, aim.z, dt, speed);
   }
 
   private moveDirectlyToward(
@@ -1318,26 +1584,39 @@ export class DoomSpider {
     this.faceHorizontalToward(tx, tz, dt * (speed > 5 ? 11 : 4.5));
 
     const step = Math.min(dist, speed * dt);
-    const nextX = this.bodyPos.x + nx * step;
-    const nextZ = this.bodyPos.z + nz * step;
+    this.bodyPos.x += nx * step;
+    this.bodyPos.z += nz * step;
 
     const bodyRadius = 0.56;
-    this.bodyPos.x = nextX;
-    this.bodyPos.z = nextZ;
-
-    for (let i = 0; i < this.colliders.length; i++) {
-      const b = this.colliders[i].box;
-      if (b.max.y < 0.5) continue;
-      const cx = Math.max(b.min.x, Math.min(this.bodyPos.x, b.max.x));
-      const cz = Math.max(b.min.z, Math.min(this.bodyPos.z, b.max.z));
-      const ox = this.bodyPos.x - cx;
-      const oz = this.bodyPos.z - cz;
-      const dSq = ox * ox + oz * oz;
-      if (dSq < bodyRadius * bodyRadius) {
-        const d = Math.sqrt(Math.max(1e-6, dSq));
-        const push = bodyRadius - d;
-        this.bodyPos.x += (ox / d) * push;
-        this.bodyPos.z += (oz / d) * push;
+    // Duas passadas garantem deslizamento suave em quinas em L sem prender nem atravessar!
+    for (let pass = 0; pass < 2; pass++) {
+      for (let i = 0; i < this.colliders.length; i++) {
+        const b = this.colliders[i].box;
+        if (b.max.y < 0.5) continue;
+        const cx = Math.max(b.min.x, Math.min(this.bodyPos.x, b.max.x));
+        const cz = Math.max(b.min.z, Math.min(this.bodyPos.z, b.max.z));
+        const ox = this.bodyPos.x - cx;
+        const oz = this.bodyPos.z - cz;
+        const dSq = ox * ox + oz * oz;
+        if (dSq < bodyRadius * bodyRadius) {
+          if (dSq > 1e-8) {
+            const d = Math.sqrt(dSq);
+            const push = bodyRadius - d;
+            this.bodyPos.x += (ox / d) * push;
+            this.bodyPos.z += (oz / d) * push;
+          } else {
+            // Segurança caso o centro caia dentro de um bloco sólido: expulsa pela face mais rasa
+            const pLeft = this.bodyPos.x - b.min.x;
+            const pRight = b.max.x - this.bodyPos.x;
+            const pFront = this.bodyPos.z - b.min.z;
+            const pBack = b.max.z - this.bodyPos.z;
+            const minP = Math.min(pLeft, pRight, pFront, pBack);
+            if (minP === pLeft) this.bodyPos.x = b.min.x - bodyRadius;
+            else if (minP === pRight) this.bodyPos.x = b.max.x + bodyRadius;
+            else if (minP === pFront) this.bodyPos.z = b.min.z - bodyRadius;
+            else this.bodyPos.z = b.max.z + bodyRadius;
+          }
+        }
       }
     }
   }
@@ -1356,6 +1635,22 @@ export class DoomSpider {
     const inArch = isArchCell(LABYRINTH_MAP, gx, gz);
     const bob = Math.sin(elapsed * 2.4) * 0.045;
 
+    if (this.surfaceMode === 'WALL') {
+      const ctx = this.computeCorridorMoveContext(gx, gz);
+      const hasValidWall = this.resolveLateralWallForMovement(
+        gx,
+        gz,
+        ctx.dirX,
+        ctx.dirZ,
+        ctx.turningCornerSoon
+      );
+      if (!hasValidWall) {
+        this.surfaceMode = this.currentUp.y < -0.15 ? 'CEILING' : 'FLOOR';
+      }
+    } else {
+      this.climbedWallNormal.set(0, 0, 0);
+    }
+
     // Corpo bem mais alto e imponente (~1.42m acima do chão!)
     let desiredY = 1.42 + bob;
     this.targetUp.set(0, 1, 0);
@@ -1363,38 +1658,24 @@ export class DoomSpider {
     if (this.surfaceMode === 'CEILING') {
       this.targetUp.set(0, -1, 0);
       desiredY = (inArch ? 1.78 : WALL_HEIGHT - 1.08) + bob;
-    } else if (this.surfaceMode === 'WALL') {
-      const wallDirs: Array<[number, number, number, number]> = [
-        [-1, 0, 1, 0],
-        [1, 0, -1, 0],
-        [0, -1, 0, 1],
-        [0, 1, 0, -1],
-      ];
+    } else if (
+      this.surfaceMode === 'WALL' &&
+      this.climbedWallNormal.lengthSq() > 0.5
+    ) {
+      const nx = this.climbedWallNormal.x;
+      const nz = this.climbedWallNormal.z;
+      this.targetUp.set(nx * 0.92, 0.24, nz * 0.92).normalize();
+      desiredY = 1.56 + Math.sin(elapsed * 1.9) * 0.14;
 
-      let foundWall = false;
-      const cellWorld = gridCellToWorld(gx, gz);
-      for (const [ogx, ogz, nx, nz] of wallDirs) {
-        if (isSolidCell(LABYRINTH_MAP, gx + ogx, gz + ogz)) {
-          foundWall = true;
-          this.targetUp.set(nx * 0.9, 0.28, nz * 0.9).normalize();
-          desiredY = 1.72 + Math.sin(elapsed * 1.9) * 0.2;
-
-          const wallTouchX = cellWorld.x + ogx * (CELL_SIZE * 0.5 - 0.88);
-          const wallTouchZ = cellWorld.z + ogz * (CELL_SIZE * 0.5 - 0.88);
-          if (ogx !== 0) {
-            this.bodyPos.x +=
-              (wallTouchX - this.bodyPos.x) * Math.min(1, dt * 3.5);
-          } else {
-            this.bodyPos.z +=
-              (wallTouchZ - this.bodyPos.z) * Math.min(1, dt * 3.5);
-          }
-          break;
-        }
-      }
-
-      if (!foundWall) {
-        this.targetUp.set(0, -1, 0);
-        desiredY = WALL_HEIGHT - 1.08 + bob;
+      // Encosta suavemente apenas no eixo transversal da parede (sem JAMAIS puxar contra o avanço!)
+      const wallStandOff = 0.62;
+      const targetCoord =
+        this.climbedWallFaceCoord + (nx !== 0 ? nx : nz) * wallStandOff;
+      const latLerp = Math.min(1, dt * 5.0);
+      if (nx !== 0) {
+        this.bodyPos.x += (targetCoord - this.bodyPos.x) * latLerp;
+      } else {
+        this.bodyPos.z += (targetCoord - this.bodyPos.z) * latLerp;
       }
     }
 
@@ -1551,7 +1832,9 @@ export class DoomSpider {
         }
 
         if (rt.stepping) {
-          const hurry = frantic ? 0.38 : 1.0;
+          const longTransition =
+            rt.stepFrom.distanceTo(rt.targetWorld) > 1.45 ? 0.62 : 1.0;
+          const hurry = (frantic ? 0.38 : 1.0) * longTransition;
           rt.stepT += dt / (spec.stepTime * hurry);
           if (rt.stepT >= 1) {
             rt.stepping = false;
@@ -1571,6 +1854,7 @@ export class DoomSpider {
           const drift = rt.footWorld.distanceTo(rt.targetWorld);
           const overstretched =
             rt.footWorld.distanceTo(rootWorld) > spec.totalLength * 0.96;
+          const urgentSurfaceShift = drift > 1.55 && airborneCount < 4;
           const neighboursPlanted = spec.neighbourIndices.every(
             (nIdx) => !this.limbs[nIdx].stepping
           );
@@ -1581,6 +1865,7 @@ export class DoomSpider {
 
           if (
             overstretched ||
+            urgentSurfaceShift ||
             (drift > triggerDist &&
               airborneCount < maxAirborne &&
               neighboursPlanted)
@@ -1730,17 +2015,58 @@ export class DoomSpider {
   ): { hitPos: THREE.Vector3; isMetalOrCeiling: boolean } {
     const hit = new THREE.Vector3().copy(restCandidate);
     let isMetalOrCeiling = restCandidate.z < 4.5;
+    let anchoredPlane: 'FLOOR' | 'CEILING' | 'WALL_X' | 'WALL_Z' = 'FLOOR';
 
     if (this.surfaceMode === 'CEILING') {
       hit.y = WALL_HEIGHT - 0.025;
       isMetalOrCeiling = true;
-    } else if (this.surfaceMode === 'FLOOR') {
-      hit.y = 0.025;
+      anchoredPlane = 'CEILING';
+    } else if (
+      this.surfaceMode === 'WALL' &&
+      this.climbedWallNormal.lengthSq() > 0.5
+    ) {
+      const wn = this.climbedWallNormal;
+      const intoWall =
+        (restCandidate.x - this.bodyPos.x) * -wn.x +
+        (restCandidate.z - this.bodyPos.z) * -wn.z;
+
+      let anchoredOnClimbedWall = false;
+      if (intoWall >= -0.35) {
+        const probeX =
+          wn.x !== 0 ? this.climbedWallFaceCoord - wn.x * 0.25 : hit.x;
+        const probeZ =
+          wn.z !== 0 ? this.climbedWallFaceCoord - wn.z * 0.25 : hit.z;
+        const wallCell = worldToGridCell(probeX, probeZ);
+        if (isSolidCell(LABYRINTH_MAP, wallCell.gx, wallCell.gz)) {
+          anchoredOnClimbedWall = true;
+          hit.y = Math.max(
+            0.14,
+            Math.min(WALL_HEIGHT - 0.14, restCandidate.y - up.y * 0.22)
+          );
+          if (wn.x !== 0) {
+            hit.x = this.climbedWallFaceCoord + wn.x * 0.045;
+            anchoredPlane = 'WALL_X';
+          } else {
+            hit.z = this.climbedWallFaceCoord + wn.z * 0.045;
+            anchoredPlane = 'WALL_Z';
+          }
+        }
+      }
+
+      // Patas do lado aberto do corredor (ou além da quina onde a parede acaba) apoiam no chão/teto real — NUNCA no ar!
+      if (!anchoredOnClimbedWall) {
+        if (restCandidate.y > WALL_HEIGHT * 0.54) {
+          hit.y = WALL_HEIGHT - 0.025;
+          isMetalOrCeiling = true;
+          anchoredPlane = 'CEILING';
+        } else {
+          hit.y = 0.025;
+          anchoredPlane = 'FLOOR';
+        }
+      }
     } else {
-      hit.y = Math.max(
-        0.08,
-        Math.min(WALL_HEIGHT - 0.08, restCandidate.y - up.y * 0.45)
-      );
+      hit.y = 0.025;
+      anchoredPlane = 'FLOOR';
     }
 
     // Apoia as garras gigantes diretamente nas paredes laterais (respeitando altura Y de arcos!)
@@ -1760,10 +2086,19 @@ export class DoomSpider {
           const dMaxZ = Math.abs(root.z - b.max.z);
           const minD = Math.min(dMinX, dMaxX, dMinZ, dMaxZ);
 
-          if (minD === dMinX) hit.x = b.min.x - 0.05;
-          else if (minD === dMaxX) hit.x = b.max.x + 0.05;
-          else if (minD === dMinZ) hit.z = b.min.z - 0.05;
-          else hit.z = b.max.z + 0.05;
+          if (minD === dMinX) {
+            hit.x = b.min.x - 0.05;
+            anchoredPlane = 'WALL_X';
+          } else if (minD === dMaxX) {
+            hit.x = b.max.x + 0.05;
+            anchoredPlane = 'WALL_X';
+          } else if (minD === dMinZ) {
+            hit.z = b.min.z - 0.05;
+            anchoredPlane = 'WALL_Z';
+          } else {
+            hit.z = b.max.z + 0.05;
+            anchoredPlane = 'WALL_Z';
+          }
 
           if (pass === 0 && b.min.y <= 0.1) {
             if (this.surfaceMode === 'FLOOR') {
@@ -1782,10 +2117,70 @@ export class DoomSpider {
       }
     }
 
+    // Limita alcance máximo preservando a garra colada na superfície física (sem puxar para o ar!)
     const dist = hit.distanceTo(root);
     if (dist > maxReach) {
-      hit.sub(root).multiplyScalar(maxReach / dist).add(root);
-      hit.y = Math.max(0.02, Math.min(WALL_HEIGHT - 0.02, hit.y));
+      if (anchoredPlane === 'FLOOR' || anchoredPlane === 'CEILING') {
+        const dy = hit.y - root.y;
+        const maxPlanar = Math.sqrt(Math.max(0.04, maxReach * maxReach - dy * dy));
+        const dx = hit.x - root.x;
+        const dz = hit.z - root.z;
+        const planar = Math.hypot(dx, dz);
+        if (planar > maxPlanar && planar > 1e-5) {
+          const s = maxPlanar / planar;
+          hit.x = root.x + dx * s;
+          hit.z = root.z + dz * s;
+        }
+      } else if (anchoredPlane === 'WALL_X') {
+        const dx = hit.x - root.x;
+        const maxTangential = Math.sqrt(
+          Math.max(0.04, maxReach * maxReach - dx * dx)
+        );
+        const dy = hit.y - root.y;
+        const dz = hit.z - root.z;
+        const tang = Math.hypot(dy, dz);
+        if (tang > maxTangential && tang > 1e-5) {
+          const s = maxTangential / tang;
+          hit.y = Math.max(0.04, Math.min(WALL_HEIGHT - 0.04, root.y + dy * s));
+          hit.z = root.z + dz * s;
+        }
+      } else {
+        const dz = hit.z - root.z;
+        const maxTangential = Math.sqrt(
+          Math.max(0.04, maxReach * maxReach - dz * dz)
+        );
+        const dy = hit.y - root.y;
+        const dx = hit.x - root.x;
+        const tang = Math.hypot(dy, dx);
+        if (tang > maxTangential && tang > 1e-5) {
+          const s = maxTangential / tang;
+          hit.y = Math.max(0.04, Math.min(WALL_HEIGHT - 0.04, root.y + dy * s));
+          hit.x = root.x + dx * s;
+        }
+      }
+    }
+
+    // Guarda final absoluta: se o clamp tangencial puxou a garra para além da quina de uma parede, ancora no chão/teto!
+    if (hit.y > 0.08 && hit.y < WALL_HEIGHT - 0.08) {
+      let touchesWall = false;
+      for (let c = 0; c < this.colliders.length; c++) {
+        const b = this.colliders[c].box;
+        if (hit.y < b.min.y - 0.06 || hit.y > b.max.y + 0.06) continue;
+        const dx = Math.max(b.min.x - hit.x, 0, hit.x - b.max.x);
+        const dz = Math.max(b.min.z - hit.z, 0, hit.z - b.max.z);
+        if (dx <= 0.1 && dz <= 0.1) {
+          touchesWall = true;
+          break;
+        }
+      }
+      if (!touchesWall) {
+        if (hit.y > WALL_HEIGHT * 0.54) {
+          hit.y = WALL_HEIGHT - 0.025;
+          isMetalOrCeiling = true;
+        } else {
+          hit.y = 0.025;
+        }
+      }
     }
 
     return { hitPos: hit, isMetalOrCeiling };
