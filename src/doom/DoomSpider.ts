@@ -22,11 +22,17 @@ export type SpiderBehaviorState =
   | 'SPINNING_WEB'
   | 'ALERT_WINDUP'
   | 'FRENZY_CHASE'
-  | 'CAPTURE_COIL'
+  | 'CINEMATIC_SEQUENCE'
   | 'FLEE_RETREAT';
 
+export type SpiderCinematicMode =
+  | 'STRIKE_ATTACK'
+  | 'DRAGGING_TO_WEB'
+  | 'WEBBING_IN_LAIR'
+  | 'FATAL_EXECUTION';
+
 const RING_SIDES = 6;
-const CURVE_SAMPLES = 15;
+const CURVE_SAMPLES = 16;
 const IK_ITERATIONS = 3;
 
 interface SpiderLimbSpec {
@@ -111,9 +117,6 @@ function catmullRomVec3(
   return out;
 }
 
-/**
- * Resolve cadeia IK multi-segmento via FABRIK (mesmo algoritmo `SolveChain` de `sh_ik.lua`).
- */
 function solveFabrikChain(
   points: THREE.Vector3[],
   lengths: number[],
@@ -151,9 +154,6 @@ function solveFabrikChain(
   }
 }
 
-/**
- * Cria BufferGeometry pré-alocado para um tubo orgânico de `CURVE_SAMPLES` anéis x `RING_SIDES` lados.
- */
 function createDynamicTubeGeometry(): {
   geometry: THREE.BufferGeometry;
   posAttr: THREE.BufferAttribute;
@@ -189,19 +189,16 @@ function createDynamicTubeGeometry(): {
   geometry.setAttribute('normal', normAttr);
   geometry.setAttribute('color', colAttr);
   geometry.setIndex(indices);
-  // Evita frustum culling prematuro em patas muito longas esticadas pelo corredor
-  geometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 60);
+  geometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 80);
 
   return { geometry, posAttr, normAttr, colAttr };
 }
 
 /**
- * Aranha Procedural de Terror baseada diretamente nas referências de "Evil crawling thing"
- * (Garry's Mod Workshop #3818771209):
- * - 8 patas negras longas, arqueadas, articuladas por IK (FABRIK) + tubos Catmull-Rom afilados até agulhas ósseas
- * - Escala livremente chão, paredes e teto (inclusive emboscadas de cabeça para baixo)
- * - Tece armadilhas de teia pelos corredores
- * - Anda bem devagar patrulhando, mas dispara em velocidade absurda ao encontrar o jogador ou sentir vibração na teia!
+ * Aranha Gigante Procedural de Terror ("Evil Crawling Thing" — escala imponente):
+ * - Corpo volumoso elevado (~1.42m no piso) e 8 patas negras longas (~3.65m - 4.17m) arqueadas até quase o teto!
+ * - Escala chão, paredes e teto livremente, tece armadilhas de teia e dispara em velocidade absurda ao avistar o jogador.
+ * - Ao alcançar o jogador: desfere ataque brutal, arrasta o corpo desacordado até seu Ninho de Teias (ou executa fatalmente se já ferido)!
  */
 export class DoomSpider {
   private readonly rootGroup = new THREE.Group();
@@ -212,7 +209,6 @@ export class DoomSpider {
   private readonly limbSpecs: SpiderLimbSpec[] = [];
   private readonly limbs: SpiderLimbRuntime[] = [];
 
-  // Posição no plano XZ e altura vertical do centro da aranha
   private readonly bodyPos = new THREE.Vector3();
   private readonly smoothVel = new THREE.Vector3();
   private readonly prevBodyPos = new THREE.Vector3();
@@ -227,16 +223,17 @@ export class DoomSpider {
   private surfaceDecisionTimer = 3.5;
   private webCooldownTimer = 6.0;
   private lostSightTimer = 0;
+  private postAbductionGraceTimer = 0;
   private churnYaw = 0;
+
+  private cinematicMode: SpiderCinematicMode | null = null;
+  private readonly cinematicVictimPos = new THREE.Vector3();
+  private cinematicProgress = 0;
 
   private pathWaypoints: Array<{ x: number; z: number }> = [];
   private pathRepathTimer = 0;
   private readonly lastKnownPlayerPos = new THREE.Vector3();
 
-  private captureProgress = 0;
-  private struggleEscapeAccum = 0;
-
-  // Vetores temporários reutilizáveis (zero GC por frame)
   private readonly tmpA = new THREE.Vector3();
   private readonly tmpB = new THREE.Vector3();
   private readonly tmpC = new THREE.Vector3();
@@ -257,7 +254,6 @@ export class DoomSpider {
     this.buildBodyCore();
     this.buildProceduralLimbs();
 
-    // Nasce longe do jogador na galeria sul (gx=7, gz=11), inicialmente no teto!
     this.respawnFarFromPlayer();
   }
 
@@ -269,12 +265,8 @@ export class DoomSpider {
     return (
       this.state === 'ALERT_WINDUP' ||
       this.state === 'FRENZY_CHASE' ||
-      this.state === 'CAPTURE_COIL'
+      this.state === 'CINEMATIC_SEQUENCE'
     );
-  }
-
-  get isCapturingPlayer(): boolean {
-    return this.state === 'CAPTURE_COIL';
   }
 
   get position(): THREE.Vector3 {
@@ -283,29 +275,45 @@ export class DoomSpider {
 
   respawnFarFromPlayer(): void {
     const startCell = gridCellToWorld(7, 11);
-    this.surfaceMode = 'CEILING';
-    this.bodyPos.set(startCell.x, WALL_HEIGHT - 0.92, startCell.z);
+    this.placeAtCell(startCell.x, startCell.z, 'CEILING');
+  }
+
+  /**
+   * Reposiciona a aranha longe do Ninho após ela deixar o jogador preso na teia!
+   */
+  relocateAwayAfterAbduction(): void {
+    const farNorth = gridCellToWorld(7, 3);
+    this.placeAtCell(farNorth.x, farNorth.z, 'CEILING');
+    this.postAbductionGraceTimer = 7.0;
+  }
+
+  private placeAtCell(
+    wx: number,
+    wz: number,
+    mode: SpiderSurfaceMode
+  ): void {
+    this.cinematicMode = null;
+    this.surfaceMode = mode;
+    const initY = mode === 'CEILING' ? WALL_HEIGHT - 1.08 : 1.42;
+    this.bodyPos.set(wx, initY, wz);
     this.prevBodyPos.copy(this.bodyPos);
     this.smoothVel.set(0, 0, 0);
-    this.currentUp.set(0, -1, 0);
-    this.targetUp.set(0, -1, 0);
+    this.currentUp.set(0, mode === 'CEILING' ? -1 : 1, 0);
+    this.targetUp.copy(this.currentUp);
     this.currentForward.set(0, 0, -1);
 
     this.state = 'STALK_PATROL';
     this.stateTimer = 0;
     this.pathWaypoints = [];
-    this.captureProgress = 0;
-    this.struggleEscapeAccum = 0;
 
-    // Reinicializa pés próximos à posição inicial
     for (let i = 0; i < this.limbs.length; i++) {
       const spec = this.limbSpecs[i];
       const rt = this.limbs[i];
       const ang = spec.angleRad;
       rt.footWorld.set(
-        this.bodyPos.x + Math.cos(ang) * 1.15,
-        WALL_HEIGHT - 0.03,
-        this.bodyPos.z + Math.sin(ang) * 1.15
+        this.bodyPos.x + Math.cos(ang) * 1.45,
+        mode === 'CEILING' ? WALL_HEIGHT - 0.03 : 0.03,
+        this.bodyPos.z + Math.sin(ang) * 1.45
       );
       rt.stepFrom.copy(rt.footWorld);
       rt.targetWorld.copy(rt.footWorld);
@@ -314,11 +322,8 @@ export class DoomSpider {
     }
   }
 
-  /**
-   * Chamado imediatamente quando o jogador pisa numa armadilha de teia!
-   */
   alertToWebTrap(trapWorldPos: THREE.Vector3, playerPos: THREE.Vector3): void {
-    if (this.state === 'CAPTURE_COIL') return;
+    if (this.state === 'CINEMATIC_SEQUENCE') return;
 
     this.lastKnownPlayerPos.copy(trapWorldPos);
     this.pathRepathTimer = 0;
@@ -333,8 +338,45 @@ export class DoomSpider {
   }
 
   /**
-   * Constrói o núcleo escuro compacto + abdômen alongado erguido + quelíceras/olhos
-   * seguindo exatamente a silhueta sombria de `image-4.png` e `Evil crawling thing`.
+   * Conduz a aranha gigante durante a animação em 1ª pessoa:
+   * - STRIKE_ATTACK: Bote violento rasgando diante da câmera
+   * - DRAGGING_TO_WEB: Andando de costas enquanto puxa o jogador desacordado pelas 2 patas dianteiras até o ninho!
+   * - WEBBING_IN_LAIR: De pé sobre o jogador tecendo fios no Ninho de Teias
+   * - FATAL_EXECUTION: Execução final letal (morte permanente)
+   */
+  updateCinematicSequence(
+    dt: number,
+    elapsed: number,
+    mode: SpiderCinematicMode,
+    progress: number,
+    spiderWorldPos: THREE.Vector3,
+    faceTargetPos: THREE.Vector3,
+    victimHookPos: THREE.Vector3
+  ): void {
+    this.state = 'CINEMATIC_SEQUENCE';
+    this.surfaceMode = 'FLOOR';
+    this.cinematicMode = mode;
+    this.cinematicProgress = progress;
+    this.cinematicVictimPos.copy(victimHookPos);
+
+    this.bodyPos.copy(spiderWorldPos);
+    this.currentUp.lerp(new THREE.Vector3(0, 1, 0), Math.min(1, dt * 12)).normalize();
+
+    this.faceHorizontalToward(faceTargetPos.x, faceTargetPos.z, 1.0);
+
+    this.tmpA
+      .subVectors(this.bodyPos, this.prevBodyPos)
+      .multiplyScalar(1 / Math.max(0.0005, dt));
+    this.smoothVel.lerp(this.tmpA, Math.min(1, dt * 16));
+    this.prevBodyPos.copy(this.bodyPos);
+
+    this.chitinMat.uniforms.uRageGlow.value = 1.0;
+
+    this.updateBodyAndLimbsIK(dt, elapsed, victimHookPos, 0, 1.4);
+  }
+
+  /**
+   * Constrói o corpo gigante e imponente da Aranha (~1.7x maior, carapaça negra brilhante).
    */
   private buildBodyCore(): void {
     const paintBlackBody = (
@@ -354,72 +396,71 @@ export class DoomSpider {
       return geo;
     };
 
-    // 1. Cefalotórax negro compacto onde convergem as 8 patas
+    // 1. Cefalotórax negro maciço onde convergem as 8 patas gigantes
     const thoraxGeo = paintBlackBody(
-      new THREE.IcosahedronGeometry(0.22, 1),
-      0.032,
-      0.032,
-      0.038
+      new THREE.IcosahedronGeometry(0.38, 1),
+      0.03,
+      0.03,
+      0.036
     );
-    thoraxGeo.scale(0.88, 0.72, 1.28);
+    thoraxGeo.scale(0.95, 0.78, 1.36);
     const thorax = new THREE.Mesh(thoraxGeo, this.chitinMat);
     this.bodyGroup.add(thorax);
 
-    // 2. Abdômen alongado e inclinado para cima/trás (idêntico à crista escura de image-4.png!)
+    // 2. Abdômen negro alongado erguido (crista ameaçadora estilo Evil Crawling Thing)
     const abdomenGeo = paintBlackBody(
-      new THREE.ConeGeometry(0.16, 0.68, 7, 3),
-      0.025,
-      0.025,
-      0.031
+      new THREE.ConeGeometry(0.28, 1.18, 7, 3),
+      0.024,
+      0.024,
+      0.03
     );
-    abdomenGeo.scale(0.76, 1.0, 1.05);
+    abdomenGeo.scale(0.78, 1.02, 1.08);
     const abdomen = new THREE.Mesh(abdomenGeo, this.chitinMat);
     abdomen.rotation.x = -Math.PI * 0.34;
-    abdomen.position.set(0, 0.24, 0.28);
+    abdomen.position.set(0, 0.42, 0.48);
     this.bodyGroup.add(abdomen);
 
-    // Cápsula inferior do abdômen para volume orgânico sem arestas secas
     const bellyGeo = paintBlackBody(
-      new THREE.SphereGeometry(0.165, 7, 6),
-      0.03,
+      new THREE.SphereGeometry(0.29, 7, 6),
       0.028,
-      0.034
+      0.026,
+      0.033
     );
-    bellyGeo.scale(0.78, 0.85, 1.35);
+    bellyGeo.scale(0.82, 0.88, 1.42);
     const belly = new THREE.Mesh(bellyGeo, this.chitinMat);
-    belly.position.set(0, 0.08, 0.19);
+    belly.position.set(0, 0.14, 0.34);
     this.bodyGroup.add(belly);
 
-    // 3. Seis pontas bucais/quelíceras inferiores móveis (`MOUTH_TIPS` de cl_init.lua)
+    // 3. Seis quelíceras/presas predatórias inferiores maiores
     for (let i = 0; i < 6; i++) {
       const ang = (i / 6) * Math.PI * 2;
       const fangGeo = paintBlackBody(
-        new THREE.ConeGeometry(0.026, 0.22, 5),
-        i < 2 ? 0.42 : 0.08,
-        i < 2 ? 0.38 : 0.07,
-        i < 2 ? 0.34 : 0.07
+        new THREE.ConeGeometry(0.045, 0.39, 5),
+        i < 2 ? 0.52 : 0.09,
+        i < 2 ? 0.46 : 0.08,
+        i < 2 ? 0.4 : 0.08
       );
       const fang = new THREE.Mesh(fangGeo, this.chitinMat);
       fang.position.set(
-        Math.cos(ang) * 0.09,
-        -0.14,
-        -0.16 + Math.sin(ang) * 0.08
+        Math.cos(ang) * 0.155,
+        -0.23,
+        -0.28 + Math.sin(ang) * 0.13
       );
-      fang.rotation.x = Math.PI + 0.32;
-      fang.rotation.z = Math.cos(ang) * 0.28;
+      fang.rotation.x = Math.PI + 0.34;
+      fang.rotation.z = Math.cos(ang) * 0.3;
       this.mandibleGroup.add(fang);
     }
     this.bodyGroup.add(this.mandibleGroup);
 
-    // 4. Ocelos frontais pálidos/rubros discretos que brilham sob o foco da lanterna
-    const eyeMat = new THREE.MeshBasicMaterial({ color: 0x9e8878 });
+    // 4. Ocelos frontais reluzentes sob luz/lanterna
+    const eyeMat = new THREE.MeshBasicMaterial({ color: 0xb58d7c });
     const eyeOffsets: Array<[number, number, number, number]> = [
-      [-0.055, 0.03, -0.255, 0.016],
-      [0.055, 0.03, -0.255, 0.016],
-      [-0.095, 0.055, -0.23, 0.011],
-      [0.095, 0.055, -0.23, 0.011],
-      [-0.03, 0.068, -0.245, 0.01],
-      [0.03, 0.068, -0.245, 0.01],
+      [-0.095, 0.05, -0.44, 0.026],
+      [0.095, 0.05, -0.44, 0.026],
+      [-0.16, 0.095, -0.39, 0.019],
+      [0.16, 0.095, -0.39, 0.019],
+      [-0.052, 0.115, -0.42, 0.016],
+      [0.052, 0.115, -0.42, 0.016],
     ];
     for (const [ex, ey, ez, er] of eyeOffsets) {
       const eye = new THREE.Mesh(new THREE.OctahedronGeometry(er, 0), eyeMat);
@@ -431,20 +472,20 @@ export class DoomSpider {
   }
 
   /**
-   * Gera as 8 patas longas assimétricas estilo `EvilCrawler.Grow(seed)`.
+   * Constrói as 8 patas colossais (~3.65m a 4.18m de envergadura cada!) que alcançam
+   * simultaneamente piso, paredes e teto dos corredores!
    */
   private buildProceduralLimbs(): void {
     const rand = mulberry32(38187712);
-    // 4 pares bilaterais (frente -> trás) com variações orgânicas sutis
     const baseDegs = [-28, 28, -64, 64, -106, 106, -146, 146];
 
     for (let i = 0; i < 8; i++) {
       const deg = baseDegs[i] + (rand() - 0.5) * 9;
       const angleRad = (deg * Math.PI) / 180;
       const segments = 4;
-      const totalLength = 2.48 + rand() * 0.42; // patas bem longas e imponentes (~2.5m - 2.9m)
+      const totalLength = 3.65 + rand() * 0.52;
 
-      const rawSegs = [0.72, 1.25, 1.18, 0.95].map(
+      const rawSegs = [0.74, 1.28, 1.2, 0.96].map(
         (w) => w * (0.9 + rand() * 0.2)
       );
       const sum = rawSegs.reduce((a, b) => a + b, 0);
@@ -452,23 +493,23 @@ export class DoomSpider {
 
       const sideSign = deg < 0 ? -1 : 1;
       const rootLocal = new THREE.Vector3(
-        sideSign * (0.11 + rand() * 0.03),
-        -0.02 + (rand() - 0.5) * 0.04,
-        Math.cos(angleRad) * -0.14
+        sideSign * (0.19 + rand() * 0.045),
+        -0.03 + (rand() - 0.5) * 0.06,
+        Math.cos(angleRad) * -0.24
       );
 
       this.limbSpecs.push({
         index: i,
         rootLocal,
         angleRad,
-        spread: 0.5 + rand() * 0.1,
+        spread: 0.48 + rand() * 0.1,
         segments,
         lengths,
         totalLength,
-        baseWidth: 0.056 + rand() * 0.012,
-        stepDistance: 0.62 + rand() * 0.22,
-        stepTime: 0.26 + rand() * 0.08,
-        stepHeight: 0.36 + rand() * 0.14,
+        baseWidth: 0.092 + rand() * 0.02,
+        stepDistance: 0.82 + rand() * 0.26,
+        stepTime: 0.27 + rand() * 0.08,
+        stepHeight: 0.5 + rand() * 0.18,
         phase: rand() * 100,
         freq: 0.8 + rand() * 1.4,
         shade: 0.85 + rand() * 0.3,
@@ -476,7 +517,6 @@ export class DoomSpider {
       });
     }
 
-    // Conecta patas vizinhas para impedir que duas patas adjacentes levantem juntas!
     for (let i = 0; i < this.limbSpecs.length; i++) {
       for (let j = 0; j < this.limbSpecs.length; j++) {
         if (i === j) continue;
@@ -526,10 +566,6 @@ export class DoomSpider {
     }
   }
 
-  /**
-   * Atualização principal de IA, superfície (chão/parede/teto), armadilhas de teia,
-   * captura/luta e cinemática inversa (IK) das 8 patas.
-   */
   update(
     dt: number,
     elapsed: number,
@@ -539,18 +575,23 @@ export class DoomSpider {
     playerCrouching: boolean,
     flashlightOn: boolean,
     flashlightDir: THREE.Vector3,
-    hasKnife: boolean,
-    struggleInput: boolean,
     activeFlares: readonly ActiveMagnesiumFlare[],
-    onDealDamageToPlayer: (damage: number, causeBleeding: boolean) => void
+    onCatchPlayer: () => void
   ): {
-    capturePullTarget: THREE.Vector3 | null;
     cameraShakeAmount: number;
     playerDistance: number;
   } {
+    if (this.state === 'CINEMATIC_SEQUENCE') {
+      return { cameraShakeAmount: 0, playerDistance: 0 };
+    }
+
     this.stateTimer += dt;
     this.webCooldownTimer = Math.max(0, this.webCooldownTimer - dt);
     this.pathRepathTimer = Math.max(0, this.pathRepathTimer - dt);
+    this.postAbductionGraceTimer = Math.max(
+      0,
+      this.postAbductionGraceTimer - dt
+    );
 
     const distToPlayer = Math.hypot(
       playerPos.x - this.bodyPos.x,
@@ -558,14 +599,14 @@ export class DoomSpider {
     );
     const stereoPan = this.computeStereoPan(playerPos, playerYaw);
 
-    // 1. Verifica repulsão por Sinalizador de Magnésio aceso no chão!
-    if (this.state !== 'FLEE_RETREAT' && this.state !== 'CAPTURE_COIL') {
+    // 1. Repulsão por Sinalizador de Magnésio aceso no chão!
+    if (this.state !== 'FLEE_RETREAT') {
       for (const fl of activeFlares) {
         const dFlare = Math.hypot(
           fl.position.x - this.bodyPos.x,
           fl.position.z - this.bodyPos.z
         );
-        if (dFlare < 4.3) {
+        if (dFlare < 4.5) {
           this.sound.playSpiderScream(stereoPan, distToPlayer);
           this.state = 'FLEE_RETREAT';
           this.stateTimer = 0;
@@ -576,15 +617,17 @@ export class DoomSpider {
       }
     }
 
-    // 2. Sensores de Visão e Audição da Aranha
-    const canSeePlayer = this.detectPlayer(
-      playerPos,
-      distToPlayer,
-      playerSprinting,
-      playerCrouching,
-      flashlightOn,
-      flashlightDir
-    );
+    // 2. Visão e Audição
+    const canSeePlayer =
+      this.postAbductionGraceTimer <= 0 &&
+      this.detectPlayer(
+        playerPos,
+        distToPlayer,
+        playerSprinting,
+        playerCrouching,
+        flashlightOn,
+        flashlightDir
+      );
 
     if (canSeePlayer) {
       this.lastKnownPlayerPos.copy(playerPos);
@@ -593,57 +636,9 @@ export class DoomSpider {
       this.lostSightTimer += dt;
     }
 
-    // 3. Máquina de Estados da Aranha
-    let capturePullTarget: THREE.Vector3 | null = null;
     let cameraShakeAmount = 0;
 
-    if (this.state === 'CAPTURE_COIL') {
-      // Aranha capturou o jogador e enrola as patas dianteiras ao redor dele (`Coil`)!
-      this.captureProgress = Math.min(1, this.captureProgress + dt * 2.8);
-      cameraShakeAmount = 0.055;
-
-      // Posiciona a câmera levemente puxada na direção da aranha
-      const toSpider = this.tmpA
-        .subVectors(this.bodyPos, playerPos)
-        .setY(0);
-      const len = toSpider.length();
-      if (len > 0.001) toSpider.multiplyScalar(1 / len);
-
-      capturePullTarget = new THREE.Vector3(
-        this.bodyPos.x - toSpider.x * 1.08,
-        playerPos.y,
-        this.bodyPos.z - toSpider.z * 1.08
-      );
-
-      // Processa tentativa do jogador de escapar
-      const baseEscapeRate = hasKnife ? 1.15 : 0.46;
-      const mashBonus = struggleInput ? (hasKnife ? 1.45 : 0.72) : 0;
-      this.struggleEscapeAccum += dt * (baseEscapeRate + mashBonus);
-
-      if (struggleInput && Math.random() < dt * 9) {
-        this.sound.playStruggleEffort();
-      }
-
-      if (this.struggleEscapeAccum >= 1.0) {
-        // Jogador escapou do bote! Aranha recua pelo teto por alguns segundos
-        if (hasKnife) {
-          this.sound.playItemUse('blade');
-        }
-        this.webManager.clearEnsnarement();
-        this.state = 'FLEE_RETREAT';
-        this.stateTimer = 0;
-        this.surfaceMode = 'CEILING';
-        this.pickFarRetreatPath(playerPos);
-      } else if (this.stateTimer > 2.35) {
-        // Segundo golpe pesado caso o jogador não reaja
-        onDealDamageToPlayer(34, true);
-        this.webManager.clearEnsnarement();
-        this.state = 'FLEE_RETREAT';
-        this.stateTimer = 0;
-        this.surfaceMode = 'CEILING';
-        this.pickFarRetreatPath(playerPos);
-      }
-    } else if (this.state === 'FLEE_RETREAT') {
+    if (this.state === 'FLEE_RETREAT') {
       this.moveAlongPath(dt, 7.6);
       if (this.stateTimer > 5.8) {
         this.state = 'STALK_PATROL';
@@ -651,7 +646,6 @@ export class DoomSpider {
         this.pathWaypoints = [];
       }
     } else if (this.state === 'ALERT_WINDUP') {
-      // Congela 0.42s erguendo as patas dianteiras antes de disparar em velocidade absurda!
       this.faceHorizontalToward(playerPos.x, playerPos.z, dt * 10);
       if (this.stateTimer >= 0.42) {
         this.state = 'FRENZY_CHASE';
@@ -659,60 +653,56 @@ export class DoomSpider {
         this.pathRepathTimer = 0;
       }
     } else if (this.state === 'FRENZY_CHASE') {
-      // VELOCIDADE ABSURDA DE PERSEGUIÇÃO! ("correr pela sua vida para tentar fugir")
       if (this.pathRepathTimer <= 0) {
-        this.pathRepathTimer = 0.32;
+        this.pathRepathTimer = 0.3;
         this.buildGridPathTo(
           this.lastKnownPlayerPos.x,
           this.lastKnownPlayerPos.z
         );
       }
 
-      // Ao chegar perto do jogador, desce do teto/parede para dar o bote!
-      if (distToPlayer < 5.4) {
+      if (distToPlayer < 6.0) {
         this.surfaceMode = 'FLOOR';
       } else if (Math.random() < dt * 0.45) {
-        // Durante a corrida pode alternar entre chão, paredes e teto!
         const roll = Math.random();
         this.surfaceMode =
           roll < 0.55 ? 'FLOOR' : roll < 0.8 ? 'CEILING' : 'WALL';
       }
 
       const chaseSpeed = this.webManager.isPlayerEnsnared ? 10.2 : 9.35;
-      if (canSeePlayer && distToPlayer < 5.5) {
+      if (canSeePlayer && distToPlayer < 5.8) {
         this.moveDirectlyToward(playerPos.x, playerPos.z, dt, chaseSpeed);
       } else {
         this.moveAlongPath(dt, chaseSpeed);
       }
 
-      if (distToPlayer < 8.5) {
-        cameraShakeAmount = (1 - distToPlayer / 8.5) * 0.018;
+      if (distToPlayer < 10.0) {
+        cameraShakeAmount = (1 - distToPlayer / 10.0) * 0.026;
       }
 
-      // Alcançou o jogador -> Captura!
-      if (distToPlayer < 1.28) {
-        this.surfaceMode = 'FLOOR';
-        this.state = 'CAPTURE_COIL';
+      // Alcançou o jogador -> Inicia Ataque Brutal + Sequestro até a Teia (ou Morte Real)!
+      if (distToPlayer < 1.58) {
+        onCatchPlayer();
+        return {
+          cameraShakeAmount: 0.12,
+          playerDistance: distToPlayer,
+        };
+      }
+
+      const giveUpTime = playerCrouching && !flashlightOn ? 5.2 : 7.8;
+      if (this.lostSightTimer > giveUpTime) {
+        this.state = 'STALK_PATROL';
         this.stateTimer = 0;
-        this.captureProgress = 0;
-        this.struggleEscapeAccum = 0;
-        this.sound.playSpiderCaptureImpact();
-        onDealDamageToPlayer(38, true);
-      } else {
-        // Perdeu o jogador de vista após ele correr e se esconder pelas esquinas
-        const giveUpTime = playerCrouching && !flashlightOn ? 5.2 : 7.8;
-        if (this.lostSightTimer > giveUpTime) {
-          this.state = 'STALK_PATROL';
-          this.stateTimer = 0;
-          this.surfaceMode = Math.random() < 0.65 ? 'CEILING' : 'WALL';
-          this.pathWaypoints = [];
-        }
+        this.surfaceMode = Math.random() < 0.65 ? 'CEILING' : 'WALL';
+        this.pathWaypoints = [];
       }
     } else if (this.state === 'SPINNING_WEB') {
-      // Tece uma armadilha de teia no corredor atual
       this.surfaceMode = 'FLOOR';
       this.churnYaw += dt * 2.4;
-      if (Math.floor((this.stateTimer - dt) * 3) !== Math.floor(this.stateTimer * 3)) {
+      if (
+        Math.floor((this.stateTimer - dt) * 3) !==
+        Math.floor(this.stateTimer * 3)
+      ) {
         this.sound.playSpiderWebSpin(stereoPan, distToPlayer);
       }
 
@@ -728,7 +718,6 @@ export class DoomSpider {
         this.surfaceMode = Math.random() < 0.7 ? 'CEILING' : 'WALL';
       }
     } else if (this.state === 'CEILING_AMBUSH') {
-      // Fica imóvel de cabeça para baixo no teto esperando alguém passar!
       this.surfaceMode = 'CEILING';
       this.churnYaw += dt * 0.25 * Math.sin(elapsed * 0.6);
 
@@ -739,7 +728,6 @@ export class DoomSpider {
         this.stateTimer = 0;
       }
     } else {
-      // STALK_PATROL — Anda bem devagar (~1.18 m/s), livre para escalar paredes, teto ou chão!
       if (canSeePlayer) {
         this.triggerAlertScream(stereoPan, distToPlayer);
       } else {
@@ -748,7 +736,6 @@ export class DoomSpider {
         }
         this.moveAlongPath(dt, 1.18);
 
-        // Liberdade autônoma para trocar entre Teto, Parede, Chão, Emboscada ou Tecer Teia!
         this.surfaceDecisionTimer -= dt;
         if (this.surfaceDecisionTimer <= 0) {
           this.surfaceDecisionTimer = 4.0 + Math.random() * 4.5;
@@ -761,7 +748,6 @@ export class DoomSpider {
             this.surfaceMode = 'FLOOR';
           }
 
-          // Às vezes para no teto em emboscada silenciosa
           if (this.surfaceMode === 'CEILING' && Math.random() < 0.28) {
             this.state = 'CEILING_AMBUSH';
             this.stateTimer = 0;
@@ -778,10 +764,8 @@ export class DoomSpider {
       }
     }
 
-    // 4. Ajusta altura vertical e normal da superfície (Chão, Parede ou Teto!)
     this.updateSurfaceAttachment(dt, elapsed);
 
-    // 5. Atualiza velocidade suavizada e brilho sutil de fúria
     this.tmpA
       .subVectors(this.bodyPos, this.prevBodyPos)
       .multiplyScalar(1 / Math.max(0.0005, dt));
@@ -793,11 +777,9 @@ export class DoomSpider {
       (targetRage - this.chitinMat.uniforms.uRageGlow.value) *
       Math.min(1, dt * 6);
 
-    // 6. Posiciona o corpo central e resolve IK + malhas tubulares das 8 patas
     this.updateBodyAndLimbsIK(dt, elapsed, playerPos, stereoPan, distToPlayer);
 
     return {
-      capturePullTarget,
       cameraShakeAmount,
       playerDistance: distToPlayer,
     };
@@ -817,23 +799,20 @@ export class DoomSpider {
     flashlightOn: boolean,
     flashlightDir: THREE.Vector3
   ): boolean {
-    // Audição aguçada: correr (Shift) perto da aranha denuncia sua posição!
-    if (playerSprinting && dist < 9.2) {
+    if (playerSprinting && dist < 9.5) {
       return true;
     }
-    if (!playerCrouching && dist < 2.8) {
+    if (!playerCrouching && dist < 2.9) {
       return true;
     }
 
-    // Alcance visual depende da lanterna e de estar agachado furtivamente (Ctrl)
-    let sightRange = 15.5;
+    let sightRange = 15.8;
     if (flashlightOn) {
-      sightRange = 20.5;
-      // Se o jogador apontar a lanterna diretamente na direção da aranha, ela percebe de longe!
+      sightRange = 21.0;
       const toSpider = this.tmpA
         .subVectors(this.bodyPos, playerPos)
         .normalize();
-      if (toSpider.dot(flashlightDir) > 0.86 && dist < 23.0) {
+      if (toSpider.dot(flashlightDir) > 0.86 && dist < 23.5) {
         if (this.hasLineOfSight(this.bodyPos, playerPos)) return true;
       }
     } else if (playerCrouching) {
@@ -842,12 +821,14 @@ export class DoomSpider {
 
     if (dist > sightRange) return false;
 
-    // Verifica cone visual amplo da aranha (230 graus; aranhas sentem quase tudo à frente/lados)
     const toPrey = this.tmpA
       .set(playerPos.x - this.bodyPos.x, 0, playerPos.z - this.bodyPos.z)
       .normalize();
-    const fwdFlat = this.tmpB
-      .set(this.currentForward.x, 0, this.currentForward.z);
+    const fwdFlat = this.tmpB.set(
+      this.currentForward.x,
+      0,
+      this.currentForward.z
+    );
     if (fwdFlat.lengthSq() > 0.01) {
       fwdFlat.normalize();
       if (toPrey.dot(fwdFlat) < -0.42 && dist > 4.2) {
@@ -859,7 +840,7 @@ export class DoomSpider {
   }
 
   private hasLineOfSight(from: THREE.Vector3, to: THREE.Vector3): boolean {
-    const startY = Math.min(2.1, Math.max(0.8, from.y));
+    const startY = Math.min(2.15, Math.max(0.85, from.y));
     const endY = 1.15;
     const dx = to.x - from.x;
     const dy = endY - startY;
@@ -889,10 +870,6 @@ export class DoomSpider {
     return true;
   }
 
-  /**
-   * Calcula caminho em grade (BFS sobre células abertas de `LABYRINTH_MAP`)
-   * para perseguição implacável pelos corredores sem nunca travar em quinas!
-   */
   private buildGridPathTo(targetX: number, targetZ: number): void {
     const rows = LABYRINTH_MAP.length;
     const cols = LABYRINTH_MAP[0].length;
@@ -983,7 +960,7 @@ export class DoomSpider {
   }
 
   private pickFarRetreatPath(awayFrom: THREE.Vector3): void {
-    let bestWorld = gridCellToWorld(7, 11);
+    let bestWorld = gridCellToWorld(7, 3);
     let bestDist = -1;
 
     for (let gz = 1; gz < LABYRINTH_MAP.length - 1; gz++) {
@@ -1005,7 +982,7 @@ export class DoomSpider {
     const wp = this.pathWaypoints[0];
     const dist = Math.hypot(wp.x - this.bodyPos.x, wp.z - this.bodyPos.z);
 
-    if (dist < 0.48) {
+    if (dist < 0.52) {
       this.pathWaypoints.shift();
       if (this.pathWaypoints.length === 0) return;
     }
@@ -1034,8 +1011,7 @@ export class DoomSpider {
     const nextX = this.bodyPos.x + nx * step;
     const nextZ = this.bodyPos.z + nz * step;
 
-    // Respeita paredes sólidas mantendo margem orgânica para o corpo central
-    const bodyRadius = 0.44;
+    const bodyRadius = 0.56;
     this.bodyPos.x = nextX;
     this.bodyPos.z = nextZ;
 
@@ -1065,29 +1041,24 @@ export class DoomSpider {
     this.currentForward.lerp(this.tmpC, Math.min(1, rate)).normalize();
   }
 
-  /**
-   * Adapta suavemente a altura do corpo e o vetor `up` conforme a aranha caminha
-   * pelo CHÃO, escala uma PAREDE lateral ou fica de cabeça para baixo no TETO!
-   */
   private updateSurfaceAttachment(dt: number, elapsed: number): void {
     const { gx, gz } = worldToGridCell(this.bodyPos.x, this.bodyPos.z);
     const inArch = isArchCell(LABYRINTH_MAP, gx, gz);
-    const bob = Math.sin(elapsed * 2.6) * 0.035;
+    const bob = Math.sin(elapsed * 2.4) * 0.045;
 
-    let desiredY = 1.04 + bob;
+    // Corpo bem mais alto e imponente (~1.42m acima do chão!)
+    let desiredY = 1.42 + bob;
     this.targetUp.set(0, 1, 0);
 
     if (this.surfaceMode === 'CEILING') {
       this.targetUp.set(0, -1, 0);
-      // Passa por baixo da viga superior ('A') sem atravessar o metal!
-      desiredY = (inArch ? 1.88 : WALL_HEIGHT - 0.92) + bob;
+      desiredY = (inArch ? 1.78 : WALL_HEIGHT - 1.08) + bob;
     } else if (this.surfaceMode === 'WALL') {
-      // Procura a parede sólida mais próxima ao redor da célula atual para escalar lateralmente!
       const wallDirs: Array<[number, number, number, number]> = [
-        [-1, 0, 1, 0], // parede a Oeste -> normal aponta +X
-        [1, 0, -1, 0], // parede a Leste -> normal aponta -X
-        [0, -1, 0, 1], // parede ao Norte -> normal aponta +Z
-        [0, 1, 0, -1], // parede ao Sul -> normal aponta -Z
+        [-1, 0, 1, 0],
+        [1, 0, -1, 0],
+        [0, -1, 0, 1],
+        [0, 1, 0, -1],
       ];
 
       let foundWall = false;
@@ -1095,26 +1066,25 @@ export class DoomSpider {
       for (const [ogx, ogz, nx, nz] of wallDirs) {
         if (isSolidCell(LABYRINTH_MAP, gx + ogx, gz + ogz)) {
           foundWall = true;
-          // Inclina entre a parede e o chão/teto para escalada aracnídea realista
-          this.targetUp.set(nx * 0.92, 0.25, nz * 0.92).normalize();
-          desiredY = 1.66 + Math.sin(elapsed * 1.9) * 0.18;
+          this.targetUp.set(nx * 0.9, 0.28, nz * 0.9).normalize();
+          desiredY = 1.72 + Math.sin(elapsed * 1.9) * 0.2;
 
-          // Aproxima suavemente o corpo da face da parede escalada
-          const wallTouchX = cellWorld.x + ogx * (CELL_SIZE * 0.5 - 0.78);
-          const wallTouchZ = cellWorld.z + ogz * (CELL_SIZE * 0.5 - 0.78);
+          const wallTouchX = cellWorld.x + ogx * (CELL_SIZE * 0.5 - 0.88);
+          const wallTouchZ = cellWorld.z + ogz * (CELL_SIZE * 0.5 - 0.88);
           if (ogx !== 0) {
-            this.bodyPos.x += (wallTouchX - this.bodyPos.x) * Math.min(1, dt * 3.5);
+            this.bodyPos.x +=
+              (wallTouchX - this.bodyPos.x) * Math.min(1, dt * 3.5);
           } else {
-            this.bodyPos.z += (wallTouchZ - this.bodyPos.z) * Math.min(1, dt * 3.5);
+            this.bodyPos.z +=
+              (wallTouchZ - this.bodyPos.z) * Math.min(1, dt * 3.5);
           }
           break;
         }
       }
 
       if (!foundWall) {
-        // Câmara aberta sem parede colada -> sobe para o teto!
         this.targetUp.set(0, -1, 0);
-        desiredY = WALL_HEIGHT - 0.92 + bob;
+        desiredY = WALL_HEIGHT - 1.08 + bob;
       }
     }
 
@@ -1123,10 +1093,6 @@ export class DoomSpider {
     this.currentUp.lerp(this.targetUp, vertLerp).normalize();
   }
 
-  /**
-   * Atualiza orientação 3D do corpo, movimentos das quelíceras, alvos de pisada
-   * em múltiplas superfícies (chão + paredes + teto), FABRIK IK e geometria Catmull-Rom!
-   */
   private updateBodyAndLimbsIK(
     dt: number,
     elapsed: number,
@@ -1134,7 +1100,6 @@ export class DoomSpider {
     stereoPan: number,
     distToPlayer: number
   ): void {
-    // Ortogonaliza base 3D do corpo (Right, Up, Forward)
     const up = this.currentUp;
     const fwd = this.tmpA.copy(this.currentForward);
     fwd.addScaledVector(up, -fwd.dot(up));
@@ -1146,7 +1111,6 @@ export class DoomSpider {
 
     const right = this.tmpRight.crossVectors(fwd, up).normalize();
 
-    // Aplica leve rotação orgânica (`churn` de cl_init.lua) quando parada/espreitando
     if (this.churnYaw !== 0) {
       const c = Math.cos(Math.sin(this.churnYaw) * 0.14);
       const s = Math.sin(Math.sin(this.churnYaw) * 0.14);
@@ -1165,14 +1129,16 @@ export class DoomSpider {
     this.bodyGroup.position.copy(this.bodyPos);
     this.bodyGroup.quaternion.setFromRotationMatrix(basisMat);
 
-    // Vibração das quelíceras inferiores
     const agit = this.isChasingOrAlert ? 1.0 : 0.2;
-    this.mandibleGroup.rotation.y = Math.sin(elapsed * (6 + agit * 14)) * 0.12;
+    this.mandibleGroup.rotation.y = Math.sin(elapsed * (6 + agit * 15)) * 0.14;
     this.mandibleGroup.scale.setScalar(
-      1 + Math.sin(elapsed * (4 + agit * 12)) * 0.06
+      1 + Math.sin(elapsed * (4 + agit * 14)) * 0.08
     );
 
-    const frantic = this.state === 'FRENZY_CHASE' || this.state === 'FLEE_RETREAT';
+    const frantic =
+      this.state === 'FRENZY_CHASE' ||
+      this.state === 'FLEE_RETREAT' ||
+      this.cinematicMode === 'DRAGGING_TO_WEB';
     const maxAirborne = frantic ? 4 : 2;
 
     let airborneCount = 0;
@@ -1180,25 +1146,22 @@ export class DoomSpider {
       if (this.limbs[i].stepping) airborneCount++;
     }
 
-    // Avanço preditivo da pisada (`LEAD_TIME` de cl_init.lua)
     const lead = this.tmpC.copy(this.smoothVel).multiplyScalar(0.15);
-    if (lead.length() > 0.85) lead.setLength(0.85);
+    if (lead.length() > 1.05) lead.setLength(1.05);
 
     for (let i = 0; i < this.limbs.length; i++) {
       const spec = this.limbSpecs[i];
       const rt = this.limbs[i];
 
-      // Tremor nervoso esporádico (`twitch` de cl_init.lua)
       rt.twitch.multiplyScalar(Math.exp(-dt * 8));
-      if (Math.random() < dt * (0.35 + agit * 1.8)) {
+      if (Math.random() < dt * (0.35 + agit * 1.9)) {
         rt.twitch.set(
-          (Math.random() - 0.5) * 0.14,
-          (Math.random() - 0.5) * 0.14,
-          (Math.random() - 0.5) * 0.14
+          (Math.random() - 0.5) * 0.18,
+          (Math.random() - 0.5) * 0.18,
+          (Math.random() - 0.5) * 0.18
         );
       }
 
-      // Raiz da pata no mundo
       const rootWorld = new THREE.Vector3(
         this.bodyPos.x +
           right.x * spec.rootLocal.x +
@@ -1214,7 +1177,6 @@ export class DoomSpider {
           fwd.z * spec.rootLocal.z
       );
 
-      // Posição ideal de apoio em superfície real (Chão, Parede ou Teto!)
       const cosA = Math.cos(spec.angleRad);
       const sinA = Math.sin(spec.angleRad);
       const ringDir = new THREE.Vector3(
@@ -1238,117 +1200,108 @@ export class DoomSpider {
       );
       rt.targetWorld.copy(hitPos);
 
-      // Patas dianteiras erguidas ameaçadoramente no ALERT_WINDUP (`THREAT_ARC`)
       const isFrontPair = i === 0 || i === 1;
       const wantRaise =
         this.state === 'ALERT_WINDUP' && isFrontPair ? 1.0 : 0.0;
       rt.raiseThreat += (wantRaise - rt.raiseThreat) * Math.min(1, dt * 12);
 
-      // Passo assíncrono das patas
-      if (this.state === 'CAPTURE_COIL' && i < 4) {
-        // Durante captura, as 4 patas frontais envolvem helicoidalmente o jogador (`Coil`)!
-        rt.stepping = false;
-      } else if (rt.stepping) {
-        const hurry = frantic ? 0.36 : 1.0;
-        rt.stepT += dt / (spec.stepTime * hurry);
-        if (rt.stepT >= 1) {
-          rt.stepping = false;
-          rt.stepT = 0;
-          rt.footWorld.copy(rt.targetWorld);
-          rt.onMetalOrCeiling = isMetalOrCeiling;
-          airborneCount--;
+      // Verifica se esta pata está sob pose cinemática especial (Ataque / Arrastando até a Teia!)
+      const overriddenFoot = this.computeCinematicLimbFoot(
+        i,
+        elapsed,
+        right,
+        fwd
+      );
 
-          this.sound.playSpiderFootstep(
-            stereoPan,
-            distToPlayer,
-            frantic,
-            rt.onMetalOrCeiling
+      const activeFoot = new THREE.Vector3();
+
+      if (overriddenFoot) {
+        rt.stepping = false;
+        rt.footWorld.copy(overriddenFoot);
+        activeFoot.copy(overriddenFoot);
+      } else {
+        if (rt.stepping) {
+          const hurry = frantic ? 0.38 : 1.0;
+          rt.stepT += dt / (spec.stepTime * hurry);
+          if (rt.stepT >= 1) {
+            rt.stepping = false;
+            rt.stepT = 0;
+            rt.footWorld.copy(rt.targetWorld);
+            rt.onMetalOrCeiling = isMetalOrCeiling;
+            airborneCount--;
+
+            this.sound.playSpiderFootstep(
+              stereoPan,
+              distToPlayer,
+              frantic,
+              rt.onMetalOrCeiling
+            );
+          }
+        } else if (rt.raiseThreat < 0.1) {
+          const drift = rt.footWorld.distanceTo(rt.targetWorld);
+          const overstretched =
+            rt.footWorld.distanceTo(rootWorld) > spec.totalLength * 0.96;
+          const neighboursPlanted = spec.neighbourIndices.every(
+            (nIdx) => !this.limbs[nIdx].stepping
+          );
+
+          const triggerDist = frantic
+            ? spec.stepDistance * 0.7
+            : spec.stepDistance;
+
+          if (
+            overstretched ||
+            (drift > triggerDist &&
+              airborneCount < maxAirborne &&
+              neighboursPlanted)
+          ) {
+            rt.stepping = true;
+            rt.stepT = 0;
+            rt.stepFrom.copy(rt.footWorld);
+            rt.onMetalOrCeiling = isMetalOrCeiling;
+            airborneCount++;
+          }
+        }
+
+        activeFoot.copy(rt.footWorld);
+        if (rt.stepping) {
+          const s = smoothStep01(rt.stepT);
+          activeFoot.lerpVectors(rt.stepFrom, rt.targetWorld, s);
+          const liftScale = frantic ? 0.58 : 1.0;
+          activeFoot.addScaledVector(
+            up,
+            Math.sin(rt.stepT * Math.PI) * spec.stepHeight * liftScale
           );
         }
-      } else if (rt.raiseThreat < 0.1) {
-        const drift = rt.footWorld.distanceTo(rt.targetWorld);
-        const overstretched =
-          rt.footWorld.distanceTo(rootWorld) > spec.totalLength * 0.96;
-        const neighboursPlanted = spec.neighbourIndices.every(
-          (nIdx) => !this.limbs[nIdx].stepping
-        );
 
-        const triggerDist = frantic
-          ? spec.stepDistance * 0.72
-          : spec.stepDistance;
-
-        if (
-          overstretched ||
-          (drift > triggerDist &&
-            airborneCount < maxAirborne &&
-            neighboursPlanted)
-        ) {
-          rt.stepping = true;
-          rt.stepT = 0;
-          rt.stepFrom.copy(rt.footWorld);
-          rt.onMetalOrCeiling = isMetalOrCeiling;
-          airborneCount++;
+        if (rt.raiseThreat > 0.01) {
+          const threatAim = new THREE.Vector3()
+            .subVectors(playerPos, rootWorld)
+            .normalize()
+            .multiplyScalar(spec.totalLength * 0.6)
+            .add(rootWorld)
+            .addScaledVector(up, 0.72);
+          activeFoot.lerp(threatAim, smoothStep01(rt.raiseThreat));
         }
       }
 
-      // Posição instantânea da ponta da pata
-      const activeFoot = new THREE.Vector3().copy(rt.footWorld);
-      if (rt.stepping) {
-        const s = smoothStep01(rt.stepT);
-        activeFoot.lerpVectors(rt.stepFrom, rt.targetWorld, s);
-        const liftScale = frantic ? 0.58 : 1.0;
-        activeFoot.addScaledVector(
-          up,
-          Math.sin(rt.stepT * Math.PI) * spec.stepHeight * liftScale
-        );
-      }
-
-      if (rt.raiseThreat > 0.01) {
-        const threatAim = new THREE.Vector3()
-          .subVectors(playerPos, rootWorld)
-          .normalize()
-          .multiplyScalar(spec.totalLength * 0.62)
-          .add(rootWorld)
-          .addScaledVector(up, 0.55);
-        activeFoot.lerp(threatAim, smoothStep01(rt.raiseThreat));
-      }
-
-      if (this.state === 'CAPTURE_COIL' && i < 4) {
-        // Enrola as 4 patas dianteiras ao redor do tronco do jogador (`Coil` de cl_init.lua)!
-        const side = i % 2 === 0 ? -1 : 1;
-        const tier = i < 2 ? 1.32 : 0.86;
-        const wrapAngle =
-          Math.atan2(
-            this.bodyPos.z - playerPos.z,
-            this.bodyPos.x - playerPos.x
-          ) +
-          side * (0.95 + this.captureProgress * 1.65);
-        const coilRadius = 0.44;
-        const coilPoint = new THREE.Vector3(
-          playerPos.x + Math.cos(wrapAngle) * coilRadius,
-          tier + Math.sin(elapsed * 18 + i) * 0.06,
-          playerPos.z + Math.sin(wrapAngle) * coilRadius
-        );
-        activeFoot.lerp(coilPoint, smoothStep01(this.captureProgress));
-      }
-
-      // Arco elevado característico de Evil Crawling Thing + image-4.png (`bow`)!
+      // Arco alto imponente das 8 patas gigantes!
       const nJoints = rt.ikPoints.length;
-      const bowHeight = spec.totalLength * (frantic ? 0.34 : 0.45);
+      const bowHeight = spec.totalLength * (frantic ? 0.34 : 0.44);
       for (let j = 0; j < nJoints; j++) {
         const f = j / (nJoints - 1);
         const arch = Math.sin(f * Math.PI);
         const wobX =
-          Math.sin(elapsed * spec.freq + spec.phase + j * 1.7) * 0.045;
+          Math.sin(elapsed * spec.freq + spec.phase + j * 1.7) * 0.055;
         const wobY =
-          Math.cos(elapsed * spec.freq * 1.3 + spec.phase + j) * 0.045;
+          Math.cos(elapsed * spec.freq * 1.3 + spec.phase + j) * 0.055;
         const wobZ =
-          Math.sin(elapsed * spec.freq * 0.9 + spec.phase * 1.4) * 0.045;
+          Math.sin(elapsed * spec.freq * 0.9 + spec.phase * 1.4) * 0.055;
 
         rt.ikPoints[j]
           .lerpVectors(rootWorld, activeFoot, f)
           .addScaledVector(up, bowHeight * arch)
-          .addScaledVector(ringDir, spec.totalLength * 0.12 * arch)
+          .addScaledVector(ringDir, spec.totalLength * 0.11 * arch)
           .add(
             new THREE.Vector3(
               (wobX + rt.twitch.x) * arch,
@@ -1372,8 +1325,69 @@ export class DoomSpider {
   }
 
   /**
-   * Projeta o alvo de apoio de cada pata em pisos, grades do teto OU faces verticais das paredes!
+   * Poses dedicadas das patas dianteiras durante:
+   * - O Bote Brutal (rasgando na frente da câmera)
+   * - O Sequestro / Arrasto até a Teia (2 patas enganchadas no corpo do jogador puxando!)
+   * - Colocando o jogador na Teia (tecendo fios sobre o peito dele)
+   * - Execução Fatal (Morte Permanente)
    */
+  private computeCinematicLimbFoot(
+    limbIndex: number,
+    elapsed: number,
+    right: THREE.Vector3,
+    fwd: THREE.Vector3
+  ): THREE.Vector3 | null {
+    if (this.state !== 'CINEMATIC_SEQUENCE' || !this.cinematicMode) {
+      return null;
+    }
+
+    const side = limbIndex % 2 === 0 ? -1 : 1;
+    const u = this.cinematicProgress;
+
+    if (this.cinematicMode === 'STRIKE_ATTACK' && limbIndex < 4) {
+      // As 4 patas dianteiras gigantes golpeiam e fecham ao redor do rosto/tronco do jogador!
+      const tierY = limbIndex < 2 ? 1.25 : 0.72;
+      const slashSwing = Math.sin(u * Math.PI * 2.4 + limbIndex * 1.2) * 0.42;
+      return new THREE.Vector3()
+        .copy(this.cinematicVictimPos)
+        .addScaledVector(right, side * (0.36 - slashSwing * 0.35))
+        .addScaledVector(fwd, -0.22)
+        .setY(tierY + Math.cos(elapsed * 22 + limbIndex) * 0.08);
+    }
+
+    if (this.cinematicMode === 'DRAGGING_TO_WEB' && limbIndex < 2) {
+      // As 2 patas frontais da aranha engancham nas pernas/cintura do jogador e puxam pelo corredor!
+      const pullPulse = Math.sin(elapsed * 6.5 + side * 0.5) * 0.08;
+      return new THREE.Vector3()
+        .copy(this.cinematicVictimPos)
+        .addScaledVector(right, side * 0.28)
+        .addScaledVector(fwd, -0.55 + pullPulse)
+        .setY(0.24 + Math.abs(pullPulse) * 0.5);
+    }
+
+    if (this.cinematicMode === 'WEBBING_IN_LAIR' && limbIndex < 4) {
+      // No ninho, tece rapidamente fios sobre o jogador desacordado!
+      const weaveAngle = elapsed * 8.5 + limbIndex * 1.57;
+      return new THREE.Vector3()
+        .copy(this.cinematicVictimPos)
+        .addScaledVector(right, Math.cos(weaveAngle) * 0.48)
+        .addScaledVector(fwd, Math.sin(weaveAngle) * 0.35)
+        .setY(0.36 + Math.abs(Math.sin(weaveAngle * 1.5)) * 0.26);
+    }
+
+    if (this.cinematicMode === 'FATAL_EXECUTION' && limbIndex < 4) {
+      // Golpe letal cravando as pontas ósseas diretamente para baixo!
+      const plunge = Math.min(1, u * 2.2);
+      const yStrike = 1.65 * (1 - plunge) + 0.18 * plunge;
+      return new THREE.Vector3()
+        .copy(this.cinematicVictimPos)
+        .addScaledVector(right, side * 0.22 * (1 - plunge * 0.4))
+        .setY(yStrike);
+    }
+
+    return null;
+  }
+
   private findSurfaceFootTarget(
     root: THREE.Vector3,
     restCandidate: THREE.Vector3,
@@ -1383,49 +1397,53 @@ export class DoomSpider {
     const hit = new THREE.Vector3().copy(restCandidate);
     let isMetalOrCeiling = restCandidate.z < 4.5;
 
-    // 1. Puxa em direção à superfície principal da postura atual (Chão, Teto ou Parede)
     if (this.surfaceMode === 'CEILING') {
       hit.y = WALL_HEIGHT - 0.025;
       isMetalOrCeiling = true;
     } else if (this.surfaceMode === 'FLOOR') {
       hit.y = 0.025;
     } else {
-      // Na parede, distribui patas em alturas variadas da alvenaria/metal
-      hit.y = Math.max(0.08, Math.min(WALL_HEIGHT - 0.08, restCandidate.y - up.y * 0.4));
+      hit.y = Math.max(
+        0.08,
+        Math.min(WALL_HEIGHT - 0.08, restCandidate.y - up.y * 0.45)
+      );
     }
 
-    // 2. Se o ponto de descanso entrou num bloco de parede sólida, apoia a pata exatamente na face da parede!
+    // Apoia as garras gigantes diretamente nas paredes laterais dos corredores!
     for (let c = 0; c < this.colliders.length; c++) {
       const b = this.colliders[c].box;
       if (
-        hit.x > b.min.x - 0.06 &&
-        hit.x < b.max.x + 0.06 &&
-        hit.z > b.min.z - 0.06 &&
-        hit.z < b.max.z + 0.06
+        hit.x > b.min.x - 0.08 &&
+        hit.x < b.max.x + 0.08 &&
+        hit.z > b.min.z - 0.08 &&
+        hit.z < b.max.z + 0.08
       ) {
-        // Projeta para a face externa do bloco mais próxima da raiz da pata
         const dMinX = Math.abs(root.x - b.min.x);
         const dMaxX = Math.abs(root.x - b.max.x);
         const dMinZ = Math.abs(root.z - b.min.z);
         const dMaxZ = Math.abs(root.z - b.max.z);
         const minD = Math.min(dMinX, dMaxX, dMinZ, dMaxZ);
 
-        if (minD === dMinX) hit.x = b.min.x - 0.03;
-        else if (minD === dMaxX) hit.x = b.max.x + 0.03;
-        else if (minD === dMinZ) hit.z = b.min.z - 0.03;
-        else hit.z = b.max.z + 0.03;
+        if (minD === dMinX) hit.x = b.min.x - 0.04;
+        else if (minD === dMaxX) hit.x = b.max.x + 0.04;
+        else if (minD === dMinZ) hit.z = b.min.z - 0.04;
+        else hit.z = b.max.z + 0.04;
 
-        // Ao encostar numa parede lateral, eleva/abaixa levemente a garra na parede!
         if (this.surfaceMode === 'FLOOR') {
-          hit.y = Math.min(1.35, 0.32 + (1.0 - Math.min(1, minD / 1.4)) * 0.85);
+          hit.y = Math.min(
+            1.85,
+            0.42 + (1.0 - Math.min(1, minD / 1.65)) * 1.25
+          );
         } else if (this.surfaceMode === 'CEILING') {
-          hit.y = Math.max(1.85, WALL_HEIGHT - 0.35 - (1.0 - Math.min(1, minD / 1.4)) * 0.75);
+          hit.y = Math.max(
+            1.45,
+            WALL_HEIGHT - 0.35 - (1.0 - Math.min(1, minD / 1.65)) * 1.15
+          );
         }
         break;
       }
     }
 
-    // Garante que nunca ultrapasse o alcance máximo da pata
     const dist = hit.distanceTo(root);
     if (dist > maxReach) {
       hit.sub(root).multiplyScalar(maxReach / dist).add(root);
@@ -1435,17 +1453,14 @@ export class DoomSpider {
     return { hitPos: hit, isMetalOrCeiling };
   }
 
-  /**
-   * Impede que os joelhos/articulações intermediárias entrem em paredes, teto ou piso (`Unclip`).
-   */
   private unclipIntermediateJoints(pts: THREE.Vector3[]): void {
     for (let i = 1; i < pts.length - 1; i++) {
       const p = pts[i];
-      p.y = Math.max(0.05, Math.min(WALL_HEIGHT - 0.05, p.y));
+      p.y = Math.max(0.06, Math.min(WALL_HEIGHT - 0.06, p.y));
 
       for (let c = 0; c < this.colliders.length; c++) {
         const b = this.colliders[c].box;
-        const pad = 0.06;
+        const pad = 0.08;
         if (
           p.x > b.min.x - pad &&
           p.x < b.max.x + pad &&
@@ -1455,7 +1470,7 @@ export class DoomSpider {
           const dL = Math.abs(p.x - (b.min.x - pad));
           const dR = Math.abs(b.max.x + pad - p.x);
           const dN = Math.abs(p.z - (b.min.z - pad));
-          const dS = Math.abs(b.max.z + pad - p.z);
+          const dS = Math.abs(p.z - (b.max.z + pad));
           const m = Math.min(dL, dR, dN, dS);
           if (m === dL) p.x = b.min.x - pad;
           else if (m === dR) p.x = b.max.x + pad;
@@ -1466,10 +1481,6 @@ export class DoomSpider {
     }
   }
 
-  /**
-   * Reconstrói in-place os vértices/normais/cores do tubo Catmull-Rom de 6 faces da pata
-   * (`Flesh.Tube` + `LimbRadius` + `LimbColor` de `cl_init.lua`).
-   */
   private rebuildLimbTubeMesh(
     spec: SpiderLimbSpec,
     rt: SpiderLimbRuntime
@@ -1477,7 +1488,6 @@ export class DoomSpider {
     const ik = rt.ikPoints;
     const nIk = ik.length;
 
-    // 1. Amostra curva suave Catmull-Rom ao longo das articulações IK
     for (let s = 0; s < CURVE_SAMPLES; s++) {
       const u = (s / (CURVE_SAMPLES - 1)) * (nIk - 1);
       const seg = Math.min(Math.floor(u), nIk - 2);
@@ -1531,7 +1541,6 @@ export class DoomSpider {
         }
       }
 
-      // Transporte paralelo da normal ao longo da pata curva (evita torções!)
       const dot = nx * tx + ny * ty + nz * tz;
       nx -= tx * dot;
       ny -= ty * dot;
@@ -1553,22 +1562,20 @@ export class DoomSpider {
 
       const f = j / (CURVE_SAMPLES - 1);
 
-      // Perfil de raio com leves nós articulares + ponta fina de agulha (`LimbRadius`)
       let radius = spec.baseWidth * (1 - 0.91 * Math.pow(f, 1.3));
       for (let k = 1; k < spec.segments; k++) {
         const d = (f - k / spec.segments) / 0.045;
-        radius += spec.baseWidth * 0.16 * Math.exp(-d * d);
+        radius += spec.baseWidth * 0.17 * Math.exp(-d * d);
       }
-      radius = Math.max(0.0055, radius);
+      radius = Math.max(0.0085, radius);
 
-      // Cor negra quitinosa que transita na ponta (`f^3`) para osso pálido (`BONE`)!
       const boneBlend = Math.pow(f, 3.2);
-      const fleshR = 0.032 * spec.shade;
-      const fleshG = 0.032 * spec.shade;
-      const fleshB = 0.038 * spec.shade;
-      const boneR = 0.62 * spec.shade;
-      const boneG = 0.58 * spec.shade;
-      const boneB = 0.52 * spec.shade;
+      const fleshR = 0.03 * spec.shade;
+      const fleshG = 0.03 * spec.shade;
+      const fleshB = 0.036 * spec.shade;
+      const boneR = 0.64 * spec.shade;
+      const boneG = 0.6 * spec.shade;
+      const boneB = 0.53 * spec.shade;
 
       const cr = fleshR + (boneR - fleshR) * boneBlend;
       const cg = fleshG + (boneG - fleshG) * boneBlend;

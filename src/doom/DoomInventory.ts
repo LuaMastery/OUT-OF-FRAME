@@ -52,7 +52,7 @@ export interface DoomInventoryCallbacks {
   onUseBattery: (chargeAmount: number) => boolean;
   onUseFlare: () => boolean;
   onCloseRequest: () => void;
-  onRespawnAfterCapture: () => void;
+  onPermanentDeathTerminate: () => void;
 }
 
 const TOTAL_SLOTS = 12;
@@ -284,6 +284,11 @@ export class DoomInventory {
   private readonly bloodVignetteEl: HTMLElement;
   private readonly webSnareEl: HTMLElement;
   private readonly pickupGlintEl: HTMLElement;
+  private readonly attackSlashEl: HTMLElement;
+  private readonly cocoonSilkEl: HTMLElement;
+  private readonly eyelidTopEl: HTMLElement;
+  private readonly eyelidBottomEl: HTMLElement;
+  private readonly blackoutVeilEl: HTMLElement;
   private readonly gameOverEl: HTMLElement;
 
   private readonly heartSvgEl: SVGElement;
@@ -349,7 +354,12 @@ export class DoomInventory {
     this.diegeticEl.innerHTML = `
       <div class="doom-blood-vignette"></div>
       <div class="doom-web-snare-fx"></div>
+      <div class="doom-cocoon-silk"></div>
       <div class="doom-pickup-glint"></div>
+      <div class="doom-attack-slash"></div>
+      <div class="doom-eyelid-top"></div>
+      <div class="doom-eyelid-bottom"></div>
+      <div class="doom-blackout-veil"></div>
     `;
     parentViewport.appendChild(this.diegeticEl);
 
@@ -359,8 +369,23 @@ export class DoomInventory {
     this.webSnareEl = this.diegeticEl.querySelector(
       '.doom-web-snare-fx'
     ) as HTMLElement;
+    this.cocoonSilkEl = this.diegeticEl.querySelector(
+      '.doom-cocoon-silk'
+    ) as HTMLElement;
     this.pickupGlintEl = this.diegeticEl.querySelector(
       '.doom-pickup-glint'
+    ) as HTMLElement;
+    this.attackSlashEl = this.diegeticEl.querySelector(
+      '.doom-attack-slash'
+    ) as HTMLElement;
+    this.eyelidTopEl = this.diegeticEl.querySelector(
+      '.doom-eyelid-top'
+    ) as HTMLElement;
+    this.eyelidBottomEl = this.diegeticEl.querySelector(
+      '.doom-eyelid-bottom'
+    ) as HTMLElement;
+    this.blackoutVeilEl = this.diegeticEl.querySelector(
+      '.doom-blackout-veil'
     ) as HTMLElement;
 
     // 2. Overlay principal do Inventário (Tecla Tab)
@@ -484,15 +509,16 @@ export class DoomInventory {
     `;
     parentViewport.appendChild(this.overlayEl);
 
-    // 3. Tela sombria de Captura Fatal (quando Vitalidade chega a 0)
+    // 3. Tela de Morte Permanente (sem renascimento na partida — se morrer, morre mesmo!)
     this.gameOverEl = document.createElement('div');
     this.gameOverEl.id = 'doom-capture-gameover';
     this.gameOverEl.innerHTML = `
-      <div class="gameover-title">Capturado na Escuridão</div>
+      <div class="gameover-title">Você Morreu</div>
       <div class="gameover-sub">
-        As patas longas e frias envolveram seu corpo antes que você conseguisse escapar pelas galerias.
+        Seu corpo não resistiu ao ataque. Nas galerias escuras, ninguém jamais ouvirá seu último fôlego.
       </div>
-      <button type="button" class="amnesia-action-btn" data-respawn-btn="1">[ Tentar Novamente ]</button>
+      <div class="gameover-perm-note">Sinal vital perdido permanentemente — encerrando processo...</div>
+      <button type="button" class="amnesia-action-btn" data-terminate-btn="1">[ Encerrar Sessão ]</button>
     `;
     parentViewport.appendChild(this.gameOverEl);
 
@@ -585,10 +611,9 @@ export class DoomInventory {
     });
 
     this.gameOverEl
-      .querySelector('[data-respawn-btn]')
+      .querySelector('[data-terminate-btn]')
       ?.addEventListener('click', () => {
-        this.hideGameOver();
-        this.callbacks.onRespawnAfterCapture();
+        this.callbacks.onPermanentDeathTerminate();
       });
 
     // Cursor magnético de proximidade ativo sobre os slots e botões do inventário!
@@ -609,7 +634,7 @@ export class DoomInventory {
     const rects: ProximityTargetRect[] = [];
     if (this.isGameOver) {
       const btn = this.gameOverEl.querySelector(
-        '[data-respawn-btn]'
+        '[data-terminate-btn]'
       ) as HTMLElement | null;
       if (btn) {
         const r = btn.getBoundingClientRect();
@@ -665,6 +690,34 @@ export class DoomInventory {
     this.setOpen(false);
     this.isGameOver = true;
     this.gameOverEl.classList.add('visible');
+  }
+
+  /**
+   * Controla os efeitos visuais de ataque, pálpebras de desmaio, escurecimento e fios do ninho de teia.
+   */
+  setAbductionScreenFX(
+    slashOpacity: number,
+    eyelidClosed: number,
+    blackoutOpacity: number,
+    cocoonOpacity: number
+  ): void {
+    this.attackSlashEl.style.opacity = Math.max(
+      0,
+      Math.min(1, slashOpacity)
+    ).toFixed(3);
+    this.cocoonSilkEl.style.opacity = Math.max(
+      0,
+      Math.min(1, cocoonOpacity)
+    ).toFixed(3);
+
+    const lid = Math.max(0, Math.min(1, eyelidClosed));
+    const offsetPct = 105 - lid * 105;
+    this.eyelidTopEl.style.transform = `translateY(${-offsetPct.toFixed(1)}%)`;
+    this.eyelidBottomEl.style.transform = `translateY(${offsetPct.toFixed(1)}%)`;
+    this.blackoutVeilEl.style.opacity = Math.max(
+      0,
+      Math.min(1, blackoutOpacity)
+    ).toFixed(3);
   }
 
   hideGameOver(): void {

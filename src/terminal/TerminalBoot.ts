@@ -598,6 +598,15 @@ export class TerminalBootController {
   }
 
   /**
+   * Reabre imediatamente a Área de Trabalho versão Terminal (usado quando o processo
+   * encerra por morte permanente do jogador).
+   */
+  startAtDesktop(): void {
+    this.clearTimers();
+    this.enterDesktopPhase();
+  }
+
+  /**
    * 2. Abre a Área de Trabalho versão Terminal.
    */
   private enterDesktopPhase(): void {

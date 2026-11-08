@@ -30,6 +30,7 @@ export class SoundEngine {
 
   // Ambiência espacial e industrial do Labirinto DOOM
   private dungeonStarted = false;
+  private dungeonBus: GainNode | null = null;
   private lampBuzzGain: GainNode | null = null;
   private lampBuzzPanner: StereoPannerNode | null = null;
   private pulseTimerId = 0;
@@ -741,6 +742,16 @@ export class SoundEngine {
     if (!this.dungeonStarted) {
       this.dungeonStarted = true;
       this.startDungeonAtmosphere(ctx);
+    } else if (this.dungeonBus) {
+      this.dungeonBus.gain.setTargetAtTime(1.0, now + 0.1, 0.5);
+    }
+  }
+
+  stopDungeonAtmosphere(): void {
+    if (this.ctx && this.dungeonBus) {
+      const now = this.ctx.currentTime;
+      this.dungeonBus.gain.setTargetAtTime(0.0001, now, 0.12);
+      this.lampBuzzGain?.gain.setTargetAtTime(0, now, 0.08);
     }
   }
 
@@ -756,6 +767,7 @@ export class SoundEngine {
     bus.gain.setValueAtTime(0.001, ctx.currentTime);
     bus.gain.setTargetAtTime(1.0, ctx.currentTime + 0.15, 0.8);
     bus.connect(this.worldDryBus);
+    this.dungeonBus = bus;
 
     // 1. Drone escuro subterrâneo filtrado bem sutil (E1 = 41.2Hz + B1 = 61.74Hz)
     const droneFilter = ctx.createBiquadFilter();
@@ -1578,6 +1590,206 @@ export class SoundEngine {
       true,
       this.reverbSend
     );
+  }
+
+  /**
+   * Ataque brutal em 1ª pessoa quando a Aranha Gigante alcança o jogador:
+   * Rasgo quitinoso + impacto corporal grave + guincho próximo + zumbido de desmaio (tinnitus).
+   */
+  playSpiderBrutalAttack(): void {
+    if (
+      !this.isRunning() ||
+      !this.ctx ||
+      !this.worldDryBus ||
+      !this.reverbSend
+    ) {
+      return;
+    }
+    const now = this.ctx.currentTime;
+
+    // 1. Impacto físico pesado derrubando o jogador no chão
+    const slam = this.ctx.createOscillator();
+    const slamGain = this.ctx.createGain();
+    slam.type = 'sawtooth';
+    slam.frequency.setValueAtTime(145, now);
+    slam.frequency.exponentialRampToValueAtTime(26, now + 0.55);
+
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.setValueAtTime(560, now);
+    lp.frequency.exponentialRampToValueAtTime(120, now + 0.55);
+
+    slamGain.gain.setValueAtTime(0.36, now);
+    slamGain.gain.exponentialRampToValueAtTime(0.0008, now + 0.58);
+
+    slam.connect(lp);
+    lp.connect(slamGain);
+    slamGain.connect(this.worldDryBus);
+    slamGain.connect(this.reverbSend);
+    slam.start(now);
+    slam.stop(now + 0.6);
+
+    // 2. Rasgo duplo das garras/quelíceras (esquerda -> direita)
+    const slashes: Array<[number, number, number]> = [
+      [0.02, -0.65, 2150],
+      [0.16, 0.65, 1680],
+    ];
+    for (const [delay, panVal, freq] of slashes) {
+      const panner = this.ctx.createStereoPanner();
+      panner.pan.value = panVal;
+      panner.connect(this.worldDryBus);
+      panner.connect(this.reverbSend);
+
+      this.triggerFilteredNoise(
+        panner,
+        now + delay,
+        0.24,
+        freq,
+        1.7,
+        0.28,
+        true
+      );
+    }
+
+    // 3. Guincho gutural da aranha bem no rosto do jogador
+    this.playSpiderScream(0, 0.8);
+
+    // 4. Zumbido agudo abafado de choque/desmaio (estilo Amnesia)
+    const ring = this.ctx.createOscillator();
+    const ringGain = this.ctx.createGain();
+    ring.type = 'sine';
+    ring.frequency.setValueAtTime(2860, now + 0.18);
+    ring.frequency.exponentialRampToValueAtTime(2540, now + 1.85);
+
+    ringGain.gain.setValueAtTime(0.0001, now + 0.18);
+    ringGain.gain.linearRampToValueAtTime(0.045, now + 0.36);
+    ringGain.gain.exponentialRampToValueAtTime(0.0008, now + 1.9);
+
+    ring.connect(ringGain);
+    ringGain.connect(this.worldDryBus);
+    ring.start(now + 0.18);
+    ring.stop(now + 1.95);
+  }
+
+  /**
+   * Som rítmico do corpo desacordado sendo arrastado pela pedra fria enquanto a aranha puxa até a teia!
+   */
+  playBodyDragPull(): void {
+    if (
+      !this.isRunning() ||
+      !this.ctx ||
+      !this.worldDryBus ||
+      !this.reverbSend
+    ) {
+      return;
+    }
+    const now = this.ctx.currentTime;
+
+    // Raspão grave de roupa/corpo contra o chão de pedra
+    this.triggerFilteredNoise(
+      this.worldDryBus,
+      now,
+      0.34,
+      340,
+      0.9,
+      0.19,
+      true,
+      this.reverbSend
+    );
+
+    // Puxão seco das garras dianteiras
+    const thud = this.ctx.createOscillator();
+    const thudGain = this.ctx.createGain();
+    thud.type = 'triangle';
+    thud.frequency.setValueAtTime(76, now);
+    thud.frequency.exponentialRampToValueAtTime(30, now + 0.22);
+    thudGain.gain.setValueAtTime(0.16, now);
+    thudGain.gain.exponentialRampToValueAtTime(0.0008, now + 0.24);
+
+    thud.connect(thudGain);
+    thudGain.connect(this.worldDryBus);
+    thudGain.connect(this.reverbSend);
+    thud.start(now);
+    thud.stop(now + 0.25);
+  }
+
+  /** Fôlego pesado e rasgo de fios viscosos ao acordar ferido dentro da teia da aranha */
+  playWakeUpGasp(): void {
+    if (
+      !this.isRunning() ||
+      !this.ctx ||
+      !this.worldDryBus ||
+      !this.reverbSend
+    ) {
+      return;
+    }
+    const now = this.ctx.currentTime;
+
+    // Inspiração ofegante filtrada
+    this.triggerFilteredNoise(
+      this.worldDryBus,
+      now,
+      0.38,
+      680,
+      1.35,
+      0.15,
+      false,
+      this.reverbSend
+    );
+
+    // Estalo sutil de seda colada soltando
+    this.triggerFilteredNoise(
+      this.worldDryBus,
+      now + 0.14,
+      0.18,
+      1900,
+      2.4,
+      0.085,
+      true
+    );
+  }
+
+  /** Morte permanente real: golpe letal + queda abissal + sinal vital encerrando */
+  playPermanentDeath(): void {
+    if (
+      !this.isRunning() ||
+      !this.ctx ||
+      !this.worldDryBus ||
+      !this.reverbSend
+    ) {
+      return;
+    }
+    const now = this.ctx.currentTime;
+
+    this.playSpiderBrutalAttack();
+
+    // Queda sub-grave final
+    const abyss = this.ctx.createOscillator();
+    const abyssGain = this.ctx.createGain();
+    abyss.type = 'sine';
+    abyss.frequency.setValueAtTime(92, now + 0.12);
+    abyss.frequency.exponentialRampToValueAtTime(22, now + 1.8);
+    abyssGain.gain.setValueAtTime(0.32, now + 0.12);
+    abyssGain.gain.exponentialRampToValueAtTime(0.0008, now + 1.9);
+
+    abyss.connect(abyssGain);
+    abyssGain.connect(this.worldDryBus);
+    abyss.start(now + 0.12);
+    abyss.stop(now + 1.95);
+
+    // Linha reta fria de sinal vital perdido
+    const flat = this.ctx.createOscillator();
+    const flatGain = this.ctx.createGain();
+    flat.type = 'sine';
+    flat.frequency.setValueAtTime(988, now + 0.55);
+    flatGain.gain.setValueAtTime(0.0001, now + 0.55);
+    flatGain.gain.linearRampToValueAtTime(0.055, now + 0.75);
+    flatGain.gain.exponentialRampToValueAtTime(0.0008, now + 3.2);
+
+    flat.connect(flatGain);
+    flatGain.connect(this.worldDryBus);
+    flat.start(now + 0.55);
+    flat.stop(now + 3.25);
   }
 
   /** Esforço físico ao se debater contra a teia ou contra o abraço da aranha */

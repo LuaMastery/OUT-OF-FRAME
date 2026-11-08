@@ -5,6 +5,7 @@ import {
   gridCellToWorld,
   isSolidCell,
   LABYRINTH_MAP,
+  WALL_HEIGHT,
   worldToGridCell,
 } from './DoomMazeBuilder';
 import { createDoomPropMaterial, DoomSharedUniforms } from './DoomShader';
@@ -45,23 +46,22 @@ function createSpiderWebTexture(): THREE.DataTexture {
       const spokeDist =
         Math.abs(spokeAngle - Math.round(spokeAngle)) *
         ((Math.PI * 2 * dist) / 11);
-      const onSpoke = spokeDist < 0.72;
+      const onSpoke = spokeDist < 0.75;
 
       // Anéis espirais pegajosos com leve curvatura entre os raios
       const sag = Math.abs(Math.sin(spokeAngle * Math.PI)) * 1.15;
-      const ringPhase = (dist + sag) % 5.4;
-      const onRing = dist > 3.5 && dist < 29.5 && ringPhase < 0.82;
+      const ringPhase = (dist + sag) % 5.2;
+      const onRing = dist > 3.2 && dist < 29.8 && ringPhase < 0.86;
 
-      // Pequenos nós pegajosos no centro e cruzamentos
-      const centerKnot = dist < 2.6;
+      const centerKnot = dist < 2.8;
 
       if (onSpoke || onRing || centerKnot) {
         const shade = centerKnot
-          ? 226
+          ? 232
           : onSpoke
-            ? 212 - dist * 1.1
-            : 188 - dist * 0.9;
-        const v = Math.max(125, Math.min(240, Math.round(shade)));
+            ? 216 - dist * 1.05
+            : 192 - dist * 0.85;
+        const v = Math.max(128, Math.min(244, Math.round(shade)));
         data[idx] = v;
         data[idx + 1] = Math.round(v * 1.01);
         data[idx + 2] = Math.round(v * 0.97);
@@ -81,9 +81,10 @@ function createSpiderWebTexture(): THREE.DataTexture {
 }
 
 /**
- * Gerenciador de Armadilhas de Teia da Aranha:
- * - A aranha tece novas armadilhas nos corredores e arcos ao longo da partida.
- * - Quando o jogador pisa numa teia, fica preso/lento e a vibração alerta a aranha imediatamente!
+ * Gerenciador de Armadilhas de Teia + Ninho Principal da Aranha (`Lair`):
+ * - Mantém o Ninho denso de teias na câmara de pedra sul (gx=7, gz=11), para onde a aranha
+ *   arrasta o jogador desacordado após o primeiro ataque.
+ * - Permite que a aranha teça armadilhas de teia extras pelos corredores e arcos.
  */
 export class DoomSpiderWebManager {
   private readonly root = new THREE.Group();
@@ -92,8 +93,15 @@ export class DoomSpiderWebManager {
   private nextTrapId = 1;
   private readonly maxActiveTraps = 7;
 
+  readonly lairCenter: THREE.Vector3;
+  readonly dragCorridorStart: THREE.Vector3;
+
   private ensnaredRemaining = 0;
   private ensnaredPos = new THREE.Vector3();
+
+  // Quando o jogador acorda ferido no centro do Ninho de Teia, precisa caminhar até rasgar e sair
+  private inWakingLairWeb = false;
+  private lairCocoonRing: THREE.Mesh | null = null;
 
   constructor(scene: THREE.Scene, sharedUniforms: DoomSharedUniforms) {
     this.root.name = 'DoomSpiderWebs';
@@ -101,28 +109,134 @@ export class DoomSpiderWebManager {
 
     const webTex = createSpiderWebTexture();
     this.webMat = createDoomPropMaterial(webTex, sharedUniforms, {
-      baseLight: 0.44,
+      baseLight: 0.48,
       alphaTest: 0.45,
       doubleSided: true,
-      emissiveBoost: 0.04,
+      emissiveBoost: 0.06,
     });
 
-    // Duas teias iniciais já tecidas em corredores intermediários/sul (longe do spawn inicial)
+    const lairW = gridCellToWorld(7, 11);
+    this.lairCenter = new THREE.Vector3(lairW.x, 0, lairW.z);
+
+    const dragStartW = gridCellToWorld(7, 9);
+    this.dragCorridorStart = new THREE.Vector3(dragStartW.x, 0, dragStartW.z + 0.4);
+
+    this.buildMainSpiderLair();
+
+    // Duas armadilhas iniciais em corredores intermediários (fora do corredor de arrasto do ninho)
     const presetA = gridCellToWorld(8, 3);
-    const presetB = gridCellToWorld(7, 10);
+    const presetB = gridCellToWorld(3, 9);
     this.spawnWebTrap(presetA.x, presetA.z, true);
     this.spawnWebTrap(presetB.x, presetB.z, true);
   }
 
+  /**
+   * Constrói o Ninho Principal da Aranha em (gx=7, gz=11) com manto duplo no chão,
+   * dossel no teto e cortinas diagonais presas às quinas de pedra!
+   */
+  private buildMainSpiderLair(): void {
+    const lairGroup = new THREE.Group();
+    lairGroup.name = 'SpiderMainLair';
+    lairGroup.position.copy(this.lairCenter);
+
+    // 1. Manto denso de teia no piso central onde a vítima acorda
+    for (let k = 0; k < 2; k++) {
+      const bed = new THREE.Mesh(
+        new THREE.PlaneGeometry(3.6 - k * 0.5, 3.6 - k * 0.5),
+        this.webMat
+      );
+      bed.rotation.x = -Math.PI * 0.5;
+      bed.rotation.z = k * 0.65;
+      bed.position.y = 0.024 + k * 0.015;
+      lairGroup.add(bed);
+    }
+
+    // 2. Dossel de teia suspenso no teto acima do ninho
+    const canopy = new THREE.Mesh(
+      new THREE.PlaneGeometry(3.5, 3.5),
+      this.webMat
+    );
+    canopy.rotation.x = Math.PI * 0.5;
+    canopy.rotation.z = 0.4;
+    canopy.position.y = WALL_HEIGHT - 0.06;
+    lairGroup.add(canopy);
+
+    // 3. Cortinas diagonais ancoradas nas 4 colunas/quinas de pedra ao redor de (7,11)
+    const cornerOffsets: Array<[number, number, number]> = [
+      [-1.55, -1.45, 0.72],
+      [1.55, -1.45, -0.72],
+      [-1.55, 1.45, -0.72],
+      [1.55, 1.45, 0.72],
+    ];
+    for (const [cx, cz, rotY] of cornerOffsets) {
+      const drape = new THREE.Mesh(
+        new THREE.PlaneGeometry(2.35, 2.75),
+        this.webMat
+      );
+      drape.position.set(cx, 1.42, cz);
+      drape.rotation.y = rotY;
+      drape.rotation.x = cz < 0 ? 0.24 : -0.24;
+      lairGroup.add(drape);
+    }
+
+    // 4. Casulo baixo de seda ao redor do centro (visível quando o jogador acorda preso na teia)
+    const cocoon = new THREE.Mesh(
+      new THREE.CylinderGeometry(1.05, 1.35, 0.95, 8, 1, true),
+      this.webMat
+    );
+    cocoon.position.y = 0.46;
+    cocoon.visible = false;
+    this.lairCocoonRing = cocoon;
+    lairGroup.add(cocoon);
+
+    this.root.add(lairGroup);
+  }
+
   get isPlayerEnsnared(): boolean {
-    return this.ensnaredRemaining > 0;
+    return this.ensnaredRemaining > 0 || this.inWakingLairWeb;
+  }
+
+  get isInsideWakingLairWeb(): boolean {
+    return this.inWakingLairWeb;
   }
 
   clearEnsnarement(): void {
     this.ensnaredRemaining = 0;
+    this.inWakingLairWeb = false;
+    if (this.lairCocoonRing) {
+      this.lairCocoonRing.visible = false;
+    }
+  }
+
+  /**
+   * Prende o jogador recém-acordado no centro do Ninho de Teia da Aranha.
+   * Ele pode caminhar para fora rasgando os fios livremente sem alertar a aranha!
+   */
+  placePlayerInWakingLairWeb(): void {
+    this.ensnaredRemaining = 0;
+    this.inWakingLairWeb = true;
+    if (this.lairCocoonRing) {
+      this.lairCocoonRing.visible = true;
+      this.lairCocoonRing.scale.set(1, 1, 1);
+    }
+  }
+
+  /**
+   * Retorna intensidade de fios de seda na tela [0..1] enquanto o jogador sai do ninho.
+   */
+  getWakingLairSilkFactor(playerPos: THREE.Vector3): number {
+    if (!this.inWakingLairWeb) return 0;
+    const d = Math.hypot(
+      playerPos.x - this.lairCenter.x,
+      playerPos.z - this.lairCenter.z
+    );
+    return Math.max(0, Math.min(1, 1 - d / 1.75)) * 0.85;
   }
 
   hasTrapNear(x: number, z: number, minRadius = 3.2): boolean {
+    if (Math.hypot(this.lairCenter.x - x, this.lairCenter.z - z) < 4.2) {
+      return true;
+    }
     for (const t of this.traps) {
       if (t.triggered) continue;
       if (Math.hypot(t.position.x - x, t.position.z - z) < minRadius) {
@@ -138,7 +252,6 @@ export class DoomSpiderWebManager {
   spawnWebTrap(wx: number, wz: number, instant = false): SpiderWebTrap | null {
     if (this.hasTrapNear(wx, wz, 2.8)) return null;
 
-    // Remove a teia mais antiga caso atinja o limite máximo
     const activeCount = this.traps.filter((t) => !t.triggered).length;
     if (activeCount >= this.maxActiveTraps) {
       const oldestIdx = this.traps.findIndex((t) => !t.triggered);
@@ -152,7 +265,6 @@ export class DoomSpiderWebManager {
     const group = new THREE.Group();
     group.position.set(wx, 0, wz);
 
-    // 1. Manto principal pegajoso estendido rente ao piso
     const floorWeb = new THREE.Mesh(
       new THREE.PlaneGeometry(2.35, 2.35),
       this.webMat
@@ -162,7 +274,6 @@ export class DoomSpiderWebManager {
     floorWeb.position.y = 0.024;
     group.add(floorWeb);
 
-    // 2. Cortinas diagonais finas ancoradas nas paredes laterais do corredor
     const { gx, gz } = worldToGridCell(wx, wz);
     const northSouthWalls =
       isSolidCell(LABYRINTH_MAP, gx, gz - 1) &&
@@ -204,8 +315,7 @@ export class DoomSpiderWebManager {
   }
 
   /**
-   * Atualiza crescimento das teias recém-tecidas, verifica se o jogador caiu numa armadilha
-   * e processa a luta para rasgar os fios.
+   * Atualiza teias nos corredores + saída viscosa do Ninho Principal após acordar!
    */
   update(
     dt: number,
@@ -215,6 +325,32 @@ export class DoomSpiderWebManager {
     sound: SoundEngine,
     onWebTriggeredAlertSpider: (trapPos: THREE.Vector3) => void
   ): { speedMultiplier: number } {
+    // 1. Caso o jogador tenha acabado de acordar no centro do Ninho de Teia da Aranha:
+    if (this.inWakingLairWeb) {
+      const distFromNest = Math.hypot(
+        playerPos.x - this.lairCenter.x,
+        playerPos.z - this.lairCenter.z
+      );
+
+      if (this.lairCocoonRing) {
+        const stretch = 1 + (distFromNest / 1.7) * 0.28;
+        this.lairCocoonRing.scale.set(stretch, Math.max(0.35, 1 - distFromNest * 0.35), stretch);
+      }
+
+      if (distFromNest >= 1.68) {
+        // Rompe os fios do casulo e sai livremente!
+        this.inWakingLairWeb = false;
+        if (this.lairCocoonRing) {
+          this.lairCocoonRing.visible = false;
+        }
+        sound.playWebTrapSnap();
+        return { speedMultiplier: 1.0 };
+      }
+
+      return { speedMultiplier: hasKnife ? 0.52 : 0.35 };
+    }
+
+    // 2. Armadilhas normais de teia espalhadas pelos corredores
     for (let i = this.traps.length - 1; i >= 0; i--) {
       const trap = this.traps[i];
       if (trap.triggered) continue;
@@ -231,9 +367,7 @@ export class DoomSpiderWebManager {
         playerPos.z - trap.position.z
       );
       if (dist < 1.05) {
-        // Jogador caiu na armadilha de teia!
         trap.triggered = true;
-        // Teia arrebenta parcialmente e envolve os pés do jogador
         trap.group.scale.set(0.75, 0.35, 0.75);
         setTimeout(() => {
           this.root.remove(trap.group);
@@ -257,7 +391,6 @@ export class DoomSpiderWebManager {
       }
       this.ensnaredRemaining = Math.max(0, this.ensnaredRemaining - decay);
 
-      // Puxa sutilmente de volta ao centro pegajoso da teia enquanto preso
       const pull = Math.min(1, dt * 3.5);
       playerPos.x += (this.ensnaredPos.x - playerPos.x) * pull * 0.28;
       playerPos.z += (this.ensnaredPos.z - playerPos.z) * pull * 0.28;

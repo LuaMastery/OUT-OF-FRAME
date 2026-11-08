@@ -21,12 +21,19 @@ import { DoomSpiderWebManager } from './DoomSpiderWebs';
 import { createDoomTextures } from './DoomTextures';
 import { DoomWorldItems } from './DoomWorldItems';
 
+type ActiveHorrorSequence =
+  | 'NONE'
+  | 'ABDUCTION_TO_WEB'
+  | 'PERMADEATH_EXECUTION'
+  | 'DEAD_TERMINATED';
+
 /**
  * Aplicação 3D do Labirinto estilo DOOM Clássico integrada a:
- * - Lanterna 3D simples (Tecla F)
- * - Agachamento furtivo contínuo (Segurar Ctrl)
- * - Inventário sombrio estilo Amnesia (Tecla Tab) + Objetos 3D coletáveis (E / Clique / Aproximação)
- * - Aranha Procedural (Evil Crawling Thing) escalando chão, paredes e teto + Armadilhas de Teia!
+ * - Lanterna 3D simples (Tecla F) + Agachamento furtivo (Segurar Ctrl)
+ * - Inventário sombrio estilo Amnesia (Tecla Tab) + Objetos 3D coletáveis
+ * - Aranha Gigante Procedural (Evil Crawling Thing) + Armadilhas de Teia + Ninho Principal
+ * - Sequência visceral em 1ª pessoa de Ataque -> Desmaio -> Sendo Puxado até a Teia -> Acordar Ferido
+ * - Morte Permanente Real (Permadeath) caso o jogador morra!
  */
 export class DoomGameApp {
   private readonly viewportEl: HTMLElement;
@@ -45,13 +52,12 @@ export class DoomGameApp {
   private colliders: StaticColliderBox[] = [];
   private lights: DoomLightSource[] = [];
   private prevLightDimState: boolean[] = [];
-  private spawnPosition = new THREE.Vector3();
-  private spawnYaw = 0;
 
   private readonly position = new THREE.Vector3();
   private readonly velocity = new THREE.Vector3();
   private yaw = 0;
   private pitch = 0;
+  private roll = 0;
   private bobPhase = 0;
   private lastBobHalfCycle = 0;
 
@@ -63,12 +69,24 @@ export class DoomGameApp {
   private crouchAmount = 0;
   private wasCrouching = false;
 
-  // Sinais vitais e equipamentos (visíveis no Inventário [Tab] estilo Amnesia)
+  // Sinais vitais
   private playerHealth = 100;
   private playerSanity = 100;
   private lanternBattery = 100;
   private playerBleeding = false;
   private cameraShake = 0;
+
+  // Estado da animação cinemática de Ataque / Sequestro para a Teia / Morte Permanente
+  private activeSequence: ActiveHorrorSequence = 'NONE';
+  private seqTime = 0;
+  private seqStagedDrag = false;
+  private seqStagedWake = false;
+  private seqGaspPlayed = false;
+  private lastDragPullStep = -1;
+  private lastWebSpinStep = -1;
+  private readonly strikeOriginPos = new THREE.Vector3();
+  private readonly strikeSpiderPos = new THREE.Vector3();
+  private permadeathTimerId = 0;
 
   private keys = new Set<string>();
   private interactQueued = false;
@@ -80,8 +98,15 @@ export class DoomGameApp {
   private lastMouseY = 0;
   private elapsed = 0;
   private lastRaf = performance.now();
+  private rafId = 0;
+  private disposed = false;
 
-  constructor(private readonly sound: SoundEngine) {
+  private readonly abortCtrl = new AbortController();
+
+  constructor(
+    private readonly sound: SoundEngine,
+    private readonly onPermanentDeathExit?: () => void
+  ) {
     this.viewportEl = document.getElementById('game-viewport') as HTMLElement;
     this.canvas = document.getElementById('webgl-canvas') as HTMLCanvasElement;
 
@@ -98,7 +123,7 @@ export class DoomGameApp {
       Math.max(1, window.innerWidth) / Math.max(1, window.innerHeight);
 
     this.scene = new THREE.Scene();
-    this.camera = new THREE.PerspectiveCamera(74, aspect, 0.12, 55);
+    this.camera = new THREE.PerspectiveCamera(74, aspect, 0.12, 58);
 
     this.compositor = new DoomRetroCompositor(
       window.innerWidth,
@@ -117,8 +142,6 @@ export class DoomGameApp {
     this.colliders = maze.colliders;
     this.lights = maze.lights;
     this.prevLightDimState = maze.lights.map(() => false);
-    this.spawnPosition.copy(maze.spawnPosition);
-    this.spawnYaw = maze.spawnYaw;
     this.position.copy(maze.spawnPosition);
     this.yaw = maze.spawnYaw;
 
@@ -141,7 +164,11 @@ export class DoomGameApp {
         }
       },
       onUseHeal: (healAmount, calmAmount) => {
-        if (this.playerHealth >= 99.5 && !this.playerBleeding && this.playerSanity >= 96) {
+        if (
+          this.playerHealth >= 99.5 &&
+          !this.playerBleeding &&
+          this.playerSanity >= 96
+        ) {
           return false;
         }
         this.playerHealth = Math.min(100, this.playerHealth + healAmount);
@@ -163,14 +190,16 @@ export class DoomGameApp {
       onCloseRequest: () => {
         this.closeInventoryAndLock();
       },
-      onRespawnAfterCapture: () => {
-        this.respawnPlayer();
+      onPermanentDeathTerminate: () => {
+        this.finalizePermanentDeath();
       },
     });
 
     this.syncCamera(0);
     this.bindInput();
-    window.addEventListener('resize', () => this.onResize());
+    window.addEventListener('resize', () => this.onResize(), {
+      signal: this.abortCtrl.signal,
+    });
   }
 
   engageFromTerminal(): void {
@@ -188,29 +217,29 @@ export class DoomGameApp {
     );
   }
 
+  private finalizePermanentDeath(): void {
+    if (this.disposed) return;
+    if (this.permadeathTimerId) {
+      window.clearTimeout(this.permadeathTimerId);
+      this.permadeathTimerId = 0;
+    }
+    this.onPermanentDeathExit?.();
+  }
+
   private closeInventoryAndLock(): void {
     this.inventory.setOpen(false);
     this.keys.clear();
     this.tryPointerLock();
   }
 
-  private respawnPlayer(): void {
-    this.playerHealth = 100;
-    this.playerSanity = 100;
-    this.playerBleeding = false;
-    this.lanternBattery = Math.max(60, this.lanternBattery);
-    this.position.copy(this.spawnPosition);
-    this.velocity.set(0, 0, 0);
-    this.yaw = this.spawnYaw;
-    this.pitch = 0;
-    this.webManager.clearEnsnarement();
-    this.spider.respawnFarFromPlayer();
-    this.syncInventoryVitals();
-    this.tryPointerLock();
-  }
-
   private tryPointerLock(): void {
-    if (this.inventory.open || this.inventory.gameOverVisible) return;
+    if (
+      this.inventory.open ||
+      this.inventory.gameOverVisible ||
+      this.activeSequence !== 'NONE'
+    ) {
+      return;
+    }
     try {
       const maybe = this.canvas.requestPointerLock?.() as
         | Promise<void>
@@ -232,6 +261,7 @@ export class DoomGameApp {
   }
 
   private bindInput(): void {
+    const sig = { signal: this.abortCtrl.signal };
     const gameCodes = new Set([
       'KeyW',
       'KeyA',
@@ -251,146 +281,193 @@ export class DoomGameApp {
       'ArrowRight',
     ]);
 
-    window.addEventListener('keydown', (e) => {
-      if (!this.engaged) return;
+    window.addEventListener(
+      'keydown',
+      (e) => {
+        if (!this.engaged || this.disposed) return;
 
-      if (gameCodes.has(e.code)) {
-        e.preventDefault();
-      }
-      this.sound.unlock();
-
-      if (this.inventory.gameOverVisible) {
-        if (e.code === 'Enter' || e.code === 'Space') {
-          this.inventory.hideGameOver();
-          this.respawnPlayer();
+        if (gameCodes.has(e.code)) {
+          e.preventDefault();
         }
-        return;
-      }
+        this.sound.unlock();
 
-      // Alterna Inventário estilo Amnesia na tecla Tab!
-      if (e.code === 'Tab' && !e.repeat) {
-        const opened = this.inventory.toggle();
+        if (this.inventory.gameOverVisible) {
+          if (e.code === 'Enter' || e.code === 'Space' || e.code === 'Escape') {
+            this.finalizePermanentDeath();
+          }
+          return;
+        }
+
+        // Durante a animação de desmaio / arrasto pela aranha, o jogador está incapacitado
+        if (this.activeSequence !== 'NONE') {
+          return;
+        }
+
+        if (e.code === 'Tab' && !e.repeat) {
+          const opened = this.inventory.toggle();
+          this.keys.clear();
+          this.isDragging = false;
+          if (opened) {
+            try {
+              document.exitPointerLock?.();
+            } catch {
+              // ignorar
+            }
+          } else {
+            this.tryPointerLock();
+          }
+          return;
+        }
+
+        if (e.code === 'Escape' && this.inventory.open && !e.repeat) {
+          this.closeInventoryAndLock();
+          return;
+        }
+
+        if (this.inventory.open) {
+          return;
+        }
+
+        this.keys.add(e.code);
+
+        if (e.code === 'KeyE' && !e.repeat) {
+          this.interactQueued = true;
+          this.struggleQueued = true;
+        }
+        if (
+          (e.code === 'Space' ||
+            e.code === 'KeyA' ||
+            e.code === 'KeyD' ||
+            e.code === 'KeyW' ||
+            e.code === 'KeyS') &&
+          !e.repeat
+        ) {
+          this.struggleQueued = true;
+        }
+
+        if (e.code === 'KeyF' && !e.repeat) {
+          const equipping = this.flashlight.toggle();
+          this.sound.playFlashlightMotion(equipping);
+          if (!equipping) {
+            this.sound.playFlashlightClick(false);
+          }
+        }
+      },
+      sig
+    );
+
+    window.addEventListener(
+      'keyup',
+      (e) => {
+        this.keys.delete(e.code);
+      },
+      sig
+    );
+
+    window.addEventListener(
+      'blur',
+      () => {
         this.keys.clear();
         this.isDragging = false;
-        if (opened) {
-          try {
-            document.exitPointerLock?.();
-          } catch {
-            // ignorar
-          }
-        } else {
+      },
+      sig
+    );
+
+    document.addEventListener(
+      'visibilitychange',
+      () => {
+        if (document.hidden) {
+          this.keys.clear();
+          this.isDragging = false;
+        }
+      },
+      sig
+    );
+
+    document.addEventListener(
+      'pointerlockchange',
+      () => {
+        this.pointerLocked = document.pointerLockElement === this.canvas;
+      },
+      sig
+    );
+
+    this.canvas.addEventListener(
+      'mousedown',
+      (e) => {
+        if (
+          this.inventory.open ||
+          this.inventory.gameOverVisible ||
+          this.activeSequence !== 'NONE'
+        ) {
+          return;
+        }
+        this.sound.unlock();
+        if (!this.pointerLocked) {
           this.tryPointerLock();
         }
-        return;
-      }
-
-      if (e.code === 'Escape' && this.inventory.open && !e.repeat) {
-        this.closeInventoryAndLock();
-        return;
-      }
-
-      if (this.inventory.open) {
-        return;
-      }
-
-      this.keys.add(e.code);
-
-      if (e.code === 'KeyE' && !e.repeat) {
-        this.interactQueued = true;
-        this.struggleQueued = true;
-      }
-      if (
-        (e.code === 'Space' ||
-          e.code === 'KeyA' ||
-          e.code === 'KeyD' ||
-          e.code === 'KeyW' ||
-          e.code === 'KeyS') &&
-        !e.repeat
-      ) {
-        this.struggleQueued = true;
-      }
-
-      if (e.code === 'KeyF' && !e.repeat) {
-        const equipping = this.flashlight.toggle();
-        this.sound.playFlashlightMotion(equipping);
-        if (!equipping) {
-          this.sound.playFlashlightClick(false);
+        if (e.button === 0) {
+          this.interactQueued = true;
+          this.struggleQueued = true;
         }
-      }
-    });
-
-    window.addEventListener('keyup', (e) => {
-      this.keys.delete(e.code);
-    });
-
-    window.addEventListener('blur', () => {
-      this.keys.clear();
-      this.isDragging = false;
-    });
-
-    document.addEventListener('visibilitychange', () => {
-      if (document.hidden) {
-        this.keys.clear();
-        this.isDragging = false;
-      }
-    });
-
-    document.addEventListener('pointerlockchange', () => {
-      this.pointerLocked = document.pointerLockElement === this.canvas;
-    });
-
-    this.canvas.addEventListener('mousedown', (e) => {
-      if (this.inventory.open || this.inventory.gameOverVisible) return;
-      this.sound.unlock();
-      if (!this.pointerLocked) {
-        this.tryPointerLock();
-      }
-      if (e.button === 0) {
-        this.interactQueued = true;
-        this.struggleQueued = true;
-      }
-      this.isDragging = true;
-      this.lastMouseX = e.clientX;
-      this.lastMouseY = e.clientY;
-    });
-
-    window.addEventListener('mouseup', () => {
-      this.isDragging = false;
-    });
-
-    window.addEventListener('mousemove', (e) => {
-      if (this.inventory.open || this.inventory.gameOverVisible) return;
-
-      const sens = 0.0022;
-      // Permite olhar bem para o alto (teto) e para baixo (armadilhas de teia no piso)!
-      const maxPitch = 1.12;
-      if (this.pointerLocked) {
-        const dYaw = -e.movementX * sens;
-        const prevPitch = this.pitch;
-        this.yaw += dYaw;
-        this.pitch = Math.max(
-          -maxPitch,
-          Math.min(maxPitch, this.pitch - e.movementY * sens * 0.78)
-        );
-        this.flashlight.addLookImpulse(dYaw, this.pitch - prevPitch);
-      } else if (this.isDragging) {
-        const dx = e.clientX - this.lastMouseX;
-        const dy = e.clientY - this.lastMouseY;
+        this.isDragging = true;
         this.lastMouseX = e.clientX;
         this.lastMouseY = e.clientY;
-        const dYaw = -dx * sens * 1.3;
-        const prevPitch = this.pitch;
-        this.yaw += dYaw;
-        this.pitch = Math.max(
-          -maxPitch,
-          Math.min(maxPitch, this.pitch - dy * sens * 0.85)
-        );
-        this.flashlight.addLookImpulse(dYaw, this.pitch - prevPitch);
-      }
-    });
+      },
+      sig
+    );
+
+    window.addEventListener(
+      'mouseup',
+      () => {
+        this.isDragging = false;
+      },
+      sig
+    );
+
+    window.addEventListener(
+      'mousemove',
+      (e) => {
+        if (
+          this.inventory.open ||
+          this.inventory.gameOverVisible ||
+          this.activeSequence !== 'NONE'
+        ) {
+          return;
+        }
+
+        const sens = 0.0022;
+        const maxPitch = 1.12;
+        if (this.pointerLocked) {
+          const dYaw = -e.movementX * sens;
+          const prevPitch = this.pitch;
+          this.yaw += dYaw;
+          this.pitch = Math.max(
+            -maxPitch,
+            Math.min(maxPitch, this.pitch - e.movementY * sens * 0.78)
+          );
+          this.flashlight.addLookImpulse(dYaw, this.pitch - prevPitch);
+        } else if (this.isDragging) {
+          const dx = e.clientX - this.lastMouseX;
+          const dy = e.clientY - this.lastMouseY;
+          this.lastMouseX = e.clientX;
+          this.lastMouseY = e.clientY;
+          const dYaw = -dx * sens * 1.3;
+          const prevPitch = this.pitch;
+          this.yaw += dYaw;
+          this.pitch = Math.max(
+            -maxPitch,
+            Math.min(maxPitch, this.pitch - dy * sens * 0.85)
+          );
+          this.flashlight.addLookImpulse(dYaw, this.pitch - prevPitch);
+        }
+      },
+      sig
+    );
   }
 
   private onResize(): void {
+    if (this.disposed) return;
     const w = window.innerWidth;
     const h = window.innerHeight;
     const aspect = Math.max(1, w) / Math.max(1, h);
@@ -404,6 +481,7 @@ export class DoomGameApp {
   start(): void {
     this.lastRaf = performance.now();
     const loop = (now: number) => {
+      if (this.disposed) return;
       const dt = Math.min(0.08, Math.max(0.0005, (now - this.lastRaf) / 1000));
       this.lastRaf = now;
       this.update(dt);
@@ -414,22 +492,403 @@ export class DoomGameApp {
         this.flashlight.viewScene,
         this.flashlight.viewCamera
       );
-      requestAnimationFrame(loop);
+      this.rafId = requestAnimationFrame(loop);
     };
-    requestAnimationFrame(loop);
+    this.rafId = requestAnimationFrame(loop);
+  }
+
+  /**
+   * Acionado quando a Aranha Gigante alcança o jogador!
+   * - Se ainda houver reserva vital (>36%): Ataque brutal -> Desmaio -> Puxado até o Ninho de Teia -> Acorda bem ferido na teia!
+   * - Se já estiver gravemente ferido (<=36%): MORTE REAL PERMANENTE!
+   */
+  private triggerSpiderCatch(): void {
+    if (this.activeSequence !== 'NONE') return;
+
+    this.inventory.setOpen(false);
+    this.keys.clear();
+    this.velocity.set(0, 0, 0);
+    this.webManager.clearEnsnarement();
+
+    this.strikeOriginPos.copy(this.position);
+
+    const toSpider = new THREE.Vector3()
+      .subVectors(this.spider.position, this.position)
+      .setY(0);
+    if (toSpider.lengthSq() < 0.01) {
+      toSpider.set(-Math.sin(this.yaw), 0, -Math.cos(this.yaw));
+    } else {
+      toSpider.normalize();
+    }
+    this.strikeSpiderPos
+      .copy(this.position)
+      .addScaledVector(toSpider, 1.48)
+      .setY(1.38);
+
+    // Gira o olhar para encarar a aranha gigante no instante do bote!
+    this.yaw = Math.atan2(-toSpider.x, -toSpider.z);
+
+    this.seqTime = 0;
+    this.seqStagedDrag = false;
+    this.seqStagedWake = false;
+    this.seqGaspPlayed = false;
+    this.lastDragPullStep = -1;
+    this.lastWebSpinStep = -1;
+
+    if (this.playerHealth > 36) {
+      this.activeSequence = 'ABDUCTION_TO_WEB';
+      this.sound.playSpiderBrutalAttack();
+    } else {
+      this.activeSequence = 'PERMADEATH_EXECUTION';
+      this.playerHealth = 0;
+      this.playerBleeding = true;
+      this.syncInventoryVitals();
+      this.sound.playPermanentDeath();
+    }
+  }
+
+  /**
+   * Executa quadro a quadro a cena em 1ª pessoa:
+   * 1) Ataque visceral com rasgos de garras e queda no chão
+   * 2) Desmaio com pálpebras pesadas
+   * 3) Visão entreaberta sendo arrastado pelas patas da Aranha Gigante até o Ninho de Teia
+   * 4) Aranha colocando o jogador na teia e tecendo seda sobre ele
+   * 5) Despertar bem ferido no meio da teia para escapar livremente!
+   */
+  private updateHorrorSequence(dt: number): void {
+    this.seqTime += dt;
+    const t = this.seqTime;
+
+    if (this.activeSequence === 'PERMADEATH_EXECUTION') {
+      const u = Math.min(1, t / 1.45);
+      const slash =
+        t < 0.35
+          ? 1.0 - t / 0.35
+          : t < 0.7
+            ? Math.max(0, 0.85 - (t - 0.35) * 2.4)
+            : 0;
+      const lid = Math.min(1, Math.pow(t / 1.15, 1.5));
+      const black = Math.max(0, Math.min(1, (t - 0.55) / 0.85));
+
+      this.inventory.setAbductionScreenFX(slash, lid, black, 0);
+
+      const eyeY = 1.62 * (1 - u) + 0.18 * u;
+      this.pitch = 0.38 * u;
+      this.roll = -0.32 * u;
+      this.cameraShake = 0.14 * (1 - u * 0.5);
+      this.setCameraFov(74 + Math.sin(u * Math.PI) * 14);
+
+      this.spider.updateCinematicSequence(
+        dt,
+        this.elapsed,
+        'FATAL_EXECUTION',
+        u,
+        this.strikeSpiderPos,
+        this.strikeOriginPos,
+        this.strikeOriginPos
+      );
+
+      this.syncCustomSequenceCamera(this.strikeOriginPos, eyeY);
+
+      if (t >= 1.5) {
+        this.activeSequence = 'DEAD_TERMINATED';
+        this.setCameraFov(74);
+        try {
+          document.exitPointerLock?.();
+        } catch {
+          // ignorar
+        }
+        this.inventory.showGameOver();
+        // Encerra o processo automaticamente após 3.8s caso o jogador não clique antes
+        this.permadeathTimerId = window.setTimeout(() => {
+          this.finalizePermanentDeath();
+        }, 3800);
+      }
+      return;
+    }
+
+    if (this.activeSequence !== 'ABDUCTION_TO_WEB') {
+      return;
+    }
+
+    // ------------------------------------------------------------------------
+    // ESTÁGIO 1 (0.00s -> 1.25s): O BOTE BRUTAL & QUEDA NO CHÃO
+    // ------------------------------------------------------------------------
+    if (t < 1.25) {
+      const u = t / 1.25;
+      // Duplo clarão rubro de garras rasgando a tela
+      const slashA = t < 0.28 ? 1 - t / 0.28 : 0;
+      const slashB =
+        t >= 0.18 && t < 0.55 ? 0.92 * (1 - (t - 0.18) / 0.37) : 0;
+      const slash = Math.max(slashA, slashB);
+
+      const lid = u > 0.45 ? (u - 0.45) / 0.55 : 0;
+      const black = u > 0.72 ? (u - 0.72) / 0.28 : 0;
+
+      this.inventory.setAbductionScreenFX(slash, lid * 0.92, black * 0.65, 0);
+
+      const fallEase = 1 - Math.pow(1 - u, 2.4);
+      const eyeY = 1.62 * (1 - fallEase) + 0.3 * fallEase;
+      this.pitch = 0.26 * fallEase + Math.sin(t * 28) * 0.06 * (1 - u);
+      this.roll = 0.26 * fallEase;
+      this.cameraShake = 0.13 * (1 - u * 0.65);
+      this.setCameraFov(74 + Math.sin(u * Math.PI) * 16);
+
+      const lungePos = new THREE.Vector3()
+        .copy(this.strikeSpiderPos)
+        .lerp(
+          new THREE.Vector3(
+            this.strikeOriginPos.x,
+            1.28,
+            this.strikeOriginPos.z
+          ),
+          0.22 * Math.sin(u * Math.PI)
+        );
+
+      this.spider.updateCinematicSequence(
+        dt,
+        this.elapsed,
+        'STRIKE_ATTACK',
+        u,
+        lungePos,
+        this.strikeOriginPos,
+        this.strikeOriginPos
+      );
+
+      this.syncCustomSequenceCamera(this.strikeOriginPos, eyeY);
+      return;
+    }
+
+    // ------------------------------------------------------------------------
+    // ESTÁGIO 2 (1.25s -> 2.05s): DESMAIO PROFUNDO
+    // ------------------------------------------------------------------------
+    if (t < 2.05) {
+      const u = (t - 1.25) / 0.8;
+      this.inventory.setAbductionScreenFX(
+        0,
+        0.92 + 0.08 * Math.min(1, u * 2),
+        0.65 + 0.35 * Math.min(1, u * 1.8),
+        0
+      );
+
+      if (!this.seqStagedDrag && u > 0.65) {
+        this.seqStagedDrag = true;
+        this.position.copy(this.webManager.dragCorridorStart);
+      }
+
+      this.setCameraFov(68);
+      this.syncCustomSequenceCamera(this.position, 0.28);
+      return;
+    }
+
+    // ------------------------------------------------------------------------
+    // ESTÁGIO 3 (2.05s -> 4.65s): ARANHA GIGANTE TE PUXANDO PELO CHÃO ATÉ A TEIA!
+    // ------------------------------------------------------------------------
+    if (t < 4.65) {
+      const u = (t - 2.05) / 2.6;
+      // Movimento em puxões rítmicos ("heave-and-drag") ao longo do corredor sul até o Ninho!
+      const pullCycles = u * 4.0;
+      const pullStep = Math.floor(pullCycles);
+      if (pullStep !== this.lastDragPullStep) {
+        this.lastDragPullStep = pullStep;
+        this.sound.playBodyDragPull();
+      }
+      const frac = pullCycles - pullStep;
+      const steppedU = Math.min(
+        1,
+        (pullStep + frac * frac * (3 - 2 * frac)) / 4.0
+      );
+
+      this.position.lerpVectors(
+        this.webManager.dragCorridorStart,
+        this.webManager.lairCenter,
+        steppedU
+      );
+
+      // Pálpebras entreabertas grogues com uma piscada pesada no meio do arrasto
+      const openFadeIn = Math.min(1, u / 0.18);
+      const midBlink = Math.exp(-Math.pow((u - 0.52) / 0.09, 2)) * 0.58;
+      const lidClosed = 1 - openFadeIn * 0.66 + midBlink;
+      const black = Math.max(0.08, (1 - openFadeIn) * 0.85 + midBlink * 0.4);
+
+      this.inventory.setAbductionScreenFX(
+        0,
+        Math.min(1, lidClosed),
+        Math.min(1, black),
+        u > 0.78 ? ((u - 0.78) / 0.22) * 0.3 : 0
+      );
+
+      // Olhando para +Z (direto para a Aranha Gigante andando de costas puxando suas pernas!)
+      const jolt = Math.sin(pullCycles * Math.PI * 2) * 0.035;
+      this.yaw = Math.PI + Math.sin(t * 2.3) * 0.05;
+      this.pitch = 0.22 + jolt * 0.9;
+      this.roll = -0.17 + Math.sin(pullCycles * Math.PI * 2) * 0.05;
+      this.cameraShake = 0.022;
+      this.setCameraFov(68);
+
+      const spiderDragPos = new THREE.Vector3(
+        this.position.x + Math.sin(t * 2.1) * 0.08,
+        1.38 + Math.abs(jolt) * 0.8,
+        this.position.z + 2.15
+      );
+
+      this.spider.updateCinematicSequence(
+        dt,
+        this.elapsed,
+        'DRAGGING_TO_WEB',
+        u,
+        spiderDragPos,
+        this.position,
+        this.position
+      );
+
+      this.syncCustomSequenceCamera(this.position, 0.28 + Math.abs(jolt) * 0.5);
+      this.sound.playTensionHeartbeat(0.75);
+      return;
+    }
+
+    // ------------------------------------------------------------------------
+    // ESTÁGIO 4 (4.65s -> 5.85s): COLOCANDO VOCÊ NO NINHO DE TEIA & TECENDO FIOS
+    // ------------------------------------------------------------------------
+    if (t < 5.85) {
+      const u = (t - 4.65) / 1.2;
+      this.position.copy(this.webManager.lairCenter);
+
+      const spinStep = Math.floor(u * 4);
+      if (spinStep !== this.lastWebSpinStep) {
+        this.lastWebSpinStep = spinStep;
+        this.sound.playSpiderWebSpin(0, 1.0);
+      }
+
+      // Fios de seda vão cobrindo as bordas enquanto as pálpebras voltam a pesar
+      const closeOut = u > 0.58 ? (u - 0.58) / 0.42 : 0;
+      const lidClosed = 0.36 + closeOut * 0.64;
+      const black = 0.12 + closeOut * 0.88;
+      const cocoon = 0.3 + u * 0.58;
+
+      this.inventory.setAbductionScreenFX(0, lidClosed, black, cocoon);
+
+      this.yaw = Math.PI + Math.sin(t * 4.5) * 0.04;
+      this.pitch = 0.46;
+      this.roll = -0.1 * (1 - u);
+      this.cameraShake = 0.015;
+
+      const spiderOverLair = new THREE.Vector3(
+        this.position.x,
+        1.42,
+        this.position.z + 1.12
+      );
+
+      this.spider.updateCinematicSequence(
+        dt,
+        this.elapsed,
+        'WEBBING_IN_LAIR',
+        u,
+        spiderOverLair,
+        this.position,
+        this.position
+      );
+
+      this.syncCustomSequenceCamera(this.position, 0.28);
+
+      // No final do apagão, afasta a aranha para longe e deixa o jogador bem ferido na teia!
+      if (!this.seqStagedWake && u > 0.9) {
+        this.seqStagedWake = true;
+        this.spider.relocateAwayAfterAbduction();
+        this.webManager.placePlayerInWakingLairWeb();
+        this.playerHealth = 22;
+        this.playerBleeding = true;
+        this.playerSanity = 25;
+        this.yaw = 0; // Acorda olhando para o corredor norte de saída do ninho
+        this.syncInventoryVitals();
+      }
+      return;
+    }
+
+    // ------------------------------------------------------------------------
+    // ESTÁGIO 5 (5.85s -> 7.35s): ACORDANDO BEM FERIDO NO MEIO DA TEIA!
+    // ------------------------------------------------------------------------
+    if (!this.seqGaspPlayed) {
+      this.seqGaspPlayed = true;
+      this.sound.playWakeUpGasp();
+    }
+
+    const uWake = Math.min(1, (t - 5.85) / 1.5);
+    const wakeEase = uWake * uWake * (3 - 2 * uWake);
+
+    const lidClosed = Math.max(0, 1 - wakeEase * 1.15);
+    const black = Math.max(0, 1 - wakeEase * 1.35);
+    const cocoon = 0.85;
+
+    this.inventory.setAbductionScreenFX(0, lidClosed, black, cocoon);
+
+    const eyeY = 0.32 + (this.standingEyeHeight - 0.32) * wakeEase;
+    this.pitch = -0.22 * (1 - wakeEase);
+    this.roll = 0.14 * Math.sin(uWake * Math.PI) * (1 - wakeEase);
+    this.setCameraFov(68 + 6 * wakeEase);
+
+    this.syncCustomSequenceCamera(this.position, eyeY);
+    this.sound.playTensionHeartbeat(0.85);
+
+    if (t >= 7.35) {
+      this.activeSequence = 'NONE';
+      this.roll = 0;
+      this.setCameraFov(74);
+      // Mantém os fios do casulo visíveis até o jogador caminhar e rasgar para fora da teia!
+      this.inventory.setAbductionScreenFX(
+        0,
+        0,
+        0,
+        this.webManager.getWakingLairSilkFactor(this.position)
+      );
+      this.syncInventoryVitals();
+    }
+  }
+
+  private setCameraFov(fov: number): void {
+    if (Math.abs(this.camera.fov - fov) > 0.05) {
+      this.camera.fov = fov;
+      this.camera.updateProjectionMatrix();
+    }
+  }
+
+  private syncCustomSequenceCamera(pos: THREE.Vector3, eyeY: number): void {
+    const shakeX =
+      this.cameraShake > 0.001
+        ? (Math.random() - 0.5) * 2 * this.cameraShake
+        : 0;
+    const shakeY =
+      this.cameraShake > 0.001
+        ? (Math.random() - 0.5) * 2 * this.cameraShake
+        : 0;
+
+    this.camera.position.set(pos.x + shakeX, eyeY + shakeY, pos.z);
+    const euler = new THREE.Euler(this.pitch, this.yaw, this.roll, 'YXZ');
+    this.camera.quaternion.setFromEuler(euler);
   }
 
   private update(dt: number): void {
-    if (!this.engaged) return;
+    if (!this.engaged || this.disposed) return;
 
-    // Pausa o mundo de jogo enquanto o jogador inspeciona o Inventário [Tab] ou tela de morte
+    if (this.activeSequence === 'DEAD_TERMINATED') {
+      return;
+    }
+
+    this.elapsed += dt;
+
+    if (this.activeSequence !== 'NONE') {
+      this.interactQueued = false;
+      this.struggleQueued = false;
+      this.updateHorrorSequence(dt);
+      this.updateFlickeringLightsAndAudio();
+      return;
+    }
+
     if (this.inventory.open || this.inventory.gameOverVisible) {
       this.interactQueued = false;
       this.struggleQueued = false;
       return;
     }
-
-    this.elapsed += dt;
 
     const interactPressed = this.interactQueued;
     const strugglePressed = this.struggleQueued;
@@ -467,7 +926,6 @@ export class DoomGameApp {
 
     if (wish.lengthSq() > 0) wish.normalize();
 
-    // Agachamento contínuo segurando Ctrl (verifica espaço acima antes de levantar)
     const holdingCtrl =
       this.keys.has('ControlLeft') || this.keys.has('ControlRight');
     const isCrouching =
@@ -484,7 +942,6 @@ export class DoomGameApp {
 
     const hasKnife = this.inventory.hasItem('rusty_knife');
 
-    // Verifica armadilhas de teia no corredor!
     const webState = this.webManager.update(
       dt,
       this.position,
@@ -496,16 +953,23 @@ export class DoomGameApp {
       }
     );
 
+    // Atualiza transparência dos fios do casulo enquanto o jogador sai caminhando do Ninho!
+    this.inventory.setAbductionScreenFX(
+      0,
+      0,
+      0,
+      this.webManager.getWakingLairSilkFactor(this.position)
+    );
+
     const sprinting =
       !isCrouching &&
       !this.webManager.isPlayerEnsnared &&
-      !this.spider.isCapturingPlayer &&
       (this.keys.has('ShiftLeft') || this.keys.has('ShiftRight'));
 
-    const baseMaxSpeed = isCrouching ? 2.65 : sprinting ? 8.6 : 6.2;
-    const maxSpeed = this.spider.isCapturingPlayer
-      ? 0.35
-      : baseMaxSpeed * webState.speedMultiplier;
+    // Levemente mais lento quando gravemente ferido (<28% vida) para reforçar sensação de ferimento
+    const injurySlow = this.playerHealth < 28 ? 0.88 : 1.0;
+    const baseMaxSpeed = (isCrouching ? 2.65 : sprinting ? 8.6 : 6.2) * injurySlow;
+    const maxSpeed = baseMaxSpeed * webState.speedMultiplier;
 
     const accel = wish.lengthSq() > 0 ? 18.0 : 12.0;
     const blend = 1 - Math.exp(-accel * dt);
@@ -540,7 +1004,7 @@ export class DoomGameApp {
 
     const planarSpeed = Math.hypot(this.velocity.x, this.velocity.z);
     let bobOffset = 0;
-    if (planarSpeed > 0.28 && !this.spider.isCapturingPlayer) {
+    if (planarSpeed > 0.28) {
       const bobRate = isCrouching
         ? 4.6 + planarSpeed * 0.9
         : 7.5 + planarSpeed * 0.75;
@@ -567,12 +1031,10 @@ export class DoomGameApp {
       this.lastBobHalfCycle = 0;
     }
 
-    // Consumo suave da bateria quando a lanterna está ligada
     if (this.flashlight.isEquipped && this.lanternBattery > 0) {
       this.lanternBattery = Math.max(0, this.lanternBattery - dt * 0.62);
     }
 
-    // Atualiza modelagem/animação da lanterna (F) e projeta seu feixe no mundo 3D
     const fl = this.flashlight.update(
       dt,
       this.bobPhase,
@@ -584,7 +1046,6 @@ export class DoomGameApp {
       this.lanternBattery
     );
 
-    // Atualiza a Aranha Procedural (Evil Crawling Thing)!
     const spiderOut = this.spider.update(
       dt,
       this.elapsed,
@@ -594,33 +1055,14 @@ export class DoomGameApp {
       isCrouching,
       fl.beamIntensity > 0.05,
       this.sharedUniforms.uFlashlightDir.value,
-      hasKnife,
-      strugglePressed,
       this.worldItems.getActiveFlares(),
-      (damage, causeBleeding) => {
-        this.applySpiderDamage(damage, causeBleeding);
+      () => {
+        this.triggerSpiderCatch();
       }
     );
 
-    if (spiderOut.capturePullTarget) {
-      this.position.lerp(spiderOut.capturePullTarget, Math.min(1, dt * 8));
-      resolveCylinderWorldCollisions(
-        this.position,
-        this.velocity,
-        this.playerRadius,
-        currentHeight,
-        this.colliders
-      );
-      // Vira suavemente o olhar na direção da aranha durante o bote!
-      const desiredYaw = Math.atan2(
-        -(this.spider.position.x - this.position.x),
-        -(this.spider.position.z - this.position.z)
-      );
-      let diff = desiredYaw - this.yaw;
-      while (diff > Math.PI) diff -= Math.PI * 2;
-      while (diff < -Math.PI) diff += Math.PI * 2;
-      this.yaw += diff * Math.min(1, dt * 7);
-      this.pitch += (-0.12 - this.pitch) * Math.min(1, dt * 6);
+    if (this.activeSequence !== 'NONE') {
+      return;
     }
 
     this.cameraShake = Math.max(
@@ -630,7 +1072,6 @@ export class DoomGameApp {
 
     this.syncCamera(bobOffset);
 
-    // Atualiza coleta de objetos 3D e sinalizadores no labirinto
     const camForward = new THREE.Vector3(0, 0, -1).applyQuaternion(
       this.camera.quaternion
     );
@@ -669,28 +1110,12 @@ export class DoomGameApp {
         .normalize();
     }
 
-    // Atualiza evolução de sangramento, nervos/sanidade e batimentos cardíacos
-    this.updateSurvivalVitals(dt, spiderOut.playerDistance, fl.beamIntensity > 0.05);
+    this.updateSurvivalVitals(
+      dt,
+      spiderOut.playerDistance,
+      fl.beamIntensity > 0.05
+    );
     this.updateFlickeringLightsAndAudio();
-  }
-
-  private applySpiderDamage(damage: number, causeBleeding: boolean): void {
-    this.playerHealth = Math.max(0, this.playerHealth - damage);
-    this.playerSanity = Math.max(0, this.playerSanity - 26);
-    if (causeBleeding && this.playerHealth > 0) {
-      this.playerBleeding = true;
-    }
-    this.cameraShake = 0.095;
-    this.syncInventoryVitals();
-
-    if (this.playerHealth <= 0) {
-      try {
-        document.exitPointerLock?.();
-      } catch {
-        // ignorar
-      }
-      this.inventory.showGameOver();
-    }
   }
 
   private updateSurvivalVitals(
@@ -698,12 +1123,11 @@ export class DoomGameApp {
     spiderDist: number,
     flashlightOn: boolean
   ): void {
-    // Sangramento drena saúde lentamente até um piso crítico (16%) até usar bandagem/analgésico
+    // Sangramento drena até piso crítico (16%), mantendo o jogador vulnerável a morte permanente se atacado de novo!
     if (this.playerBleeding && this.playerHealth > 16) {
-      this.playerHealth = Math.max(16, this.playerHealth - dt * 0.75);
+      this.playerHealth = Math.max(16, this.playerHealth - dt * 0.65);
     }
 
-    // Sanidade / Nervos caem na perseguição ou no escuro perto da aranha, e recuperam em segurança
     if (this.spider.isChasingOrAlert || this.webManager.isPlayerEnsnared) {
       this.playerSanity = Math.max(6, this.playerSanity - dt * 7.5);
     } else if (!flashlightOn && spiderDist < 11) {
@@ -712,7 +1136,6 @@ export class DoomGameApp {
       this.playerSanity = Math.min(100, this.playerSanity + dt * 2.2);
     }
 
-    // Batimento cardíaco abafado proporcional ao perigo/ferimento
     const dangerChase = this.spider.isChasingOrAlert
       ? Math.max(0.35, 1 - spiderDist / 16)
       : 0;
@@ -769,12 +1192,21 @@ export class DoomGameApp {
         ? (Math.random() - 0.5) * 2 * this.cameraShake
         : 0;
 
+    // Leve oscilação sutil quando muito ferido (<26% vida)
+    const woundedSway =
+      this.playerHealth < 26 ? Math.sin(this.elapsed * 2.1) * 0.016 : 0;
+
     this.camera.position.set(
       this.position.x + shakeX,
       currentEyeHeight + bobOffset + shakeY,
       this.position.z
     );
-    const euler = new THREE.Euler(this.pitch, this.yaw, 0, 'YXZ');
+    const euler = new THREE.Euler(
+      this.pitch,
+      this.yaw,
+      woundedSway,
+      'YXZ'
+    );
     this.camera.quaternion.setFromEuler(euler);
   }
 
@@ -814,7 +1246,6 @@ export class DoomGameApp {
       }
     }
 
-    // Injeta a luz quente dos Sinalizadores de Magnésio acesos no chão nos slots livres do shader!
     const flares = this.worldItems.getActiveFlares();
     let totalLights = baseCount;
     for (let f = 0; f < flares.length && totalLights < MAX_DOOM_LIGHTS; f++) {
@@ -835,5 +1266,20 @@ export class DoomGameApp {
       nearestDist,
       nearestJustFlickered
     );
+  }
+
+  destroy(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    if (this.permadeathTimerId) {
+      window.clearTimeout(this.permadeathTimerId);
+      this.permadeathTimerId = 0;
+    }
+    cancelAnimationFrame(this.rafId);
+    this.abortCtrl.abort();
+    this.inventory.destroy();
+    this.compositor.dispose();
+    this.renderer.dispose();
+    this.sound.stopDungeonAtmosphere();
   }
 }

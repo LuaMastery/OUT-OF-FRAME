@@ -337,6 +337,25 @@ export function buildDoomLabyrinth(
     });
   }
 
+  // Luminária tremeluzente antiga no teto do Ninho da Aranha (gx=7, gz=11)
+  const lairX = cellToWorldX(7);
+  const lairZ = cellToWorldZ(11);
+  const lairCeilLight = new THREE.Mesh(
+    new THREE.PlaneGeometry(1.1, 1.1),
+    matLightPanel
+  );
+  lairCeilLight.rotation.x = Math.PI * 0.5;
+  lairCeilLight.position.set(lairX, WALL_HEIGHT - 0.015, lairZ);
+  root.add(lairCeilLight);
+  if (lights.length < MAX_DOOM_LIGHTS) {
+    lights.push({
+      position: new THREE.Vector3(lairX, 2.35, lairZ),
+      baseIntensity: 0.52,
+      flicker: true,
+      phase: 5.1,
+    });
+  }
+
   // Sincroniza estado inicial dos uniforms de luz
   sharedUniforms.uLightCount.value = Math.min(lights.length, MAX_DOOM_LIGHTS);
   for (let i = 0; i < sharedUniforms.uLightCount.value; i++) {

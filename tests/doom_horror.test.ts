@@ -14,7 +14,7 @@ import { DoomSpiderWebManager } from '../src/doom/DoomSpiderWebs';
 import { createDoomTextures } from '../src/doom/DoomTextures';
 import { SoundEngine } from '../src/engine/audio/SoundEngine';
 
-describe('Labirinto, Armadilhas de Teia & Aranha Procedural (Evil Crawler)', () => {
+describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', () => {
   it('mantém correspondência exata entre células da grade e coordenadas do mundo', () => {
     for (let gz = 1; gz < LABYRINTH_MAP.length - 1; gz++) {
       for (let gx = 1; gx < LABYRINTH_MAP[gz].length - 1; gx++) {
@@ -58,7 +58,45 @@ describe('Labirinto, Armadilhas de Teia & Aranha Procedural (Evil Crawler)', () 
     expect(alertedPos).not.toBeNull();
   });
 
-  it('anda devagar em patrulha, dispara em alta velocidade ao encontrar o jogador e gera malha IK válida sem NaN', () => {
+  it('permite que o jogador acorde no meio do Ninho da Aranha e saia caminhando livremente rasgando os fios sem re-alertar', () => {
+    const scene = new THREE.Scene();
+    const uniforms = createDoomSharedUniforms();
+    const webs = new DoomSpiderWebManager(scene, uniforms);
+
+    let snapPlayed = false;
+    let reAlerted = false;
+    const sound = {
+      playWebTrapSnap: () => {
+        snapPlayed = true;
+      },
+      playItemUse: () => {},
+    } as unknown as SoundEngine;
+
+    webs.placePlayerInWakingLairWeb();
+    const playerPos = webs.lairCenter.clone();
+    expect(webs.isPlayerEnsnared).toBe(true);
+    expect(webs.getWakingLairSilkFactor(playerPos)).toBeGreaterThan(0.7);
+
+    // Dentro do ninho: consegue caminhar com resistência de seda (0.35), sem disparar alerta!
+    const inside = webs.update(0.05, playerPos, false, false, sound, () => {
+      reAlerted = true;
+    });
+    expect(inside.speedMultiplier).toBeCloseTo(0.35, 2);
+    expect(reAlerted).toBe(false);
+
+    // Caminha livremente para fora do Ninho (>= 1.68m): rasga os fios e sai!
+    playerPos.z -= 1.85;
+    const outside = webs.update(0.05, playerPos, false, false, sound, () => {
+      reAlerted = true;
+    });
+    expect(snapPlayed).toBe(true);
+    expect(reAlerted).toBe(false);
+    expect(webs.isPlayerEnsnared).toBe(false);
+    expect(outside.speedMultiplier).toBe(1.0);
+    expect(webs.getWakingLairSilkFactor(playerPos)).toBe(0);
+  });
+
+  it('constrói a Aranha Gigante, persegue em velocidade absurda, executa poses cinemáticas de sequestro e gera malha IK válida', () => {
     const scene = new THREE.Scene();
     const uniforms = createDoomSharedUniforms();
     const textures = createDoomTextures();
@@ -69,9 +107,6 @@ describe('Labirinto, Armadilhas de Teia & Aranha Procedural (Evil Crawler)', () 
       playSpiderFootstep: () => {},
       playSpiderScream: () => {},
       playSpiderWebSpin: () => {},
-      playSpiderCaptureImpact: () => {},
-      playStruggleEffort: () => {},
-      playItemUse: () => {},
     } as unknown as SoundEngine;
 
     const spider = new DoomSpider(
@@ -100,8 +135,6 @@ describe('Labirinto, Armadilhas de Teia & Aranha Procedural (Evil Crawler)', () 
         true,
         false,
         new THREE.Vector3(0, 0, -1),
-        false,
-        false,
         [],
         () => {}
       );
@@ -127,8 +160,6 @@ describe('Labirinto, Armadilhas de Teia & Aranha Procedural (Evil Crawler)', () 
         false,
         true,
         new THREE.Vector3(0, 0, -1),
-        false,
-        false,
         [],
         () => {}
       );
@@ -139,20 +170,53 @@ describe('Labirinto, Armadilhas de Teia & Aranha Procedural (Evil Crawler)', () 
     );
     expect(chaseDist).toBeGreaterThan(stalkDist * 2.5);
 
-    // Verifica que todas as malhas de patas tubulares possuem coordenadas finitas (sem NaN)
+    // Testa sequência cinemática de arrastar o jogador até o ninho e relocação pós-sequestro
+    const dragVictim = webs.dragCorridorStart.clone();
+    const dragSpiderPos = new THREE.Vector3(
+      dragVictim.x,
+      1.38,
+      dragVictim.z + 2.15
+    );
+    spider.updateCinematicSequence(
+      0.016,
+      2.5,
+      'DRAGGING_TO_WEB',
+      0.5,
+      dragSpiderPos,
+      dragVictim,
+      dragVictim
+    );
+    expect(spider.currentState).toBe('CINEMATIC_SEQUENCE');
+
+    spider.relocateAwayAfterAbduction();
+    expect(spider.currentState).toBe('STALK_PATROL');
+    expect(spider.position.distanceTo(webs.lairCenter)).toBeGreaterThan(15);
+
+    // Verifica que todas as malhas de patas gigantes possuem coordenadas finitas e grande envergadura
     const spiderRoot = scene.getObjectByName('EvilCrawlingSpider')!;
     let checkedVertices = 0;
+    let minX = Infinity;
+    let maxX = -Infinity;
     spiderRoot.traverse((obj) => {
       if (obj instanceof THREE.Mesh) {
         const pos = obj.geometry.getAttribute('position');
         for (let k = 0; k < pos.count; k++) {
-          expect(Number.isFinite(pos.getX(k))).toBe(true);
-          expect(Number.isFinite(pos.getY(k))).toBe(true);
-          expect(Number.isFinite(pos.getZ(k))).toBe(true);
+          const x = pos.getX(k);
+          const y = pos.getY(k);
+          const z = pos.getZ(k);
+          expect(Number.isFinite(x)).toBe(true);
+          expect(Number.isFinite(y)).toBe(true);
+          expect(Number.isFinite(z)).toBe(true);
+          if (obj.parent === spiderRoot) {
+            minX = Math.min(minX, x);
+            maxX = Math.max(maxX, x);
+          }
           checkedVertices++;
         }
       }
     });
     expect(checkedVertices).toBeGreaterThan(700);
+    // Confirma que a envergadura horizontal das patas gigantes supera ~3.2m
+    expect(maxX - minX).toBeGreaterThan(3.2);
   });
 });
