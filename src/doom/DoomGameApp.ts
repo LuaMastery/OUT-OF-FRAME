@@ -40,9 +40,13 @@ export class DoomGameApp {
   private bobPhase = 0;
   private lastBobHalfCycle = 0;
 
-  private readonly eyeHeight = 1.62;
+  private readonly standingEyeHeight = 1.62;
+  private readonly crouchEyeHeight = 0.88;
   private readonly playerRadius = 0.52;
-  private readonly playerHeight = 1.8;
+  private readonly standingPlayerHeight = 1.8;
+  private readonly crouchPlayerHeight = 1.05;
+  private crouchAmount = 0;
+  private wasCrouching = false;
 
   private keys = new Set<string>();
   private engaged = false;
@@ -119,13 +123,41 @@ export class DoomGameApp {
       if (maybe && typeof maybe.catch === 'function') {
         maybe.catch(() => {});
       }
+      // Quando suportado pelo navegador, reserva teclas de movimento para evitar atalhos com Ctrl
+      const kb = (
+        navigator as Navigator & {
+          keyboard?: { lock?: (codes?: string[]) => Promise<void> };
+        }
+      ).keyboard;
+      kb?.lock?.(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ControlLeft'])?.catch(
+        () => {}
+      );
     } catch {
       // Fallback por setas ou arrasto permanece disponível
     }
   }
 
   private bindInput(): void {
+    const gameCodes = new Set([
+      'KeyW',
+      'KeyA',
+      'KeyS',
+      'KeyD',
+      'KeyF',
+      'ControlLeft',
+      'ControlRight',
+      'ShiftLeft',
+      'ShiftRight',
+      'ArrowUp',
+      'ArrowDown',
+      'ArrowLeft',
+      'ArrowRight',
+    ]);
+
     window.addEventListener('keydown', (e) => {
+      if (this.engaged && gameCodes.has(e.code)) {
+        e.preventDefault();
+      }
       this.keys.add(e.code);
       this.sound.unlock();
 
@@ -145,6 +177,13 @@ export class DoomGameApp {
     window.addEventListener('blur', () => {
       this.keys.clear();
       this.isDragging = false;
+    });
+
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) {
+        this.keys.clear();
+        this.isDragging = false;
+      }
     });
 
     document.addEventListener('pointerlockchange', () => {
@@ -256,8 +295,25 @@ export class DoomGameApp {
 
     if (wish.lengthSq() > 0) wish.normalize();
 
-    const sprinting = this.keys.has('ShiftLeft') || this.keys.has('ShiftRight');
-    const maxSpeed = sprinting ? 8.6 : 6.2;
+    // Agachamento contínuo segurando Ctrl (verifica espaço acima antes de levantar)
+    const holdingCtrl =
+      this.keys.has('ControlLeft') || this.keys.has('ControlRight');
+    const isCrouching =
+      holdingCtrl || (this.wasCrouching && !this.canStandUp());
+
+    if (this.engaged && isCrouching !== this.wasCrouching) {
+      this.sound.playCrouchMovement(isCrouching);
+      this.wasCrouching = isCrouching;
+    }
+
+    const crouchTarget = isCrouching ? 1 : 0;
+    this.crouchAmount +=
+      (crouchTarget - this.crouchAmount) * (1 - Math.exp(-12.5 * dt));
+
+    const sprinting =
+      !isCrouching &&
+      (this.keys.has('ShiftLeft') || this.keys.has('ShiftRight'));
+    const maxSpeed = isCrouching ? 2.65 : sprinting ? 8.6 : 6.2;
 
     const accel = wish.lengthSq() > 0 ? 18.0 : 12.0;
     const blend = 1 - Math.exp(-accel * dt);
@@ -270,11 +326,15 @@ export class DoomGameApp {
     this.position.x = intendedX;
     this.position.z = intendedZ;
 
+    const currentHeight =
+      this.standingPlayerHeight +
+      (this.crouchPlayerHeight - this.standingPlayerHeight) * this.crouchAmount;
+
     resolveCylinderWorldCollisions(
       this.position,
       this.velocity,
       this.playerRadius,
-      this.playerHeight,
+      currentHeight,
       this.colliders
     );
 
@@ -288,9 +348,16 @@ export class DoomGameApp {
 
     const planarSpeed = Math.hypot(this.velocity.x, this.velocity.z);
     let bobOffset = 0;
-    if (planarSpeed > 0.35) {
-      this.bobPhase += dt * (7.5 + planarSpeed * 0.75);
-      bobOffset = Math.sin(this.bobPhase) * 0.055 * Math.min(1, planarSpeed / 5.5);
+    if (planarSpeed > 0.28) {
+      const bobRate = isCrouching
+        ? 4.6 + planarSpeed * 0.9
+        : 7.5 + planarSpeed * 0.75;
+      const bobAmp = isCrouching ? 0.028 : 0.055;
+      this.bobPhase += dt * bobRate;
+      bobOffset =
+        Math.sin(this.bobPhase) *
+        bobAmp *
+        Math.min(1, planarSpeed / (isCrouching ? 2.65 : 5.5));
 
       const halfCycle = Math.floor(this.bobPhase / Math.PI);
       if (halfCycle !== this.lastBobHalfCycle) {
@@ -299,7 +366,8 @@ export class DoomGameApp {
         this.sound.playLabyrinthFootstep(
           halfCycle % 2 === 0,
           surface,
-          sprinting
+          sprinting,
+          isCrouching
         );
       }
     } else {
@@ -310,9 +378,15 @@ export class DoomGameApp {
     this.syncCamera(bobOffset);
 
     // Atualiza modelagem/animação da lanterna (F) e projeta seu feixe no mundo 3D
-    const fl = this.flashlight.update(dt, this.bobPhase, planarSpeed, () => {
-      this.sound.playFlashlightClick(true);
-    });
+    const fl = this.flashlight.update(
+      dt,
+      this.bobPhase,
+      planarSpeed,
+      () => {
+        this.sound.playFlashlightClick(true);
+      },
+      this.crouchAmount
+    );
 
     this.sharedUniforms.uFlashlightIntensity.value = fl.beamIntensity;
     if (fl.beamIntensity > 0.005) {
@@ -343,10 +417,33 @@ export class DoomGameApp {
     this.updateFlickeringLightsAndAudio();
   }
 
+  private canStandUp(): boolean {
+    const footY = this.position.y;
+    const crouchTop = footY + this.crouchPlayerHeight;
+    const standTop = footY + this.standingPlayerHeight;
+
+    for (const col of this.colliders) {
+      const b = col.box;
+      // Só impede levantar se houver obstáculo suspenso entre a cabeça agachada e a altura em pé
+      if (b.min.y < crouchTop - 0.02 || b.min.y >= standTop) continue;
+      const closestX = Math.max(b.min.x, Math.min(this.position.x, b.max.x));
+      const closestZ = Math.max(b.min.z, Math.min(this.position.z, b.max.z));
+      const dx = this.position.x - closestX;
+      const dz = this.position.z - closestZ;
+      if (dx * dx + dz * dz < this.playerRadius * this.playerRadius) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   private syncCamera(bobOffset: number): void {
+    const currentEyeHeight =
+      this.standingEyeHeight +
+      (this.crouchEyeHeight - this.standingEyeHeight) * this.crouchAmount;
     this.camera.position.set(
       this.position.x,
-      this.eyeHeight + bobOffset,
+      currentEyeHeight + bobOffset,
       this.position.z
     );
     const euler = new THREE.Euler(this.pitch, this.yaw, 0, 'YXZ');

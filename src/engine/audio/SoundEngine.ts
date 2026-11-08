@@ -34,6 +34,7 @@ export class SoundEngine {
   private lampBuzzPanner: StereoPannerNode | null = null;
   private pulseTimerId = 0;
   private lastWallThudMs = 0;
+  private lastCrouchMs = 0;
   private lastSparkMs = 0;
 
   unlock(): void {
@@ -861,7 +862,8 @@ export class SoundEngine {
   playLabyrinthFootstep(
     altFoot: boolean,
     surface: FloorMaterialKind,
-    sprinting: boolean
+    sprinting: boolean,
+    crouching = false
   ): void {
     if (
       !this.isRunning() ||
@@ -873,15 +875,18 @@ export class SoundEngine {
     }
     const now = this.ctx.currentTime;
     const pitchJitter = (altFoot ? 1.04 : 0.96) * (0.97 + Math.random() * 0.06);
-    const volScale = sprinting ? 1.22 : 1.0;
+    const volScale = crouching ? 0.42 : sprinting ? 1.22 : 1.0;
 
-    // 1. Impacto grave da bota no piso
+    // 1. Impacto grave da bota no piso (mais abafado ao andar agachado)
     const heel = this.ctx.createOscillator();
     const heelGain = this.ctx.createGain();
     heel.type = 'sine';
-    const baseHz = (surface === 'tech' ? 96 : 78) * pitchJitter;
+    const baseHz =
+      (surface === 'tech' ? 96 : 78) *
+      (crouching ? 0.84 : 1.0) *
+      pitchJitter;
     heel.frequency.setValueAtTime(baseHz, now);
-    heel.frequency.exponentialRampToValueAtTime(32, now + 0.085);
+    heel.frequency.exponentialRampToValueAtTime(28, now + 0.085);
 
     heelGain.gain.setValueAtTime(0.16 * volScale, now);
     heelGain.gain.exponentialRampToValueAtTime(0.0008, now + 0.09);
@@ -892,8 +897,11 @@ export class SoundEngine {
     heel.start(now);
     heel.stop(now + 0.095);
 
-    // 2. Textura granular 11kHz (raspado de cascalho/pedra vs estalo de placa metálica)
-    const scrapeFreq = (surface === 'tech' ? 1450 : 880) * pitchJitter;
+    // 2. Textura granular 11kHz (suave e controlada quando agachado)
+    const scrapeFreq =
+      (surface === 'tech' ? 1450 : 880) *
+      (crouching ? 0.68 : 1.0) *
+      pitchJitter;
     const scrapeQ = surface === 'tech' ? 2.6 : 1.3;
     this.triggerFilteredNoise(
       this.worldDryBus,
@@ -903,6 +911,34 @@ export class SoundEngine {
       scrapeQ,
       0.13 * volScale,
       true,
+      this.reverbSend
+    );
+  }
+
+  /** Som sutil de roupa/joelho ao agachar ou levantar (Tecla Ctrl) */
+  playCrouchMovement(crouchingDown: boolean): void {
+    const nowMs = performance.now();
+    if (nowMs - this.lastCrouchMs < 160) return;
+    this.lastCrouchMs = nowMs;
+
+    if (
+      !this.isRunning() ||
+      !this.ctx ||
+      !this.worldDryBus ||
+      !this.reverbSend
+    ) {
+      return;
+    }
+    const now = this.ctx.currentTime;
+
+    this.triggerFilteredNoise(
+      this.worldDryBus,
+      now,
+      0.095,
+      crouchingDown ? 420 : 540,
+      1.15,
+      0.055,
+      false,
       this.reverbSend
     );
   }

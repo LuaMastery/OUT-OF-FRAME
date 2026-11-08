@@ -228,7 +228,8 @@ export class DoomFlashlight {
     dt: number,
     bobPhase: number,
     planarSpeed: number,
-    onSwitchClickOn: () => void
+    onSwitchClickOn: () => void,
+    crouchAmount = 0
   ): {
     beamIntensity: number;
     aimYawOffset: number;
@@ -289,19 +290,21 @@ export class DoomFlashlight {
     this.swayX += (0 - this.swayX) * relax;
     this.swayY += (0 - this.swayY) * relax;
 
-    // Balanço de caminhada em 8 (Lissajous clássico de FPS)
+    // Balanço de caminhada em 8 (mais contido e firme ao andar agachado)
     const moveFactor = Math.min(1, planarSpeed / 6.0);
-    const walkX = Math.cos(bobPhase * 0.5) * 0.014 * moveFactor;
-    const walkY = Math.abs(Math.sin(bobPhase * 0.5)) * -0.016 * moveFactor;
+    const bobScale = 1 - crouchAmount * 0.35;
+    const walkX = Math.cos(bobPhase * 0.5) * 0.014 * moveFactor * bobScale;
+    const walkY =
+      Math.abs(Math.sin(bobPhase * 0.5)) * -0.016 * moveFactor * bobScale;
 
     // Posição na mão direita: sobe de baixo/direita até a posição de empunhadura
     const stowedX = 0.34;
     const stowedY = -0.52;
     const stowedZ = -0.26;
 
-    const heldX = 0.235;
-    const heldY = -0.195;
-    const heldZ = -0.41;
+    const heldX = 0.235 - crouchAmount * 0.018;
+    const heldY = -0.195 + crouchAmount * 0.014;
+    const heldZ = -0.41 + crouchAmount * 0.018;
 
     this.rootGroup.position.set(
       stowedX + (heldX - stowedX) * eased + walkX + this.swayX,
