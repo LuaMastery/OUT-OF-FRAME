@@ -1400,14 +1400,20 @@ export class DoomAstronaut {
     chestShell.position.set(0, 0.28, 0);
     this.upperChestGroup.add(chestShell);
 
-    // Alças escuras do arnês PLSS cruzando os ombros
+    // Alças táticas do arnês PLSS cruzando os ombros com fivelas metálicas de peito
     for (const s of [-1, 1]) {
       const strap = new THREE.Mesh(
-        new THREE.BoxGeometry(0.054, 0.41, 0.195),
+        new THREE.BoxGeometry(0.054, 0.415, 0.205),
         this.materials.suitDarkPatch
       );
-      strap.position.set(s * 0.125, 0.285, 0.005);
-      this.upperChestGroup.add(strap);
+      strap.position.set(s * 0.128, 0.286, 0.008);
+
+      const strapBuckle = new THREE.Mesh(
+        new THREE.BoxGeometry(0.06, 0.028, 0.024),
+        this.materials.machinedAlloy
+      );
+      strapBuckle.position.set(s * 0.128, 0.385, -0.095);
+      this.upperChestGroup.add(strap, strapBuckle);
     }
 
     // Módulo de Controle Peitoral (DCM) + 2 mangueiras umbilicais corrugadas
@@ -1436,40 +1442,256 @@ export class DoomAstronaut {
       this.upperChestGroup.add(hosePort, hoseArc);
     }
 
-    // Mochila de Suporte de Vida (PLSS) nas costas (+Z)
+    // Mochila Tática de Suporte de Vida EVA (PLSS) acoplada rente às costas (+Z)
     this.plssBackpack.name = 'AstronautPLSSBackpack';
-    this.plssBackpack.position.set(0, 0.29, 0.22);
+    this.plssBackpack.position.set(0, 0.285, 0.174);
+    this.plssBackpack.rotation.x = -0.025;
     this.torsoGroup.add(this.plssBackpack);
 
-    const plssCasing = new THREE.Mesh(
-      new THREE.BoxGeometry(0.32, 0.42, 0.15),
-      this.materials.suitFabric
-    );
-    const plssTopRadiator = new THREE.Mesh(
-      new THREE.BoxGeometry(0.29, 0.065, 0.16),
-      this.materials.darkSteel
-    );
-    plssTopRadiator.position.set(0, 0.22, 0);
-    const plssBottomBattery = new THREE.Mesh(
-      new THREE.BoxGeometry(0.3, 0.09, 0.158),
+    // 1) Sela anatômica acolchoada profunda que abraça toda a curvatura dorsal elíptica sem frestas laterais!
+    const plssBackSaddle = new THREE.Mesh(
+      new THREE.BoxGeometry(0.286, 0.408, 0.096),
       this.materials.suitDarkPatch
     );
-    plssBottomBattery.position.set(0, -0.18, 0);
-    this.plssBackpack.add(plssCasing, plssTopRadiator, plssBottomBattery);
+    plssBackSaddle.position.set(0, 0.0, -0.038);
 
-    for (const ts of [-1, 1]) {
-      const o2Tank = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.056, 0.056, 0.32, 10),
+    // Mangueira corrugada superior de O2 alimentando o colar pressurizado do capacete
+    for (const hs of [-1, 1]) {
+      const helmetFeedHose = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.016, 0.016, 0.105, 8),
+        this.materials.ribbedJoint
+      );
+      helmetFeedHose.position.set(hs * 0.068, 0.232, -0.032);
+      helmetFeedHose.rotation.set(-0.58, 0, hs * 0.14);
+      this.plssBackpack.add(helmetFeedHose);
+    }
+
+    // 2) Chassi blindado principal camuflado + carenagens laterais chanfradas
+    const plssCoreChassis = new THREE.Mesh(
+      new THREE.BoxGeometry(0.296, 0.386, 0.104),
+      this.materials.astroCamo
+    );
+    plssCoreChassis.position.set(0, 0.006, 0.036);
+
+    for (const ss of [-1, 1]) {
+      const sideFairing = new THREE.Mesh(
+        new THREE.BoxGeometry(0.048, 0.356, 0.098),
+        this.materials.astroCamo
+      );
+      sideFairing.position.set(ss * 0.152, 0.006, 0.026);
+      sideFairing.rotation.y = ss * 0.28;
+
+      // Fitas laterais de ancoragem ligando a base da mochila ao cinto tático
+      const waistTieStrap = new THREE.Mesh(
+        new THREE.BoxGeometry(0.028, 0.038, 0.135),
+        this.materials.suitDarkPatch
+      );
+      waistTieStrap.position.set(ss * 0.166, -0.165, -0.038);
+      waistTieStrap.rotation.y = ss * 0.18;
+
+      const topShoulderAnchor = new THREE.Mesh(
+        new THREE.BoxGeometry(0.058, 0.034, 0.068),
         this.materials.machinedAlloy
       );
-      o2Tank.position.set(ts * 0.088, 0.01, 0.058);
-      const tankBand = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.059, 0.059, 0.03, 10),
-        this.materials.missionOrange
-      );
-      tankBand.position.set(ts * 0.088, 0.08, 0.058);
-      this.plssBackpack.add(o2Tank, tankBand);
+      topShoulderAnchor.position.set(ss * 0.126, 0.208, -0.022);
+
+      this.plssBackpack.add(sideFairing, waistTieStrap, topShoulderAnchor);
     }
+
+    // 3) Coifa superior do sublimador térmico + aletas do radiador + alça de resgate EVA
+    const plssTopHood = new THREE.Mesh(
+      new THREE.BoxGeometry(0.312, 0.062, 0.118),
+      this.materials.machinedAlloy
+    );
+    plssTopHood.position.set(0, 0.214, 0.036);
+
+    const plssTopCap = new THREE.Mesh(
+      new THREE.BoxGeometry(0.278, 0.022, 0.098),
+      this.materials.astroCamo
+    );
+    plssTopCap.position.set(0, 0.254, 0.032);
+
+    const radiatorRecess = new THREE.Mesh(
+      new THREE.BoxGeometry(0.236, 0.042, 0.018),
+      this.materials.suitDarkPatch
+    );
+    radiatorRecess.position.set(0, 0.214, 0.092);
+
+    for (let fin = 0; fin < 5; fin++) {
+      const finMesh = new THREE.Mesh(
+        new THREE.BoxGeometry(0.012, 0.034, 0.022),
+        this.materials.darkSteel
+      );
+      finMesh.position.set(-0.088 + fin * 0.044, 0.214, 0.096);
+      this.plssBackpack.add(finMesh);
+    }
+
+    // Alça superior rígida de extração/resgate em gravidade zero
+    const grabBarCross = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.01, 0.01, 0.148, 8),
+      this.materials.missionOrange
+    );
+    grabBarCross.rotation.z = Math.PI * 0.5;
+    grabBarCross.position.set(0, 0.282, 0.048);
+
+    for (const gs of [-1, 1]) {
+      const grabPost = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.01, 0.012, 0.032, 8),
+        this.materials.darkSteel
+      );
+      grabPost.position.set(gs * 0.068, 0.268, 0.048);
+      this.plssBackpack.add(grabPost);
+    }
+
+    // 4) Módulo inferior de baterias / filtro de CO2 LiOH com travas industriais
+    const plssBottomBattery = new THREE.Mesh(
+      new THREE.BoxGeometry(0.306, 0.078, 0.118),
+      this.materials.darkSteel
+    );
+    plssBottomBattery.position.set(0, -0.204, 0.036);
+
+    for (const bs of [-1, 1]) {
+      const batteryLatch = new THREE.Mesh(
+        new THREE.BoxGeometry(0.046, 0.048, 0.018),
+        this.materials.machinedAlloy
+      );
+      batteryLatch.position.set(bs * 0.096, -0.204, 0.096);
+      this.plssBackpack.add(batteryLatch);
+    }
+
+    // 5) Cilindros gêmeos pressurizados (O2 azul à esquerda / reserva vermelha à direita) com calotas esféricas, braçadeiras e coletor de válvulas
+    const manifoldPipe = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.011, 0.011, 0.196, 8),
+      this.materials.darkSteel
+    );
+    manifoldPipe.rotation.z = Math.PI * 0.5;
+    manifoldPipe.position.set(0, 0.162, 0.096);
+
+    for (const ts of [-1, 1]) {
+      const tx = ts * 0.096;
+      const tz = 0.096;
+
+      const o2TankBody = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.047, 0.047, 0.224, 12),
+        this.materials.machinedAlloy
+      );
+      o2TankBody.position.set(tx, -0.012, tz);
+
+      const tankTopDome = new THREE.Mesh(
+        new THREE.SphereGeometry(0.047, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.52),
+        this.materials.machinedAlloy
+      );
+      tankTopDome.position.set(tx, 0.1, tz);
+
+      const tankBotDome = new THREE.Mesh(
+        new THREE.SphereGeometry(
+          0.047,
+          12,
+          8,
+          0,
+          Math.PI * 2,
+          Math.PI * 0.48,
+          Math.PI * 0.52
+        ),
+        this.materials.machinedAlloy
+      );
+      tankBotDome.position.set(tx, -0.124, tz);
+
+      const tankColorBand = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.0495, 0.0495, 0.028, 12),
+        ts < 0 ? this.materials.anodizedCobalt : this.materials.anodizedCrimson
+      );
+      tankColorBand.position.set(tx, 0.068, tz);
+
+      for (const clampY of [0.022, -0.068]) {
+        const tankClamp = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.051, 0.051, 0.02, 12),
+          this.materials.darkSteel
+        );
+        tankClamp.position.set(tx, clampY, tz);
+        this.plssBackpack.add(tankClamp);
+      }
+
+      const valveNeck = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.016, 0.02, 0.032, 8),
+        this.materials.darkSteel
+      );
+      valveNeck.position.set(tx, 0.152, tz);
+
+      // Mangueiras umbilicais inferiores contornando os flancos rumo ao peito
+      const sideUmbilical = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.017, 0.017, 0.165, 8),
+        this.materials.ribbedJoint
+      );
+      sideUmbilical.position.set(ts * 0.152, -0.148, -0.012);
+      sideUmbilical.rotation.set(Math.PI * 0.38, 0, ts * 0.18);
+
+      this.plssBackpack.add(
+        o2TankBody,
+        tankTopDome,
+        tankBotDome,
+        tankColorBand,
+        valveNeck,
+        sideUmbilical
+      );
+    }
+
+    // 6) Coluna central traseira de telemetria com manômetro iluminado e luz de identificação Co-op
+    const spinePod = new THREE.Mesh(
+      new THREE.BoxGeometry(0.076, 0.228, 0.038),
+      this.materials.suitDarkPatch
+    );
+    spinePod.position.set(0, -0.01, 0.09);
+
+    const rearGaugeBezel = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.029, 0.029, 0.014, 12),
+      this.materials.darkSteel
+    );
+    rearGaugeBezel.rotation.x = Math.PI * 0.5;
+    rearGaugeBezel.position.set(0, 0.048, 0.108);
+
+    const rearGaugeFace = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.024, 0.024, 0.016, 12),
+      this.materials.gaugeDial
+    );
+    rearGaugeFace.rotation.x = Math.PI * 0.5;
+    rearGaugeFace.position.set(0, 0.048, 0.109);
+
+    const statusPipTop = new THREE.Mesh(
+      new THREE.BoxGeometry(0.044, 0.016, 0.012),
+      this.materials.missionOrange
+    );
+    statusPipTop.position.set(0, -0.022, 0.108);
+
+    const statusPipBot = new THREE.Mesh(
+      new THREE.BoxGeometry(0.044, 0.016, 0.012),
+      this.materials.anodizedCobalt
+    );
+    statusPipBot.position.set(0, -0.048, 0.108);
+
+    const purgePort = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.015, 0.018, 0.02, 8),
+      this.materials.machinedAlloy
+    );
+    purgePort.rotation.x = Math.PI * 0.5;
+    purgePort.position.set(0, -0.088, 0.108);
+
+    this.plssBackpack.add(
+      plssBackSaddle,
+      plssCoreChassis,
+      plssTopHood,
+      plssTopCap,
+      radiatorRecess,
+      grabBarCross,
+      plssBottomBattery,
+      manifoldPipe,
+      spinePod,
+      rearGaugeBezel,
+      rearGaugeFace,
+      statusPipTop,
+      statusPipBot,
+      purgePort
+    );
 
     // 3. COLAR DE PESCOÇO SELADO E CAPACETE ESPACIAL EVA TÁTICO COM VISEIRA DOURADA MOLDURADA
     const collarYoke = new THREE.Mesh(
