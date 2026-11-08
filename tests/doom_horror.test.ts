@@ -667,6 +667,7 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
     astronaut.setFirstPersonMode(false);
     expect(astronaut.root.visible).toBe(true);
     expect(astronaut.headGroup.visible).toBe(true);
+    expect(astronaut.headGroup.children.length).toBeGreaterThanOrEqual(16);
     expect(astronaut.plssBackpack.visible).toBe(true);
     expect(astronaut.leftArm.root.visible).toBe(true);
     expect(astronaut.rightArm.root.visible).toBe(true);

@@ -273,25 +273,45 @@ function createEvaRibbedJointTexture(): THREE.DataTexture {
 }
 
 /**
- * Viseira solar curva banhada a ouro do capacete espacial EVA.
+ * Viseira solar curva banhada a ouro 24k do capacete espacial EVA:
+ * - Vinheta escura nas bordas para encaixe limpo na vedação de borracha;
+ * - Reflexo curvo duplo de luminária de corredor + brilho especular metálico nítido.
  */
 function createEvaGoldVisorTexture(): THREE.DataTexture {
   const size = 64;
   const data = new Uint8Array(size * size * 4);
 
   for (let y = 0; y < size; y++) {
-    const ny = (y - 32) / 32;
+    // y=0 é a base da esfera em UV padrão Three.js, y=63 é o topo
+    const ny = (y - 31.5) / 31.5;
     for (let x = 0; x < size; x++) {
-      const nx = (x - 32) / 32;
+      const nx = (x - 31.5) / 31.5;
       const i = (y * size + x) * 4;
-      const sphere = Math.max(0, 1 - Math.hypot(nx * 0.92, ny * 0.95));
-      const specDiag = Math.exp(-Math.pow((nx + ny * 0.65 + 0.28) / 0.22, 2));
-      const horizon = Math.abs(ny + 0.05) < 0.08 ? -18 : 0;
-      const scan = (y & 1) === 0 ? 4 : -3;
 
-      const r = 46 + sphere * 145 + specDiag * 72 + horizon + scan;
-      const g = 30 + sphere * 102 + specDiag * 58 + horizon * 0.7 + scan;
-      const b = 14 + sphere * 36 + specDiag * 30 + scan;
+      const radial = Math.hypot(nx * 0.96, ny * 1.02);
+      const dome = Math.max(0, 1 - radial * 0.88);
+      // Vinheta suave nas bordas para integrar com o aro de vedação escuro
+      const rimVignette = Math.max(0.28, 1 - Math.pow(Math.max(0, radial - 0.55) / 0.55, 1.8) * 0.65);
+
+      // Reflexo curvo principal (arco superior esquerdo -> centro)
+      const arcY = ny - (0.24 - nx * nx * 0.28);
+      const primarySpec = Math.exp(-Math.pow(arcY / 0.13, 2)) * Math.exp(-Math.pow((nx + 0.18) / 0.58, 2));
+
+      // Segundo filete fino de reflexo metálico
+      const streak = Math.exp(-Math.pow((nx * 0.82 - ny * 0.52 + 0.26) / 0.09, 2)) * 0.55;
+
+      // Sombra sutil do horizonte interno da viseira
+      const horizonDip = Math.exp(-Math.pow((ny + 0.16) / 0.12, 2)) * 24;
+      const scan = (y & 1) === 0 ? 3 : -2;
+
+      const baseR = (38 + dome * 146 - horizonDip) * rimVignette;
+      const baseG = (23 + dome * 98 - horizonDip * 0.72) * rimVignette;
+      const baseB = (9 + dome * 28 - horizonDip * 0.3) * rimVignette;
+
+      const specBoost = primarySpec * 88 + streak * 64;
+      const r = baseR + specBoost + scan;
+      const g = baseG + specBoost * 0.82 + scan;
+      const b = baseB + specBoost * 0.42 + scan * 0.5;
 
       data[i] = clampByte(r);
       data[i + 1] = clampByte(g);
@@ -1451,76 +1471,294 @@ export class DoomAstronaut {
       this.plssBackpack.add(o2Tank, tankBand);
     }
 
-    // 3. COLAR DE PESCOÇO SELADO E CAPACETE ESPACIAL COM VISEIRA DOURADA
-    const neckDisconnectRing = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.138, 0.146, 0.036, 14),
+    // 3. COLAR DE PESCOÇO SELADO E CAPACETE ESPACIAL EVA TÁTICO COM VISEIRA DOURADA MOLDURADA
+    const collarYoke = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.152, 0.182, 0.042, 14),
       this.materials.machinedAlloy
     );
-    neckDisconnectRing.position.set(0, 0.505, 0);
-    const neckSealPlate = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.132, 0.134, 0.018, 14),
-      this.materials.suitDarkPatch
+    collarYoke.scale.set(1.04, 1, 0.86);
+    collarYoke.position.set(0, 0.496, 0);
+
+    const neckDisconnectRing = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.138, 0.144, 0.026, 14),
+      this.materials.darkSteel
     );
-    neckSealPlate.position.set(0, 0.516, 0);
-    this.upperChestGroup.add(neckDisconnectRing, neckSealPlate);
+    neckDisconnectRing.scale.set(1.0, 1, 0.94);
+    neckDisconnectRing.position.set(0, 0.522, 0);
+
+    const neckBellows = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.114, 0.122, 0.056, 12),
+      this.materials.ribbedJoint
+    );
+    neckBellows.position.set(0, 0.546, 0);
+
+    this.upperChestGroup.add(collarYoke, neckDisconnectRing, neckBellows);
+
+    for (const ls of [-1, 1]) {
+      const collarLatch = new THREE.Mesh(
+        new THREE.BoxGeometry(0.028, 0.024, 0.036),
+        ls < 0 ? this.materials.anodizedCobalt : this.materials.anodizedCrimson
+      );
+      collarLatch.position.set(ls * 0.136, 0.508, -0.038);
+      this.upperChestGroup.add(collarLatch);
+    }
 
     this.headGroup.name = 'AstronautHelmet';
-    this.headGroup.position.set(0, 0.64, 0);
+    this.headGroup.position.set(0, 0.628, 0);
     this.torsoGroup.add(this.headGroup);
 
-    const helmetShell = new THREE.Mesh(
-      new THREE.SphereGeometry(0.168, 16, 14),
-      this.materials.suitFabric
+    // Casco interno escuro de vedação pressurizada (cria o aro de borracha contínua ao redor de toda a viseira)
+    const innerPressureDome = new THREE.Mesh(
+      new THREE.SphereGeometry(0.149, 18, 14),
+      this.materials.suitDarkPatch
     );
-    helmetShell.scale.set(0.96, 1.04, 1.02);
+    innerPressureDome.scale.set(0.97, 1.02, 1.02);
+    innerPressureDome.position.set(0, 0.008, -0.004);
 
+    // Casco externo blindado EVA (envolve bochechas, têmporas e nuca em curva contínua sem invadir a viseira)
+    const helmetSideBackShell = new THREE.Mesh(
+      new THREE.SphereGeometry(
+        0.16,
+        20,
+        14,
+        -Math.PI * 0.245,
+        Math.PI * 1.49,
+        Math.PI * 0.06,
+        Math.PI * 0.82
+      ),
+      this.materials.astroCamo
+    );
+    helmetSideBackShell.scale.set(0.98, 1.03, 1.03);
+    helmetSideBackShell.position.set(0, 0.008, 0);
+
+    // Calota craniana superior curva + pala solar EVVA limpa seguindo o contorno esférico do capacete
+    const helmetCrownCap = new THREE.Mesh(
+      new THREE.SphereGeometry(
+        0.1605,
+        20,
+        8,
+        0,
+        Math.PI * 2,
+        0,
+        Math.PI * 0.305
+      ),
+      this.materials.astroCamo
+    );
+    helmetCrownCap.scale.set(0.98, 1.03, 1.03);
+    helmetCrownCap.position.set(0, 0.008, 0);
+
+    const visorSunHood = new THREE.Mesh(
+      new THREE.SphereGeometry(
+        0.165,
+        18,
+        6,
+        -Math.PI * 0.8,
+        Math.PI * 0.6,
+        Math.PI * 0.14,
+        Math.PI * 0.172
+      ),
+      this.materials.astroCamo
+    );
+    visorSunHood.scale.set(0.98, 1.03, 1.03);
+    visorSunHood.position.set(0, 0.01, -0.003);
+
+    // Placa frontal baixa embutida na pala (perfil rente ao domo, sem ressaltar acima da silhueta!)
+    const browBadgePlate = new THREE.Mesh(
+      new THREE.SphereGeometry(
+        0.167,
+        10,
+        4,
+        -Math.PI * 0.58,
+        Math.PI * 0.16,
+        Math.PI * 0.19,
+        Math.PI * 0.095
+      ),
+      this.materials.machinedAlloy
+    );
+    browBadgePlate.scale.set(0.98, 1.03, 1.03);
+    browBadgePlate.position.set(0, 0.01, -0.004);
+
+    // Frisos escuros curvos de vedação completa 360° (superior, inferior e laterais da viseira)
+    const browSealTrim = new THREE.Mesh(
+      new THREE.SphereGeometry(
+        0.162,
+        18,
+        4,
+        -Math.PI * 0.788,
+        Math.PI * 0.576,
+        Math.PI * 0.302,
+        Math.PI * 0.038
+      ),
+      this.materials.darkSteel
+    );
+    browSealTrim.scale.set(0.98, 1.03, 1.03);
+    browSealTrim.position.set(0, 0.008, -0.004);
+
+    const chinSealTrim = new THREE.Mesh(
+      new THREE.SphereGeometry(
+        0.162,
+        18,
+        4,
+        -Math.PI * 0.788,
+        Math.PI * 0.576,
+        Math.PI * 0.658,
+        Math.PI * 0.038
+      ),
+      this.materials.darkSteel
+    );
+    chinSealTrim.scale.set(0.98, 1.03, 1.03);
+    chinSealTrim.position.set(0, 0.008, -0.004);
+
+    for (const phiSide of [-Math.PI * 0.788, -Math.PI * 0.24]) {
+      const sideSealTrim = new THREE.Mesh(
+        new THREE.SphereGeometry(
+          0.1618,
+          4,
+          12,
+          phiSide,
+          Math.PI * 0.028,
+          Math.PI * 0.302,
+          Math.PI * 0.394
+        ),
+        this.materials.darkSteel
+      );
+      sideSealTrim.scale.set(0.98, 1.03, 1.03);
+      sideSealTrim.position.set(0, 0.008, -0.004);
+      this.headGroup.add(sideSealTrim);
+    }
+
+    const visorPullTab = new THREE.Mesh(
+      new THREE.BoxGeometry(0.044, 0.011, 0.014),
+      this.materials.machinedAlloy
+    );
+    visorPullTab.position.set(0, 0.091, -0.141);
+    visorPullTab.rotation.x = -0.34;
+
+    // Queixeira curva pressurizada contínua (acompanha a esfera do capacete sem blocos quadrados nas bochechas!)
+    const jawCurvedShell = new THREE.Mesh(
+      new THREE.SphereGeometry(
+        0.1615,
+        18,
+        6,
+        -Math.PI * 0.81,
+        Math.PI * 0.62,
+        Math.PI * 0.688,
+        Math.PI * 0.195
+      ),
+      this.materials.astroCamo
+    );
+    jawCurvedShell.scale.set(0.98, 1.03, 1.03);
+    jawCurvedShell.position.set(0, 0.008, -0.002);
+
+    // Viseira solar curva banhada a ouro 24k perfeitamente emoldurada pela abertura frontal
     const goldVisor = new THREE.Mesh(
       new THREE.SphereGeometry(
-        0.164,
+        0.156,
+        20,
         14,
-        12,
-        -Math.PI * 0.84,
-        Math.PI * 0.68,
-        Math.PI * 0.22,
-        Math.PI * 0.5
+        -Math.PI * 0.765,
+        Math.PI * 0.53,
+        Math.PI * 0.332,
+        Math.PI * 0.334
       ),
       this.materials.goldVisor
     );
-    goldVisor.position.set(0, 0.01, -0.024);
+    goldVisor.scale.set(0.97, 1.01, 1.035);
+    goldVisor.position.set(0, 0.008, -0.008);
 
-    const chinBezel = new THREE.Mesh(
-      new THREE.BoxGeometry(0.22, 0.034, 0.14),
+    // Anel de base do capacete + respirador/vocoder frontal discreto inclinado junto ao queixo
+    const helmetBaseSkirt = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.146, 0.14, 0.044, 16),
       this.materials.darkSteel
     );
-    chinBezel.position.set(0, -0.095, -0.072);
+    helmetBaseSkirt.scale.set(0.98, 1, 0.98);
+    helmetBaseSkirt.position.set(0, -0.118, 0.004);
 
-    const browShroud = new THREE.Mesh(
-      new THREE.BoxGeometry(0.24, 0.038, 0.16),
+    const chinVocoderPlate = new THREE.Mesh(
+      new THREE.BoxGeometry(0.088, 0.034, 0.028),
       this.materials.machinedAlloy
     );
-    browShroud.position.set(0, 0.125, -0.055);
+    chinVocoderPlate.position.set(0, -0.098, -0.124);
+    chinVocoderPlate.rotation.x = 0.36;
 
+    const chinVocoderGrille = new THREE.Mesh(
+      new THREE.BoxGeometry(0.056, 0.015, 0.01),
+      this.materials.suitDarkPatch
+    );
+    chinVocoderGrille.position.set(0, -0.099, -0.137);
+    chinVocoderGrille.rotation.x = 0.36;
+
+    // Placa traseira occipital de ventilação EVA (+Z)
+    const rearOccipitalPlate = new THREE.Mesh(
+      new THREE.BoxGeometry(0.136, 0.098, 0.036),
+      this.materials.machinedAlloy
+    );
+    rearOccipitalPlate.position.set(0, -0.012, 0.152);
+    rearOccipitalPlate.rotation.x = 0.14;
+
+    // Pivôs auriculares laterais da viseira + módulo de rádio/antena (direita) + lanterna tática lateral (esquerda)
     for (const es of [-1, 1]) {
-      const earPod = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.044, 0.044, 0.032, 10),
+      const earHinge = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.04, 0.044, 0.022, 12),
         this.materials.darkSteel
       );
-      earPod.rotation.z = Math.PI * 0.5;
-      earPod.position.set(es * 0.164, 0.005, 0.01);
-      this.headGroup.add(earPod);
+      earHinge.rotation.z = Math.PI * 0.5;
+      earHinge.position.set(es * 0.154, 0.008, -0.004);
+
+      const earDialCap = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.023, 0.027, 0.012, 10),
+        this.materials.machinedAlloy
+      );
+      earDialCap.rotation.z = Math.PI * 0.5;
+      earDialCap.position.set(es * 0.165, 0.008, -0.004);
+
+      this.headGroup.add(earHinge, earDialCap);
     }
 
+    const commTransceiver = new THREE.Mesh(
+      new THREE.BoxGeometry(0.024, 0.048, 0.044),
+      this.materials.darkSteel
+    );
+    commTransceiver.position.set(0.154, 0.044, 0.008);
+
     const commAntenna = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.005, 0.008, 0.14, 6),
+      new THREE.CylinderGeometry(0.0045, 0.0075, 0.112, 6),
       this.materials.machinedAlloy
     );
-    commAntenna.position.set(0.172, 0.095, 0.02);
+    commAntenna.position.set(0.157, 0.112, 0.012);
+    commAntenna.rotation.z = -0.05;
+
+    const sideLampHousing = new THREE.Mesh(
+      new THREE.BoxGeometry(0.025, 0.032, 0.068),
+      this.materials.machinedAlloy
+    );
+    sideLampHousing.position.set(-0.156, 0.038, -0.016);
+
+    const sideLampLens = new THREE.Mesh(
+      new THREE.BoxGeometry(0.017, 0.021, 0.01),
+      this.materials.gaugeDial
+    );
+    sideLampLens.position.set(-0.157, 0.038, -0.051);
+
     this.headGroup.add(
-      helmetShell,
+      innerPressureDome,
+      helmetSideBackShell,
+      helmetCrownCap,
+      visorSunHood,
+      browBadgePlate,
+      browSealTrim,
+      chinSealTrim,
+      visorPullTab,
+      jawCurvedShell,
       goldVisor,
-      chinBezel,
-      browShroud,
-      commAntenna
+      helmetBaseSkirt,
+      chinVocoderPlate,
+      chinVocoderGrille,
+      rearOccipitalPlate,
+      commTransceiver,
+      commAntenna,
+      sideLampHousing,
+      sideLampLens
     );
 
     // 4. BRAÇOS ORIGINAIS DO ASTRONAUTA MARCADOS COMO ATIVOS (`AstronautLeftArm` & `AstronautRightArm`)
@@ -1682,12 +1920,13 @@ export class DoomAstronaut {
     const crouchHipBend = crouchAmount * 0.72;
     const crouchKneeBend = crouchAmount * 1.12;
 
+    const torsoLeanForward = -(crouchAmount * 0.16 + stride * 0.05);
     this.bodyPivot.position.set(0, -crouchAmount * 0.44, 0);
     this.bodyPivot.rotation.set(0, 0, 0);
     this.hipsGroup.position.set(0, 0.85, 0);
-    this.torsoGroup.rotation.set(crouchAmount * 0.14 + stride * 0.06, 0, 0);
+    this.torsoGroup.rotation.set(torsoLeanForward, 0, 0);
     this.headGroup.rotation.set(
-      Math.max(-0.55, Math.min(0.55, pitch * 0.65)),
+      Math.max(-0.52, Math.min(0.52, pitch * 0.62)) - torsoLeanForward * 0.8,
       0,
       0
     );
