@@ -14,11 +14,17 @@ import {
   buildDoomLabyrinth,
   gridCellToWorld,
   isSolidCell,
+  isStoneSectorWorld,
   LABYRINTH_MAP,
+  LAIR_GRID_CELL,
+  syncNearestDoomLightsToUniforms,
   WALL_HEIGHT,
   worldToGridCell,
 } from '../src/doom/DoomMazeBuilder';
-import { createDoomSharedUniforms } from '../src/doom/DoomShader';
+import {
+  createDoomSharedUniforms,
+  MAX_DOOM_LIGHTS,
+} from '../src/doom/DoomShader';
 import { DoomSpider } from '../src/doom/DoomSpider';
 import { DoomSpiderWebManager } from '../src/doom/DoomSpiderWebs';
 import { createDoomTextures } from '../src/doom/DoomTextures';
@@ -772,8 +778,111 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
       }
     }
 
-    expect(testedCells).toBeGreaterThan(95);
-    expect(verifiedAnchorPoints).toBeGreaterThan(2500);
+    expect(testedCells).toBeGreaterThan(400);
+    expect(verifiedAnchorPoints).toBeGreaterThan(10000);
+  });
+
+  it('expande o complexo subterrâneo para escala 29x29 multi-setores 100% interligado com iluminação dinâmica e 24 caixotes', () => {
+    expect(LABYRINTH_MAP.length).toBe(29);
+    for (const row of LABYRINTH_MAP) {
+      expect(row.length).toBe(29);
+    }
+
+    const scene = new THREE.Scene();
+    const shared = createDoomSharedUniforms();
+    const textures = createDoomTextures();
+    const maze = buildDoomLabyrinth(scene, textures, shared);
+
+    // 1) 100% das células caminháveis alcançáveis a partir do spawn (grafo conexo único > 440 células!)
+    const start = worldToGridCell(maze.spawnPosition.x, maze.spawnPosition.z);
+    const visited = new Set<string>([`${start.gx},${start.gz}`]);
+    const queue: Array<[number, number]> = [[start.gx, start.gz]];
+    while (queue.length > 0) {
+      const [cx, cz] = queue.shift()!;
+      for (const [dx, dz] of [
+        [1, 0],
+        [-1, 0],
+        [0, 1],
+        [0, -1],
+      ]) {
+        const nx = cx + dx;
+        const nz = cz + dz;
+        const key = `${nx},${nz}`;
+        if (!isSolidCell(LABYRINTH_MAP, nx, nz) && !visited.has(key)) {
+          visited.add(key);
+          queue.push([nx, nz]);
+        }
+      }
+    }
+
+    let totalWalkable = 0;
+    for (let gz = 0; gz < LABYRINTH_MAP.length; gz++) {
+      for (let gx = 0; gx < LABYRINTH_MAP[gz].length; gx++) {
+        if (!isSolidCell(LABYRINTH_MAP, gx, gz)) {
+          totalWalkable++;
+          expect(visited.has(`${gx},${gz}`)).toBe(true);
+        }
+      }
+    }
+    expect(totalWalkable).toBeGreaterThan(440);
+
+    // 2) Iluminação distribuída pelos 5 setores (>= 70 pontos luminosos) + streaming das luzes mais próximas
+    expect(maze.lights.length).toBeGreaterThanOrEqual(70);
+    expect(MAX_DOOM_LIGHTS).toBeGreaterThanOrEqual(48);
+    const lairWorld = gridCellToWorld(LAIR_GRID_CELL.gx, LAIR_GRID_CELL.gz);
+    const uploaded = syncNearestDoomLightsToUniforms(
+      maze.lights.map((l) => ({
+        position: l.position,
+        intensity: l.baseIntensity,
+      })),
+      new THREE.Vector3(lairWorld.x, 0, lairWorld.z),
+      shared
+    );
+    expect(uploaded).toBe(MAX_DOOM_LIGHTS);
+    const nearestUploadedDist = Math.hypot(
+      shared.uLightPositions.value[0].x - lairWorld.x,
+      shared.uLightPositions.value[0].z - lairWorld.z
+    );
+    expect(nearestUploadedDist).toBeLessThan(1.0);
+
+    // 3) Transição acústica precisa entre setores industriais Norte e Catacumbas Sul
+    expect(
+      isStoneSectorWorld(maze.spawnPosition.x, maze.spawnPosition.z)
+    ).toBe(false);
+    expect(isStoneSectorWorld(lairWorld.x, lairWorld.z)).toBe(true);
+
+    // 4) 24 caixotes de suprimento esculpidos e 100% alcançáveis em todos os setores
+    const items = new DoomWorldItems(scene, shared);
+    let collectedCount = 0;
+    const collectedIds = new Set<string>();
+    const invMock = {
+      addItem: (itemId: string) => {
+        collectedCount++;
+        collectedIds.add(itemId);
+        return true;
+      },
+    };
+    const fwd = new THREE.Vector3(0, 0, -1);
+    for (let gz = 1; gz < 28; gz++) {
+      for (let gx = 1; gx < 28; gx++) {
+        if (isSolidCell(LABYRINTH_MAP, gx, gz)) continue;
+        const w = gridCellToWorld(gx, gz);
+        items.updateAndCheckPickups(
+          0.016,
+          0,
+          new THREE.Vector3(w.x, 0, w.z),
+          new THREE.Vector3(w.x, 1.72, w.z),
+          fwd,
+          false,
+          invMock as never
+        );
+      }
+    }
+    expect(collectedCount).toBe(24);
+    expect(collectedIds.has('torn_log_04')).toBe(true);
+    expect(collectedIds.has('rusty_knife')).toBe(true);
+    expect(collectedIds.has('arachnid_report_09')).toBe(true);
+    expect(collectedIds.has('sector_b_key')).toBe(true);
   });
 
   it('exibe pés, tronco e os dois braços com camuflagem astronáutica ao olhar para baixo e anima o canivete oxidado pelas juntas EVA do astronauta', () => {

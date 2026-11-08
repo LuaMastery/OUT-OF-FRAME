@@ -22,31 +22,67 @@ export interface DoomMazeResult {
 }
 
 /**
- * Mapa 15x15 do Labirinto Subterrâneo estilo DOOM Clássico:
- * - '#' : Parede industrial escura STARTAN (Setor Norte)
- * - 'B' : Alvenaria subterrânea de pedra STONE (Catacumbas Sul & Ninho)
- * - 'M' : Coluna blindada estrutural central
- * - 'L' : Bloco com arandela gradeada LITE5 iluminando o corredor
+ * Mapa 29x29 (87m x 87m — 451 células transitáveis em 5 grandes setores interligados)
+ * do Complexo Subterrâneo estilo DOOM Clássico:
+ * - Setor Noroeste (gx 0..10, gz 0..8)   : Esclusa de Chegada & Enfermaria Médica (STARTAN '#')
+ * - Setor Nordeste (gx 18..28, gz 0..8)  : Salão dos Reatores & Subestação Energética (STARTAN '#' + 'M')
+ * - Eixo Central   (gx 8..20, gz 8..15)  : Átrio de Comando, Logística Oeste & Paiol Leste
+ * - Setor Sudoeste (gx 0..10, gz 16..28) : Galerias de Escavação & Cisterna Antiga (STONE 'B' + Madeira)
+ * - Catacumbas Sul & Ala B (gx 11..28, gz 16..28): Grande Ninho da Aranha (14, 23) & Cripta Abobadada Leste
+ *
+ * Legenda:
+ * - '#' : Parede industrial escura STARTAN (Complexo Técnico Norte, linhas 0..15)
+ * - 'B' : Alvenaria subterrânea de pedra STONE (Escavações & Catacumbas Sul, linhas 16..28)
+ * - 'M' : Coluna blindada estrutural de contenção
+ * - 'L' : Bloco com arandela gradeada LITE5 iluminando os corredores adjacentes
  * - 'A' : Pórtico estrutural em arco com viga I, mãos-francesas e batentes de ferro
- * - 'P' : Ponto inicial do jogador
- * - '.' : Corredor / câmara aberta
+ * - 'P' : Ponto inicial do jogador (Esclusa Noroeste)
+ * - '.' : Corredor / salão / câmara aberta
  */
 export const LABYRINTH_MAP: string[] = [
-  '###L#####L#####',
-  '#P..A...#.....#',
-  '###.###.#.###.#',
-  'L...#...A.#.L.#',
-  '#.###.###.#.#.#',
-  '#...A.....A...L',
-  '###.#..M..#.###',
-  'L...A.....A...L',
-  '#.###.#L#.###.#',
-  'B.B...B.B...B.B',
-  'B.A.BBB.BBB.A.B',
-  'L.B.........B.L',
-  'B.BBB.BAB.BBB.B',
-  'B.....B.B.....B',
-  'BBBLBBBLBBBLBBB',
+  '###L#####L###L###L#####L#####', // 00
+  '#.P.A...#.....#...#.A.......#', // 01
+  '###.###.#.###.#.#.#.#.#####.#', // 02
+  'L...#.....#.L...L.#.......#.L', // 03
+  '#.#.#..M..#.#####.#...M...#.#', // 04
+  '#.#.#.....A...#...A.......#.#', // 05
+  '#.A.###L###.#.#.###.#.M.#L#.L', // 06
+  '#.#...#.....#.......#...#.#.#', // 07
+  '#.###.#.###L##A##L###.###.#.#', // 08
+  'L.....A.#...........#.A...#.#', // 09
+  '#.#####.#.#.M...M.#.#.#.###.L', // 10
+  '#.....L.#.A.......A.#.L...#.#', // 11
+  '###A#.#.#.#.M...M.#.#.###.#.#', // 12
+  'L...#...#.#.......#.#...M...#', // 13
+  '#.#.###.#.###LAL###.###.###.#', // 14
+  '#.#.....A...........A.......L', // 15
+  'B.BLBBBBB.BBBL.LBBBBB.BBBBBLB', // 16 — Divisória blindada Norte-Sul (início das Catacumbas)
+  'B...B.....B.........B.......B', // 17
+  'B.BBB.BBB.B.BB.BB.B.BBB.BBB.L', // 18
+  'L.B.......A.......A.......B.B', // 19
+  'B.B..B..B.BBBBABBBB.B...B.B.B', // 20
+  'B.B.....L...BB.BB...L.....B.B', // 21 — (14, 21): Início do corredor reto de arrasto para o Ninho
+  'B.BBB.BBBBB.BB.BB.BBB.B.B.B.L', // 22
+  'L.......A...........A.....B.B', // 23 — (14, 23): Câmara Central do Grande Ninho da Aranha
+  'B.BBB.BBBBB.BBABB.BBB.B...B.B', // 24
+  'B...B...L...BB.BB...L.BBB.B.B', // 25
+  'B.B.BBB.B.BBB...BBB.....B...B', // 26
+  'B.......A...A...A...BBB...B.L', // 27
+  'BBBLBBBBBLBBBBBBBLBBBBBLBBBBB', // 28
+];
+
+export const STONE_SECTOR_START_ROW = 16;
+export const LAIR_GRID_CELL = { gx: 14, gz: 23 } as const;
+export const DRAG_START_GRID_CELL = { gx: 14, gz: 21 } as const;
+export const SPIDER_INITIAL_SPAWN_CELL = { gx: 23, gz: 23 } as const;
+export const SPIDER_POST_ABDUCTION_CELL = { gx: 21, gz: 5 } as const;
+export const INITIAL_WEB_TRAP_CELLS: ReadonlyArray<{ gx: number; gz: number }> = [
+  { gx: 9, gz: 3 },
+  { gx: 20, gz: 5 },
+  { gx: 5, gz: 11 },
+  { gx: 23, gz: 11 },
+  { gx: 7, gz: 19 },
+  { gx: 21, gz: 21 },
 ];
 
 export const CELL_SIZE = 3.0;
@@ -91,6 +127,48 @@ export function worldToGridCell(
     gx: Math.floor((wx + halfW) / CELL_SIZE),
     gz: Math.floor((wz + halfD) / CELL_SIZE),
   };
+}
+
+export function isStoneSectorWorld(wx: number, wz: number): boolean {
+  const { gz } = worldToGridCell(wx, wz);
+  return gz >= STONE_SECTOR_START_ROW;
+}
+
+/**
+ * Seleciona e envia para os uniforms do shader as luzes mais próximas do observador,
+ * garantindo que todos os setores de um complexo enorme recebam iluminação real sem estourar MAX_DOOM_LIGHTS.
+ */
+export function syncNearestDoomLightsToUniforms(
+  lights: ReadonlyArray<{ position: THREE.Vector3; intensity: number }>,
+  viewerPos: THREE.Vector3,
+  sharedUniforms: DoomSharedUniforms,
+  maxSlots: number = MAX_DOOM_LIGHTS
+): number {
+  const limit = Math.max(0, Math.min(maxSlots, MAX_DOOM_LIGHTS));
+  if (lights.length <= limit) {
+    for (let i = 0; i < lights.length; i++) {
+      sharedUniforms.uLightPositions.value[i].copy(lights[i].position);
+      sharedUniforms.uLightIntensities.value[i] = lights[i].intensity;
+    }
+    sharedUniforms.uLightCount.value = lights.length;
+    return lights.length;
+  }
+
+  const ranked = lights
+    .map((l, idx) => {
+      const dx = l.position.x - viewerPos.x;
+      const dz = l.position.z - viewerPos.z;
+      return { idx, d2: dx * dx + dz * dz };
+    })
+    .sort((a, b) => a.d2 - b.d2);
+
+  for (let i = 0; i < limit; i++) {
+    const src = lights[ranked[i].idx];
+    sharedUniforms.uLightPositions.value[i].copy(src.position);
+    sharedUniforms.uLightIntensities.value[i] = src.intensity;
+  }
+  sharedUniforms.uLightCount.value = limit;
+  return limit;
 }
 
 /**
@@ -318,9 +396,9 @@ export function buildDoomLabyrinth(
   const woodGeos: THREE.BufferGeometry[] = [];
   const lightGeos: THREE.BufferGeometry[] = [];
 
-  // Divisão limpa de piso e teto entre o Bunker Norte (linhas 0..8) e as Catacumbas Sul (linhas 9..14)
+  // Divisão limpa de piso e teto entre o Complexo Industrial Norte (linhas 0..15) e as Catacumbas Sul (linhas 16..28)
   const totalW = cols * CELL_SIZE;
-  const northRows = 9;
+  const northRows = STONE_SECTOR_START_ROW;
   const southRows = rows - northRows;
   const northD = northRows * CELL_SIZE;
   const southD = southRows * CELL_SIZE;
@@ -374,7 +452,9 @@ export function buildDoomLabyrinth(
         const solidS = isSolidCell(LABYRINTH_MAP, gx, gz + 1);
         const solidW = isSolidCell(LABYRINTH_MAP, gx - 1, gz);
         const solidE = isSolidCell(LABYRINTH_MAP, gx + 1, gz);
-        const isSouthStone = gz >= 9;
+        const isSouthStone = gz >= STONE_SECTOR_START_ROW;
+        const isLairCenter =
+          gx === LAIR_GRID_CELL.gx && gz === LAIR_GRID_CELL.gz;
 
         if (solidN && solidS) {
           // Viga transversal em células alternadas para ritmo limpo sem poluição visual
@@ -470,23 +550,77 @@ export function buildDoomLabyrinth(
           }
         }
 
-        // Escoras antigas de madeira nas galerias de pedra sul
-        if (
-          isSouthStone &&
-          solidN &&
-          solidW &&
-          !(gx === 7 && gz === 11) &&
-          (gx + gz) % 2 === 0
-        ) {
-          pushBox(
-            woodGeos,
-            0.16,
-            WALL_HEIGHT - 0.18,
-            0.16,
-            wx - half + 0.14,
-            (WALL_HEIGHT - 0.18) * 0.5,
-            wz - half + 0.14
-          );
+        // Escoras e pórticos antigos de madeira nas galerias de escavação e catacumbas sul
+        if (isSouthStone && !isLairCenter) {
+          if (solidN && solidW && (gx + gz) % 2 === 0) {
+            pushBox(
+              woodGeos,
+              0.16,
+              WALL_HEIGHT - 0.18,
+              0.16,
+              wx - half + 0.14,
+              (WALL_HEIGHT - 0.18) * 0.5,
+              wz - half + 0.14
+            );
+          }
+          // Vigas transversais de escoramento de mina no teto (y = WALL_HEIGHT - 0.12 -> zero obstrução!)
+          if (solidW && solidE && (gx * 3 + gz * 5) % 4 === 0) {
+            pushBox(
+              woodGeos,
+              CELL_SIZE - 0.16,
+              0.17,
+              0.18,
+              wx,
+              WALL_HEIGHT - 0.11,
+              wz
+            );
+            pushBox(
+              woodGeos,
+              0.15,
+              WALL_HEIGHT - 0.2,
+              0.15,
+              wx - half + 0.12,
+              (WALL_HEIGHT - 0.2) * 0.5,
+              wz
+            );
+            pushBox(
+              woodGeos,
+              0.15,
+              WALL_HEIGHT - 0.2,
+              0.15,
+              wx + half - 0.12,
+              (WALL_HEIGHT - 0.2) * 0.5,
+              wz
+            );
+          } else if (solidN && solidS && (gx * 5 + gz * 3) % 4 === 0) {
+            pushBox(
+              woodGeos,
+              0.18,
+              0.17,
+              CELL_SIZE - 0.16,
+              wx,
+              WALL_HEIGHT - 0.11,
+              wz
+            );
+            pushBox(
+              woodGeos,
+              0.15,
+              WALL_HEIGHT - 0.2,
+              0.15,
+              wx,
+              (WALL_HEIGHT - 0.2) * 0.5,
+              wz - half + 0.12
+            );
+            pushBox(
+              woodGeos,
+              0.15,
+              WALL_HEIGHT - 0.2,
+              0.15,
+              wx,
+              (WALL_HEIGHT - 0.2) * 0.5,
+              wz + half - 0.12
+            );
+          }
         }
         continue;
       }
@@ -642,7 +776,8 @@ export function buildDoomLabyrinth(
       // ======================================================================
       // 3. BLOCOS SÓLIDOS DE PAREDE + RODAPÉS, SANCAS E PILASTRAS SEM Z-FIGHTING
       // ======================================================================
-      const isStoneBlock = ch === 'B' || (ch === 'L' && gz >= 9);
+      const isStoneBlock =
+        ch === 'B' || (ch === 'L' && gz >= STONE_SECTOR_START_ROW);
       const isMetalPillar = ch === 'M';
       const wallBucket = isMetalPillar
         ? pillarGeos
@@ -733,8 +868,9 @@ export function buildDoomLabyrinth(
         }
       }
 
-      // Pilastras estruturais nos cantos externos expostos E em toda a divisória Norte-Sul (gz === 8)
-      const isTransitionRow = gz === 8;
+      // Pilastras estruturais nos cantos externos expostos E em toda a divisória Norte-Sul (gz === 15/16)
+      const isTransitionRow =
+        gz === STONE_SECTOR_START_ROW - 1 || gz === STONE_SECTOR_START_ROW;
       const corners: Array<[boolean, number, number]> = [
         [(openN && openW) || (isTransitionRow && (openN || openW)), -half, -half],
         [(openN && openE) || (isTransitionRow && (openN || openE)), half, -half],
@@ -834,35 +970,31 @@ export function buildDoomLabyrinth(
             wz + d.nz * (half + 0.038)
           );
 
-          if (lights.length < MAX_DOOM_LIGHTS) {
-            lights.push({
-              position: new THREE.Vector3(
-                wx + d.nx * (half + 1.05),
-                1.72,
-                wz + d.nz * (half + 1.05)
-              ),
-              baseIntensity: 0.62,
-              flicker: (gx + gz) % 3 === 0,
-              phase: gx * 1.7 + gz * 2.3 + d.nx * 0.8 + d.nz * 1.1,
-            });
-          }
+          lights.push({
+            position: new THREE.Vector3(
+              wx + d.nx * (half + 1.05),
+              1.72,
+              wz + d.nz * (half + 1.05)
+            ),
+            baseIntensity: 0.62,
+            flicker: (gx + gz) % 3 === 0,
+            phase: gx * 1.7 + gz * 2.3 + d.nx * 0.8 + d.nz * 1.1,
+          });
         }
       }
     }
   }
 
   // ==========================================================================
-  // 5. PLAFONS INDUSTRIAIS DA CÂMARA CENTRAL & PENDENTE DO NINHO DA ARANHA
+  // 5. MARCOS ARQUITETÔNICOS 3D & PLAFONS INDUSTRIAIS NOS 5 GRANDES SETORES
   // ==========================================================================
-  const centerX = cellToWorldX(7);
-  const centerZ = cellToWorldZ(6);
-  for (const offset of [
-    [-3.0, 0],
-    [3.0, 0],
-  ]) {
-    const lx = centerX + offset[0];
-    const lz = centerZ + offset[1];
-
+  const addCeilingFixture = (
+    lx: number,
+    lz: number,
+    intensity: number,
+    flicker: boolean,
+    phase: number
+  ) => {
     const ceilLight = new THREE.PlaneGeometry(1.24, 1.24);
     ceilLight.rotateX(Math.PI * 0.5);
     ceilLight.translate(lx, WALL_HEIGHT - 0.07, lz);
@@ -875,19 +1007,95 @@ export function buildDoomLabyrinth(
     pushBox(darkIronGeos, 1.3, 0.035, 0.05, lx, WALL_HEIGHT - 0.085, lz);
     pushBox(darkIronGeos, 0.05, 0.035, 1.3, lx, WALL_HEIGHT - 0.085, lz);
 
-    if (lights.length < MAX_DOOM_LIGHTS) {
-      lights.push({
-        position: new THREE.Vector3(lx, 2.35, lz),
-        baseIntensity: 0.56,
-        flicker: false,
-        phase: 0,
-      });
-    }
+    lights.push({
+      position: new THREE.Vector3(lx, 2.35, lz),
+      baseIntensity: intensity,
+      flicker,
+      phase,
+    });
+  };
+
+  // A) Grande Átrio Central de Comando (gx=14, gz=11 — nave 7x5 com pórticos suspensos)
+  const atriumX = cellToWorldX(14);
+  const atriumZ = cellToWorldZ(11);
+  pushBox(metalGeos, 17.8, 0.18, 0.34, atriumX, WALL_HEIGHT - 0.1, atriumZ);
+  pushBox(metalGeos, 0.34, 0.18, 13.8, atriumX, WALL_HEIGHT - 0.1, atriumZ);
+  pushBox(darkIronGeos, 17.8, 0.05, 0.44, atriumX, WALL_HEIGHT - 0.2, atriumZ);
+  pushBox(darkIronGeos, 0.44, 0.05, 13.8, atriumX, WALL_HEIGHT - 0.2, atriumZ);
+  for (const [ox, oz, ph] of [
+    [-3.0, -3.0, 0.4],
+    [3.0, -3.0, 1.2],
+    [-3.0, 3.0, 2.1],
+    [3.0, 3.0, 2.9],
+  ] as const) {
+    addCeilingFixture(atriumX + ox, atriumZ + oz, 0.58, false, ph);
   }
 
-  // Luminária industrial antiga suspensa e torta no teto do Ninho da Aranha (7, 11)
-  const lairX = cellToWorldX(7);
-  const lairZ = cellToWorldZ(11);
+  // B) Salão dos Reatores Nordeste (colunas M em (22, 4) e (22, 6) com barramento energético aéreo)
+  const reactorX = cellToWorldX(22);
+  const reactorMidZ = cellToWorldZ(5);
+  for (const rgz of [4, 6]) {
+    const rz = cellToWorldZ(rgz);
+    for (const ry of [0.55, 1.6, 2.65]) {
+      pushBox(darkIronGeos, 3.36, 0.16, 3.36, reactorX, ry, rz);
+      pushBox(metalGeos, 3.44, 0.07, 3.44, reactorX, ry + 0.09, rz);
+    }
+  }
+  // Dutos gêmeos de turbina no teto interligando os dois núcleos do reator (y = 2.86m -> livre abaixo!)
+  for (const busOx of [-0.65, 0.65]) {
+    pushCylinder(
+      darkIronGeos,
+      0.16,
+      0.16,
+      CELL_SIZE * 2.1,
+      10,
+      reactorX + busOx,
+      WALL_HEIGHT - 0.34,
+      reactorMidZ,
+      Math.PI * 0.5,
+      0,
+      0
+    );
+    pushBox(
+      metalGeos,
+      0.42,
+      0.26,
+      0.28,
+      reactorX + busOx,
+      WALL_HEIGHT - 0.16,
+      reactorMidZ
+    );
+  }
+  for (const [ox, oz, ph] of [
+    [-4.2, -3.0, 0.7],
+    [4.2, -3.0, 1.9],
+    [-4.2, 3.0, 3.1],
+    [4.2, 3.0, 4.3],
+  ] as const) {
+    addCeilingFixture(reactorX + ox, reactorMidZ + oz, 0.6, true, ph);
+  }
+
+  // C) Enfermaria Médica Noroeste (em torno da coluna M em (7, 4))
+  const infirmaryX = cellToWorldX(7);
+  const infirmaryZ = cellToWorldZ(4);
+  addCeilingFixture(infirmaryX - 3.0, infirmaryZ, 0.56, false, 0.9);
+  addCeilingFixture(infirmaryX + 3.0, infirmaryZ, 0.54, true, 3.7);
+
+  // D) Nervuras de abóbada de pedra na Cisterna Sudoeste (6, 20) e Cripta Sudeste Ala B (23, 22)
+  for (const [cgx, cgz, spanW, spanD, ph] of [
+    [6, 20, 8.6, 8.6, 2.6],
+    [23, 22, 11.6, 11.6, 4.8],
+  ] as const) {
+    const vx = cellToWorldX(cgx);
+    const vz = cellToWorldZ(cgz);
+    pushBox(stoneGeos, spanW, 0.24, 0.36, vx, WALL_HEIGHT - 0.12, vz);
+    pushBox(stoneGeos, 0.36, 0.24, spanD, vx, WALL_HEIGHT - 0.12, vz);
+    addCeilingFixture(vx, vz - 3.0, 0.46, true, ph);
+  }
+
+  // E) Luminária industrial antiga suspensa e torta no teto do Grande Ninho da Aranha (LAIR_GRID_CELL)
+  const lairX = cellToWorldX(LAIR_GRID_CELL.gx);
+  const lairZ = cellToWorldZ(LAIR_GRID_CELL.gz);
   pushCylinder(
     darkIronGeos,
     0.036,
@@ -919,14 +1127,12 @@ export function buildDoomLabyrinth(
   lairCeilLight.translate(lairX, WALL_HEIGHT - 0.302, lairZ);
   lightGeos.push(lairCeilLight);
 
-  if (lights.length < MAX_DOOM_LIGHTS) {
-    lights.push({
-      position: new THREE.Vector3(lairX, 2.35, lairZ),
-      baseIntensity: 0.48,
-      flicker: true,
-      phase: 5.1,
-    });
-  }
+  lights.push({
+    position: new THREE.Vector3(lairX, 2.35, lairZ),
+    baseIntensity: 0.48,
+    flicker: true,
+    phase: 5.1,
+  });
 
   // Consolida as malhas estáticas na cena
   const buckets: Array<[THREE.BufferGeometry[], THREE.Material, string]> = [
@@ -948,11 +1154,12 @@ export function buildDoomLabyrinth(
     }
   }
 
-  sharedUniforms.uLightCount.value = Math.min(lights.length, MAX_DOOM_LIGHTS);
-  for (let i = 0; i < sharedUniforms.uLightCount.value; i++) {
-    sharedUniforms.uLightPositions.value[i].copy(lights[i].position);
-    sharedUniforms.uLightIntensities.value[i] = lights[i].baseIntensity;
-  }
+  syncNearestDoomLightsToUniforms(
+    lights.map((l) => ({ position: l.position, intensity: l.baseIntensity })),
+    spawnPosition,
+    sharedUniforms,
+    MAX_DOOM_LIGHTS
+  );
 
   return {
     colliders,

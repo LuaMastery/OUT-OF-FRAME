@@ -17,6 +17,7 @@ import { DoomInventory } from './DoomInventory';
 import {
   buildDoomLabyrinth,
   DoomLightSource,
+  isStoneSectorWorld,
 } from './DoomMazeBuilder';
 import {
   createDoomSharedUniforms,
@@ -132,7 +133,7 @@ export class DoomGameApp {
       Math.max(1, window.innerWidth) / Math.max(1, window.innerHeight);
 
     this.scene = new THREE.Scene();
-    this.camera = new THREE.PerspectiveCamera(74, aspect, 0.12, 58);
+    this.camera = new THREE.PerspectiveCamera(74, aspect, 0.12, 125);
 
     this.compositor = new DoomRetroCompositor(
       window.innerWidth,
@@ -1178,7 +1179,9 @@ export class DoomGameApp {
       const halfCycle = Math.floor(this.bobPhase / Math.PI);
       if (halfCycle !== this.lastBobHalfCycle) {
         this.lastBobHalfCycle = halfCycle;
-        const surface = this.position.z >= 4.5 ? 'stone' : 'tech';
+        const surface = isStoneSectorWorld(this.position.x, this.position.z)
+          ? 'stone'
+          : 'tech';
         this.sound.playLabyrinthFootstep(
           halfCycle % 2 === 0,
           surface,
@@ -1383,44 +1386,78 @@ export class DoomGameApp {
     this.camera.quaternion.setFromEuler(euler);
   }
 
+  private readonly rankedLightScratch: Array<{
+    position: THREE.Vector3;
+    intensity: number;
+    d2: number;
+  }> = [];
+
   private updateFlickeringLightsAndAudio(): void {
     const tick = Math.floor(this.elapsed * 10);
     let nearestLamp: THREE.Vector3 | null = null;
     let nearestDist = Infinity;
     let nearestJustFlickered = false;
 
-    const baseCount = Math.min(this.lights.length, MAX_DOOM_LIGHTS);
-    for (let i = 0; i < baseCount; i++) {
+    while (this.rankedLightScratch.length < this.lights.length) {
+      this.rankedLightScratch.push({
+        position: new THREE.Vector3(),
+        intensity: 0,
+        d2: 0,
+      });
+    }
+
+    for (let i = 0; i < this.lights.length; i++) {
       const src = this.lights[i];
       let isDim = false;
+      let curIntensity = src.baseIntensity;
 
-      if (!src.flicker) {
-        this.sharedUniforms.uLightIntensities.value[i] = src.baseIntensity;
-      } else {
+      if (src.flicker) {
         const hash = Math.sin(tick * 12.9898 + src.phase * 78.233) * 43758.5453;
         const r = hash - Math.floor(hash);
         isDim = r < 0.16;
-        this.sharedUniforms.uLightIntensities.value[i] = isDim
-          ? src.baseIntensity * 0.35
-          : src.baseIntensity;
+        curIntensity = isDim ? src.baseIntensity * 0.35 : src.baseIntensity;
       }
 
       const justFlickered = isDim && !this.prevLightDimState[i];
       this.prevLightDimState[i] = isDim;
 
-      const d = Math.hypot(
-        src.position.x - this.position.x,
-        src.position.z - this.position.z
-      );
+      const dx = src.position.x - this.position.x;
+      const dz = src.position.z - this.position.z;
+      const d2 = dx * dx + dz * dz;
+      const d = Math.sqrt(d2);
       if (d < nearestDist) {
         nearestDist = d;
         nearestLamp = src.position;
         nearestJustFlickered = justFlickered;
       }
+
+      const slot = this.rankedLightScratch[i];
+      slot.position = src.position;
+      slot.intensity = curIntensity;
+      slot.d2 = d2;
     }
 
+    this.rankedLightScratch.length = this.lights.length;
+    this.rankedLightScratch.sort((a, b) => a.d2 - b.d2);
+
     const flares = this.worldItems.getActiveFlares();
-    let totalLights = baseCount;
+    const reservedForFlares = Math.min(flares.length, 8);
+    const staticSlots = Math.min(
+      this.rankedLightScratch.length,
+      MAX_DOOM_LIGHTS - reservedForFlares
+    );
+
+    let totalLights = 0;
+    for (let i = 0; i < staticSlots; i++) {
+      const chosen = this.rankedLightScratch[i];
+      this.sharedUniforms.uLightPositions.value[totalLights].copy(
+        chosen.position
+      );
+      this.sharedUniforms.uLightIntensities.value[totalLights] =
+        chosen.intensity;
+      totalLights++;
+    }
+
     for (let f = 0; f < flares.length && totalLights < MAX_DOOM_LIGHTS; f++) {
       const fl = flares[f];
       const fade = Math.min(1, fl.remainingSec / 2.5);

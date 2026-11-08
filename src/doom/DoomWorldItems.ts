@@ -500,19 +500,41 @@ export class DoomWorldItems {
       oz: number;
       itemId: string;
     }> = [
-      // Logo no corredor inicial para o jogador já encontrar seu primeiro registro!
-      { gx: 3, gz: 1, ox: 0.55, oz: -0.65, itemId: 'torn_log_04' },
-      { gx: 6, gz: 1, ox: 0.6, oz: 0.55, itemId: 'industrial_battery' },
-      { gx: 11, gz: 1, ox: 0.0, oz: -0.6, itemId: 'rusty_knife' },
-      { gx: 1, gz: 3, ox: -0.55, oz: 0.45, itemId: 'sterile_bandage' },
-      { gx: 12, gz: 5, ox: 0.45, oz: -0.55, itemId: 'magnesium_flare' },
-      { gx: 6, gz: 6, ox: -0.35, oz: 0.45, itemId: 'old_morphine' },
-      { gx: 4, gz: 9, ox: 0.0, oz: 0.55, itemId: 'magnesium_flare' },
-      { gx: 9, gz: 11, ox: 0.4, oz: -0.55, itemId: 'arachnid_report_09' },
-      { gx: 2, gz: 13, ox: -0.45, oz: 0.5, itemId: 'sterile_bandage' },
-      { gx: 4, gz: 13, ox: 0.35, oz: -0.5, itemId: 'industrial_battery' },
-      { gx: 10, gz: 13, ox: -0.3, oz: 0.5, itemId: 'old_morphine' },
-      { gx: 12, gz: 13, ox: 0.5, oz: -0.45, itemId: 'sector_b_key' },
+      // 1. Setor Noroeste — Corredor de Chegada & Enfermaria Médica
+      { gx: 3, gz: 1, ox: 0.35, oz: -0.58, itemId: 'torn_log_04' },
+      { gx: 6, gz: 1, ox: 0.45, oz: -0.58, itemId: 'industrial_battery' },
+      { gx: 5, gz: 3, ox: -0.52, oz: -0.52, itemId: 'sterile_bandage' },
+      { gx: 9, gz: 5, ox: 0.52, oz: 0.52, itemId: 'old_morphine' },
+      { gx: 1, gz: 7, ox: -0.55, oz: 0.35, itemId: 'magnesium_flare' },
+
+      // 2. Ponte de Comando Norte & Galeria Central
+      { gx: 11, gz: 1, ox: 0.0, oz: -0.58, itemId: 'rusty_knife' },
+      { gx: 13, gz: 7, ox: -0.45, oz: 0.52, itemId: 'industrial_battery' },
+      { gx: 11, gz: 9, ox: -0.52, oz: -0.52, itemId: 'sterile_bandage' },
+      { gx: 17, gz: 13, ox: 0.52, oz: 0.52, itemId: 'magnesium_flare' },
+
+      // 3. Setor Nordeste — Salão dos Reatores & Passarela Leste
+      { gx: 19, gz: 3, ox: -0.52, oz: -0.52, itemId: 'industrial_battery' },
+      { gx: 24, gz: 5, ox: 0.48, oz: -0.42, itemId: 'magnesium_flare' },
+      { gx: 27, gz: 5, ox: 0.55, oz: 0.0, itemId: 'old_morphine' },
+
+      // 4. Alas Laterais — Logística Oeste & Subestação de Munições Leste
+      { gx: 3, gz: 9, ox: 0.0, oz: -0.56, itemId: 'industrial_battery' },
+      { gx: 3, gz: 15, ox: -0.42, oz: 0.54, itemId: 'sterile_bandage' },
+      { gx: 25, gz: 9, ox: 0.52, oz: -0.48, itemId: 'magnesium_flare' },
+      { gx: 25, gz: 15, ox: 0.45, oz: 0.54, itemId: 'industrial_battery' },
+
+      // 5. Divisória Blindada & Minas de Escavação Sudoeste
+      { gx: 15, gz: 17, ox: 0.42, oz: -0.52, itemId: 'sterile_bandage' },
+      { gx: 3, gz: 17, ox: -0.48, oz: -0.52, itemId: 'industrial_battery' },
+      { gx: 6, gz: 21, ox: 0.0, oz: 0.54, itemId: 'old_morphine' },
+      { gx: 3, gz: 25, ox: -0.48, oz: 0.52, itemId: 'magnesium_flare' },
+
+      // 6. Catacumbas Centrais, Santuário do Ninho & Cripta Abobadada Ala B (Sudeste)
+      { gx: 10, gz: 23, ox: -0.38, oz: -0.54, itemId: 'arachnid_report_09' },
+      { gx: 14, gz: 26, ox: 0.45, oz: 0.38, itemId: 'sterile_bandage' },
+      { gx: 23, gz: 17, ox: 0.0, oz: -0.55, itemId: 'industrial_battery' },
+      { gx: 25, gz: 26, ox: 0.48, oz: -0.48, itemId: 'sector_b_key' },
     ];
 
     placements.forEach((p, idx) => {

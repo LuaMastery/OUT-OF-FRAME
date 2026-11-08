@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 
-export const MAX_DOOM_LIGHTS = 24;
+export const MAX_DOOM_LIGHTS = 48;
 
 export interface DoomSharedUniforms {
   uLightPositions: { value: THREE.Vector3[] };

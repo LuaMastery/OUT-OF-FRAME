@@ -7,6 +7,8 @@ import {
   isArchCell,
   isSolidCell,
   LABYRINTH_MAP,
+  SPIDER_INITIAL_SPAWN_CELL,
+  SPIDER_POST_ABDUCTION_CELL,
   WALL_HEIGHT,
   worldToGridCell,
 } from './DoomMazeBuilder';
@@ -189,7 +191,7 @@ function createDynamicTubeGeometry(): {
   geometry.setAttribute('normal', normAttr);
   geometry.setAttribute('color', colAttr);
   geometry.setIndex(indices);
-  geometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 80);
+  geometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 160);
 
   return { geometry, posAttr, normAttr, colAttr };
 }
@@ -276,7 +278,10 @@ export class DoomSpider {
   }
 
   respawnFarFromPlayer(): void {
-    const startCell = gridCellToWorld(11, 11);
+    const startCell = gridCellToWorld(
+      SPIDER_INITIAL_SPAWN_CELL.gx,
+      SPIDER_INITIAL_SPAWN_CELL.gz
+    );
     this.placeAtCell(startCell.x, startCell.z, 'CEILING');
   }
 
@@ -284,7 +289,10 @@ export class DoomSpider {
    * Reposiciona a aranha longe do Ninho após ela deixar o jogador preso na teia!
    */
   relocateAwayAfterAbduction(): void {
-    const farNorth = gridCellToWorld(7, 3);
+    const farNorth = gridCellToWorld(
+      SPIDER_POST_ABDUCTION_CELL.gx,
+      SPIDER_POST_ABDUCTION_CELL.gz
+    );
     this.placeAtCell(farNorth.x, farNorth.z, 'CEILING');
     this.postAbductionGraceTimer = 7.5;
   }
@@ -1259,7 +1267,10 @@ export class DoomSpider {
   }
 
   private pickFarRetreatPath(awayFrom: THREE.Vector3): void {
-    let bestWorld = gridCellToWorld(7, 3);
+    let bestWorld = gridCellToWorld(
+      SPIDER_POST_ABDUCTION_CELL.gx,
+      SPIDER_POST_ABDUCTION_CELL.gz
+    );
     let bestDist = -1;
 
     for (let gz = 1; gz < LABYRINTH_MAP.length - 1; gz++) {

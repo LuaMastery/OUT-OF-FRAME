@@ -2,9 +2,12 @@ import * as THREE from 'three';
 import { SoundEngine } from '../engine/audio/SoundEngine';
 import {
   CELL_SIZE,
+  DRAG_START_GRID_CELL,
   gridCellToWorld,
+  INITIAL_WEB_TRAP_CELLS,
   isSolidCell,
   LABYRINTH_MAP,
+  LAIR_GRID_CELL,
   WALL_HEIGHT,
   worldToGridCell,
 } from './DoomMazeBuilder';
@@ -558,6 +561,23 @@ function buildAnchoredOrbQuad(
  * - Fios catenários 3D reais no Ninho Sul, nas armadilhas e ao redor do jogador quando capturado!
  * - Suporta corte instantâneo com o Canivete (`slashWebWithKnife`), acionando também o rasgo visual.
  */
+let cachedWebTextures: {
+  orb: THREE.DataTexture;
+  cornerSheet: THREE.DataTexture;
+  denseSilk: THREE.DataTexture;
+} | null = null;
+
+function getCachedWebTextures() {
+  if (!cachedWebTextures) {
+    cachedWebTextures = {
+      orb: createOrbTrapWebTexture(),
+      cornerSheet: createCornerSheetWebTexture(),
+      denseSilk: createDenseSilkFiberTexture(),
+    };
+  }
+  return cachedWebTextures;
+}
+
 export class DoomSpiderWebManager {
   private readonly root = new THREE.Group();
   private readonly orbWebMat: THREE.ShaderMaterial;
@@ -565,7 +585,7 @@ export class DoomSpiderWebManager {
   private readonly silkSolidMat: THREE.ShaderMaterial;
   private readonly traps: SpiderWebTrap[] = [];
   private nextTrapId = 1;
-  private readonly maxActiveTraps = 7;
+  private readonly maxActiveTraps = 14;
 
   readonly lairCenter: THREE.Vector3;
   readonly dragCorridorStart: THREE.Vector3;
@@ -589,19 +609,17 @@ export class DoomSpiderWebManager {
     this.root.name = 'DoomSpiderWebs';
     scene.add(this.root);
 
-    this.orbWebMat = createDoomPropMaterial(
-      createOrbTrapWebTexture(),
-      sharedUniforms,
-      {
-        baseLight: 0.3,
-        alphaTest: 0.45,
-        doubleSided: true,
-        emissiveBoost: 0.03,
-      }
-    );
+    const webTex = getCachedWebTextures();
+
+    this.orbWebMat = createDoomPropMaterial(webTex.orb, sharedUniforms, {
+      baseLight: 0.3,
+      alphaTest: 0.45,
+      doubleSided: true,
+      emissiveBoost: 0.03,
+    });
 
     this.sheetWebMat = createDoomPropMaterial(
-      createCornerSheetWebTexture(),
+      webTex.cornerSheet,
       sharedUniforms,
       {
         baseLight: 0.28,
@@ -612,7 +630,7 @@ export class DoomSpiderWebManager {
     );
 
     this.silkSolidMat = createDoomPropMaterial(
-      createDenseSilkFiberTexture(),
+      webTex.denseSilk,
       sharedUniforms,
       {
         baseLight: 0.28,
@@ -620,10 +638,13 @@ export class DoomSpiderWebManager {
       }
     );
 
-    const lairW = gridCellToWorld(7, 11);
+    const lairW = gridCellToWorld(LAIR_GRID_CELL.gx, LAIR_GRID_CELL.gz);
     this.lairCenter = new THREE.Vector3(lairW.x, 0, lairW.z);
 
-    const dragStartW = gridCellToWorld(7, 9);
+    const dragStartW = gridCellToWorld(
+      DRAG_START_GRID_CELL.gx,
+      DRAG_START_GRID_CELL.gz
+    );
     this.dragCorridorStart = new THREE.Vector3(
       dragStartW.x,
       0,
@@ -633,11 +654,11 @@ export class DoomSpiderWebManager {
     this.buildMainSpiderLair();
     this.buildPlayerSnareTethers();
 
-    // Duas armadilhas iniciais em corredores retos com paredes laterais reais (fora do corredor de arrasto do ninho)
-    const presetA = gridCellToWorld(8, 3);
-    const presetB = gridCellToWorld(4, 9);
-    this.spawnWebTrap(presetA.x, presetA.z, true);
-    this.spawnWebTrap(presetB.x, presetB.z, true);
+    // Armadilhas iniciais distribuídas estrategicamente pelos 5 setores (fora do corredor de arrasto)
+    for (const tc of INITIAL_WEB_TRAP_CELLS) {
+      const presetW = gridCellToWorld(tc.gx, tc.gz);
+      this.spawnWebTrap(presetW.x, presetW.z, true);
+    }
   }
 
   /**
