@@ -2060,4 +2060,189 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
     guestClient.disconnect();
     hostClient.disconnect();
   });
+
+  it('sincroniza a Aranha em Multiplayer (perseguição multi-jogador, arrasto em 3ª pessoa, armadilhas de teia e resgate com sinalizador/faca)', async () => {
+    const scene = new THREE.Scene();
+    const shared = createDoomSharedUniforms();
+    const textures = createDoomTextures();
+    const built = buildDoomLabyrinth(scene, textures, shared);
+    const webs = new DoomSpiderWebManager(scene, shared);
+    const sound = {
+      playSpiderStep: () => {},
+      playSpiderHiss: () => {},
+      playSpiderScream: () => {},
+      playSpiderStrike: () => {},
+      playSpiderDragPull: () => {},
+      playSpiderWebSpin: () => {},
+      playWebTrapSnap: () => {},
+      playItemUse: () => {},
+    } as unknown as SoundEngine;
+
+    const hostSpider = new DoomSpider(
+      scene,
+      shared,
+      built.colliders,
+      webs,
+      sound
+    );
+    const guestScene = new THREE.Scene();
+    const guestShared = createDoomSharedUniforms();
+    const guestWebs = new DoomSpiderWebManager(guestScene, guestShared);
+    const guestSpider = new DoomSpider(
+      guestScene,
+      guestShared,
+      built.colliders,
+      guestWebs,
+      sound
+    );
+
+    // 1) Seleção inteligente de alvo multi-jogador: Host furtivo atrás de parede vs Convidado correndo de lanterna acesa perto da aranha!
+    const hostPos = gridCellToWorld(2, 13);
+    const nearSpiderCell = worldToGridCell(
+      hostSpider.position.x,
+      hostSpider.position.z
+    );
+    const guestPos = gridCellToWorld(nearSpiderCell.gx, nearSpiderCell.gz);
+
+    const selected = hostSpider.selectBestMultiplayerCandidate([
+      {
+        id: 'host-stealth',
+        isLocal: true,
+        pos: new THREE.Vector3(hostPos.x, 0, hostPos.z),
+        yaw: 0,
+        sprinting: false,
+        crouching: true,
+        flashlightOn: false,
+        flashlightDir: new THREE.Vector3(0, 0, -1),
+        ensnared: false,
+        afk: false,
+      },
+      {
+        id: 'guest-runner',
+        isLocal: false,
+        pos: new THREE.Vector3(guestPos.x, 0, guestPos.z),
+        yaw: 0,
+        sprinting: true,
+        crouching: false,
+        flashlightOn: true,
+        flashlightDir: new THREE.Vector3(0, 0, -1),
+        ensnared: false,
+        afk: false,
+      },
+    ]);
+    expect(selected.id).toBe('guest-runner');
+    expect(selected.isLocal).toBe(false);
+
+    // 2) Sincronização de cena cinemática (sequestro / arrasto) do Host para o Cliente e postura deitado + casulo no Astronauta 3D!
+    const dragVictimPos = webs.dragCorridorStart
+      .clone()
+      .lerp(webs.lairCenter, 0.45);
+    const dragSpiderPos = new THREE.Vector3(
+      dragVictimPos.x,
+      1.38,
+      dragVictimPos.z + 2.15
+    );
+    hostSpider.updateCinematicSequence(
+      0.016,
+      4.0,
+      'DRAGGING_TO_WEB',
+      0.45,
+      dragSpiderPos,
+      dragVictimPos,
+      dragVictimPos
+    );
+
+    const snap = hostSpider.getNetworkSnapshot('guest-runner');
+    expect(snap.state).toBe('CINEMATIC_SEQUENCE');
+    expect(snap.cinematicMode).toBe('DRAGGING_TO_WEB');
+    expect(snap.victimId).toBe('guest-runner');
+
+    guestSpider.applyRemoteNetworkState(
+      0.016,
+      4.0,
+      snap,
+      new THREE.Vector3(hostPos.x, 0, hostPos.z),
+      0,
+      () => {}
+    );
+    expect(guestSpider.currentState).toBe('CINEMATIC_SEQUENCE');
+    expect(guestSpider.position.distanceTo(dragSpiderPos)).toBeLessThan(0.25);
+
+    // Astronauta aliado sendo arrastado deitado no chão + casulo de teia 3D visível!
+    const allyAstro = new DoomAstronaut(guestScene, guestShared);
+    allyAstro.updateThirdPersonAlly(
+      dragVictimPos,
+      0,
+      0,
+      1.2,
+      0,
+      0,
+      false,
+      true,
+      false,
+      true
+    );
+    const cocoonGroup = allyAstro.root.getObjectByName(
+      'AstronautThirdPersonWebCocoon'
+    );
+    expect(cocoonGroup?.visible).toBe(true);
+    const bodyPivot = allyAstro.root.children[0];
+    expect(Math.abs(bodyPivot.rotation.x)).toBeGreaterThan(1.2);
+    expect(bodyPivot.position.y).toBeLessThan(-0.5);
+
+    // 3) Resgate Cooperativo! Um aliado joga Sinalizador / usa Faca perto da Aranha durante o arrasto ->
+    //    Aranha solta o amigo na hora, entra em FLEE_RETREAT e o cliente remoto acompanha suavemente!
+    const rescuerPos = dragSpiderPos.clone().add(new THREE.Vector3(0, 0, -1.6));
+    hostSpider.interruptAbductionAndFlee(rescuerPos);
+    expect(hostSpider.currentState).toBe('FLEE_RETREAT');
+
+    const fleeSnap = hostSpider.getNetworkSnapshot(null);
+    expect(fleeSnap.state).toBe('FLEE_RETREAT');
+    expect(fleeSnap.cinematicMode).toBeNull();
+
+    guestSpider.applyRemoteNetworkState(
+      0.016,
+      4.05,
+      fleeSnap,
+      rescuerPos,
+      0,
+      () => {}
+    );
+    expect(guestSpider.currentState).toBe('FLEE_RETREAT');
+
+    // Aliado resgatado volta imediatamente a ficar de pé e sem casulo de teia!
+    allyAstro.updateThirdPersonAlly(
+      dragVictimPos,
+      0,
+      0,
+      1.5,
+      0,
+      0,
+      true,
+      false,
+      false,
+      false
+    );
+    expect(bodyPivot.rotation.x).toBe(0);
+    expect(cocoonGroup?.visible).toBe(false);
+
+    // 4) Sincronização de armadilha de teia cortada por faca entre clientes (`cutTrapPos` + `collapseTrapNearWorld`)
+    const trapCell = gridCellToWorld(7, 3);
+    webs.spawnWebTrap(trapCell.x, trapCell.z, false);
+    guestWebs.spawnWebTrap(trapCell.x, trapCell.z, false);
+
+    const knifeRes = webs.slashWebWithKnife(
+      new THREE.Vector3(trapCell.x, 1.72, trapCell.z + 1.2),
+      new THREE.Vector3(0, 0, -1),
+      sound
+    );
+    expect(knifeRes.cutNearbyTrap).toBe(true);
+    expect(knifeRes.cutTrapPos).toBeDefined();
+
+    const collapsedOnGuest = guestWebs.collapseTrapNearWorld(
+      knifeRes.cutTrapPos!.x,
+      knifeRes.cutTrapPos!.z
+    );
+    expect(collapsedOnGuest).toBe(true);
+  });
 });

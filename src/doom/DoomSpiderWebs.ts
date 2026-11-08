@@ -938,7 +938,11 @@ export class DoomSpiderWebManager {
     playerPos: THREE.Vector3,
     lookForward: THREE.Vector3,
     sound: SoundEngine
-  ): { cutActiveSnare: boolean; cutNearbyTrap: boolean } {
+  ): {
+    cutActiveSnare: boolean;
+    cutNearbyTrap: boolean;
+    cutTrapPos?: { x: number; z: number };
+  } {
     if (this.inWakingLairWeb) {
       this.inWakingLairWeb = false;
       if (this.lairCocoonRing) {
@@ -987,11 +991,36 @@ export class DoomSpiderWebManager {
           this.root.remove(grp);
         }, 700);
         sound.playWebTrapSnap();
-        return { cutActiveSnare: false, cutNearbyTrap: true };
+        return {
+          cutActiveSnare: false,
+          cutNearbyTrap: true,
+          cutTrapPos: { x: trap.position.x, z: trap.position.z },
+        };
       }
     }
 
     return { cutActiveSnare: false, cutNearbyTrap: false };
+  }
+
+  /**
+   * Colapsa e remove sincronizadamente uma armadilha de corredor próxima a `(wx, wz)`
+   * quando outro jogador do esquadrão a corta ou aciona no Multiplayer.
+   */
+  collapseTrapNearWorld(wx: number, wz: number): boolean {
+    for (let i = this.traps.length - 1; i >= 0; i--) {
+      const trap = this.traps[i];
+      if (trap.triggered) continue;
+      if (Math.hypot(trap.position.x - wx, trap.position.z - wz) <= 2.2) {
+        trap.triggered = true;
+        trap.group.scale.set(1, 0.16, 1);
+        const grp = trap.group;
+        setTimeout(() => {
+          this.root.remove(grp);
+        }, 700);
+        return true;
+      }
+    }
+    return false;
   }
 
   /**

@@ -33,6 +33,19 @@ export type SpiderCinematicMode =
   | 'WEBBING_IN_LAIR'
   | 'FATAL_EXECUTION';
 
+export interface SpiderPlayerCandidate {
+  id: string;
+  pos: THREE.Vector3;
+  yaw: number;
+  sprinting: boolean;
+  crouching: boolean;
+  flashlightOn: boolean;
+  flashlightDir: THREE.Vector3;
+  ensnared: boolean;
+  afk: boolean;
+  isLocal: boolean;
+}
+
 const RING_SIDES = 8;
 const CURVE_SAMPLES = 20;
 const IK_ITERATIONS = 3;
@@ -233,6 +246,9 @@ export class DoomSpider {
   private lastCinematicMode: SpiderCinematicMode | null = null;
   private readonly cinematicVictimPos = new THREE.Vector3();
   private cinematicProgress = 0;
+  private remoteDrivenCinematic = false;
+
+  onWebTrapSpawned?: (x: number, z: number) => void;
 
   private pathWaypoints: Array<{ x: number; z: number }> = [];
   private pathRepathTimer = 0;
@@ -318,9 +334,10 @@ export class DoomSpider {
   }
 
   /**
-   * Snapshot compacto do estado da Aranha Gigante para replicação multiplayer pelo Host.
+   * Snapshot completo do estado da Aranha Gigante (incluindo arrasto/abdução cinemática)
+   * para replicação multiplayer em tempo real.
    */
-  getNetworkSnapshot(): {
+  getNetworkSnapshot(victimId: string | null = null): {
     x: number;
     y: number;
     z: number;
@@ -332,6 +349,12 @@ export class DoomSpider {
     fwdZ: number;
     state: SpiderBehaviorState;
     surfaceMode: SpiderSurfaceMode;
+    cinematicMode: SpiderCinematicMode | null;
+    cinematicProgress: number;
+    victimId: string | null;
+    victimX: number;
+    victimY: number;
+    victimZ: number;
   } {
     return {
       x: this.bodyPos.x,
@@ -345,12 +368,92 @@ export class DoomSpider {
       fwdZ: this.currentForward.z,
       state: this.state,
       surfaceMode: this.surfaceMode,
+      cinematicMode:
+        this.state === 'CINEMATIC_SEQUENCE' ? this.cinematicMode : null,
+      cinematicProgress: this.cinematicProgress,
+      victimId:
+        this.state === 'CINEMATIC_SEQUENCE' ? victimId : null,
+      victimX: this.cinematicVictimPos.x,
+      victimY: this.cinematicVictimPos.y,
+      victimZ: this.cinematicVictimPos.z,
     };
   }
 
   /**
-   * Aplica suavemente o estado da Aranha recebido do Host nos clientes conectados,
-   * mantendo animação completa de 8 patas FABRIK IK e detecção de alcance ao jogador local!
+   * Avalia TODOS os jogadores conectados na sala (visão direta, lanterna, corrida, teia)
+   * para escolher dinamicamente quem a Aranha enxerga/ouve ou está prestes a capturar!
+   */
+  selectBestMultiplayerCandidate(
+    candidates: readonly SpiderPlayerCandidate[]
+  ): SpiderPlayerCandidate {
+    let best = candidates[0];
+    let bestScore = Infinity;
+
+    for (const c of candidates) {
+      const dist = Math.hypot(
+        c.pos.x - this.bodyPos.x,
+        c.pos.z - this.bodyPos.z
+      );
+      const inCatchReach =
+        dist < 1.52 && this.hasLineOfSight(this.bodyPos, c.pos, c.crouching);
+      const detected =
+        inCatchReach ||
+        (this.postAbductionGraceTimer <= 0 &&
+          this.detectPlayer(
+            c.pos,
+            dist,
+            c.sprinting,
+            c.crouching,
+            c.flashlightOn,
+            c.flashlightDir
+          ));
+
+      // Alvos em alcance imediato de bote (<1.52m com LOS) têm prioridade máxima (-500),
+      // seguidos por alvos ativamente vistos/ouvidos (0..100), e por fim não detectados (1000+).
+      let score: number;
+      if (inCatchReach) {
+        score = -500 + dist + (c.afk ? 4 : 0);
+      } else if (detected) {
+        score = dist - (c.ensnared ? 2.8 : 0) + (c.afk ? 10 : 0);
+      } else {
+        score = 1000 + dist - (c.ensnared ? 4.0 : 0) + (c.afk ? 14 : 0);
+      }
+
+      if (score < bestScore) {
+        bestScore = score;
+        best = c;
+      }
+    }
+
+    return best;
+  }
+
+  /**
+   * Interrompe imediatamente um ataque/arrasto cinemático quando um aliado salva a vítima
+   * com Sinalizador de Magnésio ou golpe de Faca, fazendo a Aranha gritar e fugir pelo teto!
+   */
+  interruptAbductionAndFlee(threatPos: THREE.Vector3): void {
+    const dist = Math.hypot(
+      threatPos.x - this.bodyPos.x,
+      threatPos.z - this.bodyPos.z
+    );
+    this.sound.playSpiderScream?.(0, dist);
+    this.cinematicMode = null;
+    this.lastCinematicMode = null;
+    this.remoteDrivenCinematic = false;
+    this.searchingAroundLastKnown = false;
+    this.state = 'FLEE_RETREAT';
+    this.stateTimer = 0;
+    this.surfaceMode = 'CEILING';
+    this.climbedWallNormal.set(0, 0, 0);
+    this.postAbductionGraceTimer = 5.0;
+    this.pickFarRetreatPath(threatPos);
+    this.snapAllFeetAroundBody();
+  }
+
+  /**
+   * Aplica suavemente o estado da Aranha recebido pela rede nos clientes conectados,
+   * incluindo animação em 3ª pessoa quando um aliado está sendo atacado/arrastado até o ninho!
    */
   applyRemoteNetworkState(
     dt: number,
@@ -367,13 +470,54 @@ export class DoomSpider {
       fwdZ: number;
       state: string;
       surfaceMode: 'FLOOR' | 'WALL' | 'CEILING';
+      cinematicMode?: SpiderCinematicMode | null;
+      cinematicProgress?: number;
+      victimId?: string | null;
+      victimX?: number;
+      victimY?: number;
+      victimZ?: number;
     },
     localPlayerPos: THREE.Vector3,
     localPlayerYaw: number,
     onCatchLocalPlayer: () => void
   ): { cameraShakeAmount: number; playerDistance: number } {
-    if (this.state === 'CINEMATIC_SEQUENCE') {
+    // Se a própria máquina local está sofrendo a cena em 1ª pessoa, não sobrescreve
+    if (this.state === 'CINEMATIC_SEQUENCE' && !this.remoteDrivenCinematic) {
       return { cameraShakeAmount: 0, playerDistance: 0 };
+    }
+
+    // Replicação em 3ª pessoa da Aranha atacando/arrastando/tecendo sobre um aliado!
+    if (pkt.state === 'CINEMATIC_SEQUENCE' && pkt.cinematicMode) {
+      this.remoteDrivenCinematic = true;
+      const spiderPos = this.tmpB.set(pkt.x, pkt.y, pkt.z);
+      const victimPos = this.tmpC.set(
+        pkt.victimX ?? pkt.x,
+        pkt.victimY ?? 0.25,
+        pkt.victimZ ?? pkt.z
+      );
+      this.updateCinematicSequence(
+        dt,
+        elapsed,
+        pkt.cinematicMode,
+        pkt.cinematicProgress ?? 0.5,
+        spiderPos,
+        victimPos,
+        victimPos
+      );
+      const d = Math.hypot(
+        localPlayerPos.x - this.bodyPos.x,
+        localPlayerPos.z - this.bodyPos.z
+      );
+      const shake = d < 9.0 ? (1 - d / 9.0) * 0.022 : 0;
+      return { cameraShakeAmount: shake, playerDistance: d };
+    }
+
+    if (this.remoteDrivenCinematic) {
+      this.remoteDrivenCinematic = false;
+      this.cinematicMode = null;
+      this.lastCinematicMode = null;
+      this.state = (pkt.state as SpiderBehaviorState) || 'STALK_PATROL';
+      this.snapAllFeetAroundBody();
     }
 
     const blend = 1 - Math.exp(-14 * dt);
@@ -443,8 +587,33 @@ export class DoomSpider {
   /**
    * Garante que a aranha saia de qualquer estado cinemático caso ainda esteja nele.
    */
+  /**
+   * Conduz a Aranha em 3ª pessoa para representar um aliado remoto sendo atacado/arrastado,
+   * marcando `remoteDrivenCinematic = true` para transição suave quando o evento terminar ou for interrompido!
+   */
+  updateRemoteCinematicSequence(
+    dt: number,
+    elapsed: number,
+    mode: SpiderCinematicMode,
+    progress: number,
+    spiderWorldPos: THREE.Vector3,
+    victimWorldPos: THREE.Vector3
+  ): void {
+    this.remoteDrivenCinematic = true;
+    this.updateCinematicSequence(
+      dt,
+      elapsed,
+      mode,
+      progress,
+      spiderWorldPos,
+      victimWorldPos,
+      victimWorldPos
+    );
+  }
+
   ensureExitedCinematic(): void {
     if (this.state === 'CINEMATIC_SEQUENCE') {
+      this.remoteDrivenCinematic = false;
       this.relocateAwayAfterAbduction();
     }
   }
@@ -1200,7 +1369,14 @@ export class DoomSpider {
       } else if (this.stateTimer >= 2.3) {
         const { gx, gz } = worldToGridCell(this.bodyPos.x, this.bodyPos.z);
         const cellCenter = gridCellToWorld(gx, gz);
-        this.webManager.spawnWebTrap(cellCenter.x, cellCenter.z, false);
+        const spawned = this.webManager.spawnWebTrap(
+          cellCenter.x,
+          cellCenter.z,
+          false
+        );
+        if (spawned) {
+          this.onWebTrapSpawned?.(cellCenter.x, cellCenter.z);
+        }
         this.webCooldownTimer = 15.0;
         this.state = 'STALK_PATROL';
         this.stateTimer = 0;

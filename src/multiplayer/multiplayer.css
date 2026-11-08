@@ -852,6 +852,26 @@
   color: #ffd4d4;
 }
 
+.oof-ally-label-3d.dragged {
+  border-color: #ff3b3b;
+  background: rgba(68, 6, 6, 0.95);
+  color: #fff0f0;
+  box-shadow: 0 0 14px rgba(255, 48, 48, 0.55);
+  animation: oofDraggedEmergencyPulse 0.65s ease-in-out infinite;
+}
+
+@keyframes oofDraggedEmergencyPulse {
+  0%,
+  100% {
+    transform: translate(-50%, -100%) scale(1);
+    border-color: #ff3b3b;
+  }
+  50% {
+    transform: translate(-50%, -100%) scale(1.05);
+    border-color: #ffb0b0;
+  }
+}
+
 /* Indicador de AFK na tela do próprio jogador quando está ausente/parado */
 .oof-local-afk-banner {
   position: absolute;

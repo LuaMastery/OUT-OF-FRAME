@@ -8,6 +8,10 @@ import {
 } from '../doom/DoomMazeBuilder';
 import { getSectorNameForCell, RadarAllyBlip } from '../doom/DoomRadar';
 import { DoomSharedUniforms } from '../doom/DoomShader';
+import {
+  SpiderCinematicMode,
+  SpiderPlayerCandidate,
+} from '../doom/DoomSpider';
 import { SoundEngine } from '../engine/audio/SoundEngine';
 import {
   ActiveRoomSession,
@@ -37,10 +41,15 @@ interface RemoteAllyEntity {
   bobPhase: number;
   crouch: number;
   flashlightOn: boolean;
+  flashDir: THREE.Vector3;
   health: number;
   bleeding: boolean;
   ensnared: boolean;
   inSequence: boolean;
+  beingDragged: boolean;
+  abductionMode: SpiderCinematicMode | null;
+  abductionProgress: number;
+  abductionSpiderPos: THREE.Vector3;
   dead: boolean;
   afk: boolean;
   lastAfkNoticeMs: number;
@@ -58,6 +67,19 @@ interface ActiveTacticalPing {
 export interface MultiplayerCoordinatorHooks {
   onReceiveFlare: (pos: THREE.Vector3, yaw: number) => void;
   onRescuedByAlly: (rescuerName: string) => void;
+  onAbductionInterruptedByAlly: (
+    rescuerName: string,
+    weapon: 'knife' | 'flare'
+  ) => void;
+  onSpiderInterruptedAndFlees: (threatPos: THREE.Vector3) => void;
+  onCaughtByAuthoritativeSpider: (spiderPos: THREE.Vector3) => void;
+  onRemoteVictimFinishedAbduction: () => void;
+  onRemoteWebTrapSpawned: (x: number, z: number) => void;
+  onRemoteWebTrapTriggered: (
+    trapPos: THREE.Vector3,
+    playerPos: THREE.Vector3
+  ) => void;
+  onRemoteWebTrapCut: (x: number, z: number) => void;
   onNotifyHud: (text: string) => void;
   onLeaveRoomRequested: () => void;
 }
@@ -101,7 +123,10 @@ export class DoomMultiplayerCoordinator {
   private maskRoomCode = false;
   private chatInputActive = false;
   private wasLocalEnsnared = false;
+  private wasLocalDragged = false;
   private localAfk = false;
+  private lastCatchBroadcastMs = 0;
+  private readonly candidatesScratch: SpiderPlayerCandidate[] = [];
 
   private readonly hudRootEl: HTMLDivElement;
   private readonly roomTagEl: HTMLSpanElement;
@@ -216,6 +241,10 @@ export class DoomMultiplayerCoordinator {
     return this.client.isHost;
   }
 
+  get localPlayerId(): string {
+    return this.session.localPlayerId;
+  }
+
   get isChatTyping(): boolean {
     return this.chatInputActive;
   }
@@ -312,30 +341,174 @@ export class DoomMultiplayerCoordinator {
     });
   }
 
-  notifyFlareSpawned(pos: THREE.Vector3, yaw: number): void {
+  notifyFlareSpawned(
+    pos: THREE.Vector3,
+    yaw: number,
+    spiderPos: THREE.Vector3
+  ): void {
     this.client.broadcastWorldEvent({
       kind: 'flare',
       senderId: this.session.localPlayerId,
+      senderName: this.session.localPlayerName,
       x: pos.x,
       y: pos.y,
       z: pos.z,
       yaw,
       ts: Date.now(),
     });
+    // Se um aliado estiver sendo atacado/arrastado pela Aranha perto do sinalizador, salva-o na hora!
+    this.tryInterruptSpiderAbduction(pos, spiderPos, 'flare');
+  }
+
+  notifyWebTrapSpawned(x: number, z: number): void {
+    if (!this.client.isHost) return;
+    this.client.broadcastWorldEvent({
+      kind: 'web_trap_spawned',
+      x,
+      z,
+      ts: Date.now(),
+    });
+  }
+
+  notifyWebTrapTriggered(
+    trapX: number,
+    trapZ: number,
+    playerPos: THREE.Vector3
+  ): void {
+    this.client.broadcastWorldEvent({
+      kind: 'web_trap_triggered',
+      senderId: this.session.localPlayerId,
+      senderName: this.session.localPlayerName,
+      x: trapX,
+      z: trapZ,
+      playerX: playerPos.x,
+      playerZ: playerPos.z,
+      ts: Date.now(),
+    });
+  }
+
+  notifyWebTrapCut(x: number, z: number): void {
+    this.client.broadcastWorldEvent({
+      kind: 'web_trap_cut',
+      senderId: this.session.localPlayerId,
+      x,
+      z,
+      ts: Date.now(),
+    });
+  }
+
+  notifyAuthoritativeSpiderCaughtAlly(
+    targetPlayerId: string,
+    spiderPos: THREE.Vector3
+  ): void {
+    const now = performance.now();
+    if (now - this.lastCatchBroadcastMs < 1400) return;
+    this.lastCatchBroadcastMs = now;
+    this.client.broadcastWorldEvent({
+      kind: 'spider_catch_player',
+      targetPlayerId,
+      spiderX: spiderPos.x,
+      spiderY: spiderPos.y,
+      spiderZ: spiderPos.z,
+      ts: Date.now(),
+    });
+  }
+
+  notifyLocalAbductionFinished(): void {
+    this.client.broadcastWorldEvent({
+      kind: 'abduction_finished',
+      victimId: this.session.localPlayerId,
+      ts: Date.now(),
+    });
   }
 
   /**
-   * Permite que um aliado liberte outro jogador preso em teia ao chegar perto (< 2.8m) e usar [E] ou Faca!
+   * Interrompe o ataque/arrasto da Aranha usando Sinalizador ou Faca, salvando o amigo antes do ninho!
    */
-  tryRescueNearbyTrappedAlly(localPos: THREE.Vector3): boolean {
+  tryInterruptSpiderAbduction(
+    localPos: THREE.Vector3,
+    spiderPos: THREE.Vector3,
+    weapon: 'knife' | 'flare'
+  ): boolean {
+    const maxDist = weapon === 'flare' ? 5.6 : 3.85;
+    for (const ally of this.allies.values()) {
+      if (ally.dead || (!ally.inSequence && !ally.beingDragged)) continue;
+      const distToAlly = Math.hypot(
+        ally.currentPos.x - localPos.x,
+        ally.currentPos.z - localPos.z
+      );
+      const distToSpider = Math.hypot(
+        spiderPos.x - localPos.x,
+        spiderPos.z - localPos.z
+      );
+      const distToAbductionSpider = ally.abductionMode
+        ? Math.hypot(
+            ally.abductionSpiderPos.x - localPos.x,
+            ally.abductionSpiderPos.z - localPos.z
+          )
+        : Infinity;
+
+      if (
+        Math.min(distToAlly, distToSpider, distToAbductionSpider) <= maxDist
+      ) {
+        ally.inSequence = false;
+        ally.beingDragged = false;
+        ally.abductionMode = null;
+        this.hooks.onSpiderInterruptedAndFlees(localPos);
+        this.client.broadcastWorldEvent({
+          kind: 'interrupt_abduction',
+          rescuerId: this.session.localPlayerId,
+          rescuerName: this.session.localPlayerName,
+          targetPlayerId: ally.id,
+          weapon,
+          x: localPos.x,
+          z: localPos.z,
+          ts: Date.now(),
+        });
+        this.pushRadioFeed(
+          weapon === 'flare'
+            ? `🔥 Seu sinalizador cegou a Aranha e SALVOU ${ally.name}!`
+            : `🗡️ Você golpeou a Aranha e SALVOU ${ally.name} do arrasto!`,
+          false
+        );
+        this.renderSquadHud();
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Permite que um aliado salve outro jogador sendo arrastado pela Aranha OU preso em teia/ninho
+   * ao chegar perto e usar Faca [1] ou Interagir [E]!
+   */
+  tryRescueNearbyTrappedAlly(
+    localPos: THREE.Vector3,
+    spiderPos?: THREE.Vector3,
+    hasKnife = false
+  ): boolean {
+    if (
+      spiderPos &&
+      hasKnife &&
+      this.tryInterruptSpiderAbduction(localPos, spiderPos, 'knife')
+    ) {
+      return true;
+    }
+
     for (const ally of this.allies.values()) {
       if (!ally.ensnared || ally.dead) continue;
       const d = Math.hypot(
         ally.currentPos.x - localPos.x,
         ally.currentPos.z - localPos.z
       );
-      if (d <= 2.85) {
+      if (d <= 3.1) {
         ally.ensnared = false;
+        if (
+          spiderPos &&
+          Math.hypot(spiderPos.x - localPos.x, spiderPos.z - localPos.z) <= 4.2
+        ) {
+          this.hooks.onSpiderInterruptedAndFlees(localPos);
+        }
         this.client.broadcastWorldEvent({
           kind: 'rescue_ally',
           rescuerId: this.session.localPlayerId,
@@ -347,6 +520,7 @@ export class DoomMultiplayerCoordinator {
           `Você cortou a teia e salvou ${ally.name}!`,
           false
         );
+        this.renderSquadHud();
         return true;
       }
     }
@@ -354,64 +528,77 @@ export class DoomMultiplayerCoordinator {
   }
 
   /**
-   * No Host, escolhe o jogador vivo mais próximo da Aranha (entre o Host e os aliados)
-   * para que o monstro cace todo o esquadrão de forma justa!
+   * Retorna dados de abdução ativa caso algum aliado esteja sendo atacado/arrastado/tecido pela Aranha,
+   * permitindo que o Host e todos os observadores vejam a cena 3D sincronizada em tempo real!
    */
-  pickSpiderTargetPlayer(
-    localPos: THREE.Vector3,
-    localYaw: number,
-    localSprinting: boolean,
-    localCrouching: boolean,
-    localFlashlightOn: boolean,
-    spiderPos: THREE.Vector3,
-    localAfk = false
-  ): {
-    targetPos: THREE.Vector3;
-    targetYaw: number;
+  getActiveRemoteAbduction(): {
+    allyId: string;
+    allyName: string;
+    mode: SpiderCinematicMode;
+    progress: number;
+    spiderPos: THREE.Vector3;
+    victimPos: THREE.Vector3;
+  } | null {
+    for (const ally of this.allies.values()) {
+      if (!ally.dead && ally.inSequence && ally.abductionMode) {
+        return {
+          allyId: ally.id,
+          allyName: ally.name,
+          mode: ally.abductionMode,
+          progress: ally.abductionProgress,
+          spiderPos: ally.abductionSpiderPos,
+          victimPos: ally.currentPos,
+        };
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Constrói a lista completa de operadores candidatos (Host + todos os aliados vivos)
+   * com direção real de lanterna, corrida, agachamento e estado de teia para a IA da Aranha!
+   */
+  buildSpiderPlayerCandidates(local: {
+    pos: THREE.Vector3;
+    yaw: number;
     sprinting: boolean;
     crouching: boolean;
     flashlightOn: boolean;
-    targetingLocal: boolean;
-  } {
-    let bestPos = localPos;
-    let bestYaw = localYaw;
-    let bestSprint = localSprinting;
-    let bestCrouch = localCrouching;
-    let bestFlash = localFlashlightOn;
-    let targetingLocal = true;
-    // Penaliza levemente alvos AFK quando há outro operador ativo jogando na partida
-    let bestScore =
-      Math.hypot(localPos.x - spiderPos.x, localPos.z - spiderPos.z) +
-      (localAfk ? 14 : 0);
+    flashlightDir: THREE.Vector3;
+    ensnared: boolean;
+    afk: boolean;
+  }): readonly SpiderPlayerCandidate[] {
+    this.candidatesScratch.length = 0;
+    this.candidatesScratch.push({
+      id: this.session.localPlayerId,
+      pos: local.pos,
+      yaw: local.yaw,
+      sprinting: local.sprinting,
+      crouching: local.crouching,
+      flashlightOn: local.flashlightOn,
+      flashlightDir: local.flashlightDir,
+      ensnared: local.ensnared,
+      afk: local.afk,
+      isLocal: true,
+    });
 
     for (const ally of this.allies.values()) {
-      if (ally.dead || ally.inSequence) {
-        continue;
-      }
-      const d =
-        Math.hypot(
-          ally.currentPos.x - spiderPos.x,
-          ally.currentPos.z - spiderPos.z
-        ) + (ally.afk ? 14 : 0);
-      if (d < bestScore - 0.5) {
-        bestScore = d;
-        bestPos = ally.currentPos;
-        bestYaw = ally.currentYaw;
-        bestSprint = !ally.afk && ally.speed > 7.0;
-        bestCrouch = ally.crouch > 0.5;
-        bestFlash = ally.flashlightOn;
-        targetingLocal = false;
-      }
+      if (ally.dead || ally.inSequence) continue;
+      this.candidatesScratch.push({
+        id: ally.id,
+        pos: ally.currentPos,
+        yaw: ally.currentYaw,
+        sprinting: !ally.afk && ally.speed > 7.0,
+        crouching: ally.crouch > 0.5,
+        flashlightOn: ally.flashlightOn,
+        flashlightDir: ally.flashDir,
+        ensnared: ally.ensnared,
+        afk: ally.afk,
+        isLocal: false,
+      });
     }
 
-    return {
-      targetPos: bestPos,
-      targetYaw: bestYaw,
-      sprinting: bestSprint,
-      crouching: bestCrouch,
-      flashlightOn: bestFlash,
-      targetingLocal,
-    };
+    return this.candidatesScratch;
   }
 
   consumeLatestRemoteSpiderPacket(): NetworkSpiderPacket | null {
@@ -451,6 +638,10 @@ export class DoomMultiplayerCoordinator {
       bleeding: boolean;
       ensnared: boolean;
       inSequence: boolean;
+      beingDragged?: boolean;
+      abductionMode?: SpiderCinematicMode | null;
+      abductionProgress?: number;
+      abductionSpiderPos?: THREE.Vector3 | null;
       dead: boolean;
       afk?: boolean;
     },
@@ -466,13 +657,19 @@ export class DoomMultiplayerCoordinator {
       fwdZ: number;
       state: string;
       surfaceMode: 'FLOOR' | 'WALL' | 'CEILING';
+      cinematicMode?: SpiderCinematicMode | null;
+      cinematicProgress?: number;
+      victimId?: string | null;
+      victimX?: number;
+      victimY?: number;
+      victimZ?: number;
     },
     hideHud: boolean
   ): void {
     this.hudRootEl.style.display = hideHud ? 'none' : 'flex';
     this.worldLabelsLayerEl.style.display = hideHud ? 'none' : 'block';
 
-    // Alerta SOS automático quando o jogador local cai numa armadilha de teia!
+    // Alerta SOS automático quando o jogador local cai numa armadilha de teia ou começa a ser arrastado!
     if (localState.ensnared && !this.wasLocalEnsnared) {
       const { gx, gz } = worldToGridCell(localState.pos.x, localState.pos.z);
       const sector = getSectorNameForCell(gx, gz);
@@ -488,6 +685,22 @@ export class DoomMultiplayerCoordinator {
     }
     this.wasLocalEnsnared = localState.ensnared;
 
+    const nowDragged = Boolean(localState.beingDragged);
+    if (nowDragged && !this.wasLocalDragged) {
+      const { gx, gz } = worldToGridCell(localState.pos.x, localState.pos.z);
+      const sector = getSectorNameForCell(gx, gz);
+      this.client.broadcastWorldEvent({
+        kind: 'sos_alert',
+        senderId: this.session.localPlayerId,
+        senderName: this.session.localPlayerName,
+        sectorName: `${sector} (SENDO ARRASTADO PELA ARANHA!)`,
+        x: localState.pos.x,
+        z: localState.pos.z,
+        ts: Date.now(),
+      });
+    }
+    this.wasLocalDragged = nowDragged;
+
     const nextLocalAfk = Boolean(localState.afk);
     if (this.localAfk !== nextLocalAfk) {
       this.localAfk = nextLocalAfk;
@@ -495,7 +708,7 @@ export class DoomMultiplayerCoordinator {
       this.renderSquadHud();
     }
 
-    // 1. Transmite pose 3D do jogador local (~16 Hz quando ativo; inclui estado AFK!)
+    // 1. Transmite pose 3D do jogador local (~16 Hz quando ativo; inclui estado AFK e arrasto pela Aranha!)
     this.poseSendAccum += dt;
     if (this.poseSendAccum >= 0.062) {
       this.poseSendAccum = 0;
@@ -516,6 +729,12 @@ export class DoomMultiplayerCoordinator {
         bleeding: localState.bleeding,
         ensnared: localState.ensnared,
         inSequence: localState.inSequence,
+        beingDragged: nowDragged,
+        abductionMode: localState.abductionMode ?? null,
+        abductionProgress: localState.abductionProgress ?? 0,
+        abductionSpiderX: localState.abductionSpiderPos?.x,
+        abductionSpiderY: localState.abductionSpiderPos?.y,
+        abductionSpiderZ: localState.abductionSpiderPos?.z,
         dead: localState.dead,
         afk: nextLocalAfk,
       });
@@ -554,7 +773,7 @@ export class DoomMultiplayerCoordinator {
         smooth
       );
       const effectiveSpeed = ally.afk ? 0 : ally.speed;
-      if (effectiveSpeed > 0.25) {
+      if (effectiveSpeed > 0.25 || ally.beingDragged || ally.inSequence) {
         ally.bobPhase += dt * (6.8 + effectiveSpeed * 0.75);
       }
 
@@ -565,6 +784,7 @@ export class DoomMultiplayerCoordinator {
         continue;
       }
 
+      const isBeingDragged = Boolean(ally.beingDragged || (ally.inSequence && ally.abductionMode === 'DRAGGING_TO_WEB'));
       ally.astronaut.updateThirdPersonAlly(
         ally.currentPos,
         ally.currentYaw,
@@ -574,7 +794,8 @@ export class DoomMultiplayerCoordinator {
         ally.crouch,
         ally.flashlightOn,
         ally.ensnared || ally.inSequence,
-        ally.afk
+        ally.afk,
+        isBeingDragged
       );
 
       // Foco sutil no bocal ancorado exatamente na frente da lente da lanterna 3D sólida do aliado
@@ -595,8 +816,12 @@ export class DoomMultiplayerCoordinator {
         );
       }
 
-      // Projeção na tela da etiqueta acima do capacete do aliado (com ícone de AFK quando ausente!)
-      const headHeight = 1.94 - ally.crouch * 0.42;
+      // Projeção na tela da etiqueta acima do capacete do aliado (com ícone de AFK ou alerta de ARRASTO/TEIA!)
+      const headHeight = isBeingDragged
+        ? 0.95
+        : ally.ensnared || ally.inSequence
+          ? 1.45
+          : 1.94 - ally.crouch * 0.42;
       this.projVec.set(
         ally.currentPos.x,
         ally.currentPos.y + headHeight,
@@ -605,7 +830,7 @@ export class DoomMultiplayerCoordinator {
       const dist = this.projVec.distanceTo(camera.position);
       this.projVec.project(camera);
 
-      if (this.projVec.z < 1.0 && dist < 34) {
+      if (this.projVec.z < 1.0 && dist < 38) {
         const sx = (this.projVec.x * 0.5 + 0.5) * viewW;
         const sy = (-this.projVec.y * 0.5 + 0.5) * viewH;
         ally.labelEl.style.display = 'flex';
@@ -619,12 +844,17 @@ export class DoomMultiplayerCoordinator {
           'afk',
           ally.afk && !ally.ensnared && !ally.inSequence
         );
-        ally.labelAfkRowEl.style.display = ally.afk ? 'inline-flex' : 'none';
+        ally.labelAfkRowEl.style.display =
+          ally.afk && !ally.ensnared && !ally.inSequence
+            ? 'inline-flex'
+            : 'none';
 
-        if (ally.ensnared) {
-          ally.labelTextEl.textContent = `🕸️ ${ally.name} — PRESO NA TEIA! [E / FACA]`;
+        if (isBeingDragged) {
+          ally.labelTextEl.textContent = `🕷️ ${ally.name} — SENDO ARRASTADO! [SINALIZADOR / FACA]`;
         } else if (ally.inSequence) {
-          ally.labelTextEl.textContent = `⚠ ${ally.name} — ATACADO PELA ARANHA!`;
+          ally.labelTextEl.textContent = `🕷️ ${ally.name} — NAS GARRAS DA ARANHA! [SINALIZADOR / FACA]`;
+        } else if (ally.ensnared) {
+          ally.labelTextEl.textContent = `🕸️ ${ally.name} — PRESO NA TEIA! [E / FACA]`;
         } else if (ally.afk) {
           ally.labelTextEl.textContent = `${ally.name} • INDÍSP.`;
         } else {
@@ -804,10 +1034,23 @@ export class DoomMultiplayerCoordinator {
         bobPhase: pkt.bobPhase,
         crouch: pkt.crouch,
         flashlightOn: pkt.flashlightOn,
+        flashDir: new THREE.Vector3(
+          pkt.flashDirX || 0,
+          pkt.flashDirY || 0,
+          pkt.flashDirZ || -1
+        ).normalize(),
         health: pkt.health,
         bleeding: pkt.bleeding,
         ensnared: pkt.ensnared,
         inSequence: pkt.inSequence,
+        beingDragged: Boolean(pkt.beingDragged),
+        abductionMode: pkt.abductionMode ?? null,
+        abductionProgress: pkt.abductionProgress ?? 0,
+        abductionSpiderPos: new THREE.Vector3(
+          pkt.abductionSpiderX ?? pkt.x,
+          pkt.abductionSpiderY ?? 1.38,
+          pkt.abductionSpiderZ ?? pkt.z
+        ),
         dead: pkt.dead,
         afk: Boolean(pkt.afk),
         lastAfkNoticeMs: 0,
@@ -820,15 +1063,36 @@ export class DoomMultiplayerCoordinator {
 
     ent.name = pkt.name;
     ent.targetPos.set(pkt.x, pkt.y, pkt.z);
+    if (pkt.beingDragged || pkt.inSequence) {
+      // Durante arrasto/bote segue a posição exata sem atraso para alinhar com as garras da Aranha!
+      ent.currentPos.set(pkt.x, pkt.y, pkt.z);
+    }
     ent.targetYaw = pkt.yaw;
     ent.pitch = pkt.pitch;
     ent.speed = pkt.speed;
     ent.crouch = pkt.crouch;
     ent.flashlightOn = pkt.flashlightOn;
+    ent.flashDir
+      .set(pkt.flashDirX || 0, pkt.flashDirY || 0, pkt.flashDirZ || -1)
+      .normalize();
     ent.health = pkt.health;
     ent.bleeding = pkt.bleeding;
     ent.ensnared = pkt.ensnared;
     ent.inSequence = pkt.inSequence;
+    ent.beingDragged = Boolean(pkt.beingDragged);
+    ent.abductionMode = pkt.abductionMode ?? null;
+    ent.abductionProgress = pkt.abductionProgress ?? 0;
+    if (
+      typeof pkt.abductionSpiderX === 'number' &&
+      typeof pkt.abductionSpiderY === 'number' &&
+      typeof pkt.abductionSpiderZ === 'number'
+    ) {
+      ent.abductionSpiderPos.set(
+        pkt.abductionSpiderX,
+        pkt.abductionSpiderY,
+        pkt.abductionSpiderZ
+      );
+    }
     ent.dead = pkt.dead;
     ent.lastSeenMs = performance.now();
     this.applyAllyAfkTransition(ent, Boolean(pkt.afk));
@@ -969,9 +1233,14 @@ export class DoomMultiplayerCoordinator {
       }
     } else if (ev.kind === 'flare') {
       if (ev.senderId !== this.session.localPlayerId) {
-        this.hooks.onReceiveFlare(new THREE.Vector3(ev.x, ev.y, ev.z), ev.yaw);
+        const flarePos = new THREE.Vector3(ev.x, ev.y, ev.z);
+        this.hooks.onReceiveFlare(flarePos, ev.yaw);
       }
     } else if (ev.kind === 'rescue_ally') {
+      const targetAlly = this.allies.get(ev.targetPlayerId);
+      if (targetAlly) {
+        targetAlly.ensnared = false;
+      }
       if (ev.targetPlayerId === this.session.localPlayerId) {
         this.hooks.onRescuedByAlly(ev.rescuerName);
         this.pushRadioFeed(
@@ -983,6 +1252,66 @@ export class DoomMultiplayerCoordinator {
           `${ev.rescuerName} libertou um aliado da teia!`,
           false
         );
+      }
+      this.renderSquadHud();
+    } else if (ev.kind === 'interrupt_abduction') {
+      const threatPos = new THREE.Vector3(ev.x, 0, ev.z);
+      const savedAlly = this.allies.get(ev.targetPlayerId);
+      if (savedAlly) {
+        savedAlly.inSequence = false;
+        savedAlly.beingDragged = false;
+        savedAlly.abductionMode = null;
+      }
+      this.hooks.onSpiderInterruptedAndFlees(threatPos);
+      if (ev.targetPlayerId === this.session.localPlayerId) {
+        this.hooks.onAbductionInterruptedByAlly(ev.rescuerName, ev.weapon);
+        this.pushRadioFeed(
+          ev.weapon === 'flare'
+            ? `🔥 O sinalizador de ${ev.rescuerName} cegou a Aranha e SALVOU você!`
+            : `🗡️ ${ev.rescuerName} golpeou a Aranha e SALVOU você do arrasto!`,
+          false
+        );
+      } else if (ev.rescuerId !== this.session.localPlayerId) {
+        const victimLabel = savedAlly ? savedAlly.name : 'um aliado';
+        this.pushRadioFeed(
+          ev.weapon === 'flare'
+            ? `🔥 ${ev.rescuerName} salvou ${victimLabel} com um sinalizador!`
+            : `🗡️ ${ev.rescuerName} salvou ${victimLabel} das garras da Aranha!`,
+          false
+        );
+      }
+      this.renderSquadHud();
+    } else if (ev.kind === 'spider_catch_player') {
+      if (ev.targetPlayerId === this.session.localPlayerId) {
+        this.hooks.onCaughtByAuthoritativeSpider(
+          new THREE.Vector3(ev.spiderX, ev.spiderY, ev.spiderZ)
+        );
+      }
+    } else if (ev.kind === 'abduction_finished') {
+      if (ev.victimId !== this.session.localPlayerId) {
+        const ally = this.allies.get(ev.victimId);
+        if (ally) {
+          ally.beingDragged = false;
+          ally.abductionMode = null;
+        }
+        if (this.client.isHost) {
+          this.hooks.onRemoteVictimFinishedAbduction();
+        }
+      }
+    } else if (ev.kind === 'web_trap_spawned') {
+      if (!this.client.isHost) {
+        this.hooks.onRemoteWebTrapSpawned(ev.x, ev.z);
+      }
+    } else if (ev.kind === 'web_trap_triggered') {
+      if (ev.senderId !== this.session.localPlayerId) {
+        this.hooks.onRemoteWebTrapTriggered(
+          new THREE.Vector3(ev.x, 0, ev.z),
+          new THREE.Vector3(ev.playerX, 0, ev.playerZ)
+        );
+      }
+    } else if (ev.kind === 'web_trap_cut') {
+      if (ev.senderId !== this.session.localPlayerId) {
+        this.hooks.onRemoteWebTrapCut(ev.x, ev.z);
       }
     } else if (ev.kind === 'sos_alert') {
       if (ev.senderId !== this.session.localPlayerId) {
@@ -1096,7 +1425,13 @@ export class DoomMultiplayerCoordinator {
       if (ally.dead) {
         hpSpan.className = 'oof-coop-ally-hp danger';
         hpSpan.textContent = 'MORTO';
-      } else if (ally.ensnared || ally.inSequence) {
+      } else if (ally.beingDragged || (ally.inSequence && ally.abductionMode === 'DRAGGING_TO_WEB')) {
+        hpSpan.className = 'oof-coop-ally-hp danger';
+        hpSpan.textContent = 'ARRASTADO!';
+      } else if (ally.inSequence) {
+        hpSpan.className = 'oof-coop-ally-hp danger';
+        hpSpan.textContent = 'ATACADO!';
+      } else if (ally.ensnared) {
         hpSpan.className = 'oof-coop-ally-hp danger';
         hpSpan.textContent = 'NA TEIA!';
       } else if (ally.afk) {

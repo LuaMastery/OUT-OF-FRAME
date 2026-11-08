@@ -1316,6 +1316,7 @@ export class DoomAstronaut {
   readonly leftArm: AstronautArmRig;
   readonly rightArm: AstronautArmRig;
   readonly thirdPersonFlashlightGroup = new THREE.Group();
+  readonly thirdPersonWebCocoonGroup = new THREE.Group();
   private readonly thirdPersonFlashlightMuzzle = new THREE.Object3D();
   private readonly leftLeg: AstronautLegRig;
   private readonly rightLeg: AstronautLegRig;
@@ -2086,6 +2087,32 @@ export class DoomAstronaut {
     this.thirdPersonFlashlightGroup.visible = false;
     this.rightArm.gripSocket.add(this.thirdPersonFlashlightGroup);
 
+    // 6. CASULO / FIOS 3D DE SEDA AO REDOR DO ASTRONAUTA QUANDO PRESO EM TEIA (CO-OP 3ª PESSOA)
+    this.thirdPersonWebCocoonGroup.name = 'AstronautThirdPersonWebCocoon';
+    const silkBandMat = new THREE.MeshBasicMaterial({
+      color: 0xd9ddd2,
+      transparent: true,
+      opacity: 0.72,
+      side: THREE.DoubleSide,
+    });
+    const bandSpecs: Array<[number, number, number, number, number]> = [
+      [0.24, 0.25, 0.09, 0.26, 0.16],
+      [0.25, 0.23, 0.11, 0.11, -0.22],
+      [0.22, 0.21, 0.08, -0.04, 0.19],
+      [0.23, 0.24, 0.07, 0.36, -0.14],
+    ];
+    for (const [rt, rb, h, yPos, tiltZ] of bandSpecs) {
+      const band = new THREE.Mesh(
+        new THREE.CylinderGeometry(rt, rb, h, 10, 1, true),
+        silkBandMat
+      );
+      band.position.set(0, yPos, 0.01);
+      band.rotation.z = tiltZ;
+      this.thirdPersonWebCocoonGroup.add(band);
+    }
+    this.thirdPersonWebCocoonGroup.visible = false;
+    this.torsoGroup.add(this.thirdPersonWebCocoonGroup);
+
     this.setFirstPersonMode(true);
     scene.add(this.root);
   }
@@ -2129,6 +2156,7 @@ export class DoomAstronaut {
       this.leftArm.root.visible = false;
       this.rightArm.root.visible = false;
       this.thirdPersonFlashlightGroup.visible = false;
+      this.thirdPersonWebCocoonGroup.visible = false;
     }
   }
 
@@ -2199,7 +2227,8 @@ export class DoomAstronaut {
     crouchAmount: number,
     flashlightOn: boolean,
     trappedOrDowned: boolean,
-    afk = false
+    afk = false,
+    draggedBySpider = false
   ): void {
     this.root.visible = true;
     this.setFirstPersonMode(false);
@@ -2207,8 +2236,30 @@ export class DoomAstronaut {
     this.root.position.set(position.x, position.y, position.z);
     this.root.rotation.set(0, yaw, 0);
 
+    if (draggedBySpider) {
+      // Deitado de costas no piso sendo puxado pelas patas dianteiras da Aranha Gigante!
+      this.thirdPersonFlashlightGroup.visible = false;
+      this.thirdPersonWebCocoonGroup.visible = true;
+      const struggle = Math.sin(bobPhase * 5.2) * 0.12;
+      this.bodyPivot.position.set(0, -0.68, 0);
+      this.bodyPivot.rotation.set(1.36, struggle * 0.25, struggle * 0.16);
+      this.hipsGroup.position.set(0, 0.85, 0);
+      this.torsoGroup.rotation.set(-0.18, 0, 0);
+      this.headGroup.rotation.set(-0.35 + struggle * 0.4, struggle * 0.5, 0);
+      this.leftLeg.hipPivot.rotation.set(0.18 + struggle * 0.3, 0, -0.09);
+      this.leftLeg.kneePivot.rotation.set(-0.26, 0, 0);
+      this.rightLeg.hipPivot.rotation.set(0.18 - struggle * 0.3, 0, 0.09);
+      this.rightLeg.kneePivot.rotation.set(-0.26, 0, 0);
+      this.leftArm.shoulderPivot.rotation.set(1.05 + struggle, 0.28, -0.22);
+      this.leftArm.elbowPivot.rotation.set(0.72, 0, 0);
+      this.rightArm.shoulderPivot.rotation.set(1.05 - struggle, -0.28, 0.22);
+      this.rightArm.elbowPivot.rotation.set(0.72, 0, 0);
+      return;
+    }
+
     if (trappedOrDowned) {
       this.thirdPersonFlashlightGroup.visible = false;
+      this.thirdPersonWebCocoonGroup.visible = true;
       const struggle = Math.sin(bobPhase * 3.2) * 0.09;
       this.bodyPivot.position.set(0, -0.36, 0);
       this.bodyPivot.rotation.set(0.28, struggle * 0.5, struggle * 0.35);
@@ -2225,6 +2276,8 @@ export class DoomAstronaut {
       this.rightArm.elbowPivot.rotation.set(0.8, 0, 0);
       return;
     }
+
+    this.thirdPersonWebCocoonGroup.visible = false;
 
     const stride = Math.min(1, planarSpeed / 5.4);
     const legSwing = Math.sin(bobPhase * 0.5) * 0.52 * stride;

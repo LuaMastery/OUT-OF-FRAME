@@ -33,7 +33,10 @@ import {
   DoomSharedUniforms,
   MAX_DOOM_LIGHTS,
 } from './DoomShader';
-import { DoomSpider } from './DoomSpider';
+import {
+  DoomSpider,
+  SpiderCinematicMode,
+} from './DoomSpider';
 import { DoomSpiderWebManager } from './DoomSpiderWebs';
 import { createDoomTextures } from './DoomTextures';
 import { DoomWorldItems } from './DoomWorldItems';
@@ -299,6 +302,9 @@ export class DoomGameApp {
   private lastWebSpinStep = -1;
   private readonly strikeOriginPos = new THREE.Vector3();
   private readonly strikeSpiderPos = new THREE.Vector3();
+  private currentAbductionMode: SpiderCinematicMode | null = null;
+  private currentAbductionProgress = 0;
+  private readonly currentAbductionSpiderPos = new THREE.Vector3();
   private permadeathTimerId = 0;
 
   private keys = new Set<string>();
@@ -400,6 +406,9 @@ export class DoomGameApp {
       this.webManager,
       this.sound
     );
+    this.spider.onWebTrapSpawned = (x, z) => {
+      this.multiplayer?.notifyWebTrapSpawned(x, z);
+    };
 
     this.inventory = new DoomInventory(this.viewportEl, this.sound, {
       onToggleFlashlightFromUI: () => {
@@ -435,7 +444,11 @@ export class DoomGameApp {
       onUseFlare: () => {
         this.flashlight.triggerQuickItemAction('flare');
         this.worldItems.spawnLitFlare(this.position, this.yaw);
-        this.multiplayer?.notifyFlareSpawned(this.position, this.yaw);
+        this.multiplayer?.notifyFlareSpawned(
+          this.position,
+          this.yaw,
+          this.spider.position
+        );
         return true;
       },
       onUseKnife: () => {
@@ -453,14 +466,34 @@ export class DoomGameApp {
           lookForward,
           this.sound
         );
+        if (res.cutNearbyTrap && res.cutTrapPos) {
+          this.multiplayer?.notifyWebTrapCut(
+            res.cutTrapPos.x,
+            res.cutTrapPos.z
+          );
+        }
+        const interruptedDrag =
+          this.multiplayer?.tryInterruptSpiderAbduction(
+            this.position,
+            this.spider.position,
+            'knife'
+          ) ?? false;
         const rescuedAlly =
-          this.multiplayer?.tryRescueNearbyTrappedAlly(this.position) ?? false;
+          this.multiplayer?.tryRescueNearbyTrappedAlly(
+            this.position,
+            this.spider.position,
+            true
+          ) ?? false;
         if (res.cutActiveSnare) {
           this.inventory.setAbductionScreenFX(0, 0, 0, 0);
           this.syncInventoryVitals();
         }
         return {
-          cutWeb: res.cutActiveSnare || res.cutNearbyTrap || rescuedAlly,
+          cutWeb:
+            res.cutActiveSnare ||
+            res.cutNearbyTrap ||
+            interruptedDrag ||
+            rescuedAlly,
         };
       },
       onUseKey: () => {
@@ -536,6 +569,7 @@ export class DoomGameApp {
           this.worldItems.spawnLitFlare(pos, yaw);
         },
         onRescuedByAlly: () => {
+          this.webManager.clearEnsnarement();
           const lookForward = new THREE.Vector3(
             -Math.sin(this.yaw),
             0,
@@ -548,6 +582,32 @@ export class DoomGameApp {
           );
           this.inventory.setAbductionScreenFX(0, 0, 0, 0);
           this.syncInventoryVitals();
+        },
+        onAbductionInterruptedByAlly: () => {
+          this.abortAbductionByAllyRescue();
+        },
+        onSpiderInterruptedAndFlees: (threatPos) => {
+          this.spider.interruptAbductionAndFlee(threatPos);
+        },
+        onCaughtByAuthoritativeSpider: (spiderPos) => {
+          if (this.activeSequence === 'NONE') {
+            this.triggerSpiderCatch(spiderPos);
+          }
+        },
+        onRemoteVictimFinishedAbduction: () => {
+          this.spider.relocateAwayAfterAbduction();
+        },
+        onRemoteWebTrapSpawned: (x, z) => {
+          this.webManager.spawnWebTrap(x, z, false);
+        },
+        onRemoteWebTrapTriggered: (trapPos, playerPos) => {
+          this.webManager.collapseTrapNearWorld(trapPos.x, trapPos.z);
+          if (!this.multiplayer || this.multiplayer.isHost) {
+            this.spider.alertToWebTrap(trapPos, playerPos);
+          }
+        },
+        onRemoteWebTrapCut: (x, z) => {
+          this.webManager.collapseTrapNearWorld(x, z);
         },
         onNotifyHud: (text) => {
           this.multiplayer?.pushHudNotice(text);
@@ -1023,7 +1083,7 @@ export class DoomGameApp {
    * - Se ainda houver reserva vital (>36%): Ataque brutal -> Desmaio -> Puxado até o Ninho de Teia -> Acorda bem ferido na teia!
    * - Se já estiver gravemente ferido (<=36%): MORTE REAL PERMANENTE!
    */
-  private triggerSpiderCatch(): void {
+  private triggerSpiderCatch(overrideSpiderPos?: THREE.Vector3): void {
     if (this.activeSequence !== 'NONE') return;
 
     this.inventory.setOpen(false);
@@ -1041,8 +1101,9 @@ export class DoomGameApp {
 
     this.strikeOriginPos.copy(this.position);
 
+    const spiderSource = overrideSpiderPos ?? this.spider.position;
     const toSpider = new THREE.Vector3()
-      .subVectors(this.spider.position, this.position)
+      .subVectors(spiderSource, this.position)
       .setY(0);
     if (toSpider.lengthSq() < 0.01) {
       toSpider.set(-Math.sin(this.yaw), 0, -Math.cos(this.yaw));
@@ -1109,6 +1170,42 @@ export class DoomGameApp {
   }
 
   /**
+   * Interrompe imediatamente o sequestro/arrasto quando um aliado usa Sinalizador ou Faca perto da Aranha,
+   * devolvendo o controle ao jogador no próprio corredor sem levá-lo ao ninho!
+   */
+  private abortAbductionByAllyRescue(): void {
+    if (
+      this.activeSequence !== 'ABDUCTION_TO_WEB' &&
+      !(this.activeSequence === 'PERMADEATH_EXECUTION' && this.seqTime < 1.45)
+    ) {
+      return;
+    }
+
+    if (this.permadeathTimerId) {
+      window.clearTimeout(this.permadeathTimerId);
+      this.permadeathTimerId = 0;
+    }
+
+    this.activeSequence = 'NONE';
+    this.seqTime = 0;
+    this.currentAbductionMode = null;
+    this.currentAbductionProgress = 0;
+    this.webManager.clearEnsnarement();
+    this.spider.interruptAbductionAndFlee(this.position);
+    this.inventory.setAbductionScreenFX(0, 0, 0, 0);
+
+    this.roll = 0;
+    this.pitch = 0;
+    this.cameraShake = 0.06;
+    this.setCameraFov(74);
+    this.playerHealth = Math.max(this.playerHealth, 38);
+    this.playerSanity = Math.max(this.playerSanity, 40);
+    this.sound.playWakeUpGasp();
+    this.syncInventoryVitals();
+    this.syncCamera(0);
+  }
+
+  /**
    * Executa quadro a quadro a cena em 1ª pessoa:
    * 1) Ataque visceral com rasgos de garras e queda no chão (lanterna cai das mãos e apaga!)
    * 2) Desmaio com pálpebras pesadas
@@ -1144,6 +1241,9 @@ export class DoomGameApp {
       this.cameraShake = 0.14 * (1 - u * 0.5);
       this.setCameraFov(74 + Math.sin(u * Math.PI) * 14);
 
+      this.currentAbductionMode = 'FATAL_EXECUTION';
+      this.currentAbductionProgress = u;
+      this.currentAbductionSpiderPos.copy(this.strikeSpiderPos);
       this.spider.updateCinematicSequence(
         dt,
         this.elapsed,
@@ -1216,6 +1316,9 @@ export class DoomGameApp {
           0.22 * Math.sin(u * Math.PI)
         );
 
+      this.currentAbductionMode = 'STRIKE_ATTACK';
+      this.currentAbductionProgress = u;
+      this.currentAbductionSpiderPos.copy(lungePos);
       this.spider.updateCinematicSequence(
         dt,
         this.elapsed,
@@ -1252,6 +1355,13 @@ export class DoomGameApp {
         this.position.copy(this.webManager.dragCorridorStart);
       }
 
+      this.currentAbductionMode = 'DRAGGING_TO_WEB';
+      this.currentAbductionProgress = 0;
+      this.currentAbductionSpiderPos.set(
+        this.position.x,
+        1.38,
+        this.position.z + 2.15
+      );
       this.setCameraFov(68);
       this.astronaut.updateSupineAbductionPose(this.position, this.yaw, 0, false);
       this.syncCustomSequenceCamera(this.position, 0.28);
@@ -1309,6 +1419,9 @@ export class DoomGameApp {
         this.position.z + 2.15
       );
 
+      this.currentAbductionMode = 'DRAGGING_TO_WEB';
+      this.currentAbductionProgress = u;
+      this.currentAbductionSpiderPos.copy(spiderDragPos);
       this.spider.updateCinematicSequence(
         dt,
         this.elapsed,
@@ -1362,6 +1475,9 @@ export class DoomGameApp {
         this.position.z + 1.05
       );
 
+      this.currentAbductionMode = 'WEBBING_IN_LAIR';
+      this.currentAbductionProgress = u;
+      this.currentAbductionSpiderPos.copy(spiderOverLair);
       this.spider.updateCinematicSequence(
         dt,
         this.elapsed,
@@ -1389,7 +1505,10 @@ export class DoomGameApp {
     this.astronaut.updateSupineAbductionPose(this.position, this.yaw, 0, false);
     if (!this.seqStagedWake) {
       this.seqStagedWake = true;
+      this.currentAbductionMode = null;
+      this.currentAbductionProgress = 0;
       this.spider.relocateAwayAfterAbduction();
+      this.multiplayer?.notifyLocalAbductionFinished();
       this.webManager.placePlayerInWakingLairWeb();
       this.playerHealth = 22;
       this.playerBleeding = true;
@@ -1482,6 +1601,9 @@ export class DoomGameApp {
       this.interactQueued = false;
       this.struggleQueued = false;
       this.updateHorrorSequence(dt);
+      const beingDragged =
+        this.currentAbductionMode === 'DRAGGING_TO_WEB' ||
+        this.currentAbductionMode === 'STRIKE_ATTACK';
       this.multiplayer?.update(
         dt,
         this.elapsed,
@@ -1497,12 +1619,16 @@ export class DoomGameApp {
           flashDir: this.sharedUniforms.uFlashlightDir.value,
           health: this.playerHealth,
           bleeding: this.playerBleeding,
-          ensnared: true,
-          inSequence: true,
+          ensnared: this.currentAbductionMode === 'WEBBING_IN_LAIR' || this.seqTime >= 5.85,
+          inSequence: this.seqTime < 5.85,
+          beingDragged,
+          abductionMode: this.currentAbductionMode,
+          abductionProgress: this.currentAbductionProgress,
+          abductionSpiderPos: this.currentAbductionSpiderPos,
           dead: this.activeSequence === 'PERMADEATH_EXECUTION',
           afk: isLocalAfk,
         },
-        this.spider.getNetworkSnapshot(),
+        this.spider.getNetworkSnapshot(this.multiplayer?.localPlayerId ?? null),
         true
       );
       this.updateFlickeringLightsAndAudio();
@@ -1592,6 +1718,11 @@ export class DoomGameApp {
       this.sound,
       (trapPos) => {
         this.spider.alertToWebTrap(trapPos, this.position);
+        this.multiplayer?.notifyWebTrapTriggered(
+          trapPos.x,
+          trapPos.z,
+          this.position
+        );
       }
     );
 
@@ -1741,7 +1872,56 @@ export class DoomGameApp {
       sprinting || (isSliding && this.slideState.slideTimer < 0.2);
 
     let spiderOut: { cameraShakeAmount: number; playerDistance: number };
-    if (this.multiplayer && !this.multiplayer.isHost) {
+    const remoteAbduction =
+      this.multiplayer?.getActiveRemoteAbduction() ?? null;
+    const activeFlares = this.worldItems.getActiveFlares();
+
+    // Se houver um sinalizador aceso perto de um aliado sendo arrastado, salva-o automaticamente!
+    if (remoteAbduction && this.multiplayer) {
+      for (const flItem of activeFlares) {
+        if (
+          Math.hypot(
+            flItem.position.x - remoteAbduction.spiderPos.x,
+            flItem.position.z - remoteAbduction.spiderPos.z
+          ) <= 5.2 ||
+          Math.hypot(
+            flItem.position.x - remoteAbduction.victimPos.x,
+            flItem.position.z - remoteAbduction.victimPos.z
+          ) <= 5.2
+        ) {
+          this.multiplayer.tryInterruptSpiderAbduction(
+            flItem.position,
+            remoteAbduction.spiderPos,
+            'flare'
+          );
+          break;
+        }
+      }
+    }
+
+    const updatedRemoteAbduction =
+      this.multiplayer?.getActiveRemoteAbduction() ?? null;
+
+    if (updatedRemoteAbduction && this.multiplayer) {
+      // Todos os jogadores assistem em 3ª pessoa a Aranha atacando/arrastando/tecendo sobre o aliado!
+      this.spider.updateRemoteCinematicSequence(
+        dt,
+        this.elapsed,
+        updatedRemoteAbduction.mode,
+        updatedRemoteAbduction.progress,
+        updatedRemoteAbduction.spiderPos,
+        updatedRemoteAbduction.victimPos
+      );
+      const distToSpider = Math.hypot(
+        this.position.x - this.spider.position.x,
+        this.position.z - this.spider.position.z
+      );
+      spiderOut = {
+        cameraShakeAmount:
+          distToSpider < 9.0 ? (1 - distToSpider / 9.0) * 0.024 : 0,
+        playerDistance: distToSpider,
+      };
+    } else if (this.multiplayer && !this.multiplayer.isHost) {
       const remotePkt = this.multiplayer.consumeLatestRemoteSpiderPacket();
       if (remotePkt && Date.now() - remotePkt.ts < 2500) {
         spiderOut = this.spider.applyRemoteNetworkState(
@@ -1755,6 +1935,7 @@ export class DoomGameApp {
           }
         );
       } else {
+        this.spider.ensureExitedCinematic();
         spiderOut = this.spider.update(
           dt,
           this.elapsed,
@@ -1764,35 +1945,43 @@ export class DoomGameApp {
           isCrouching,
           fl.beamIntensity > 0.05,
           this.sharedUniforms.uFlashlightDir.value,
-          this.worldItems.getActiveFlares(),
+          activeFlares,
           () => {
             this.triggerSpiderCatch();
           }
         );
       }
     } else if (this.multiplayer && this.multiplayer.isHost) {
-      const chosen = this.multiplayer.pickSpiderTargetPlayer(
-        this.position,
-        this.yaw,
-        spiderHearsSprint,
-        isCrouching,
-        fl.beamIntensity > 0.05,
-        this.spider.position,
-        isLocalAfk
-      );
+      this.spider.ensureExitedCinematic();
+      const candidates = this.multiplayer.buildSpiderPlayerCandidates({
+        pos: this.position,
+        yaw: this.yaw,
+        sprinting: spiderHearsSprint,
+        crouching: isCrouching,
+        flashlightOn: fl.beamIntensity > 0.05,
+        flashlightDir: this.sharedUniforms.uFlashlightDir.value,
+        ensnared: this.webManager.isPlayerEnsnared,
+        afk: isLocalAfk,
+      });
+      const chosen = this.spider.selectBestMultiplayerCandidate(candidates);
       spiderOut = this.spider.update(
         dt,
         this.elapsed,
-        chosen.targetPos,
-        chosen.targetYaw,
+        chosen.pos,
+        chosen.yaw,
         chosen.sprinting,
         chosen.crouching,
         chosen.flashlightOn,
-        this.sharedUniforms.uFlashlightDir.value,
-        this.worldItems.getActiveFlares(),
+        chosen.flashlightDir,
+        activeFlares,
         () => {
-          if (chosen.targetingLocal) {
+          if (chosen.isLocal) {
             this.triggerSpiderCatch();
+          } else {
+            this.multiplayer?.notifyAuthoritativeSpiderCaughtAlly(
+              chosen.id,
+              this.spider.position
+            );
           }
         }
       );
@@ -1806,7 +1995,7 @@ export class DoomGameApp {
         isCrouching,
         fl.beamIntensity > 0.05,
         this.sharedUniforms.uFlashlightDir.value,
-        this.worldItems.getActiveFlares(),
+        activeFlares,
         () => {
           this.triggerSpiderCatch();
         }
@@ -1846,7 +2035,11 @@ export class DoomGameApp {
     this.syncCamera(bobOffset);
 
     if (interactPressed && this.multiplayer) {
-      this.multiplayer.tryRescueNearbyTrappedAlly(this.position);
+      this.multiplayer.tryRescueNearbyTrappedAlly(
+        this.position,
+        this.spider.position,
+        hasKnife
+      );
     }
 
     const camForward = new THREE.Vector3(0, 0, -1).applyQuaternion(
@@ -1900,7 +2093,9 @@ export class DoomGameApp {
         dead: false,
         afk: isLocalAfk,
       },
-      this.spider.getNetworkSnapshot(),
+      this.spider.getNetworkSnapshot(
+        updatedRemoteAbduction?.allyId ?? null
+      ),
       !this.engaged || this.inventory.open || this.inventory.gameOverVisible
     );
 

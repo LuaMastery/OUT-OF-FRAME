@@ -118,6 +118,17 @@ export interface NetworkPlayerPosePacket {
   inSequence: boolean;
   dead: boolean;
   afk?: boolean;
+  beingDragged?: boolean;
+  abductionMode?:
+    | 'STRIKE_ATTACK'
+    | 'DRAGGING_TO_WEB'
+    | 'WEBBING_IN_LAIR'
+    | 'FATAL_EXECUTION'
+    | null;
+  abductionProgress?: number;
+  abductionSpiderX?: number;
+  abductionSpiderY?: number;
+  abductionSpiderZ?: number;
   ts: number;
 }
 
@@ -134,6 +145,17 @@ export interface NetworkSpiderPacket {
   fwdZ: number;
   state: string;
   surfaceMode: 'FLOOR' | 'WALL' | 'CEILING';
+  cinematicMode?:
+    | 'STRIKE_ATTACK'
+    | 'DRAGGING_TO_WEB'
+    | 'WEBBING_IN_LAIR'
+    | 'FATAL_EXECUTION'
+    | null;
+  cinematicProgress?: number;
+  victimId?: string | null;
+  victimX?: number;
+  victimY?: number;
+  victimZ?: number;
   ts: number;
 }
 
@@ -159,6 +181,7 @@ export type NetworkWorldEvent =
   | {
       kind: 'flare';
       senderId: string;
+      senderName?: string;
       x: number;
       y: number;
       z: number;
@@ -170,6 +193,52 @@ export type NetworkWorldEvent =
       rescuerId: string;
       rescuerName: string;
       targetPlayerId: string;
+      ts: number;
+    }
+  | {
+      kind: 'interrupt_abduction';
+      rescuerId: string;
+      rescuerName: string;
+      targetPlayerId: string;
+      weapon: 'knife' | 'flare';
+      x: number;
+      z: number;
+      ts: number;
+    }
+  | {
+      kind: 'spider_catch_player';
+      targetPlayerId: string;
+      spiderX: number;
+      spiderY: number;
+      spiderZ: number;
+      ts: number;
+    }
+  | {
+      kind: 'abduction_finished';
+      victimId: string;
+      ts: number;
+    }
+  | {
+      kind: 'web_trap_spawned';
+      x: number;
+      z: number;
+      ts: number;
+    }
+  | {
+      kind: 'web_trap_triggered';
+      senderId: string;
+      senderName: string;
+      x: number;
+      z: number;
+      playerX: number;
+      playerZ: number;
+      ts: number;
+    }
+  | {
+      kind: 'web_trap_cut';
+      senderId: string;
+      x: number;
+      z: number;
       ts: number;
     }
   | {
