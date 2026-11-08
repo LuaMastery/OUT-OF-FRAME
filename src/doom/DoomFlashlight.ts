@@ -109,6 +109,7 @@ export class DoomFlashlight {
   // Grupo de ação rápida em 1ª pessoa (atalhos [1], [2], [3] e uso de objetos)
   private readonly quickRootGroup = new THREE.Group();
   private readonly quickAnimGroup = new THREE.Group();
+  private readonly knifeBladePivot = new THREE.Group();
   private readonly quickPropMeshes: Record<QuickHandheldKind, THREE.Object3D>;
   private readonly flareSparkMesh: THREE.Mesh;
   private activeQuickKind: QuickHandheldKind | null = null;
@@ -135,11 +136,11 @@ export class DoomFlashlight {
   constructor(aspect: number) {
     this.viewCamera = new THREE.PerspectiveCamera(62, aspect, 0.04, 5.0);
 
-    // Iluminação direcional contrastada para destacar chanfros, anéis EVA e facetas low-poly
-    const ambient = new THREE.AmbientLight(0x8a8e98, 0.9);
-    const keyLight = new THREE.DirectionalLight(0xfff3de, 1.42);
+    // Iluminação direcional calibrada sem estourar o albedo (>1.0) para preservar 100% da Camuflagem Astronáutica no COLORMAP!
+    const ambient = new THREE.AmbientLight(0x88909e, 0.48);
+    const keyLight = new THREE.DirectionalLight(0xfff1d6, 0.88);
     keyLight.position.set(-0.65, 1.25, 0.95);
-    const rimLight = new THREE.DirectionalLight(0x768296, 0.62);
+    const rimLight = new THREE.DirectionalLight(0x6e7d94, 0.38);
     rimLight.position.set(0.85, -0.35, 0.35);
     this.viewScene.add(ambient, keyLight, rimLight);
 
@@ -342,14 +343,16 @@ export class DoomFlashlight {
     lens.rotation.y = Math.PI;
     model.add(lens);
 
-    // F) BRAÇO DIREITO ORIGINAL DO ASTRONAUTA (`AstronautRightArm`) SEGURANDO A LANTERNA!
+    // F) BRAÇO DIREITO ORIGINAL DO ASTRONAUTA (`AstronautRightArm`) COM CAMUFLAGEM ASTRONÁUTICA SEGURANDO A LANTERNA!
     this.rightAstronautArm = createAstronautArmRig('right', astroMats, {
-      includeUpperArm: false,
+      includeUpperArm: true,
     });
     this.rightAstronautArm.setGripPose('flashlight');
-    // Cotovelo à direita/abaixo/atrás -> antebraço EVA sobe na diagonal até envolver o tubo recartilhado da lanterna!
+    // Ombro direito projetado da borda inferior-direita -> antebraço camuflado sobe na diagonal até envolver a lanterna!
+    this.rightAstronautArm.shoulderPivot.rotation.order = 'YXZ';
+    this.rightAstronautArm.shoulderPivot.rotation.set(0.84, -0.18, -0.14);
     this.rightAstronautArm.elbowPivot.rotation.order = 'YXZ';
-    this.rightAstronautArm.elbowPivot.rotation.set(1.96, 0.34, -0.16);
+    this.rightAstronautArm.elbowPivot.rotation.set(1.12, 0.48, -0.04);
     this.rightAstronautArm.wristPivot.rotation.order = 'YXZ';
     this.rightAstronautArm.wristPivot.rotation.set(-1.92, -0.28, 0.26);
     this.rightAstronautArm.root.position.set(0, 0, 0);
@@ -403,78 +406,142 @@ export class DoomFlashlight {
     });
     const sparkMat = new THREE.MeshBasicMaterial({ color: 0xffe89c });
 
-    // Braço Esquerdo Original Completo do Astronauta (ombro + antebraço com manômetro O2 + anel azul-cobalto + luva EVA!)
+    // Braço Esquerdo Original Completo do Astronauta ancorado anatomicamente no OMBRO ESQUERDO!
+    // Os objetos e o Canivete Oxidado são filhos diretos do `gripSocket` dentro da luva EVA de 5 dedos,
+    // de modo que toda animação é conduzida pelas juntas reais (`shoulderPivot`, `elbowPivot`, `wristPivot`)!
     this.leftAstronautArm = createAstronautArmRig('left', astroMats, {
       includeUpperArm: true,
     });
     this.leftAstronautArm.setGripPose('knife');
-    // Mantém antebraço e braço superior num alinhamento anatômico contínuo vindo do ombro inferior-esquerdo (-X, -Y, +Z)
     this.leftAstronautArm.shoulderPivot.rotation.order = 'YXZ';
-    this.leftAstronautArm.shoulderPivot.rotation.set(2.18, -0.32, 0.16);
     this.leftAstronautArm.elbowPivot.rotation.order = 'YXZ';
-    this.leftAstronautArm.elbowPivot.rotation.set(0.22, -0.04, 0.04);
-    // Orienta a palma da luva EVA esquerda em torno dos cabos verticais (+Y) centrados em (0, 0, 0)
     this.leftAstronautArm.wristPivot.rotation.order = 'YXZ';
-    this.leftAstronautArm.wristPivot.rotation.set(-0.82, 0.28, -0.22);
     this.leftAstronautArm.root.position.set(0, 0, 0);
-    this.leftAstronautArm.root.updateMatrixWorld(true);
-    const leftSocketOffset = new THREE.Vector3();
-    this.leftAstronautArm.gripSocket.getWorldPosition(leftSocketOffset);
-    this.leftAstronautArm.root.position.set(
-      0.004 - leftSocketOffset.x,
-      0.008 - leftSocketOffset.y,
-      -0.006 - leftSocketOffset.z
-    );
     this.quickAnimGroup.add(this.leftAstronautArm.root);
 
-    // 2A) Canivete Oxidado em 1ª pessoa (lâmina chanfrada apontada para cortar teias!)
+    // Adaptador canônico dentro do `gripSocket` da luva esquerda:
+    // +Y aponta para fora do topo do punho fechado (lado do polegar/indicador) e -Z aponta à frente pelos nós dos dedos!
+    const itemSocketAdapter = new THREE.Group();
+    itemSocketAdapter.name = 'AstronautLeftGripAdapter';
+    itemSocketAdapter.rotation.set(-Math.PI * 0.5, 0, 0);
+    this.leftAstronautArm.gripSocket.add(itemSocketAdapter);
+
+    const honedEdgeMat = new THREE.MeshLambertMaterial({
+      color: 0xeef4fc,
+      flatShading: true,
+    });
+
+    // 2A) Canivete Oxidado Dobrável (`Canivete oxidado`) projetado para a luva EVA do Astronauta:
+    // Cabo com virolas de latão + pino de abertura para polegar pressurizado + lâmina articulada com fio polido à frente (-Z)!
     const knifeProp = new THREE.Group();
+    knifeProp.position.set(0.004, 0.006, -0.004);
     const kGrip = new THREE.Mesh(
-      new THREE.BoxGeometry(0.036, 0.145, 0.046),
+      new THREE.BoxGeometry(0.028, 0.118, 0.036),
       woodMat
     );
-    kGrip.position.set(0, -0.01, 0);
-    const kPommel = new THREE.Mesh(
-      new THREE.BoxGeometry(0.04, 0.026, 0.05),
+    const kBackSpring = new THREE.Mesh(
+      new THREE.BoxGeometry(0.012, 0.122, 0.008),
       darkRingMat
     );
-    kPommel.position.set(0, -0.088, 0);
-    const kGuard = new THREE.Mesh(
-      new THREE.BoxGeometry(0.048, 0.022, 0.076),
+    kBackSpring.position.set(0, 0, 0.016);
+    const kBladeSlot = new THREE.Mesh(
+      new THREE.BoxGeometry(0.01, 0.112, 0.008),
+      darkRingMat
+    );
+    kBladeSlot.position.set(0, 0.002, -0.015);
+    const kBolsterFront = new THREE.Mesh(
+      new THREE.BoxGeometry(0.033, 0.026, 0.042),
       brassMat
     );
-    kGuard.position.set(0, 0.068, 0);
-    for (const ry of [-0.05, -0.01, 0.03]) {
+    kBolsterFront.position.set(0, 0.056, 0);
+    const kBolsterRear = new THREE.Mesh(
+      new THREE.BoxGeometry(0.031, 0.022, 0.039),
+      brassMat
+    );
+    kBolsterRear.position.set(0, -0.056, 0);
+    const kBail = new THREE.Mesh(
+      new THREE.TorusGeometry(0.012, 0.0028, 6, 10),
+      brassMat
+    );
+    kBail.position.set(0, -0.072, 0.006);
+    kBail.rotation.y = Math.PI * 0.5;
+    for (const ry of [-0.03, 0, 0.028]) {
       const rvt = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.005, 0.005, 0.042, 6),
+        new THREE.CylinderGeometry(0.0042, 0.0042, 0.032, 6),
         brassMat
       );
       rvt.rotation.z = Math.PI * 0.5;
-      rvt.position.set(0, ry, 0);
+      rvt.position.set(0, ry, 0.002);
       knifeProp.add(rvt);
     }
-    const kBlade = new THREE.Mesh(
-      new THREE.BoxGeometry(0.011, 0.185, 0.042),
-      bladeMat
-    );
-    kBlade.position.set(0, 0.17, 0.002);
-    const kSpine = new THREE.Mesh(
-      new THREE.BoxGeometry(0.016, 0.18, 0.011),
+
+    this.knifeBladePivot.name = 'AstronautPocketKnifeBladePivot';
+    this.knifeBladePivot.position.set(0, 0.062, -0.002);
+
+    const kRicasso = new THREE.Mesh(
+      new THREE.BoxGeometry(0.012, 0.028, 0.033),
       darkRingMat
     );
-    kSpine.position.set(0, 0.168, -0.016);
-    const kFuller = new THREE.Mesh(
-      new THREE.BoxGeometry(0.013, 0.135, 0.009),
-      rustMat
+    kRicasso.position.set(0, 0.014, 0.002);
+    const kThumbStud = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.0058, 0.0058, 0.024, 8),
+      brassMat
     );
-    kFuller.position.set(0, 0.155, -0.004);
-    const kTip = new THREE.Mesh(
-      new THREE.ConeGeometry(0.023, 0.078, 4),
+    kThumbStud.rotation.z = Math.PI * 0.5;
+    kThumbStud.position.set(0, 0.034, 0.008);
+    const kBlade = new THREE.Mesh(
+      new THREE.BoxGeometry(0.01, 0.156, 0.032),
       bladeMat
     );
+    kBlade.position.set(0, 0.102, 0.001);
+    // Chanfro duplo (hollow grind) + fio polido para refletir a luz claramente em qualquer ângulo do golpe!
+    const kBevelSlope = new THREE.Mesh(
+      new THREE.BoxGeometry(0.0115, 0.156, 0.015),
+      honedEdgeMat
+    );
+    kBevelSlope.position.set(0, 0.102, -0.009);
+    const kEdgeBevel = new THREE.Mesh(
+      new THREE.BoxGeometry(0.005, 0.158, 0.011),
+      honedEdgeMat
+    );
+    // Fio cortante afiado voltado para -Z (direção dos nós dos dedos / trajetória de corte!)
+    kEdgeBevel.position.set(0, 0.103, -0.016);
+    const kSpine = new THREE.Mesh(
+      new THREE.BoxGeometry(0.0135, 0.148, 0.009),
+      darkRingMat
+    );
+    kSpine.position.set(0, 0.098, 0.015);
+    const kFuller = new THREE.Mesh(
+      new THREE.BoxGeometry(0.0125, 0.112, 0.007),
+      rustMat
+    );
+    kFuller.position.set(0, 0.098, 0.005);
+    const kTip = new THREE.Mesh(
+      new THREE.ConeGeometry(0.021, 0.068, 4),
+      honedEdgeMat
+    );
     kTip.scale.set(0.32, 1, 1);
-    kTip.position.set(0, 0.298, 0.003);
-    knifeProp.add(kGrip, kPommel, kGuard, kBlade, kSpine, kFuller, kTip);
+    kTip.position.set(0, 0.208, -0.002);
+    this.knifeBladePivot.add(
+      kRicasso,
+      kThumbStud,
+      kBlade,
+      kBevelSlope,
+      kEdgeBevel,
+      kSpine,
+      kFuller,
+      kTip
+    );
+
+    knifeProp.add(
+      kGrip,
+      kBackSpring,
+      kBladeSlot,
+      kBolsterFront,
+      kBolsterRear,
+      kBail,
+      this.knifeBladePivot
+    );
 
     // 2B) Rolo de Gaze Estéril (miolo oco real + cinta médica + ponta caída natural)
     const bandageProp = new THREE.Group();
@@ -681,9 +748,11 @@ export class DoomFlashlight {
     for (const k of Object.keys(this.quickPropMeshes) as QuickHandheldKind[]) {
       const m = this.quickPropMeshes[k];
       m.visible = false;
-      this.quickAnimGroup.add(m);
+      itemSocketAdapter.add(m);
     }
 
+    // Ancora `quickRootGroup` diretamente na posição anatômica do ombro esquerdo do Astronauta na viewCamera!
+    this.quickRootGroup.position.set(-0.29, -0.23, 0.04);
     this.quickRootGroup.add(this.quickAnimGroup);
     this.quickRootGroup.visible = false;
     this.viewScene.add(this.quickRootGroup);
@@ -930,114 +999,217 @@ export class DoomFlashlight {
     }
 
     this.leftAstronautArm.setInUse(true);
+    this.quickAnimGroup.rotation.set(0, 0, 0);
     const kind = this.activeQuickKind;
 
     if (kind === 'knife') {
-      // Saque relâmpago (0..0.24) -> Golpe diagonal cortando fios de teia (0.24..0.68) -> Recuo (0.68..1)
+      // Animação EVA Anatômica do Canivete Oxidado (`AstronautLeftArm` ancorado no ombro esquerdo):
+      // Fase 1 (0..0.24): Saque rápido elevando antebraço camuflado + manômetro O2 + abertura mecânica da lâmina (`knifeBladePivot`);
+      // Fase 2 (0.24..0.68): Golpe diagonal vigoroso cruzando a mira, conduzido pelo ombro + fole do cotovelo + giro axial do punho;
+      // Fase 3 (0.68..1.0): Recuo tático amortecido de volta ao coldre esquerdo!
       if (u < 0.24) {
         const p = u / 0.24;
         const e = 1 - Math.pow(1 - p, 3);
+        const flickOvershoot =
+          p < 0.82
+            ? -2.05 * (1 - Math.pow(p / 0.82, 2.2))
+            : Math.sin(((p - 0.82) / 0.18) * Math.PI) * 0.09;
+        this.knifeBladePivot.rotation.set(flickOvershoot, 0, 0);
+
         this.quickRootGroup.position.set(
-          -0.28 + 0.06 * e,
-          -0.46 + 0.36 * e,
-          -0.38 - 0.06 * e
+          -0.31 + 0.04 * e,
+          -0.26 + 0.09 * e,
+          0.08 - 0.02 * e
         );
-        this.quickAnimGroup.rotation.set(
-          -0.35 + 0.25 * e,
-          -0.35,
-          -0.58 + 0.18 * e
+        this.leftAstronautArm.shoulderPivot.rotation.set(
+          0.74 + 0.52 * e,
+          -0.02 - 0.06 * e,
+          0.04 + 0.08 * e
+        );
+        this.leftAstronautArm.elbowPivot.rotation.set(
+          0.58 + 0.24 * e,
+          -0.08 - 0.08 * e,
+          0.16 + 0.16 * e
+        );
+        this.leftAstronautArm.wristPivot.rotation.set(
+          -0.06 * e,
+          0.18 * e,
+          -0.12 * e
         );
       } else if (u < 0.68) {
         const p = (u - 0.24) / 0.44;
         const slash = p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
+        const lunge = Math.sin(slash * Math.PI);
+        this.knifeBladePivot.rotation.set(0, 0, 0);
+
+        // Mantém 100% da lâmina, da luva EVA, do anel azul e do manômetro O2 visíveis cruzando a mira em diagonal!
         this.quickRootGroup.position.set(
-          -0.22 + slash * 0.44,
-          -0.1 - slash * 0.15,
-          -0.44 - Math.sin(slash * Math.PI) * 0.09
+          -0.27 + slash * 0.06,
+          -0.17 + slash * 0.015,
+          0.06 + slash * 0.03 - lunge * 0.015
         );
-        this.quickAnimGroup.rotation.set(
-          -0.1 - slash * 0.65,
-          -0.35 + slash * 0.85,
-          -0.4 - slash * 1.15
+        this.leftAstronautArm.shoulderPivot.rotation.set(
+          1.26 + lunge * 0.05 - slash * 0.04,
+          -0.08 - slash * 0.18,
+          0.12 + slash * 0.13
+        );
+        this.leftAstronautArm.elbowPivot.rotation.set(
+          0.82 - slash * 0.08 + lunge * 0.04,
+          -0.16 - slash * 0.08,
+          0.32 + slash * 0.08
+        );
+        // Pronação axial controlada (`ry: +0.18 -> -0.44`) do anel metálico EVA de desconexão de punho:
+        // inclina a lâmina diagonalmente (~45°) para a direita através da mira conduzindo o golpe pelo fio polido!
+        this.leftAstronautArm.wristPivot.rotation.set(
+          -0.06 - slash * 0.34,
+          0.18 - slash * 0.62,
+          -0.12 - slash * 0.24
         );
       } else {
         const p = (u - 0.68) / 0.32;
-        this.quickRootGroup.position.set(
-          0.22 - p * 0.36,
-          -0.25 - p * 0.32,
-          -0.44 + p * 0.1
+        const e = p * p * (3 - 2 * p);
+        this.knifeBladePivot.rotation.set(
+          -0.95 * Math.max(0, (p - 0.35) / 0.65),
+          0,
+          0
         );
-        this.quickAnimGroup.rotation.set(
-          -0.75 - p * 0.3,
-          0.5 - p * 0.5,
-          -1.55 + p * 0.5
+
+        this.quickRootGroup.position.set(
+          -0.21 - e * 0.1,
+          -0.155 - e * 0.13,
+          0.09
+        );
+        this.leftAstronautArm.shoulderPivot.rotation.set(
+          1.22 - e * 0.52,
+          -0.26 + e * 0.22,
+          0.25 - e * 0.2
+        );
+        this.leftAstronautArm.elbowPivot.rotation.set(
+          0.74 - e * 0.18,
+          -0.24 + e * 0.16,
+          0.4 - e * 0.24
+        );
+        this.leftAstronautArm.wristPivot.rotation.set(
+          -0.4 + e * 0.4,
+          -0.44 + e * 0.44,
+          -0.36 + e * 0.36
         );
       }
       return;
     }
 
+    // Demais ações rápidas (`flare`, `bandage`, `morphine`, `key`, `battery`) articuladas pelas juntas EVA do ombro/cotovelo/punho!
+    this.knifeBladePivot.rotation.set(0, 0, 0);
     const arc = Math.sin(u * Math.PI);
+    const raise = 1 - Math.pow(1 - arc, 2);
+
     if (kind === 'flare') {
       const toss = u > 0.55 ? (u - 0.55) / 0.45 : 0;
+      const strikeJitter = Math.sin(u * 28) * 0.06 * (1 - toss);
       this.quickRootGroup.position.set(
-        -0.19 + u * 0.12,
-        -0.38 + arc * 0.31 - toss * 0.12,
-        -0.41 - toss * 0.18
+        -0.27 + toss * 0.05,
+        -0.24 + raise * 0.11 - toss * 0.06,
+        0.04 - toss * 0.06
       );
-      this.quickAnimGroup.rotation.set(
-        -0.25 - toss * 0.95,
-        0.22,
-        -0.28 + Math.sin(u * 24) * 0.08 * (1 - toss)
+      this.leftAstronautArm.shoulderPivot.rotation.set(
+        0.65 + raise * 0.62 + toss * 0.24,
+        -0.14 - toss * 0.22,
+        0.12 + raise * 0.16
+      );
+      this.leftAstronautArm.elbowPivot.rotation.set(
+        0.58 + raise * 0.26 - toss * 0.42,
+        -0.18,
+        0.26 + strikeJitter
+      );
+      this.leftAstronautArm.wristPivot.rotation.set(
+        -0.08 - toss * 0.26,
+        0.18 + strikeJitter * 1.4,
+        -0.1
       );
       this.flareSparkMesh.scale.setScalar(
         u > 0.22 ? 0.75 + Math.sin(u * 55) * 0.35 : 0.01
       );
     } else if (kind === 'bandage') {
-      const wrapOsc = Math.sin(u * Math.PI * 3) * 0.055;
-      this.quickRootGroup.position.set(
-        -0.15 + wrapOsc,
-        -0.38 + arc * 0.3,
-        -0.41
+      const wrapOsc = Math.sin(u * Math.PI * 3);
+      this.quickRootGroup.position.set(-0.26, -0.24 + raise * 0.11, 0.04);
+      this.leftAstronautArm.shoulderPivot.rotation.set(
+        0.64 + raise * 0.62,
+        -0.2 - wrapOsc * 0.12,
+        0.16 + raise * 0.18
       );
-      this.quickAnimGroup.rotation.set(
-        0.22,
-        0.35 + wrapOsc * 2.5,
-        -0.35 + wrapOsc * 1.8
+      this.leftAstronautArm.elbowPivot.rotation.set(
+        0.58 + raise * 0.3,
+        -0.22 + wrapOsc * 0.16,
+        0.3 + wrapOsc * 0.08
+      );
+      this.leftAstronautArm.wristPivot.rotation.set(
+        0.12,
+        0.28 + wrapOsc * 0.38,
+        -0.14
       );
     } else if (kind === 'morphine') {
       const tilt =
         u > 0.3 && u < 0.78 ? Math.sin(((u - 0.3) / 0.48) * Math.PI) : 0;
       this.quickRootGroup.position.set(
-        -0.13 + tilt * 0.06,
-        -0.38 + arc * 0.32,
-        -0.4 + tilt * 0.04
+        -0.26 + tilt * 0.03,
+        -0.24 + raise * 0.12,
+        0.04
       );
-      this.quickAnimGroup.rotation.set(
-        0.18 + tilt * 0.78,
-        0.25,
-        -0.22 - tilt * 0.25
+      this.leftAstronautArm.shoulderPivot.rotation.set(
+        0.65 + raise * 0.64 + tilt * 0.12,
+        -0.22 - tilt * 0.14,
+        0.16 + raise * 0.2
+      );
+      this.leftAstronautArm.elbowPivot.rotation.set(
+        0.58 + raise * 0.3 + tilt * 0.12,
+        -0.24,
+        0.3
+      );
+      this.leftAstronautArm.wristPivot.rotation.set(
+        0.16 + tilt * 0.28,
+        0.22,
+        -0.18 - tilt * 0.22
       );
     } else if (kind === 'key') {
       const turn =
         u > 0.32 && u < 0.76 ? Math.sin(((u - 0.32) / 0.44) * Math.PI) : 0;
       this.quickRootGroup.position.set(
-        -0.16 + arc * 0.08,
-        -0.38 + arc * 0.31,
-        -0.41
+        -0.26 + raise * 0.03,
+        -0.24 + raise * 0.11,
+        0.03 - raise * 0.03
       );
-      this.quickAnimGroup.rotation.set(
-        0.16 - turn * 0.35,
-        0.28 + turn * 0.55,
-        -0.24 + turn * 0.65
+      this.leftAstronautArm.shoulderPivot.rotation.set(
+        0.66 + raise * 0.64,
+        -0.18 - raise * 0.12,
+        0.14 + raise * 0.16
+      );
+      this.leftAstronautArm.elbowPivot.rotation.set(
+        0.56 + raise * 0.24,
+        -0.2,
+        0.26
+      );
+      this.leftAstronautArm.wristPivot.rotation.set(
+        -0.18,
+        0.18 + turn * 0.85,
+        -0.12 + turn * 0.22
       );
     } else {
-      // Bateria 9V aproximando-se da lanterna para recarga
       this.quickRootGroup.position.set(
-        -0.21 + arc * 0.26,
-        -0.39 + arc * 0.3,
-        -0.41
+        -0.26 + raise * 0.06,
+        -0.25 + raise * 0.11,
+        0.04
       );
-      this.quickAnimGroup.rotation.set(0.18, -0.25, -0.35 + arc * 0.32);
+      this.leftAstronautArm.shoulderPivot.rotation.set(
+        0.64 + raise * 0.58,
+        -0.18 - raise * 0.34,
+        0.16 + raise * 0.26
+      );
+      this.leftAstronautArm.elbowPivot.rotation.set(
+        0.56 + raise * 0.26,
+        -0.22,
+        0.3
+      );
+      this.leftAstronautArm.wristPivot.rotation.set(0.14, -0.18, -0.16);
     }
   }
 

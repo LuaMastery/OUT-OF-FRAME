@@ -1,6 +1,9 @@
 import * as THREE from 'three';
 import { describe, expect, it } from 'vitest';
-import { DoomAstronaut } from '../src/doom/DoomAstronaut';
+import {
+  createAstronautMaterials,
+  DoomAstronaut,
+} from '../src/doom/DoomAstronaut';
 import { DoomFlashlight, QuickHandheldKind } from '../src/doom/DoomFlashlight';
 import {
   ITEM_CATALOG,
@@ -771,5 +774,98 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
 
     expect(testedCells).toBeGreaterThan(95);
     expect(verifiedAnchorPoints).toBeGreaterThan(2500);
+  });
+
+  it('exibe pés, tronco e os dois braços com camuflagem astronáutica ao olhar para baixo e anima o canivete oxidado pelas juntas EVA do astronauta', () => {
+    const scene = new THREE.Scene();
+    const shared = createDoomSharedUniforms();
+    const astronaut = new DoomAstronaut(scene, shared);
+    const mats = createAstronautMaterials();
+
+    // 1) Camuflagem Astronáutica 64x64 de alto contraste aplicada nos braços e traje
+    const camoMat = mats.astroCamo as THREE.MeshLambertMaterial;
+    expect(camoMat.map).toBeDefined();
+    expect(camoMat.map!.image.width).toBe(64);
+    const camoPixels = camoMat.map!.image.data as Uint8Array;
+    let minLum = 255;
+    let maxLum = 0;
+    for (let i = 0; i < camoPixels.length; i += 4) {
+      const lum = (camoPixels[i] + camoPixels[i + 1] + camoPixels[i + 2]) / 3;
+      if (lum < minLum) minLum = lum;
+      if (lum > maxLum) maxLum = lum;
+    }
+    expect(maxLum - minLum).toBeGreaterThan(120);
+
+    // 2) Olhando na horizontal (pitch = 0): tronco superior e braços ocultos para não invadir a visão frontal
+    astronaut.updateFirstPersonBody(
+      new THREE.Vector3(0, 0, 0),
+      0,
+      0,
+      0,
+      0,
+      false,
+      false,
+      0
+    );
+    const upperChest = astronaut.torsoGroup.getObjectByName(
+      'AstronautUpperChest'
+    )!;
+    expect(upperChest.visible).toBe(false);
+    expect(astronaut.leftArm.root.visible).toBe(false);
+    expect(astronaut.rightArm.root.visible).toBe(false);
+
+    // 3) Olhando para baixo (pitch = -1.12, lanterna guardada): pés + tronco + OS DOIS BRAÇOS visíveis dentro do frustum!
+    astronaut.updateFirstPersonBody(
+      new THREE.Vector3(0, 0, 0),
+      0,
+      0,
+      0,
+      0,
+      false,
+      false,
+      -1.12
+    );
+    expect(upperChest.visible).toBe(true);
+    expect(astronaut.leftArm.root.visible).toBe(true);
+    expect(astronaut.leftArm.elbowPivot.visible).toBe(true);
+    expect(astronaut.rightArm.root.visible).toBe(true);
+    expect(astronaut.rightArm.elbowPivot.visible).toBe(true);
+
+    // Olhando para baixo com lanterna equipada: braço esquerdo completo no mundo + ombro direito conectado sem duplicar antebraço!
+    astronaut.updateFirstPersonBody(
+      new THREE.Vector3(0, 0, 0),
+      0,
+      0,
+      0,
+      0,
+      true,
+      false,
+      -1.12
+    );
+    expect(upperChest.visible).toBe(true);
+    expect(astronaut.leftArm.root.visible).toBe(true);
+    expect(astronaut.leftArm.elbowPivot.visible).toBe(true);
+    expect(astronaut.rightArm.root.visible).toBe(true);
+    expect(astronaut.rightArm.elbowPivot.visible).toBe(false);
+
+    // 4) Canivete Oxidado montado no gripSocket da luva EVA esquerda com abertura dobrável + golpe pelas juntas!
+    const fl = new DoomFlashlight(16 / 9);
+    const bladePivot = fl.leftAstronautArm.gripSocket.getObjectByName(
+      'AstronautPocketKnifeBladePivot'
+    );
+    expect(bladePivot).toBeDefined();
+
+    fl.triggerQuickItemAction('knife');
+    fl.update(0.02, 0, 0, () => {}, 0, 100);
+    const initialFold = bladePivot!.rotation.x;
+    const initialWristRoll = fl.leftAstronautArm.wristPivot.rotation.y;
+    expect(initialFold).toBeLessThan(-1.0);
+
+    // Meio do golpe diagonal: lâmina totalmente travada aberta (0 rad) e punho EVA rotacionando axialmente!
+    fl.update(0.22, 0, 0, () => {}, 0, 100);
+    expect(Math.abs(bladePivot!.rotation.x)).toBeLessThan(0.02);
+    expect(
+      Math.abs(fl.leftAstronautArm.wristPivot.rotation.y - initialWristRoll)
+    ).toBeGreaterThan(0.25);
   });
 });

@@ -1239,7 +1239,8 @@ export class DoomGameApp {
       planarSpeed,
       this.crouchAmount,
       this.flashlight.isEquipped,
-      this.flashlight.isLeftArmAnimating
+      this.flashlight.isLeftArmAnimating,
+      this.pitch
     );
 
     this.syncCamera(bobOffset);

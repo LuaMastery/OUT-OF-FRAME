@@ -50,6 +50,7 @@ export interface AstronautArmRig {
 
 export interface AstronautMaterialSet {
   suitFabric: THREE.Material;
+  astroCamo: THREE.Material;
   suitDarkPatch: THREE.Material;
   ribbedJoint: THREE.Material;
   anodizedCrimson: THREE.Material;
@@ -65,6 +66,7 @@ export interface AstronautMaterialSet {
 
 interface AstronautTextureCache {
   suitFabricTex: THREE.DataTexture;
+  astroCamoTex: THREE.DataTexture;
   ribbedJointTex: THREE.DataTexture;
   goldVisorTex: THREE.DataTexture;
   chestPanelTex: THREE.DataTexture;
@@ -114,6 +116,114 @@ function createEvaSuitFabricTexture(): THREE.DataTexture {
       data[i] = clampByte(v * 1.01);
       data[i + 1] = clampByte(v * 0.98);
       data[i + 2] = clampByte(v * 0.91);
+      data[i + 3] = 255;
+    }
+  }
+
+  const tex = new THREE.DataTexture(data, size, size, THREE.RGBAFormat);
+  tex.magFilter = THREE.NearestFilter;
+  tex.minFilter = THREE.NearestFilter;
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+/**
+ * Camuflagem Astronáutica EVA (64x64 pixel-art nítido estilo DOOM):
+ * Padrão tático lunar/orbital de alto contraste em 4 tons (cinza-rególito claro,
+ * ardósia titânio, carvão espacial profundo e cáqui-lunar oxidado), com matelassê
+ * térmico Kevlar em losangos, costuras seladas e micro-marcações técnicas.
+ */
+function createAstronautCamoTexture(): THREE.DataTexture {
+  const size = 64;
+  const data = new Uint8Array(size * size * 4);
+
+  // Centros procedurais de manchas táticas (wrap 64x64 sem costura!)
+  const seeds: Array<{ cx: number; cy: number; rx: number; ry: number; tone: number }> = [];
+  for (let s = 0; s < 34; s++) {
+    seeds.push({
+      cx: Math.floor(hash2(s, 11, 701) * 32) * 2,
+      cy: Math.floor(hash2(s, 29, 709) * 32) * 2,
+      rx: 5 + Math.floor(hash2(s, 47, 719) * 7),
+      ry: 4 + Math.floor(hash2(s, 61, 727) * 8),
+      tone: (s % 4 === 0 ? 2 : s % 4 === 1 ? 1 : s % 4 === 2 ? 3 : 0),
+    });
+  }
+
+  const wrapDelta = (a: number, b: number) => {
+    let d = a - b;
+    if (d > 32) d -= 64;
+    if (d < -32) d += 64;
+    return d;
+  };
+
+  // Pré-calcula mapa de zonas em blocos pixel-art 2x2 para silhueta tática nítida
+  const zoneGrid = new Uint8Array(size * size);
+  for (let y = 0; y < size; y++) {
+    const qy = y & ~1;
+    for (let x = 0; x < size; x++) {
+      const qx = x & ~1;
+      let zone = 0;
+      let bestScore = 1.05;
+      for (let s = 0; s < seeds.length; s++) {
+        const sd = seeds[s];
+        const dx = wrapDelta(qx, sd.cx);
+        const dy = wrapDelta(qy, sd.cy);
+        // Geometria angular/chanfrada típica de camuflagem espacial/tática
+        const score =
+          (Math.abs(dx) * 0.72 + Math.abs(dy) * 0.28) / sd.rx +
+          (Math.abs(dy) * 0.74 + Math.abs(dx - dy) * 0.18) / sd.ry;
+        if (score < bestScore) {
+          bestScore = score;
+          zone = sd.tone;
+        }
+      }
+      // Micro-fragmentos digitais 2x2 nas transições
+      if (hash2(qx >> 1, qy >> 1, 733) > 0.84) {
+        zone = (zone + 1) & 3;
+      }
+      zoneGrid[y * size + x] = zone;
+    }
+  }
+
+  // Paleta de 4 tons astronáuticos calibrada para não lavar no COLORMAP do DOOM
+  const palette: Array<[number, number, number]> = [
+    [214, 216, 220], // 0: Branco-cinza rególito lunar
+    [138, 146, 158], // 1: Cinza-ardósia orbital
+    [68, 74, 86],    // 2: Carvão de vácuo profundo
+    [112, 108, 96],  // 3: Titânio/poeira lunar oxidada
+  ];
+
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const i = (y * size + x) * 4;
+      const z = zoneGrid[y * size + x];
+      const zRight = zoneGrid[y * size + ((x + 1) & 63)];
+      const zDown = zoneGrid[((y + 1) & 63) * size + x];
+
+      let [r, g, b] = palette[z];
+
+      // Contorno nítido de 1px entre manchas claras e escuras
+      if (z !== zRight || z !== zDown) {
+        r *= 0.84;
+        g *= 0.84;
+        b *= 0.86;
+      }
+
+      // Trama ripstop + matelassê térmico diagonal do traje espacial
+      const ripstop = (x & 3) === 0 || (y & 3) === 0 ? -7 : 3;
+      const quiltDiag =
+        (x + y) % 16 === 0 || ((x - y) % 16 + 16) % 16 === 0 ? -18 : 0;
+      const panelSeam = y === 0 || y === 32 ? -32 : y === 1 || y === 33 ? 14 : 0;
+      const rivet =
+        (y === 2 || y === 30 || y === 34 || y === 62) && x % 16 === 4 ? 26 : 0;
+      const grain = (hash2(x, y, 751) - 0.5) * 10;
+
+      const delta = ripstop + quiltDiag + panelSeam + rivet + grain;
+      data[i] = clampByte(r + delta);
+      data[i + 1] = clampByte(g + delta);
+      data[i + 2] = clampByte(b + delta);
       data[i + 3] = 255;
     }
   }
@@ -317,6 +427,7 @@ function getAstronautTextures(): AstronautTextureCache {
   if (!cachedAstronautTextures) {
     cachedAstronautTextures = {
       suitFabricTex: createEvaSuitFabricTexture(),
+      astroCamoTex: createAstronautCamoTexture(),
       ribbedJointTex: createEvaRibbedJointTexture(),
       goldVisorTex: createEvaGoldVisorTexture(),
       chestPanelTex: createEvaChestPanelTexture(),
@@ -341,6 +452,10 @@ export function createAstronautMaterials(
       suitFabric: createDoomPropMaterial(tex.suitFabricTex, sharedUniforms, {
         baseLight: 0.24,
         tint: new THREE.Color(0xd2cdc0),
+      }),
+      astroCamo: createDoomPropMaterial(tex.astroCamoTex, sharedUniforms, {
+        baseLight: 0.26,
+        tint: new THREE.Color(0xe6e8ee),
       }),
       suitDarkPatch: createDoomPropMaterial(tex.suitFabricTex, sharedUniforms, {
         baseLight: 0.22,
@@ -401,6 +516,11 @@ export function createAstronautMaterials(
     suitFabric: new THREE.MeshLambertMaterial({
       map: tex.suitFabricTex,
       color: 0xd8d3c6,
+      flatShading: true,
+    }),
+    astroCamo: new THREE.MeshLambertMaterial({
+      map: tex.astroCamoTex,
+      color: 0xe6e8ee,
       flatShading: true,
     }),
     suitDarkPatch: new THREE.MeshLambertMaterial({
@@ -521,27 +641,51 @@ export function createAstronautArmRig(
     shoulderBellows.position.set(0, -0.036, 0);
     upperArmGroup.add(shoulderBellows);
 
-    // Manga superior acolchoada em Beta-Cloth
+    // Manga superior acolchoada em Camuflagem Astronáutica EVA + ombreira tática esculpida
     const upperSleeve = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.068, 0.06, 0.175, 10),
-      materials.suitFabric
+      new THREE.CylinderGeometry(0.068, 0.06, 0.175, 12),
+      materials.astroCamo
     );
     upperSleeve.position.set(0, -0.142, 0);
     upperArmGroup.add(upperSleeve);
 
-    // Faixa de identificação espacial / insígnia EVA no deltoide externo
+    // Ombreira composta chanfrada (pauldron EVA) com placa camuflada e friso metálico
+    const shoulderPauldron = new THREE.Mesh(
+      new THREE.CylinderGeometry(
+        0.075,
+        0.071,
+        0.086,
+        10,
+        1,
+        false,
+        sign > 0 ? -Math.PI * 0.42 : Math.PI * 0.58,
+        Math.PI * 0.84
+      ),
+      materials.astroCamo
+    );
+    shoulderPauldron.position.set(0, -0.098, 0);
+    upperArmGroup.add(shoulderPauldron);
+
+    // Faixa de identificação espacial / insígnia EVA no deltoide externo + cinta de bíceps
     const missionBand = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.0695, 0.0675, 0.032, 10),
+      new THREE.CylinderGeometry(0.0705, 0.0685, 0.026, 12),
       side === 'right' ? materials.missionOrange : materials.anodizedCobalt
     );
-    missionBand.position.set(0, -0.105, 0);
+    missionBand.position.set(0, -0.108, 0);
     upperArmGroup.add(missionBand);
+
+    const bicepStrap = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.064, 0.062, 0.018, 12),
+      materials.suitDarkPatch
+    );
+    bicepStrap.position.set(0, -0.188, 0);
+    upperArmGroup.add(bicepStrap);
 
     const deltoidPatch = new THREE.Mesh(
       new THREE.BoxGeometry(0.014, 0.054, 0.044),
-      materials.suitDarkPatch
+      materials.darkSteel
     );
-    deltoidPatch.position.set(sign * 0.062, -0.148, 0);
+    deltoidPatch.position.set(sign * 0.064, -0.148, 0);
     upperArmGroup.add(deltoidPatch);
   }
 
@@ -556,10 +700,10 @@ export function createAstronautArmRig(
   forearmGroup.name = `Astronaut${sideLabel}Forearm`;
   elbowPivot.add(forearmGroup);
 
-  // Fole sanfonado de borracha pressurizada no cotovelo + cotoveleira traseira
+  // Fole sanfonado de borracha pressurizada no cotovelo + cotoveleira traseira blindada
   for (let b = 0; b < 3; b++) {
     const pleat = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.06, 0.062, 0.017, 10),
+      new THREE.CylinderGeometry(0.061, 0.063, 0.017, 12),
       materials.ribbedJoint
     );
     pleat.position.set(0, -0.008 - b * 0.019, 0);
@@ -567,27 +711,71 @@ export function createAstronautArmRig(
   }
 
   const elbowPad = new THREE.Mesh(
-    new THREE.BoxGeometry(0.056, 0.064, 0.026),
+    new THREE.BoxGeometry(0.058, 0.066, 0.028),
     materials.darkSteel
   );
   elbowPad.position.set(0, -0.024, 0.05);
   forearmGroup.add(elbowPad);
 
-  // Manga acolchoada do antebraço EVA
+  // Manga principal do antebraço inteiramente revestida em Camuflagem Astronáutica EVA!
   const forearmSleeve = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.061, 0.051, 0.165, 10),
-    materials.suitFabric
+    new THREE.CylinderGeometry(0.062, 0.052, 0.168, 14),
+    materials.astroCamo
   );
   forearmSleeve.position.set(0, -0.132, 0);
   forearmGroup.add(forearmSleeve);
 
-  // Reforço térmico escuro ao longo da face dorsal externa do antebraço
-  const dorsalShield = new THREE.Mesh(
-    new THREE.BoxGeometry(0.014, 0.128, 0.052),
-    materials.suitDarkPatch
+  // Duas cintas táticas de contenção em nylon escuro com fivelas metálicas envolvendo a camuflagem
+  for (const [sy, rTop, rBot] of [
+    [-0.078, 0.0615, 0.0605],
+    [-0.186, 0.0555, 0.054],
+  ] as const) {
+    const restraintStrap = new THREE.Mesh(
+      new THREE.CylinderGeometry(rTop, rBot, 0.015, 14),
+      materials.suitDarkPatch
+    );
+    restraintStrap.position.set(0, sy, 0);
+    forearmGroup.add(restraintStrap);
+
+    const strapBuckle = new THREE.Mesh(
+      new THREE.BoxGeometry(0.016, 0.021, 0.022),
+      materials.machinedAlloy
+    );
+    strapBuckle.position.set(-sign * (rTop - 0.004), sy, -0.024);
+    strapBuckle.rotation.y = sign * 0.45;
+    forearmGroup.add(strapBuckle);
+  }
+
+  // Mangueira umbilical pressurizada trançada percorrendo a lateral radial visível do antebraço!
+  const umbilicalTube = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.0068, 0.0068, 0.148, 8),
+    materials.ribbedJoint
   );
-  dorsalShield.position.set(sign * 0.052, -0.134, 0);
-  forearmGroup.add(dorsalShield);
+  umbilicalTube.position.set(-sign * 0.049, -0.132, -0.028);
+  umbilicalTube.rotation.z = -sign * 0.055;
+  forearmGroup.add(umbilicalTube);
+
+  for (const fy of [-0.06, -0.202]) {
+    const fitting = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.0095, 0.0095, 0.014, 8),
+      side === 'right' ? materials.anodizedCrimson : materials.anodizedCobalt
+    );
+    fitting.position.set(-sign * 0.048, fy, -0.028);
+    forearmGroup.add(fitting);
+  }
+
+  // Placa dorsal blindada camuflada ao longo da face externa do antebraço
+  const dorsalCamoPlate = new THREE.Mesh(
+    new THREE.BoxGeometry(0.016, 0.126, 0.054),
+    materials.astroCamo
+  );
+  dorsalCamoPlate.position.set(sign * 0.053, -0.134, 0);
+  const dorsalSteelTrim = new THREE.Mesh(
+    new THREE.BoxGeometry(0.012, 0.132, 0.024),
+    materials.darkSteel
+  );
+  dorsalSteelTrim.position.set(sign * 0.056, -0.134, 0);
+  forearmGroup.add(dorsalCamoPlate, dorsalSteelTrim);
 
   let gaugeNeedleMesh: THREE.Mesh | null = null;
 
@@ -597,17 +785,9 @@ export function createAstronautArmRig(
       new THREE.BoxGeometry(0.028, 0.074, 0.064),
       materials.darkSteel
     );
-    // Posicionado na face súpero-interna do antebraço para leitura clara em 1ª pessoa
     cuffHousing.position.set(0.036, -0.138, -0.032);
     cuffHousing.rotation.y = 0.68;
     forearmGroup.add(cuffHousing);
-
-    const strapBand = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.058, 0.055, 0.028, 10),
-      materials.suitDarkPatch
-    );
-    strapBand.position.set(0, -0.138, 0);
-    forearmGroup.add(strapBand);
 
     const dialBezel = new THREE.Mesh(
       new THREE.CylinderGeometry(0.022, 0.023, 0.01, 12),
@@ -635,7 +815,6 @@ export function createAstronautArmRig(
     gaugeNeedleMesh.rotation.x = 0.42;
     forearmGroup.add(gaugeNeedleMesh);
 
-    // Duas micro-chaves anodizadas abaixo do mostrador
     const btnA = new THREE.Mesh(
       new THREE.BoxGeometry(0.008, 0.01, 0.012),
       materials.anodizedCrimson
@@ -648,49 +827,69 @@ export function createAstronautArmRig(
     btnB.position.set(0.038, -0.158, -0.046);
     forearmGroup.add(btnA, btnB);
   } else {
-    // Antebraço DIREITO: Faixa Laranja EVA + Braçadeira de Engate Rápido (visível segurando a lanterna!)
+    // Antebraço DIREITO: Braçadeira Camuflada de Checklist EVA + Faixa Laranja + Pinos de Telemetria (visível com a lanterna!)
     const rightStripe = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.0575, 0.055, 0.024, 10),
+      new THREE.CylinderGeometry(0.0585, 0.0565, 0.019, 14),
       materials.missionOrange
     );
-    rightStripe.position.set(0, -0.152, 0);
+    rightStripe.position.set(0, -0.156, 0);
     forearmGroup.add(rightStripe);
 
-    const tetherBracket = new THREE.Mesh(
-      new THREE.BoxGeometry(0.02, 0.046, 0.028),
-      materials.machinedAlloy
+    const checklistFrame = new THREE.Mesh(
+      new THREE.BoxGeometry(0.016, 0.068, 0.044),
+      materials.darkSteel
     );
-    tetherBracket.position.set(-0.048, -0.145, -0.024);
-    forearmGroup.add(tetherBracket);
+    checklistFrame.position.set(-0.041, -0.128, -0.036);
+    checklistFrame.rotation.y = -0.68;
+    forearmGroup.add(checklistFrame);
+
+    const checklistCamoCover = new THREE.Mesh(
+      new THREE.BoxGeometry(0.008, 0.054, 0.034),
+      materials.astroCamo
+    );
+    checklistCamoCover.position.set(-0.045, -0.128, -0.039);
+    checklistCamoCover.rotation.y = -0.68;
+    forearmGroup.add(checklistCamoCover);
+
+    const pipA = new THREE.Mesh(
+      new THREE.BoxGeometry(0.007, 0.008, 0.008),
+      materials.missionOrange
+    );
+    pipA.position.set(-0.047, -0.108, -0.035);
+    const pipB = new THREE.Mesh(
+      new THREE.BoxGeometry(0.007, 0.008, 0.008),
+      materials.anodizedCobalt
+    );
+    pipB.position.set(-0.042, -0.108, -0.045);
+    forearmGroup.add(pipA, pipB);
   }
 
-  // Anel rotativo anodizado de desconexão de punho (marca registrada de traje de astronauta!)
+  // Anel rotativo anodizado de desconexão de punho com 6 travas baioneta usinadas
   const wristRingGroup = new THREE.Group();
   wristRingGroup.name = `Astronaut${sideLabel}WristRing`;
   wristRingGroup.position.set(0, -0.218, 0);
   forearmGroup.add(wristRingGroup);
 
   const ringFlangeUpper = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.055, 0.055, 0.012, 12),
+    new THREE.CylinderGeometry(0.055, 0.055, 0.012, 14),
     materials.machinedAlloy
   );
   ringFlangeUpper.position.y = 0.009;
   const ringAnodizedCore = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.057, 0.057, 0.015, 12),
+    new THREE.CylinderGeometry(0.057, 0.057, 0.015, 14),
     side === 'right' ? materials.anodizedCrimson : materials.anodizedCobalt
   );
   const ringFlangeLower = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.054, 0.054, 0.01, 12),
+    new THREE.CylinderGeometry(0.054, 0.054, 0.01, 14),
     materials.machinedAlloy
   );
   ringFlangeLower.position.y = -0.011;
   wristRingGroup.add(ringFlangeUpper, ringAnodizedCore, ringFlangeLower);
 
-  // 4 travas baioneta radiais ao redor do anel de punho
-  for (let l = 0; l < 4; l++) {
-    const ang = (l / 4) * Math.PI * 2 + 0.4;
+  for (let l = 0; l < 6; l++) {
+    const ang = (l / 6) * Math.PI * 2 + 0.35;
     const lug = new THREE.Mesh(
-      new THREE.BoxGeometry(0.014, 0.02, 0.014),
+      new THREE.BoxGeometry(0.012, 0.02, 0.012),
       materials.darkSteel
     );
     lug.position.set(Math.cos(ang) * 0.056, 0, Math.sin(ang) * 0.056);
@@ -709,18 +908,24 @@ export function createAstronautArmRig(
   gloveGroup.userData = { isAstronautGlove: true, armSide: side };
   wristPivot.add(gloveGroup);
 
-  // Punho curto da luva + casco metacarpal acolchoado + palma de silicone antiderrapante
+  // Punho e casco metacarpal revestidos em Camuflagem Astronáutica + protetor de juntas e palma de silicone
   const gloveCuff = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.051, 0.048, 0.024, 10),
-    materials.suitFabric
+    new THREE.CylinderGeometry(0.051, 0.048, 0.024, 12),
+    materials.astroCamo
   );
   gloveCuff.position.set(0, -0.01, 0);
 
   const metacarpalShell = new THREE.Mesh(
     new THREE.BoxGeometry(0.044, 0.068, 0.078),
-    materials.suitFabric
+    materials.astroCamo
   );
   metacarpalShell.position.set(sign * 0.004, -0.046, 0);
+
+  const dorsalArmorStrip = new THREE.Mesh(
+    new THREE.BoxGeometry(0.01, 0.046, 0.064),
+    materials.darkSteel
+  );
+  dorsalArmorStrip.position.set(sign * 0.024, -0.042, 0);
 
   const palmGripPad = new THREE.Mesh(
     new THREE.BoxGeometry(0.016, 0.06, 0.07),
@@ -734,9 +939,15 @@ export function createAstronautArmRig(
   );
   knuckleArmor.position.set(sign * 0.024, -0.068, 0);
 
-  gloveGroup.add(gloveCuff, metacarpalShell, palmGripPad, knuckleArmor);
+  gloveGroup.add(
+    gloveCuff,
+    metacarpalShell,
+    dorsalArmorStrip,
+    palmGripPad,
+    knuckleArmor
+  );
 
-  // 4 dedos articulados da luva EVA (indicador -> mínimo ao longo de Z: -0.027 .. +0.027)
+  // 4 dedos articulados da luva EVA (segmentos em camuflagem astronáutica + juntas sanfonadas + pontas aderentes)
   const fingers: AstronautFingerRig[] = [];
   const fingerLengths = [0.032, 0.035, 0.033, 0.028];
 
@@ -755,7 +966,7 @@ export function createAstronautArmRig(
 
     const proxSeg = new THREE.Mesh(
       new THREE.BoxGeometry(0.02, pLen, 0.016),
-      materials.suitFabric
+      materials.astroCamo
     );
     proxSeg.position.set(0, -pLen * 0.5, 0);
 
@@ -773,7 +984,7 @@ export function createAstronautArmRig(
     const dLen = pLen * 0.82;
     const distSeg = new THREE.Mesh(
       new THREE.BoxGeometry(0.018, dLen, 0.015),
-      materials.suitFabric
+      materials.astroCamo
     );
     distSeg.position.set(0, -dLen * 0.45, 0);
 
@@ -798,7 +1009,7 @@ export function createAstronautArmRig(
 
   const thumbBaseMesh = new THREE.Mesh(
     new THREE.BoxGeometry(0.022, 0.032, 0.022),
-    materials.suitFabric
+    materials.astroCamo
   );
   thumbBaseMesh.position.set(0, -0.015, -0.006);
   thumbPivot.add(thumbBaseMesh);
@@ -939,8 +1150,8 @@ function createAstronautLegRig(
   hipPivot.add(hipBellows);
 
   const thigh = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.092, 0.08, 0.31, 10),
-    materials.suitFabric
+    new THREE.CylinderGeometry(0.092, 0.08, 0.31, 12),
+    materials.astroCamo
   );
   thigh.position.set(0, -0.2, 0);
   hipPivot.add(thigh);
@@ -954,7 +1165,7 @@ function createAstronautLegRig(
   hipPivot.add(cargoPocket);
 
   const thighStripe = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.085, 0.083, 0.024, 10),
+    new THREE.CylinderGeometry(0.085, 0.083, 0.024, 12),
     side === 'right' ? materials.missionOrange : materials.anodizedCobalt
   );
   thighStripe.position.set(0, -0.31, 0);
@@ -967,7 +1178,7 @@ function createAstronautLegRig(
   hipPivot.add(kneePivot);
 
   const kneeBellows = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.078, 0.078, 0.07, 10),
+    new THREE.CylinderGeometry(0.078, 0.078, 0.07, 12),
     materials.ribbedJoint
   );
   kneeBellows.position.set(0, -0.02, 0);
@@ -981,14 +1192,14 @@ function createAstronautLegRig(
   kneePivot.add(kneeCap);
 
   const shin = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.08, 0.07, 0.29, 10),
-    materials.suitFabric
+    new THREE.CylinderGeometry(0.08, 0.07, 0.29, 12),
+    materials.astroCamo
   );
   shin.position.set(0, -0.19, 0);
   kneePivot.add(shin);
 
   const ankleRing = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.074, 0.074, 0.022, 10),
+    new THREE.CylinderGeometry(0.074, 0.074, 0.022, 12),
     materials.machinedAlloy
   );
   ankleRing.position.set(0, -0.34, 0);
@@ -1002,7 +1213,7 @@ function createAstronautLegRig(
 
   const bootCuff = new THREE.Mesh(
     new THREE.BoxGeometry(0.145, 0.075, 0.175),
-    materials.suitFabric
+    materials.astroCamo
   );
   bootCuff.position.set(0, -0.035, -0.015);
 
@@ -1101,7 +1312,7 @@ export class DoomAstronaut {
 
     const pelvisBrief = new THREE.Mesh(
       new THREE.CylinderGeometry(0.185, 0.175, 0.14, 12),
-      this.materials.suitFabric
+      this.materials.astroCamo
     );
     pelvisBrief.scale.set(1.06, 1, 0.78);
     pelvisBrief.position.set(0, -0.09, 0);
@@ -1154,8 +1365,8 @@ export class DoomAstronaut {
     this.upperChestGroup.add(waistBellows);
 
     const chestShell = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.218, 0.188, 0.42, 12),
-      this.materials.suitFabric
+      new THREE.CylinderGeometry(0.218, 0.188, 0.42, 14),
+      this.materials.astroCamo
     );
     chestShell.scale.set(1.08, 1, 0.8);
     chestShell.position.set(0, 0.28, 0);
@@ -1232,13 +1443,18 @@ export class DoomAstronaut {
       this.plssBackpack.add(o2Tank, tankBand);
     }
 
-    // 3. COLAR DE PESCOÇO E CAPACETE ESPACIAL COM VISEIRA DOURADA
+    // 3. COLAR DE PESCOÇO SELADO E CAPACETE ESPACIAL COM VISEIRA DOURADA
     const neckDisconnectRing = new THREE.Mesh(
       new THREE.CylinderGeometry(0.138, 0.146, 0.036, 14),
       this.materials.machinedAlloy
     );
     neckDisconnectRing.position.set(0, 0.505, 0);
-    this.upperChestGroup.add(neckDisconnectRing);
+    const neckSealPlate = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.132, 0.134, 0.018, 14),
+      this.materials.suitDarkPatch
+    );
+    neckSealPlate.position.set(0, 0.516, 0);
+    this.upperChestGroup.add(neckDisconnectRing, neckSealPlate);
 
     this.headGroup.name = 'AstronautHelmet';
     this.headGroup.position.set(0, 0.64, 0);
@@ -1346,13 +1562,19 @@ export class DoomAstronaut {
     this.upperChestGroup.visible = !enabled;
     if (!enabled) {
       this.leftArm.root.visible = true;
+      this.leftArm.elbowPivot.visible = true;
       this.rightArm.root.visible = true;
+      this.rightArm.elbowPivot.visible = true;
     }
   }
 
   /**
-   * Atualiza o corpo 3D do Astronauta durante a locomoção normal em 1ª pessoa
-   * (ao olhar para baixo, o jogador enxerga o cinto EVA, coxas acolchoadas, joelheiras e botas lunares!).
+   * Atualiza o corpo 3D completo do Astronauta durante a locomoção em 1ª pessoa:
+   * - Em visão horizontal (`pitch >= -0.14`), mantém tronco superior e braços ocultos atrás da câmera
+   *   para nunca obstruir o campo de visão frontal;
+   * - Ao olhar para baixo (`pitch < -0.14`), articula progressivamente coluna, quadris, pernas e ombros
+   *   para que o jogador enxergue simultaneamente seus PÉS (botas lunares + pernas), seu TRONCO
+   *   (peitoral camuflado + módulo DCM + mangueiras + cinto tático) e OS DOIS BRAÇOS camuflados!
    */
   updateFirstPersonBody(
     position: THREE.Vector3,
@@ -1361,51 +1583,137 @@ export class DoomAstronaut {
     planarSpeed: number,
     crouchAmount: number,
     rightArmActiveInViewmodel: boolean,
-    leftArmActiveInViewmodel: boolean
+    leftArmActiveInViewmodel: boolean,
+    pitch = 0
   ): void {
     this.root.visible = true;
-    this.setFirstPersonMode(true);
+    this.firstPersonMode = true;
+    this.headGroup.visible = false;
+    this.plssBackpack.visible = false;
 
-    const fwdX = -Math.sin(yaw) * 0.1;
-    const fwdZ = -Math.cos(yaw) * 0.1;
-    this.root.position.set(position.x + fwdX, position.y, position.z + fwdZ);
+    const lookDown = Math.max(0, Math.min(1, (-pitch - 0.14) / 0.86));
+    const showUpperBody = lookDown > 0.01;
+    this.upperChestGroup.visible = showUpperBody;
+
+    // Posiciona a coluna 13cm atrás do globo ocular (+Z local) com inclinação frontal sutil (-0.05 rad),
+    // enquadrando simultaneamente na tela: Peitoral Camuflado + Módulo DCM + Mangueiras + Cinto Tático na base,
+    // Coxas Camufladas + Joelheiras + Botas Lunares logo à frente, e OS DOIS BRAÇOS camuflados nas laterais!
+    const backDist =
+      -0.08 * (1 - lookDown) + (0.162 - crouchAmount * 0.032) * lookDown;
+    const backX = Math.sin(yaw) * backDist;
+    const backZ = Math.cos(yaw) * backDist;
+    this.root.position.set(position.x + backX, position.y, position.z + backZ);
     this.root.rotation.set(0, yaw, 0);
 
-    this.bodyPivot.position.set(0, -crouchAmount * 0.36, 0);
+    this.bodyPivot.position.set(0, -crouchAmount * 0.45, 0);
     this.bodyPivot.rotation.set(0, 0, 0);
 
     const stride = Math.min(1, planarSpeed / 5.2);
-    const legSwing = Math.sin(bobPhase * 0.5) * 0.52 * stride;
-    const leftLift = Math.max(0, Math.cos(bobPhase * 0.5)) * 0.45 * stride;
-    const rightLift = Math.max(0, -Math.cos(bobPhase * 0.5)) * 0.45 * stride;
+    const legSwing = Math.sin(bobPhase * 0.5) * 0.48 * stride;
+    const armSwing = Math.sin(bobPhase * 0.5) * 0.24 * stride;
+    const breath = Math.sin(bobPhase * 0.25) * 0.018;
+    const leftLift = Math.max(0, Math.cos(bobPhase * 0.5)) * 0.42 * stride;
+    const rightLift = Math.max(0, -Math.cos(bobPhase * 0.5)) * 0.42 * stride;
 
-    const crouchHipBend = crouchAmount * 0.62;
-    const crouchKneeBend = crouchAmount * 0.95;
+    const crouchHipBend = crouchAmount * 0.76;
+    const crouchKneeBend = crouchAmount * 1.16;
+    const lookHipForward = lookDown * (0.68 - crouchAmount * 0.18);
+    const lookKneeBend = lookDown * (0.12 - crouchAmount * 0.04);
 
-    this.hipsGroup.position.set(0, 0.86, 0);
-    this.torsoGroup.rotation.set(-crouchAmount * 0.18, 0, 0);
+    this.hipsGroup.position.set(0, 0.85 - lookDown * 0.02, 0);
+    this.torsoGroup.rotation.set(
+      lookDown * 0.04 + crouchAmount * 0.04,
+      0,
+      0
+    );
 
-    this.leftLeg.hipPivot.rotation.set(crouchHipBend + legSwing, 0, 0);
-    this.leftLeg.kneePivot.rotation.set(-(crouchKneeBend + leftLift), 0, 0);
+    // Para as pernas (-Y), rotação X positiva projeta coxas camufladas, joelheiras e botas lunares à frente (-Z)!
+    this.leftLeg.hipPivot.rotation.set(
+      crouchHipBend + lookHipForward + legSwing,
+      0.05 * lookDown,
+      -0.045 * lookDown
+    );
+    this.leftLeg.kneePivot.rotation.set(
+      -(crouchKneeBend + lookKneeBend + leftLift),
+      0,
+      0
+    );
     this.leftLeg.anklePivot.rotation.set(
-      (crouchKneeBend - crouchHipBend) * 0.4,
+      (crouchKneeBend - crouchHipBend) * 0.44 - lookDown * 0.38,
       0,
       0
     );
 
-    this.rightLeg.hipPivot.rotation.set(crouchHipBend - legSwing, 0, 0);
-    this.rightLeg.kneePivot.rotation.set(-(crouchKneeBend + rightLift), 0, 0);
+    this.rightLeg.hipPivot.rotation.set(
+      crouchHipBend + lookHipForward - legSwing,
+      -0.05 * lookDown,
+      0.045 * lookDown
+    );
+    this.rightLeg.kneePivot.rotation.set(
+      -(crouchKneeBend + lookKneeBend + rightLift),
+      0,
+      0
+    );
     this.rightLeg.anklePivot.rotation.set(
-      (crouchKneeBend - crouchHipBend) * 0.4,
+      (crouchKneeBend - crouchHipBend) * 0.44 - lookDown * 0.38,
       0,
       0
     );
 
-    // Sincroniza a marcação de uso nos braços originais do Astronauta; em 1ª pessoa os braços em uso são renderizados na viewScene!
+    // Sincroniza e articula OS DOIS BRAÇOS camuflados do Astronauta ao olhar para baixo!
     this.rightArm.setInUse(rightArmActiveInViewmodel);
     this.leftArm.setInUse(leftArmActiveInViewmodel);
-    this.rightArm.root.visible = false;
-    this.leftArm.root.visible = false;
+
+    if (!showUpperBody) {
+      this.leftArm.root.visible = false;
+      this.rightArm.root.visible = false;
+      return;
+    }
+
+    // Braço ESQUERDO no mundo: totalmente visível (ombro + antebraço camuflado + manômetro O2 + luva 5 dedos)
+    this.leftArm.root.visible = true;
+    this.leftArm.elbowPivot.visible = !leftArmActiveInViewmodel;
+    this.leftArm.shoulderPivot.rotation.order = 'YXZ';
+    if (leftArmActiveInViewmodel) {
+      this.leftArm.shoulderPivot.rotation.set(0.95, 0.16, -0.2);
+    } else {
+      this.leftArm.shoulderPivot.rotation.set(
+        0.74 * lookDown - armSwing + breath,
+        0.16,
+        -0.18
+      );
+      this.leftArm.elbowPivot.rotation.order = 'YXZ';
+      this.leftArm.elbowPivot.rotation.set(
+        0.58 * lookDown + crouchAmount * 0.16,
+        -0.26,
+        0.16
+      );
+      this.leftArm.wristPivot.rotation.set(0.12, 0.22, 0.08);
+      this.leftArm.setGripPose('relaxed');
+    }
+
+    // Braço DIREITO no mundo: totalmente visível quando a lanterna está guardada;
+    // quando a lanterna está ativa na viewScene, conecta ombro/braço superior em direção à lanterna!
+    this.rightArm.root.visible = true;
+    this.rightArm.elbowPivot.visible = !rightArmActiveInViewmodel;
+    this.rightArm.shoulderPivot.rotation.order = 'YXZ';
+    if (rightArmActiveInViewmodel) {
+      this.rightArm.shoulderPivot.rotation.set(0.92, -0.18, 0.22);
+    } else {
+      this.rightArm.shoulderPivot.rotation.set(
+        0.74 * lookDown + armSwing + breath,
+        -0.16,
+        0.18
+      );
+      this.rightArm.elbowPivot.rotation.order = 'YXZ';
+      this.rightArm.elbowPivot.rotation.set(
+        0.58 * lookDown + crouchAmount * 0.16,
+        0.26,
+        -0.16
+      );
+      this.rightArm.wristPivot.rotation.set(0.12, -0.22, -0.08);
+      this.rightArm.setGripPose('relaxed');
+    }
   }
 
   /**
