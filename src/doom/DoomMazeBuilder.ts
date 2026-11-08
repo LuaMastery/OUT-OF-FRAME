@@ -434,6 +434,40 @@ export function buildDoomLabyrinth(
 
   const half = CELL_SIZE * 0.5;
 
+  // Células abertas verificadas que recebem plafons industriais no teto (livres de paredes, vigas e arcos!)
+  const ceilingFixtureSpecs: ReadonlyArray<{
+    gx: number;
+    gz: number;
+    intensity: number;
+    flicker: boolean;
+    phase: number;
+  }> = [
+    // Grande Átrio Central de Comando (7x5)
+    { gx: 13, gz: 10, intensity: 0.58, flicker: false, phase: 0.4 },
+    { gx: 15, gz: 10, intensity: 0.58, flicker: false, phase: 1.2 },
+    { gx: 13, gz: 12, intensity: 0.58, flicker: false, phase: 2.1 },
+    { gx: 15, gz: 12, intensity: 0.58, flicker: false, phase: 2.9 },
+    // Salão dos Reatores Nordeste
+    { gx: 21, gz: 3, intensity: 0.6, flicker: true, phase: 0.7 },
+    { gx: 23, gz: 3, intensity: 0.6, flicker: false, phase: 1.9 },
+    { gx: 21, gz: 5, intensity: 0.6, flicker: false, phase: 3.1 },
+    { gx: 23, gz: 5, intensity: 0.6, flicker: true, phase: 4.3 },
+    // Enfermaria Médica Noroeste
+    { gx: 6, gz: 4, intensity: 0.56, flicker: false, phase: 0.9 },
+    { gx: 8, gz: 4, intensity: 0.54, flicker: true, phase: 3.7 },
+    // Cisterna Sudoeste & Cripta Abobadada Sudeste (Ala B)
+    { gx: 6, gz: 19, intensity: 0.46, flicker: true, phase: 2.6 },
+    { gx: 23, gz: 21, intensity: 0.46, flicker: true, phase: 4.8 },
+  ];
+
+  const ceilingFixtureCellKeys = new Set<string>(
+    ceilingFixtureSpecs.map((s) => `${s.gx},${s.gz}`)
+  );
+  ceilingFixtureCellKeys.add(`${LAIR_GRID_CELL.gx},${LAIR_GRID_CELL.gz}`);
+
+  const isLightCell = (cx: number, cz: number): boolean =>
+    cz >= 0 && cz < rows && cx >= 0 && cx < cols && LABYRINTH_MAP[cz][cx] === 'L';
+
   for (let gz = 0; gz < rows; gz++) {
     for (let gx = 0; gx < cols; gx++) {
       const ch = LABYRINTH_MAP[gz][gx];
@@ -445,41 +479,131 @@ export function buildDoomLabyrinth(
       }
 
       // ======================================================================
-      // 1. VÃOS ABERTOS ('.' / 'P'): VIGAS ESPAÇADAS E ELETRODUTOS SEM COLISÃO VISUAL
+      // 1. VÃOS ABERTOS ('.' / 'P'): VIGAS, TUBULAÇÕES E QUADROS DE MINA SEM COLISÃO
       // ======================================================================
       if (ch === '.' || ch === 'P') {
+        if (ceilingFixtureCellKeys.has(`${gx},${gz}`)) {
+          continue;
+        }
+
         const solidN = isSolidCell(LABYRINTH_MAP, gx, gz - 1);
         const solidS = isSolidCell(LABYRINTH_MAP, gx, gz + 1);
         const solidW = isSolidCell(LABYRINTH_MAP, gx - 1, gz);
         const solidE = isSolidCell(LABYRINTH_MAP, gx + 1, gz);
         const isSouthStone = gz >= STONE_SECTOR_START_ROW;
-        const isLairCenter =
-          gx === LAIR_GRID_CELL.gx && gz === LAIR_GRID_CELL.gz;
+
+        // Verifica se é possível erguer um quadro de madeira de mina sem jamais tocar em luminárias 'L'
+        const canPlaceTimberWE =
+          isSouthStone &&
+          solidW &&
+          solidE &&
+          !isLightCell(gx - 1, gz) &&
+          !isLightCell(gx + 1, gz) &&
+          (gx * 3 + gz * 5) % 4 === 0;
+
+        const canPlaceTimberNS =
+          isSouthStone &&
+          !canPlaceTimberWE &&
+          solidN &&
+          solidS &&
+          !isLightCell(gx, gz - 1) &&
+          !isLightCell(gx, gz + 1) &&
+          (gx * 5 + gz * 3) % 4 === 0;
+
+        if (canPlaceTimberWE || canPlaceTimberNS) {
+          // Quadro de escoramento de madeira com carpintaria limpa (sapatas de ferro, esteios recuados do rodapé,
+          // viga mestra apoiada sobre os esteios abaixo da sanca, mãos-francesas e cintas de ferro — ZERO Z-fighting!)
+          const postOffset = half - 0.14; // [1.28..1.44] -> livre do rodapé de 0.052m!
+          const shoeH = 0.1;
+          const postH = 2.74; // y: 0.10 .. 2.84
+          const capH = 0.18; // y: 2.84 .. 3.02 (abaixo da sanca superior 3.05..3.20!)
+          const spanLen = postOffset * 2 + 0.18; // 2.90m cobrindo exatamente o topo dos dois esteios!
+
+          if (canPlaceTimberWE) {
+            pushBox(woodGeos, spanLen, capH, 0.18, wx, shoeH + postH + capH * 0.5, wz);
+            for (const sign of [-1, 1]) {
+              const px = wx + sign * postOffset;
+              pushBox(darkIronGeos, 0.19, shoeH, 0.21, px, shoeH * 0.5, wz);
+              pushBox(woodGeos, 0.16, postH, 0.17, px, shoeH + postH * 0.5, wz);
+              // Cinta de ferro abraçando o encontro esteio-viga
+              pushBox(darkIronGeos, 0.19, 0.06, 0.2, px, shoeH + postH, wz);
+              // Mão-francesa escalonada interna sem rotação diagonal quebrada
+              pushBox(
+                woodGeos,
+                0.16,
+                0.14,
+                0.13,
+                px - sign * 0.16,
+                shoeH + postH - 0.07,
+                wz
+              );
+              pushBox(
+                woodGeos,
+                0.09,
+                0.11,
+                0.13,
+                px - sign * 0.125,
+                shoeH + postH - 0.195,
+                wz
+              );
+            }
+          } else {
+            pushBox(woodGeos, 0.18, capH, spanLen, wx, shoeH + postH + capH * 0.5, wz);
+            for (const sign of [-1, 1]) {
+              const pz = wz + sign * postOffset;
+              pushBox(darkIronGeos, 0.21, shoeH, 0.19, wx, shoeH * 0.5, pz);
+              pushBox(woodGeos, 0.17, postH, 0.16, wx, shoeH + postH * 0.5, pz);
+              pushBox(darkIronGeos, 0.2, 0.06, 0.19, wx, shoeH + postH, pz);
+              pushBox(
+                woodGeos,
+                0.13,
+                0.14,
+                0.16,
+                wx,
+                shoeH + postH - 0.07,
+                pz - sign * 0.16
+              );
+              pushBox(
+                woodGeos,
+                0.13,
+                0.11,
+                0.09,
+                wx,
+                shoeH + postH - 0.195,
+                pz - sign * 0.125
+              );
+            }
+          }
+          continue;
+        }
 
         if (solidN && solidS) {
-          // Viga transversal em células alternadas para ritmo limpo sem poluição visual
-          if ((gx + gz) % 2 === 0) {
+          // Viga transversal de teto apenas quando NÃO há luminária 'L' nas paredes onde apoia
+          if (
+            (gx + gz) % 2 === 0 &&
+            !isLightCell(gx, gz - 1) &&
+            !isLightCell(gx, gz + 1)
+          ) {
             pushBox(
               isSouthStone ? stoneGeos : metalGeos,
               0.22,
-              0.18,
-              CELL_SIZE - 0.12,
+              0.16,
+              CELL_SIZE - 0.14,
               wx,
-              WALL_HEIGHT - 0.09,
+              WALL_HEIGHT - 0.085,
               wz
             );
             pushBox(
               darkIronGeos,
-              0.28,
-              0.045,
-              CELL_SIZE - 0.1,
+              0.26,
+              0.04,
+              CELL_SIZE - 0.12,
               wx,
-              WALL_HEIGHT - 0.19,
+              WALL_HEIGHT - 0.185,
               wz
             );
           }
-          // Tubulação industrial correndo abaixo do nível da viga (y = WALL_HEIGHT - 0.27 -> zero colisão!)
-          if (!isSouthStone) {
+          if (!isSouthStone && !isLightCell(gx, gz - 1)) {
             pushCylinder(
               darkIronGeos,
               0.045,
@@ -496,35 +620,39 @@ export function buildDoomLabyrinth(
             pushBox(
               darkIronGeos,
               0.07,
-              0.24,
+              0.22,
               0.11,
               wx,
-              WALL_HEIGHT - 0.14,
+              WALL_HEIGHT - 0.15,
               wz - half + 0.22
             );
           }
         } else if (solidW && solidE) {
-          if ((gx + gz) % 2 === 0) {
+          if (
+            (gx + gz) % 2 === 0 &&
+            !isLightCell(gx - 1, gz) &&
+            !isLightCell(gx + 1, gz)
+          ) {
             pushBox(
               isSouthStone ? stoneGeos : metalGeos,
-              CELL_SIZE - 0.12,
-              0.18,
+              CELL_SIZE - 0.14,
+              0.16,
               0.22,
               wx,
-              WALL_HEIGHT - 0.09,
+              WALL_HEIGHT - 0.085,
               wz
             );
             pushBox(
               darkIronGeos,
-              CELL_SIZE - 0.1,
-              0.045,
-              0.28,
+              CELL_SIZE - 0.12,
+              0.04,
+              0.26,
               wx,
-              WALL_HEIGHT - 0.19,
+              WALL_HEIGHT - 0.185,
               wz
             );
           }
-          if (!isSouthStone) {
+          if (!isSouthStone && !isLightCell(gx - 1, gz)) {
             pushCylinder(
               darkIronGeos,
               0.045,
@@ -541,84 +669,11 @@ export function buildDoomLabyrinth(
             pushBox(
               darkIronGeos,
               0.11,
-              0.24,
+              0.22,
               0.07,
               wx - half + 0.22,
-              WALL_HEIGHT - 0.14,
+              WALL_HEIGHT - 0.15,
               wz
-            );
-          }
-        }
-
-        // Escoras e pórticos antigos de madeira nas galerias de escavação e catacumbas sul
-        if (isSouthStone && !isLairCenter) {
-          if (solidN && solidW && (gx + gz) % 2 === 0) {
-            pushBox(
-              woodGeos,
-              0.16,
-              WALL_HEIGHT - 0.18,
-              0.16,
-              wx - half + 0.14,
-              (WALL_HEIGHT - 0.18) * 0.5,
-              wz - half + 0.14
-            );
-          }
-          // Vigas transversais de escoramento de mina no teto (y = WALL_HEIGHT - 0.12 -> zero obstrução!)
-          if (solidW && solidE && (gx * 3 + gz * 5) % 4 === 0) {
-            pushBox(
-              woodGeos,
-              CELL_SIZE - 0.16,
-              0.17,
-              0.18,
-              wx,
-              WALL_HEIGHT - 0.11,
-              wz
-            );
-            pushBox(
-              woodGeos,
-              0.15,
-              WALL_HEIGHT - 0.2,
-              0.15,
-              wx - half + 0.12,
-              (WALL_HEIGHT - 0.2) * 0.5,
-              wz
-            );
-            pushBox(
-              woodGeos,
-              0.15,
-              WALL_HEIGHT - 0.2,
-              0.15,
-              wx + half - 0.12,
-              (WALL_HEIGHT - 0.2) * 0.5,
-              wz
-            );
-          } else if (solidN && solidS && (gx * 5 + gz * 3) % 4 === 0) {
-            pushBox(
-              woodGeos,
-              0.18,
-              0.17,
-              CELL_SIZE - 0.16,
-              wx,
-              WALL_HEIGHT - 0.11,
-              wz
-            );
-            pushBox(
-              woodGeos,
-              0.15,
-              WALL_HEIGHT - 0.2,
-              0.15,
-              wx,
-              (WALL_HEIGHT - 0.2) * 0.5,
-              wz - half + 0.12
-            );
-            pushBox(
-              woodGeos,
-              0.15,
-              WALL_HEIGHT - 0.2,
-              0.15,
-              wx,
-              (WALL_HEIGHT - 0.2) * 0.5,
-              wz + half - 0.12
             );
           }
         }
@@ -626,143 +681,183 @@ export function buildDoomLabyrinth(
       }
 
       // ======================================================================
-      // 2. PÓRTICOS EM ARCO ESCULPIDOS EM AÇO ESCURO ('A')
+      // 2. PÓRTICOS EM ARCO ESCULPIDOS ('A' — GEOMETRIA LIMPA SEM Z-FIGHTING)
       // ======================================================================
       if (ch === 'A') {
         const northSouthWalls =
           isSolidCell(LABYRINTH_MAP, gx, gz - 1) &&
           isSolidCell(LABYRINTH_MAP, gx, gz + 1);
 
-        const lintelH = 0.64;
-        const jambH = WALL_HEIGHT - lintelH;
-        const jambThickness = 0.26;
+        // Alturas não-sobrepostas milimetricamente para eliminar 100% de Z-fighting:
+        // Plinto: [0.004..0.22] | Coluna: [0.22..2.56] | Flange inf.: [2.56..2.63] | Viga: [2.63..3.194]
+        const plinthH = 0.216;
+        const jambBottom = 0.22;
+        const archClearH = 2.56;
+        const jambH = archClearH - jambBottom; // 2.34m
+        const flangeH = 0.07; // [2.56..2.63]
+        const lintelTop = WALL_HEIGHT - 0.006; // 3.194m (abaixo do teto!)
+        const lintelH = lintelTop - (archClearH + flangeH); // 0.564m
+        const jambThick = 0.25;
+        const spanFull = CELL_SIZE - 0.012; // 2.988m (encosta nas paredes sem coplanaridade)
 
         if (northSouthWalls) {
           pushBox(
             metalGeos,
-            0.48,
+            0.46,
             lintelH,
-            CELL_SIZE - 0.04,
+            spanFull,
             wx,
-            WALL_HEIGHT - lintelH * 0.5,
+            archClearH + flangeH + lintelH * 0.5,
             wz
           );
           pushBox(
             darkIronGeos,
-            0.58,
-            0.09,
-            CELL_SIZE - 0.02,
+            0.52,
+            flangeH,
+            spanFull - 0.004,
             wx,
-            WALL_HEIGHT - lintelH + 0.045,
+            archClearH + flangeH * 0.5,
             wz
           );
-          // Chave central rebitada no topo do arco
+          // Chave central rebitada (estritamente dentro de [2.54..3.19], mais larga em X para zero Z-fighting)
           pushBox(
             darkIronGeos,
-            0.62,
-            lintelH + 0.06,
+            0.56,
+            lintelTop - 2.54 - 0.004,
             0.34,
             wx,
-            WALL_HEIGHT - lintelH * 0.5,
+            (2.54 + lintelTop - 0.004) * 0.5,
             wz
           );
 
           for (const sign of [-1, 1]) {
-            const jz = wz + sign * (half - jambThickness * 0.5);
-            pushBox(metalGeos, 0.44, jambH, jambThickness, wx, jambH * 0.5, jz);
+            const jz = wz + sign * (half - jambThick * 0.5 - 0.004);
+            pushBox(
+              metalGeos,
+              0.44,
+              jambH,
+              jambThick,
+              wx,
+              jambBottom + jambH * 0.5,
+              jz
+            );
+            // Plinto inferior mais largo que o rodapé da parede para acabamento limpo
             pushBox(
               darkIronGeos,
               0.52,
-              0.24,
-              jambThickness + 0.06,
+              plinthH,
+              jambThick + 0.05,
               wx,
-              0.12,
-              jz - sign * 0.02
+              0.004 + plinthH * 0.5,
+              wz + sign * (half - (jambThick + 0.05) * 0.5 - 0.004)
             );
+            // Anel mediano rebitado
             pushBox(
               darkIronGeos,
               0.48,
-              0.09,
-              jambThickness + 0.04,
+              0.08,
+              jambThick + 0.03,
               wx,
-              1.35,
-              jz - sign * 0.015
+              1.36,
+              wz + sign * (half - (jambThick + 0.03) * 0.5 - 0.004)
             );
-            // Mão-francesa chanfrada 45° no canto superior (livre da cápsula do jogador)
+            // Mísulas escalonadas brutalistas nos cantos superiores (sem caixas giradas atravessando faces!)
+            const innerFaceZ = wz + sign * (half - jambThick - 0.004);
+            pushBox(
+              darkIronGeos,
+              0.4,
+              0.12,
+              0.22,
+              wx,
+              archClearH - 0.06,
+              innerFaceZ - sign * 0.11
+            );
             pushBox(
               darkIronGeos,
               0.38,
-              0.42,
-              0.16,
+              0.11,
+              0.12,
               wx,
-              WALL_HEIGHT - lintelH - 0.1,
-              wz + sign * (half - jambThickness - 0.08),
-              sign * (Math.PI * 0.25),
-              0,
-              0
+              archClearH - 0.175,
+              innerFaceZ - sign * 0.06
             );
           }
         } else {
           pushBox(
             metalGeos,
-            CELL_SIZE - 0.04,
+            spanFull,
             lintelH,
-            0.48,
+            0.46,
             wx,
-            WALL_HEIGHT - lintelH * 0.5,
+            archClearH + flangeH + lintelH * 0.5,
             wz
           );
           pushBox(
             darkIronGeos,
-            CELL_SIZE - 0.02,
-            0.09,
-            0.58,
+            spanFull - 0.004,
+            flangeH,
+            0.52,
             wx,
-            WALL_HEIGHT - lintelH + 0.045,
+            archClearH + flangeH * 0.5,
             wz
           );
           pushBox(
             darkIronGeos,
             0.34,
-            lintelH + 0.06,
-            0.62,
+            lintelTop - 2.54 - 0.004,
+            0.56,
             wx,
-            WALL_HEIGHT - lintelH * 0.5,
+            (2.54 + lintelTop - 0.004) * 0.5,
             wz
           );
 
           for (const sign of [-1, 1]) {
-            const jx = wx + sign * (half - jambThickness * 0.5);
-            pushBox(metalGeos, jambThickness, jambH, 0.44, jx, jambH * 0.5, wz);
+            const jx = wx + sign * (half - jambThick * 0.5 - 0.004);
+            pushBox(
+              metalGeos,
+              jambThick,
+              jambH,
+              0.44,
+              jx,
+              jambBottom + jambH * 0.5,
+              wz
+            );
             pushBox(
               darkIronGeos,
-              jambThickness + 0.06,
-              0.24,
+              jambThick + 0.05,
+              plinthH,
               0.52,
-              jx - sign * 0.02,
-              0.12,
+              wx + sign * (half - (jambThick + 0.05) * 0.5 - 0.004),
+              0.004 + plinthH * 0.5,
               wz
             );
             pushBox(
               darkIronGeos,
-              jambThickness + 0.04,
-              0.09,
+              jambThick + 0.03,
+              0.08,
               0.48,
-              jx - sign * 0.015,
-              1.35,
+              wx + sign * (half - (jambThick + 0.03) * 0.5 - 0.004),
+              1.36,
+              wz
+            );
+            const innerFaceX = wx + sign * (half - jambThick - 0.004);
+            pushBox(
+              darkIronGeos,
+              0.22,
+              0.12,
+              0.4,
+              innerFaceX - sign * 0.11,
+              archClearH - 0.06,
               wz
             );
             pushBox(
               darkIronGeos,
-              0.16,
-              0.42,
+              0.12,
+              0.11,
               0.38,
-              wx + sign * (half - jambThickness - 0.08),
-              WALL_HEIGHT - lintelH - 0.1,
-              wz,
-              0,
-              0,
-              -sign * (Math.PI * 0.25)
+              innerFaceX - sign * 0.06,
+              archClearH - 0.175,
+              wz
             );
           }
         }
@@ -820,11 +915,43 @@ export function buildDoomLabyrinth(
         { open: openE, nx: 1, nz: 0, rotY: Math.PI * 0.5 },
       ];
 
-      // Rodapés e sancas em ferro escuro limpo (recuados 0.01m nas pontas para ZERO Z-fighting!)
+      // Rodapés e sancas em ferro escuro limpo (recuados nas pontas e sem cruzar pórticos 'A'!)
       for (const fd of faceDirs) {
         if (!fd.open) continue;
+        const nGx = gx + fd.nx;
+        const nGz = gz + fd.nz;
+        const neighborCh =
+          nGz >= 0 && nGz < rows && nGx >= 0 && nGx < cols
+            ? LABYRINTH_MAP[nGz][nGx]
+            : '#';
+        const facesArch = neighborCh === 'A';
+
         const fx = wx + fd.nx * (half + 0.026);
         const fz = wz + fd.nz * (half + 0.026);
+
+        if (facesArch) {
+          // Nas paredes laterais de um arco 'A', divide o rodapé/sanca nos dois vãos externos ao redor da coluna central (0.54m)
+          const segSpan = (CELL_SIZE - 0.56) * 0.5 - 0.01;
+          const segOffset = 0.28 + segSpan * 0.5;
+          for (const side of [-1, 1]) {
+            const ox = fd.nx === 0 ? side * segOffset : 0;
+            const oz = fd.nz === 0 ? side * segOffset : 0;
+            const sx = fd.nx === 0 ? segSpan : 0.052;
+            const sz = fd.nz === 0 ? segSpan : 0.052;
+            pushBox(darkIronGeos, sx, 0.16, sz, fx + ox, 0.08, fz + oz);
+            pushBox(
+              darkIronGeos,
+              sx,
+              0.15,
+              sz,
+              fx + ox,
+              WALL_HEIGHT - 0.075,
+              fz + oz
+            );
+          }
+          continue;
+        }
+
         const span = CELL_SIZE - 0.02;
         const sx = fd.nx === 0 ? span : 0.052;
         const sz = fd.nz === 0 ? span : 0.052;
@@ -834,7 +961,7 @@ export function buildDoomLabyrinth(
         // Sanca superior escura
         pushBox(darkIronGeos, sx, 0.15, sz, fx, WALL_HEIGHT - 0.075, fz);
 
-        // Tubulação vertical com caixa de passagem em ferro escuro (SEM listras amarelas!)
+        // Tubulação vertical com caixa de passagem em ferro escuro (apenas em paredes '#' livres)
         if (
           ch === '#' &&
           (gx * 3 + gz * 5 + (fd.nx + 2) + (fd.nz + 2)) % 6 === 0
@@ -848,7 +975,7 @@ export function buildDoomLabyrinth(
             darkIronGeos,
             0.042,
             0.042,
-            WALL_HEIGHT - 0.32,
+            WALL_HEIGHT - 0.34,
             8,
             px,
             WALL_HEIGHT * 0.5,
@@ -895,80 +1022,83 @@ export function buildDoomLabyrinth(
       }
 
       // ======================================================================
-      // 4. ARANDELAS DE PAREDE 3D GRADEADAS ('L' — 100% CENTRALIZADAS E ILUMINADAS)
+      // 4. ARANDELAS DE PAREDE 3D GRADEADAS ('L' — MOLDURA REFINADA E SEM COLISÃO)
       // ======================================================================
       if (ch === 'L') {
-        // Filtra apenas faces voltadas para dentro do mapa (ignora borda externa do labirinto!)
+        // Monta luminárias APENAS para corredores abertos '.' ou 'P' (nunca dentro de pórticos 'A' nem fora da borda!)
         const interiorOpenFaces = faceDirs.filter((d) => {
           if (!d.open) return false;
           const nGx = gx + d.nx;
           const nGz = gz + d.nz;
-          return nGx >= 0 && nGx < cols && nGz >= 0 && nGz < rows;
+          if (nGx < 0 || nGx >= cols || nGz < 0 || nGz >= rows) return false;
+          const nCh = LABYRINTH_MAP[nGz][nGx];
+          return nCh === '.' || nCh === 'P';
         });
 
-        // Coloca no máximo 2 luminárias por bloco 'L', cada uma com sua própria luz real!
         const activeFaces = interiorOpenFaces.slice(0, 2);
         for (const d of activeFaces) {
-          // Painel emissor LITE5 usando UV local 0..1 (sempre perfeitamente enquadrado!)
-          const panel = new THREE.PlaneGeometry(0.78, 1.74);
+          // Geometria sem sobreposição de cantos:
+          // Painel LITE5: largura 0.72 ([-0.36..+0.36]), altura 1.64 ([0.82..2.46])
+          // Montantes laterais: [-0.44..-0.36] e [+0.36..+0.44], altura exata 1.64 ([0.82..2.46])
+          // Coifas superior/inferior: [-0.46..+0.46], y=[2.46..2.55] e y=[0.73..0.82] (ZERO interseção!)
+          const glassW = 0.72;
+          const glassH = 1.64;
+          const centerY = 1.64;
+          const jambW = 0.08;
+          const frameDepth = 0.078;
+
+          const panel = new THREE.PlaneGeometry(glassW, glassH);
           if (d.rotY !== 0) panel.rotateY(d.rotY);
           panel.translate(
-            wx + d.nx * (half + 0.022),
-            1.64,
-            wz + d.nz * (half + 0.022)
+            wx + d.nx * (half + 0.02),
+            centerY,
+            wz + d.nz * (half + 0.02)
           );
           lightGeos.push(panel);
 
-          // Gaiola metálica 3D escura de proteção (coifa superior/inferior, laterais e 3 barras)
-          const frameDepth = 0.085;
-          const outX = wx + d.nx * (half + frameDepth * 0.5);
-          const outZ = wz + d.nz * (half + frameDepth * 0.5);
+          const outX = wx + d.nx * (half + frameDepth * 0.5 + 0.002);
+          const outZ = wz + d.nz * (half + frameDepth * 0.5 + 0.002);
+          const hoodOutX = wx + d.nx * (half + (frameDepth + 0.024) * 0.5 + 0.002);
+          const hoodOutZ = wz + d.nz * (half + (frameDepth + 0.024) * 0.5 + 0.002);
+          const trimOutX = wx + d.nx * (half + 0.034);
+          const trimOutZ = wz + d.nz * (half + 0.034);
+          const louverOutX = wx + d.nx * (half + frameDepth - 0.016);
+          const louverOutZ = wz + d.nz * (half + frameDepth - 0.016);
 
           if (d.nx === 0) {
-            pushBox(darkIronGeos, 0.92, 0.09, frameDepth + 0.025, outX, 2.55, outZ);
-            pushBox(darkIronGeos, 0.92, 0.09, frameDepth + 0.025, outX, 0.73, outZ);
-            pushBox(darkIronGeos, 0.07, 1.88, frameDepth, outX - 0.42, 1.64, outZ);
-            pushBox(darkIronGeos, 0.07, 1.88, frameDepth, outX + 0.42, 1.64, outZ);
-            for (const gy of [1.18, 1.64, 2.1]) {
-              pushBox(
-                darkIronGeos,
-                0.86,
-                0.032,
-                0.032,
-                wx + d.nx * (half + frameDepth),
-                gy,
-                wz + d.nz * (half + frameDepth)
-              );
+            // Coifas superior e inferior chanfradas em degrau (sem invadir os montantes laterais!)
+            pushBox(darkIronGeos, 0.92, 0.09, frameDepth + 0.024, hoodOutX, 2.505, hoodOutZ);
+            pushBox(darkIronGeos, 0.92, 0.09, frameDepth + 0.024, hoodOutX, 0.775, hoodOutZ);
+            pushBox(metalGeos, 0.76, 0.024, 0.032, trimOutX, 2.448, trimOutZ);
+            pushBox(metalGeos, 0.76, 0.024, 0.032, trimOutX, 0.832, trimOutZ);
+
+            // Montantes verticais esquerdo e direito (estritamente entre 0.82 e 2.46)
+            pushBox(darkIronGeos, jambW, glassH, frameDepth, outX - 0.4, centerY, outZ);
+            pushBox(darkIronGeos, jambW, glassH, frameDepth, outX + 0.4, centerY, outZ);
+
+            // Aletas horizontais embutidas dentro do vão livre (0.716m < 0.72m -> sem pontas saltando para fora!)
+            for (const gy of [1.22, 1.64, 2.06]) {
+              pushBox(darkIronGeos, glassW - 0.004, 0.032, 0.026, louverOutX, gy, louverOutZ);
             }
           } else {
-            pushBox(darkIronGeos, frameDepth + 0.025, 0.09, 0.92, outX, 2.55, outZ);
-            pushBox(darkIronGeos, frameDepth + 0.025, 0.09, 0.92, outX, 0.73, outZ);
-            pushBox(darkIronGeos, frameDepth, 1.88, 0.07, outX, 1.64, outZ - 0.42);
-            pushBox(darkIronGeos, frameDepth, 1.88, 0.07, outX, 1.64, outZ + 0.42);
-            for (const gy of [1.18, 1.64, 2.1]) {
-              pushBox(
-                darkIronGeos,
-                0.032,
-                0.032,
-                0.86,
-                wx + d.nx * (half + frameDepth),
-                gy,
-                wz + d.nz * (half + frameDepth)
-              );
+            pushBox(darkIronGeos, frameDepth + 0.024, 0.09, 0.92, hoodOutX, 2.505, hoodOutZ);
+            pushBox(darkIronGeos, frameDepth + 0.024, 0.09, 0.92, hoodOutX, 0.775, hoodOutZ);
+            pushBox(metalGeos, 0.032, 0.024, 0.76, trimOutX, 2.448, trimOutZ);
+            pushBox(metalGeos, 0.032, 0.024, 0.76, trimOutX, 0.832, trimOutZ);
+
+            pushBox(darkIronGeos, frameDepth, glassH, jambW, outX, centerY, outZ - 0.4);
+            pushBox(darkIronGeos, frameDepth, glassH, jambW, outX, centerY, outZ + 0.4);
+
+            for (const gy of [1.22, 1.64, 2.06]) {
+              pushBox(darkIronGeos, 0.026, 0.032, glassW - 0.004, louverOutX, gy, louverOutZ);
             }
           }
 
-          // Eletroduto vertical ligando o topo da luminária à sanca
-          pushCylinder(
-            darkIronGeos,
-            0.028,
-            0.028,
-            0.52,
-            6,
-            wx + d.nx * (half + 0.038),
-            2.84,
-            wz + d.nz * (half + 0.038)
-          );
+          // Eletroduto vertical ligando a coifa superior (2.55) até a base da sanca (3.05) + bucha de união
+          const condX = wx + d.nx * (half + 0.038);
+          const condZ = wz + d.nz * (half + 0.038);
+          pushCylinder(darkIronGeos, 0.026, 0.026, 0.49, 6, condX, 2.8, condZ);
+          pushCylinder(metalGeos, 0.042, 0.042, 0.045, 6, condX, 2.575, condZ);
 
           lights.push({
             position: new THREE.Vector3(
@@ -989,23 +1119,36 @@ export function buildDoomLabyrinth(
   // 5. MARCOS ARQUITETÔNICOS 3D & PLAFONS INDUSTRIAIS NOS 5 GRANDES SETORES
   // ==========================================================================
   const addCeilingFixture = (
-    lx: number,
-    lz: number,
+    gx: number,
+    gz: number,
     intensity: number,
     flicker: boolean,
     phase: number
   ) => {
-    const ceilLight = new THREE.PlaneGeometry(1.24, 1.24);
+    const lx = cellToWorldX(gx);
+    const lz = cellToWorldZ(gz);
+
+    // Painel 1.16 x 1.16 centralizado em célula aberta 3.0 x 3.0 (folga > 0.84m de qualquer parede!)
+    const panelSize = 1.16;
+    const frameThick = 0.08;
+    const halfPanel = panelSize * 0.5; // 0.58m
+    const railOffset = halfPanel + frameThick * 0.5; // 0.62m
+    const outerSpan = panelSize + frameThick * 2; // 1.32m
+
+    const ceilLight = new THREE.PlaneGeometry(panelSize, panelSize);
     ceilLight.rotateX(Math.PI * 0.5);
-    ceilLight.translate(lx, WALL_HEIGHT - 0.07, lz);
+    ceilLight.translate(lx, WALL_HEIGHT - 0.062, lz);
     lightGeos.push(ceilLight);
 
-    pushBox(darkIronGeos, 1.44, 0.09, 0.09, lx, WALL_HEIGHT - 0.045, lz - 0.67);
-    pushBox(darkIronGeos, 1.44, 0.09, 0.09, lx, WALL_HEIGHT - 0.045, lz + 0.67);
-    pushBox(darkIronGeos, 0.09, 0.09, 1.26, lx - 0.67, WALL_HEIGHT - 0.045, lz);
-    pushBox(darkIronGeos, 0.09, 0.09, 1.26, lx + 0.67, WALL_HEIGHT - 0.045, lz);
-    pushBox(darkIronGeos, 1.3, 0.035, 0.05, lx, WALL_HEIGHT - 0.085, lz);
-    pushBox(darkIronGeos, 0.05, 0.035, 1.3, lx, WALL_HEIGHT - 0.085, lz);
+    // Moldura externa sem interseção nos 4 cantos: trilhos N/S cobrem outerSpan, L/O ficam estritamente entre eles
+    pushBox(darkIronGeos, outerSpan, 0.085, frameThick, lx, WALL_HEIGHT - 0.044, lz - railOffset);
+    pushBox(darkIronGeos, outerSpan, 0.085, frameThick, lx, WALL_HEIGHT - 0.044, lz + railOffset);
+    pushBox(darkIronGeos, frameThick, 0.085, panelSize, lx - railOffset, WALL_HEIGHT - 0.044, lz);
+    pushBox(darkIronGeos, frameThick, 0.085, panelSize, lx + railOffset, WALL_HEIGHT - 0.044, lz);
+
+    // Cruzeta interna embutida sem atravessar os trilhos externos
+    pushBox(darkIronGeos, panelSize - 0.008, 0.028, 0.044, lx, WALL_HEIGHT - 0.078, lz);
+    pushBox(darkIronGeos, 0.044, 0.028, panelSize - 0.008, lx, WALL_HEIGHT - 0.078, lz);
 
     lights.push({
       position: new THREE.Vector3(lx, 2.35, lz),
@@ -1015,21 +1158,17 @@ export function buildDoomLabyrinth(
     });
   };
 
-  // A) Grande Átrio Central de Comando (gx=14, gz=11 — nave 7x5 com pórticos suspensos)
+  for (const spec of ceilingFixtureSpecs) {
+    addCeilingFixture(spec.gx, spec.gz, spec.intensity, spec.flicker, spec.phase);
+  }
+
+  // A) Grande Átrio Central de Comando (gx=14, gz=11 — vigas aéreas estritamente nos eixos livres gx=14 e gz=11)
   const atriumX = cellToWorldX(14);
   const atriumZ = cellToWorldZ(11);
-  pushBox(metalGeos, 17.8, 0.18, 0.34, atriumX, WALL_HEIGHT - 0.1, atriumZ);
-  pushBox(metalGeos, 0.34, 0.18, 13.8, atriumX, WALL_HEIGHT - 0.1, atriumZ);
-  pushBox(darkIronGeos, 17.8, 0.05, 0.44, atriumX, WALL_HEIGHT - 0.2, atriumZ);
-  pushBox(darkIronGeos, 0.44, 0.05, 13.8, atriumX, WALL_HEIGHT - 0.2, atriumZ);
-  for (const [ox, oz, ph] of [
-    [-3.0, -3.0, 0.4],
-    [3.0, -3.0, 1.2],
-    [-3.0, 3.0, 2.1],
-    [3.0, 3.0, 2.9],
-  ] as const) {
-    addCeilingFixture(atriumX + ox, atriumZ + oz, 0.58, false, ph);
-  }
+  pushBox(metalGeos, 20.4, 0.17, 0.32, atriumX, WALL_HEIGHT - 0.09, atriumZ);
+  pushBox(metalGeos, 0.32, 0.17, 14.4, atriumX, WALL_HEIGHT - 0.09, atriumZ);
+  pushBox(darkIronGeos, 20.4, 0.045, 0.4, atriumX, WALL_HEIGHT - 0.195, atriumZ);
+  pushBox(darkIronGeos, 0.4, 0.045, 14.4, atriumX, WALL_HEIGHT - 0.195, atriumZ);
 
   // B) Salão dos Reatores Nordeste (colunas M em (22, 4) e (22, 6) com barramento energético aéreo)
   const reactorX = cellToWorldX(22);
@@ -1041,13 +1180,13 @@ export function buildDoomLabyrinth(
       pushBox(metalGeos, 3.44, 0.07, 3.44, reactorX, ry + 0.09, rz);
     }
   }
-  // Dutos gêmeos de turbina no teto interligando os dois núcleos do reator (y = 2.86m -> livre abaixo!)
+  // Dutos gêmeos de turbina no teto interligando os dois núcleos do reator (y = 2.86m -> livre de plafons!)
   for (const busOx of [-0.65, 0.65]) {
     pushCylinder(
       darkIronGeos,
       0.16,
       0.16,
-      CELL_SIZE * 2.1,
+      CELL_SIZE * 1.9,
       10,
       reactorX + busOx,
       WALL_HEIGHT - 0.34,
@@ -1059,38 +1198,12 @@ export function buildDoomLabyrinth(
     pushBox(
       metalGeos,
       0.42,
-      0.26,
+      0.24,
       0.28,
       reactorX + busOx,
-      WALL_HEIGHT - 0.16,
+      WALL_HEIGHT - 0.15,
       reactorMidZ
     );
-  }
-  for (const [ox, oz, ph] of [
-    [-4.2, -3.0, 0.7],
-    [4.2, -3.0, 1.9],
-    [-4.2, 3.0, 3.1],
-    [4.2, 3.0, 4.3],
-  ] as const) {
-    addCeilingFixture(reactorX + ox, reactorMidZ + oz, 0.6, true, ph);
-  }
-
-  // C) Enfermaria Médica Noroeste (em torno da coluna M em (7, 4))
-  const infirmaryX = cellToWorldX(7);
-  const infirmaryZ = cellToWorldZ(4);
-  addCeilingFixture(infirmaryX - 3.0, infirmaryZ, 0.56, false, 0.9);
-  addCeilingFixture(infirmaryX + 3.0, infirmaryZ, 0.54, true, 3.7);
-
-  // D) Nervuras de abóbada de pedra na Cisterna Sudoeste (6, 20) e Cripta Sudeste Ala B (23, 22)
-  for (const [cgx, cgz, spanW, spanD, ph] of [
-    [6, 20, 8.6, 8.6, 2.6],
-    [23, 22, 11.6, 11.6, 4.8],
-  ] as const) {
-    const vx = cellToWorldX(cgx);
-    const vz = cellToWorldZ(cgz);
-    pushBox(stoneGeos, spanW, 0.24, 0.36, vx, WALL_HEIGHT - 0.12, vz);
-    pushBox(stoneGeos, 0.36, 0.24, spanD, vx, WALL_HEIGHT - 0.12, vz);
-    addCeilingFixture(vx, vz - 3.0, 0.46, true, ph);
   }
 
   // E) Luminária industrial antiga suspensa e torta no teto do Grande Ninho da Aranha (LAIR_GRID_CELL)
@@ -1120,11 +1233,12 @@ export function buildDoomLabyrinth(
   );
   const lairCeilLight = new THREE.PlaneGeometry(0.98, 0.98);
   lairCeilLight.rotateX(Math.PI * 0.5);
+  lairCeilLight.translate(0, -0.052, 0);
   const tiltMat = new THREE.Matrix4().makeRotationFromEuler(
     new THREE.Euler(0.06, 0.18, -0.05, 'YXZ')
   );
   lairCeilLight.applyMatrix4(tiltMat);
-  lairCeilLight.translate(lairX, WALL_HEIGHT - 0.302, lairZ);
+  lairCeilLight.translate(lairX, WALL_HEIGHT - 0.25, lairZ);
   lightGeos.push(lairCeilLight);
 
   lights.push({

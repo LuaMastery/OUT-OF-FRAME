@@ -1109,4 +1109,128 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
 
     radar.destroy();
   });
+
+  it('garante que nenhum LED de teto ou parede colida com paredes, vigas ou molduras e que pórticos fiquem limpos', () => {
+    const scene = new THREE.Scene();
+    const uniforms = createDoomSharedUniforms();
+    const textures = createDoomTextures();
+    buildDoomLabyrinth(scene, textures, uniforms);
+
+    const meshes: Record<string, THREE.Mesh> = {};
+    scene.traverse((obj) => {
+      if ((obj as THREE.Mesh).isMesh && obj.name) {
+        meshes[obj.name] = obj as THREE.Mesh;
+      }
+    });
+
+    const countIntersectingTris = (
+      mesh: THREE.Mesh | undefined,
+      testBox: THREE.Box3
+    ): number => {
+      if (!mesh) return 0;
+      const g = mesh.geometry;
+      const p = g.getAttribute('position');
+      const index = g.getIndex();
+      const tri = new THREE.Triangle();
+      let hits = 0;
+      const triCount = index ? index.count / 3 : p.count / 3;
+      for (let t = 0; t < triCount; t++) {
+        const i0 = index ? index.getX(t * 3) : t * 3;
+        const i1 = index ? index.getX(t * 3 + 1) : t * 3 + 1;
+        const i2 = index ? index.getX(t * 3 + 2) : t * 3 + 2;
+        tri.a.set(p.getX(i0), p.getY(i0), p.getZ(i0));
+        tri.b.set(p.getX(i1), p.getY(i1), p.getZ(i1));
+        tri.c.set(p.getX(i2), p.getY(i2), p.getZ(i2));
+        if (testBox.intersectsTriangle(tri)) hits++;
+      }
+      return hits;
+    };
+
+    const lightMesh = meshes['MazeLightPanels'];
+    expect(lightMesh).toBeDefined();
+    const pos = lightMesh.geometry.getAttribute('position');
+    let ceilingCount = 0;
+    let wallCount = 0;
+
+    for (let v = 0; v < pos.count; v += 4) {
+      const box = new THREE.Box3();
+      for (let k = 0; k < 4; k++) {
+        box.expandByPoint(
+          new THREE.Vector3(pos.getX(v + k), pos.getY(v + k), pos.getZ(v + k))
+        );
+      }
+      const size = new THREE.Vector3();
+      box.getSize(size);
+      const center = new THREE.Vector3();
+      box.getCenter(center);
+      const cell = worldToGridCell(center.x, center.z);
+      const ch = LABYRINTH_MAP[cell.gz]?.[cell.gx];
+
+      if (size.y < 0.25) {
+        // 1. Plafons de teto: sempre em células abertas '.' e sem colidir com paredes ou vigas
+        ceilingCount++;
+        expect(ch).toBe('.');
+        const fixtureBox = box
+          .clone()
+          .expandByVector(new THREE.Vector3(0.12, 0.04, 0.12));
+        for (const mName of [
+          'MazeWallsStartan',
+          'MazeWallsStone',
+          'MazeBulkheadPillar',
+          'MazePropsWood',
+          'MazeTrimMetal',
+        ]) {
+          expect(countIntersectingTris(meshes[mName], fixtureBox)).toBe(0);
+        }
+      } else {
+        // 2. LEDs de parede ('L'): sempre voltados para corredor livre ('.' ou 'P', nunca para arco 'A') e sem molduras na frente
+        wallCount++;
+        expect(ch === '.' || ch === 'P').toBe(true);
+        const cellCenter = gridCellToWorld(cell.gx, cell.gz);
+        const dirX = Math.sign(cellCenter.x - center.x);
+        const dirZ = Math.sign(cellCenter.z - center.z);
+        const wallFaceX = center.x - dirX * 0.02;
+        const wallFaceZ = center.z - dirZ * 0.02;
+        const frontBox = new THREE.Box3();
+        if (Math.abs(size.x) > Math.abs(size.z)) {
+          frontBox.min.set(
+            center.x - 0.5,
+            0.65,
+            Math.min(wallFaceZ + dirZ * 0.13, wallFaceZ + dirZ * 0.85)
+          );
+          frontBox.max.set(
+            center.x + 0.5,
+            2.65,
+            Math.max(wallFaceZ + dirZ * 0.13, wallFaceZ + dirZ * 0.85)
+          );
+        } else {
+          frontBox.min.set(
+            Math.min(wallFaceX + dirX * 0.13, wallFaceX + dirX * 0.85),
+            0.65,
+            center.z - 0.5
+          );
+          frontBox.max.set(
+            Math.max(wallFaceX + dirX * 0.13, wallFaceX + dirX * 0.85),
+            2.65,
+            center.z + 0.5
+          );
+        }
+        for (const mName of Object.keys(meshes)) {
+          if (mName === 'MazeLightPanels') continue;
+          expect(countIntersectingTris(meshes[mName], frontBox)).toBe(0);
+        }
+      }
+    }
+
+    expect(ceilingCount).toBe(13);
+    expect(wallCount).toBeGreaterThanOrEqual(50);
+
+    // 3. Quadros de madeira ('MazePropsWood') não cruzam vigas de pedra/metal nem passam do teto (WALL_HEIGHT)
+    for (const m of Object.values(meshes)) {
+      const p = m.geometry.getAttribute('position');
+      for (let i = 0; i < p.count; i++) {
+        expect(p.getY(i)).toBeLessThanOrEqual(WALL_HEIGHT + 0.005);
+      }
+    }
+  });
 });
