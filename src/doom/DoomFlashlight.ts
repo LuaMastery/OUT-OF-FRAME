@@ -49,7 +49,6 @@ export class DoomFlashlight {
   private readonly animGroup = new THREE.Group();
   private readonly switchMesh: THREE.Mesh;
   private readonly lensMaterial: THREE.MeshBasicMaterial;
-  private readonly innerGlowMaterial: THREE.MeshBasicMaterial;
 
   private equipped = false;
   private lightActive = false;
@@ -98,15 +97,6 @@ export class DoomFlashlight {
 
     this.lensMaterial = new THREE.MeshBasicMaterial({
       color: 0x1b2026,
-    });
-
-    this.innerGlowMaterial = new THREE.MeshBasicMaterial({
-      color: 0xfff3c4,
-      transparent: true,
-      opacity: 0,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-      side: THREE.DoubleSide,
     });
 
     // ------------------------------------------------------------------------
@@ -185,22 +175,14 @@ export class DoomFlashlight {
     frontRim.position.z = -0.236;
     model.add(frontRim);
 
-    // 7. Lente frontal e cone curto sutil de feixe saindo do bocal quando acesa
+    // 7. Lente frontal interna (sem cone translúcido flutuante à frente)
     const lens = new THREE.Mesh(
       new THREE.CircleGeometry(0.048, 8),
       this.lensMaterial
     );
     lens.position.z = -0.244;
-    lens.material.side = THREE.DoubleSide;
+    lens.rotation.y = Math.PI;
     model.add(lens);
-
-    const beamConeGeo = new THREE.ConeGeometry(0.13, 0.42, 8, 1, true);
-    // ConeGeometry aponta para +Y por padrão; giramos para abrir de z=-0.24 até z=-0.66
-    beamConeGeo.translate(0, -0.21, 0);
-    beamConeGeo.rotateX(Math.PI * 0.5);
-    const beamCone = new THREE.Mesh(beamConeGeo, this.innerGlowMaterial);
-    beamCone.position.z = -0.24;
-    model.add(beamCone);
 
     this.animGroup.add(model);
     this.rootGroup.add(this.animGroup);
@@ -284,13 +266,11 @@ export class DoomFlashlight {
         this.flickerWarmup < 0.45 ? 0.55 : this.flickerWarmup;
     }
 
-    // Atualiza cor da lente e cone curto de saída
+    // Atualiza cor da lente interna
     if (beamIntensity > 0.05) {
       this.lensMaterial.color.setHex(0xfff2c2);
-      this.innerGlowMaterial.opacity = 0.11 * beamIntensity;
     } else {
       this.lensMaterial.color.setHex(0x1b2026);
-      this.innerGlowMaterial.opacity = 0;
     }
 
     // 4. Curva de pose da animação de saque (easeOutBack sutil para peso mecânico)
