@@ -21,11 +21,6 @@ export class SoundEngine {
   private noiseBuffer: AudioBuffer | null = null;
   private grittyNoiseBuffer: AudioBuffer | null = null;
 
-  // Ambiência contínua do Terminal
-  private termHumGain: GainNode | null = null;
-  private termHumOscA: OscillatorNode | null = null;
-  private termHumOscB: OscillatorNode | null = null;
-
   // Tensão contínua da Convergência Binária
   private coalesceDroneGain: GainNode | null = null;
   private coalesceDroneFilter: BiquadFilterNode | null = null;
@@ -112,8 +107,6 @@ export class SoundEngine {
     // Buffers reutilizáveis de ruído (fino e "gritty" 11kHz estilo SoundBlaster DOOM)
     this.noiseBuffer = this.buildNoiseBuffer(ctx, 1.0, 1);
     this.grittyNoiseBuffer = this.buildNoiseBuffer(ctx, 1.0, 4);
-
-    this.startTerminalPresence(ctx, terminalBus);
   }
 
   private createWarmCurve(samples: number): Float32Array<ArrayBuffer> {
@@ -184,55 +177,6 @@ export class SoundEngine {
       data[i] = current;
     }
     return buffer;
-  }
-
-  private startTerminalPresence(ctx: AudioContext, dest: AudioNode): void {
-    const humGain = ctx.createGain();
-    humGain.gain.value = 0.016;
-    humGain.connect(dest);
-    this.termHumGain = humGain;
-
-    const filter = ctx.createBiquadFilter();
-    filter.type = 'lowpass';
-    filter.frequency.value = 240;
-    filter.connect(humGain);
-
-    const oscA = ctx.createOscillator();
-    oscA.type = 'sine';
-    oscA.frequency.value = 60;
-    oscA.connect(filter);
-    oscA.start();
-    this.termHumOscA = oscA;
-
-    const oscB = ctx.createOscillator();
-    oscB.type = 'triangle';
-    oscB.frequency.value = 120.2;
-    const subGain = ctx.createGain();
-    subGain.gain.value = 0.35;
-    oscB.connect(subGain);
-    subGain.connect(filter);
-    oscB.start();
-    this.termHumOscB = oscB;
-
-    // Leve sopro de ventilação do gabinete
-    if (this.noiseBuffer) {
-      const fan = ctx.createBufferSource();
-      fan.buffer = this.noiseBuffer;
-      fan.loop = true;
-
-      const fanBp = ctx.createBiquadFilter();
-      fanBp.type = 'bandpass';
-      fanBp.frequency.value = 340;
-      fanBp.Q.value = 0.9;
-
-      const fanGain = ctx.createGain();
-      fanGain.gain.value = 0.18;
-
-      fan.connect(fanBp);
-      fanBp.connect(fanGain);
-      fanGain.connect(humGain);
-      fan.start();
-    }
   }
 
   // ==========================================================================
@@ -707,9 +651,6 @@ export class SoundEngine {
     osc.start(now);
     osc.stop(now + 0.56);
 
-    if (this.termHumGain) {
-      this.termHumGain.gain.setTargetAtTime(0.0001, now, 0.08);
-    }
     if (this.masterGain) {
       this.masterGain.gain.setTargetAtTime(0.0001, now + 0.35, 0.08);
     }
@@ -729,11 +670,6 @@ export class SoundEngine {
     }
     const ctx = this.ctx;
     const now = ctx.currentTime;
-
-    // Recua suavemente o hum do terminal
-    if (this.termHumGain) {
-      this.termHumGain.gain.setTargetAtTime(0.0001, now, 0.25);
-    }
 
     // Impacto dramático estilo abertura de porta/elevador pesado do DOOM clássico
     this.triggerFilteredNoise(
@@ -1088,12 +1024,6 @@ export class SoundEngine {
       this.pulseTimerId = 0;
     }
     this.stopCoalesceDrone();
-    try {
-      this.termHumOscA?.stop();
-      this.termHumOscB?.stop();
-    } catch {
-      // ignora
-    }
     if (this.ctx) {
       void this.ctx.close();
       this.ctx = null;
