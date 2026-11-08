@@ -514,12 +514,12 @@ export class SoundEngine {
 
     if (this.coalesceDroneGain && this.coalesceDroneFilter) {
       this.coalesceDroneGain.gain.setTargetAtTime(
-        0.015 + progress * 0.055,
+        0.005 + progress * 0.016,
         now,
         0.06
       );
       this.coalesceDroneFilter.frequency.setTargetAtTime(
-        120 + Math.pow(progress, 1.7) * 1450,
+        110 + Math.pow(progress, 1.7) * 950,
         now,
         0.06
       );
@@ -723,30 +723,29 @@ export class SoundEngine {
     bus.gain.setTargetAtTime(1.0, ctx.currentTime + 0.15, 0.8);
     bus.connect(this.worldDryBus);
 
-    // 1. Drone escuro subterrâneo filtrado (E1 = 41.2Hz + B1 = 61.74Hz)
+    // 1. Drone escuro subterrâneo filtrado bem sutil (E1 = 41.2Hz + B1 = 61.74Hz)
     const droneFilter = ctx.createBiquadFilter();
     droneFilter.type = 'lowpass';
-    droneFilter.frequency.value = 145;
-    droneFilter.Q.value = 2.8;
+    droneFilter.frequency.value = 125;
+    droneFilter.Q.value = 1.6;
 
     const droneGain = ctx.createGain();
-    droneGain.gain.value = 0.055;
+    droneGain.gain.value = 0.012;
     droneFilter.connect(droneGain);
     droneGain.connect(bus);
-    droneGain.connect(this.reverbSend);
 
     // LFO lento modulando o filtro do drone para sensação orgânica de masmorra/base
     const lfo = ctx.createOscillator();
     const lfoGain = ctx.createGain();
     lfo.type = 'sine';
-    lfo.frequency.value = 0.11;
-    lfoGain.gain.value = 55;
+    lfo.frequency.value = 0.1;
+    lfoGain.gain.value = 32;
     lfo.connect(lfoGain);
     lfoGain.connect(droneFilter.frequency);
     lfo.start();
 
     const d1 = ctx.createOscillator();
-    d1.type = 'sawtooth';
+    d1.type = 'sine';
     d1.frequency.value = 41.2;
     d1.connect(droneFilter);
     d1.start();
@@ -757,19 +756,18 @@ export class SoundEngine {
     d2.connect(droneFilter);
     d2.start();
 
-    // 2. Corrente de ar sombria nos túneis
+    // 2. Corrente de ar subterrânea bem baixa nos túneis
     if (this.noiseBuffer) {
       const air = ctx.createBufferSource();
       air.buffer = this.noiseBuffer;
       air.loop = true;
 
       const airFilter = ctx.createBiquadFilter();
-      airFilter.type = 'bandpass';
-      airFilter.frequency.value = 190;
-      airFilter.Q.value = 1.4;
+      airFilter.type = 'lowpass';
+      airFilter.frequency.value = 210;
 
       const airGain = ctx.createGain();
-      airGain.gain.value = 0.032;
+      airGain.gain.value = 0.0055;
 
       air.connect(airFilter);
       airFilter.connect(airGain);
@@ -787,20 +785,20 @@ export class SoundEngine {
     this.lampBuzzPanner = lampPan;
 
     const buzzOsc = ctx.createOscillator();
-    buzzOsc.type = 'sawtooth';
+    buzzOsc.type = 'triangle';
     buzzOsc.frequency.value = 120;
     const buzzFilter = ctx.createBiquadFilter();
     buzzFilter.type = 'bandpass';
-    buzzFilter.frequency.value = 480;
-    buzzFilter.Q.value = 3.2;
+    buzzFilter.frequency.value = 360;
+    buzzFilter.Q.value = 2.5;
     buzzOsc.connect(buzzFilter);
     buzzFilter.connect(lampGain);
     buzzOsc.start();
 
-    // 4. Pulsos industriais distantes ocasionais ecoando no labirinto
+    // 4. Pulsos industriais distantes ocasionais e discretos ecoando no labirinto
     this.pulseTimerId = window.setInterval(() => {
       if (!this.ctx || this.ctx.state !== 'running' || !this.reverbSend) return;
-      if (Math.random() > 0.55) return;
+      if (Math.random() > 0.5) return;
       const t = this.ctx.currentTime;
       const pan = this.ctx.createStereoPanner();
       pan.pan.value = (Math.random() * 2 - 1) * 0.75;
@@ -810,20 +808,20 @@ export class SoundEngine {
       const osc = this.ctx.createOscillator();
       const g = this.ctx.createGain();
       const notes = [41.2, 43.65, 55.0, 61.74]; // Mi Frígio (E, F, A, B)
-      osc.type = 'triangle';
+      osc.type = 'sine';
       osc.frequency.setValueAtTime(
         notes[Math.floor(Math.random() * notes.length)],
         t
       );
       g.gain.setValueAtTime(0.0001, t);
-      g.gain.linearRampToValueAtTime(0.075, t + 0.12);
+      g.gain.linearRampToValueAtTime(0.018, t + 0.16);
       g.gain.exponentialRampToValueAtTime(0.0008, t + 1.8);
 
       osc.connect(g);
       g.connect(pan);
       osc.start(t);
       osc.stop(t + 1.85);
-    }, 4200);
+    }, 6500);
   }
 
   /**
@@ -952,9 +950,9 @@ export class SoundEngine {
 
     const proximity = Math.pow(Math.max(0, 1 - nearestDist / 7.5), 2);
     this.lampBuzzPanner?.pan.setTargetAtTime(pan, now, 0.05);
-    this.lampBuzzGain?.gain.setTargetAtTime(proximity * 0.026, now, 0.06);
+    this.lampBuzzGain?.gain.setTargetAtTime(proximity * 0.006, now, 0.06);
 
-    // Estalo fluorescente quando uma luminária LITE5 próxima falha/pisca!
+    // Estalo fluorescente discreto quando uma luminária LITE5 próxima falha/pisca
     if (
       justFlickeredDim &&
       nearestDist < 6.0 &&
@@ -971,10 +969,10 @@ export class SoundEngine {
       this.triggerFilteredNoise(
         sparkPan,
         now,
-        0.028,
-        2900,
+        0.024,
+        2600,
         2.8,
-        0.09 * proximity,
+        0.028 * proximity,
         true
       );
     }
