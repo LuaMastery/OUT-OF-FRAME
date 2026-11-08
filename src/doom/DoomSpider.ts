@@ -237,6 +237,7 @@ export class DoomSpider {
   private pathWaypoints: Array<{ x: number; z: number }> = [];
   private pathRepathTimer = 0;
   private readonly lastKnownPlayerPos = new THREE.Vector3();
+  private searchingAroundLastKnown = false;
 
   // Controle físico de escalada lateral em paredes + anti-travamento em cantos
   private readonly climbedWallNormal = new THREE.Vector3();
@@ -282,6 +283,14 @@ export class DoomSpider {
       this.state === 'FRENZY_CHASE' ||
       this.state === 'CINEMATIC_SEQUENCE'
     );
+  }
+
+  /**
+   * Verdadeiro quando o jogador quebrou a linha de visão direta e parou de correr,
+   * fazendo a aranha continuar correndo e vasculhando os corredores próximos!
+   */
+  get isSearchingHiddenPlayer(): boolean {
+    return this.state === 'FRENZY_CHASE' && this.searchingAroundLastKnown;
   }
 
   get position(): THREE.Vector3 {
@@ -419,7 +428,11 @@ export class DoomSpider {
       cameraShakeAmount = (1 - distToPlayer / 10.0) * 0.026;
     }
 
-    if (this.state === 'FRENZY_CHASE' && distToPlayer < 1.55) {
+    if (
+      this.state === 'FRENZY_CHASE' &&
+      distToPlayer < 1.52 &&
+      this.hasLineOfSight(this.bodyPos, localPlayerPos, false)
+    ) {
       onCatchLocalPlayer();
       return { cameraShakeAmount: 0.12, playerDistance: distToPlayer };
     }
@@ -459,6 +472,7 @@ export class DoomSpider {
 
     this.state = 'STALK_PATROL';
     this.stateTimer = 0;
+    this.searchingAroundLastKnown = false;
     this.pathWaypoints = [];
 
     this.snapAllFeetAroundBody();
@@ -535,6 +549,7 @@ export class DoomSpider {
     if (this.state === 'CINEMATIC_SEQUENCE') return;
 
     this.lastKnownPlayerPos.copy(trapWorldPos);
+    this.searchingAroundLastKnown = false;
     this.pathRepathTimer = 0;
 
     const pan = this.computeStereoPan(playerPos, 0);
@@ -1065,6 +1080,10 @@ export class DoomSpider {
     if (canSeePlayer) {
       this.lastKnownPlayerPos.copy(playerPos);
       this.lostSightTimer = 0;
+      if (this.searchingAroundLastKnown) {
+        this.searchingAroundLastKnown = false;
+        this.pathRepathTimer = 0;
+      }
     } else {
       this.lostSightTimer += dt;
     }
@@ -1075,11 +1094,12 @@ export class DoomSpider {
     const prevMoveZ = this.bodyPos.z;
 
     if (this.state === 'FLEE_RETREAT') {
-      this.commandedSpeed = 7.6;
-      this.moveAlongPath(dt, 7.6);
+      this.commandedSpeed = 7.2;
+      this.moveAlongPath(dt, 7.2);
       if (this.stateTimer > 5.8) {
         this.state = 'STALK_PATROL';
         this.stateTimer = 0;
+        this.searchingAroundLastKnown = false;
         this.pathWaypoints = [];
       }
     } else if (this.state === 'ALERT_WINDUP') {
@@ -1087,18 +1107,38 @@ export class DoomSpider {
       if (this.stateTimer >= 0.42) {
         this.state = 'FRENZY_CHASE';
         this.stateTimer = 0;
+        this.searchingAroundLastKnown = false;
         this.pathRepathTimer = 0;
       }
     } else if (this.state === 'FRENZY_CHASE') {
-      if (this.pathRepathTimer <= 0) {
-        this.pathRepathTimer = 0.3;
-        this.buildGridPathTo(
-          this.lastKnownPlayerPos.x,
-          this.lastKnownPlayerPos.z
+      // Se ainda está vendo/ouvindo o jogador ou indo até o último ponto avistado:
+      if (!this.searchingAroundLastKnown) {
+        if (this.pathRepathTimer <= 0) {
+          this.pathRepathTimer = 0.28;
+          this.buildGridPathTo(
+            this.lastKnownPlayerPos.x,
+            this.lastKnownPlayerPos.z
+          );
+        }
+
+        const distToLastKnown = Math.hypot(
+          this.lastKnownPlayerPos.x - this.bodyPos.x,
+          this.lastKnownPlayerPos.z - this.bodyPos.z
         );
+        if (
+          !canSeePlayer &&
+          (distToLastKnown < 1.15 || this.pathWaypoints.length === 0)
+        ) {
+          // O jogador quebrou a visão direta e se escondeu!
+          // A aranha NÃO sabe onde ele parou: ela continua correndo e vasculhando os corredores próximos!
+          this.searchingAroundLastKnown = true;
+          this.pickSearchPathNear(this.lastKnownPlayerPos);
+        }
+      } else if (this.pathWaypoints.length === 0) {
+        this.pickSearchPathNear(this.lastKnownPlayerPos);
       }
 
-      if (distToPlayer < 6.0) {
+      if (canSeePlayer && distToPlayer < 6.0) {
         this.surfaceMode = 'FLOOR';
       } else if (Math.random() < dt * 0.45) {
         const roll = Math.random();
@@ -1106,9 +1146,14 @@ export class DoomSpider {
           roll < 0.55 ? 'FLOOR' : roll < 0.8 ? 'CEILING' : 'WALL';
       }
 
-      const chaseSpeed = this.webManager.isPlayerEnsnared ? 10.2 : 9.35;
+      // Velocidade rápida e ameaçadora, porém um pouco reduzida para dar chance justa de fuga correndo/deslizando!
+      const chaseSpeed = this.webManager.isPlayerEnsnared
+        ? 8.45
+        : this.searchingAroundLastKnown
+          ? 7.2
+          : 7.75;
       this.commandedSpeed = chaseSpeed;
-      if (canSeePlayer && distToPlayer < 5.8) {
+      if (canSeePlayer && distToPlayer < 5.6) {
         this.surfaceMode = 'FLOOR';
         this.climbedWallNormal.set(0, 0, 0);
         this.moveDirectlyToward(playerPos.x, playerPos.z, dt, chaseSpeed);
@@ -1120,8 +1165,11 @@ export class DoomSpider {
         cameraShakeAmount = (1 - distToPlayer / 10.0) * 0.026;
       }
 
-      // Alcançou o jogador -> Inicia Ataque Brutal + Sequestro até a Teia (ou Morte Real)!
-      if (distToPlayer < 1.58) {
+      // Alcançou o jogador COM linha de visão direta -> Inicia Ataque Brutal (nunca atravessa paredes!)
+      if (
+        distToPlayer < 1.52 &&
+        this.hasLineOfSight(this.bodyPos, playerPos, playerCrouching)
+      ) {
         onCatchPlayer();
         return {
           cameraShakeAmount: 0.12,
@@ -1129,10 +1177,11 @@ export class DoomSpider {
         };
       }
 
-      const giveUpTime = playerCrouching && !flashlightOn ? 5.2 : 7.8;
+      const giveUpTime = playerCrouching && !flashlightOn ? 6.0 : 8.2;
       if (this.lostSightTimer > giveUpTime) {
         this.state = 'STALK_PATROL';
         this.stateTimer = 0;
+        this.searchingAroundLastKnown = false;
         this.surfaceMode = Math.random() < 0.65 ? 'CEILING' : 'WALL';
         this.pathWaypoints = [];
       }
@@ -1288,24 +1337,36 @@ export class DoomSpider {
     flashlightOn: boolean,
     flashlightDir: THREE.Vector3
   ): boolean {
-    if (playerSprinting && dist < 9.5) {
+    const directLOS = this.hasLineOfSight(
+      this.bodyPos,
+      playerPos,
+      playerCrouching
+    );
+
+    // Sem linha de visão direta (paredes, esquinas ou colunas entre a aranha e o jogador):
+    // Se o jogador parar de correr e se esconder, a aranha NÃO consegue enxergá-lo nem saber onde está!
+    if (!directLOS) {
+      return playerSprinting && dist < 8.0;
+    }
+
+    if (playerSprinting && dist < 16.5) {
       return true;
     }
-    if (!playerCrouching && dist < 2.9) {
+    if (!playerCrouching && dist < 2.8) {
       return true;
     }
 
-    let sightRange = 15.8;
+    let sightRange = 15.2;
     if (flashlightOn) {
-      sightRange = 21.0;
+      sightRange = 20.5;
       const toSpider = this.tmpA
         .subVectors(this.bodyPos, playerPos)
         .normalize();
-      if (toSpider.dot(flashlightDir) > 0.86 && dist < 23.5) {
-        if (this.hasLineOfSight(this.bodyPos, playerPos)) return true;
+      if (toSpider.dot(flashlightDir) > 0.86 && dist < 23.0) {
+        return true;
       }
     } else if (playerCrouching) {
-      sightRange = 5.4;
+      sightRange = 4.6;
     }
 
     if (dist > sightRange) return false;
@@ -1320,21 +1381,30 @@ export class DoomSpider {
     );
     if (fwdFlat.lengthSq() > 0.01) {
       fwdFlat.normalize();
-      if (toPrey.dot(fwdFlat) < -0.42 && dist > 4.2) {
+      const dotFwd = toPrey.dot(fwdFlat);
+      if (playerCrouching && !flashlightOn) {
+        if (dotFwd < 0.22 && dist > 1.65) {
+          return false;
+        }
+      } else if (dotFwd < -0.42 && dist > 3.8) {
         return false;
       }
     }
 
-    return this.hasLineOfSight(this.bodyPos, playerPos);
+    return true;
   }
 
-  private hasLineOfSight(from: THREE.Vector3, to: THREE.Vector3): boolean {
+  private hasLineOfSight(
+    from: THREE.Vector3,
+    to: THREE.Vector3,
+    targetCrouching = false
+  ): boolean {
     const startY = Math.min(2.15, Math.max(0.85, from.y));
-    const endY = 1.15;
+    const endY = targetCrouching ? 0.72 : 1.22;
     const dx = to.x - from.x;
     const dy = endY - startY;
     const dz = to.z - from.z;
-    const steps = Math.max(4, Math.ceil(Math.hypot(dx, dz) / 0.55));
+    const steps = Math.max(6, Math.ceil(Math.hypot(dx, dz) / 0.28));
 
     for (let s = 1; s < steps; s++) {
       const f = s / steps;
@@ -1445,6 +1515,46 @@ export class DoomSpider {
     }
     const [rx, rz] = candidates[Math.floor(Math.random() * candidates.length)];
     const w = gridCellToWorld(rx, rz);
+    this.buildGridPathTo(w.x, w.z);
+  }
+
+  /**
+   * Escolhe um corredor próximo ao último ponto conhecido do jogador para que a aranha
+   * continue correndo e procurando ativamente enquanto o jogador permanece escondido fora de visão!
+   */
+  private pickSearchPathNear(anchorWorld: THREE.Vector3): void {
+    const anchorCell = worldToGridCell(anchorWorld.x, anchorWorld.z);
+    const curCell = worldToGridCell(this.bodyPos.x, this.bodyPos.z);
+    const candidates: Array<[number, number]> = [];
+
+    for (let dz = -8; dz <= 8; dz++) {
+      for (let dx = -8; dx <= 8; dx++) {
+        const gx = anchorCell.gx + dx;
+        const gz = anchorCell.gz + dz;
+        if (
+          gz <= 0 ||
+          gz >= LABYRINTH_MAP.length - 1 ||
+          gx <= 0 ||
+          gx >= LABYRINTH_MAP[gz].length - 1
+        ) {
+          continue;
+        }
+        if (isSolidCell(LABYRINTH_MAP, gx, gz)) continue;
+        const distFromSpider = Math.abs(gx - curCell.gx) + Math.abs(gz - curCell.gz);
+        const distFromAnchor = Math.abs(dx) + Math.abs(dz);
+        if (distFromSpider >= 3 && distFromAnchor <= 9) {
+          candidates.push([gx, gz]);
+        }
+      }
+    }
+
+    if (candidates.length === 0) {
+      this.pickRandomPatrolPath();
+      return;
+    }
+
+    const [sx, sz] = candidates[Math.floor(Math.random() * candidates.length)];
+    const w = gridCellToWorld(sx, sz);
     this.buildGridPathTo(w.x, w.z);
   }
 

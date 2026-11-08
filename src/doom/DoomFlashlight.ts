@@ -235,191 +235,138 @@ export class DoomFlashlight {
     this.bulbMaterial = new THREE.MeshBasicMaterial({ color: 0x3a362e });
 
     // ========================================================================
-    // 1. LANTERNA INDUSTRIAL + BRAÇO DIREITO ORIGINAL DO ASTRONAUTA (`AstronautRightArm`)
+    // 1. LANTERNA CLÁSSICA SIMPLES & LIMPA + BRAÇO DIREITO DO ASTRONAUTA (`AstronautRightArm`)
     // ========================================================================
     const model = new THREE.Group();
 
-    // A) Tampa traseira sextavada com argola metálica de fiel (lanyard)
+    // A) Tampa traseira limpa (sem argolas traseiras que atravessem a luva/punho)
     const tailCap = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.036, 0.033, 0.044, 8),
+      new THREE.CylinderGeometry(0.0265, 0.0245, 0.026, 10),
       bezelMat
     );
     tailCap.rotation.x = Math.PI * 0.5;
-    tailCap.position.z = 0.114;
+    tailCap.position.z = 0.088;
     model.add(tailCap);
 
-    const tailGroove = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.037, 0.037, 0.008, 8),
-      darkRingMat
-    );
-    tailGroove.rotation.x = Math.PI * 0.5;
-    tailGroove.position.z = 0.098;
-    model.add(tailGroove);
-
-    const lanyardLug = new THREE.Mesh(
-      new THREE.BoxGeometry(0.016, 0.018, 0.016),
-      brassMat
-    );
-    lanyardLug.position.set(0, -0.022, 0.138);
-    const lanyardRing = new THREE.Mesh(
-      new THREE.TorusGeometry(0.012, 0.003, 6, 10),
-      brassMat
-    );
-    lanyardRing.position.set(0, -0.028, 0.148);
-    lanyardRing.rotation.x = 0.45;
-    model.add(lanyardLug, lanyardRing);
-
-    // B) Tubo central recartilhado
-    const barrelRear = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.0345, 0.0345, 0.06, 10),
+    // B) Corpo cilíndrico simples e bem proporcionado com textura recartilhada discreta
+    const barrel = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.0265, 0.0265, 0.162, 10),
       bodyMat
     );
-    barrelRear.rotation.x = Math.PI * 0.5;
-    barrelRear.position.z = 0.062;
-    model.add(barrelRear);
+    barrel.rotation.x = Math.PI * 0.5;
+    barrel.position.z = -0.006;
+    model.add(barrel);
 
-    const gripKnurl = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.0365, 0.0365, 0.125, 10),
-      bodyMat
-    );
-    gripKnurl.rotation.x = Math.PI * 0.5;
-    gripKnurl.position.z = -0.028;
-    model.add(gripKnurl);
-
-    for (const gz of [0.032, -0.005, -0.042, -0.082]) {
-      const oRing = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.038, 0.038, 0.007, 10),
-        darkRingMat
-      );
-      oRing.rotation.x = Math.PI * 0.5;
-      oRing.position.z = gz;
-      model.add(oRing);
-    }
-
-    // C) Aletas de dissipação térmica + colar de latão
+    // C) Anel simples de latão na transição para o bocal
     const brassCollar = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.0395, 0.038, 0.018, 10),
+      new THREE.CylinderGeometry(0.0285, 0.0275, 0.014, 10),
       brassMat
     );
     brassCollar.rotation.x = Math.PI * 0.5;
-    brassCollar.position.z = -0.102;
+    brassCollar.position.z = -0.092;
     model.add(brassCollar);
 
-    for (let i = 0; i < 3; i++) {
-      const fin = new THREE.Mesh(
-        new THREE.CylinderGeometry(
-          0.043 + i * 0.0025,
-          0.042 + i * 0.0025,
-          0.01,
-          10
-        ),
-        darkRingMat
-      );
-      fin.rotation.x = Math.PI * 0.5;
-      fin.position.z = -0.118 - i * 0.015;
-      model.add(fin);
-    }
-
-    // D) Trilho superior blindado + botão deslizante mecânico
+    // D) Botão deslizante superior simples e legível
     const switchRail = new THREE.Mesh(
-      new THREE.BoxGeometry(0.026, 0.014, 0.064),
+      new THREE.BoxGeometry(0.018, 0.008, 0.044),
       darkRingMat
     );
-    switchRail.position.set(0, 0.037, -0.068);
+    switchRail.position.set(0, 0.028, -0.032);
     model.add(switchRail);
 
     this.switchMesh = new THREE.Mesh(
-      new THREE.BoxGeometry(0.019, 0.013, 0.026),
+      new THREE.BoxGeometry(0.014, 0.009, 0.02),
       switchMat
     );
-    this.switchMesh.position.set(0, 0.044, -0.068);
+    this.switchMesh.position.set(0, 0.033, -0.028);
     model.add(this.switchMesh);
 
-    // E) Cabeçal octogonal alargado + coroa crenelada + refletor parabólico interno
-    const headTransition = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.056, 0.044, 0.042, 10),
+    // E) Cabeçal cônico aberto à frente (sem cilindros fechados sobrepostos/z-fighting!)
+    const headBackCap = new THREE.Mesh(
+      new THREE.CircleGeometry(0.029, 10),
       bezelMat
     );
-    headTransition.rotation.x = Math.PI * 0.5;
-    headTransition.position.z = -0.172;
-    model.add(headTransition);
+    headBackCap.position.z = -0.099;
+    model.add(headBackCap);
 
     const headBell = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.058, 0.056, 0.054, 10),
+      new THREE.CylinderGeometry(0.043, 0.029, 0.058, 10, 1, true),
       bodyMat
     );
     headBell.rotation.x = Math.PI * 0.5;
-    headBell.position.z = -0.218;
+    headBell.position.z = -0.128;
     model.add(headBell);
 
     const bezelLip = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.06, 0.06, 0.014, 10),
+      new THREE.TorusGeometry(0.0415, 0.0042, 8, 12),
       darkRingMat
     );
-    bezelLip.rotation.x = Math.PI * 0.5;
-    bezelLip.position.z = -0.246;
+    bezelLip.position.z = -0.157;
     model.add(bezelLip);
 
-    for (let c = 0; c < 6; c++) {
-      const ang = (c / 6) * Math.PI * 2;
-      const tooth = new THREE.Mesh(
-        new THREE.BoxGeometry(0.014, 0.01, 0.014),
-        bezelMat
-      );
-      tooth.position.set(
-        Math.cos(ang) * 0.054,
-        Math.sin(ang) * 0.054,
-        -0.249
-      );
-      tooth.rotation.z = ang;
-      model.add(tooth);
-    }
-
     const reflectorCone = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.05, 0.014, 0.044, 10, 1, true),
+      new THREE.CylinderGeometry(0.039, 0.012, 0.048, 10, 1, true),
       this.reflectorMaterial
     );
     reflectorCone.rotation.x = Math.PI * 0.5;
-    reflectorCone.position.z = -0.222;
+    reflectorCone.position.z = -0.131;
     model.add(reflectorCone);
 
     const bulb = new THREE.Mesh(
-      new THREE.SphereGeometry(0.011, 8, 6),
+      new THREE.SphereGeometry(0.0095, 8, 6),
       this.bulbMaterial
     );
-    bulb.scale.set(0.85, 0.85, 1.45);
-    bulb.position.z = -0.208;
+    bulb.position.z = -0.122;
     model.add(bulb);
 
+    this.lensMaterial.transparent = true;
+    this.lensMaterial.opacity = 0.55;
+    this.lensMaterial.side = THREE.DoubleSide;
     const lens = new THREE.Mesh(
-      new THREE.CircleGeometry(0.05, 10),
+      new THREE.CircleGeometry(0.039, 10),
       this.lensMaterial
     );
-    lens.position.z = -0.244;
-    lens.rotation.y = Math.PI;
+    lens.position.z = -0.154;
     model.add(lens);
 
-    // F) BRAÇO DIREITO ORIGINAL DO ASTRONAUTA (`AstronautRightArm`) COM CAMUFLAGEM ASTRONÁUTICA SEGURANDO A LANTERNA!
+    // F) BRAÇO DIREITO DO ASTRONAUTA (`AstronautRightArm`) COM ANATOMIA CORRIGIDA:
+    // - Sem braço superior dobrando em V na frente da lente (`includeUpperArm: false`);
+    // - Punho 100% reto e coaxial ao anel metálico carmim (`wristPivot = 0, 0, 0`, sem torção quebrada!);
+    // - Antebraço camuflado entra suavemente pelo canto inferior-direito da tela e a luva envolve o tubo por baixo/direita!
     this.rightAstronautArm = createAstronautArmRig('right', astroMats, {
-      includeUpperArm: true,
+      includeUpperArm: false,
     });
     this.rightAstronautArm.setGripPose('flashlight');
-    // Ombro direito projetado da borda inferior-direita -> antebraço camuflado sobe na diagonal até envolver a lanterna!
-    this.rightAstronautArm.shoulderPivot.rotation.order = 'YXZ';
-    this.rightAstronautArm.shoulderPivot.rotation.set(0.84, -0.18, -0.14);
+
+    const armAxisY = new THREE.Vector3(0.38, -0.44, 0.813).normalize();
+    const armAxisX = new THREE.Vector3(0.84, -0.48, -0.25).normalize();
+    armAxisX.addScaledVector(armAxisY, -armAxisX.dot(armAxisY)).normalize();
+    const armAxisZ = new THREE.Vector3()
+      .crossVectors(armAxisX, armAxisY)
+      .normalize();
+    const rightForearmBasis = new THREE.Matrix4().makeBasis(
+      armAxisX,
+      armAxisY,
+      armAxisZ
+    );
+
+    this.rightAstronautArm.shoulderPivot.rotation.set(0, 0, 0);
     this.rightAstronautArm.elbowPivot.rotation.order = 'YXZ';
-    this.rightAstronautArm.elbowPivot.rotation.set(1.12, 0.48, -0.04);
+    this.rightAstronautArm.elbowPivot.rotation.setFromRotationMatrix(
+      rightForearmBasis,
+      'YXZ'
+    );
     this.rightAstronautArm.wristPivot.rotation.order = 'YXZ';
-    this.rightAstronautArm.wristPivot.rotation.set(-1.92, -0.28, 0.26);
+    this.rightAstronautArm.wristPivot.rotation.set(0, 0, 0);
+
     this.rightAstronautArm.root.position.set(0, 0, 0);
     this.rightAstronautArm.root.updateMatrixWorld(true);
     const rightSocketOffset = new THREE.Vector3();
     this.rightAstronautArm.gripSocket.getWorldPosition(rightSocketOffset);
-    // Alinha o centro exato da palma/dedos (`gripSocket`) ao tubo da lanterna (0.004, -0.004, -0.016)
     this.rightAstronautArm.root.position.set(
-      0.004 - rightSocketOffset.x,
-      -0.004 - rightSocketOffset.y,
-      -0.016 - rightSocketOffset.z
+      0.025 - rightSocketOffset.x,
+      -0.041 - rightSocketOffset.y,
+      -0.006 - rightSocketOffset.z
     );
     model.add(this.rightAstronautArm.root);
 
@@ -1351,7 +1298,8 @@ export class DoomFlashlight {
     planarSpeed: number,
     onSwitchClickOn: () => void,
     crouchAmount = 0,
-    batteryPercent = 100
+    batteryPercent = 100,
+    slideAmount = 0
   ): {
     beamIntensity: number;
     aimYawOffset: number;
@@ -1376,14 +1324,17 @@ export class DoomFlashlight {
     this.rootGroup.visible = rightVisible;
     this.rightAstronautArm.setInUse(rightVisible);
 
-    // Animação do botão físico + polegar articulado da luva EVA direita na parte superior da lanterna
+    // Animação sutil do botão superior + pressão natural do polegar da luva EVA direita
     const targetSwitch = this.lightActive ? 1 : 0;
     this.switchProgress +=
       (targetSwitch - this.switchProgress) * (1 - Math.exp(-22 * dt));
-    this.switchMesh.position.z = -0.068 - this.switchProgress * 0.014;
-    this.switchMesh.position.y = 0.044 - this.switchProgress * 0.0025;
-    this.rightAstronautArm.thumbTipPivot.rotation.x =
-      0.28 + this.switchProgress * 0.34;
+    this.switchMesh.position.z = -0.028 - this.switchProgress * 0.011;
+    this.switchMesh.position.y = 0.033 - this.switchProgress * 0.0018;
+    this.rightAstronautArm.thumbTipPivot.rotation.set(
+      -0.1 - this.switchProgress * 0.14,
+      0,
+      -0.32 - this.switchProgress * 0.16
+    );
 
     let beamIntensity = 0;
     if (this.lightActive && batteryPercent > 0.2) {
@@ -1403,10 +1354,12 @@ export class DoomFlashlight {
       this.bulbMaterial.color.setHex(0xfff9de);
       this.reflectorMaterial.color.setHex(0xd8c394);
       this.lensMaterial.color.setHex(0xfff0be);
+      this.lensMaterial.opacity = 0.68;
     } else {
       this.bulbMaterial.color.setHex(0x3a362e);
       this.reflectorMaterial.color.setHex(0x4b5059);
       this.lensMaterial.color.setHex(0x191d23);
+      this.lensMaterial.opacity = 0.42;
     }
 
     const t = this.equipProgress;
@@ -1424,18 +1377,18 @@ export class DoomFlashlight {
     this.swayY += (0 - this.swayY) * relax;
 
     const moveFactor = Math.min(1, planarSpeed / 6.0);
-    const bobScale = 1 - crouchAmount * 0.35;
-    const walkX = Math.cos(bobPhase * 0.5) * 0.014 * moveFactor * bobScale;
+    const bobScale = (1 - crouchAmount * 0.35) * (1 - slideAmount * 0.85);
+    const walkX = Math.cos(bobPhase * 0.5) * 0.013 * moveFactor * bobScale;
     const walkY =
-      Math.abs(Math.sin(bobPhase * 0.5)) * -0.016 * moveFactor * bobScale;
+      Math.abs(Math.sin(bobPhase * 0.5)) * -0.015 * moveFactor * bobScale;
 
-    const stowedX = 0.34;
-    const stowedY = -0.52;
-    const stowedZ = -0.26;
+    const stowedX = 0.32;
+    const stowedY = -0.48;
+    const stowedZ = -0.25;
 
-    const heldX = 0.212 - crouchAmount * 0.018;
-    const heldY = -0.162 + crouchAmount * 0.014;
-    const heldZ = -0.43 + crouchAmount * 0.018;
+    const heldX = 0.195 - crouchAmount * 0.015 - slideAmount * 0.022;
+    const heldY = -0.156 + crouchAmount * 0.012 - slideAmount * 0.022;
+    const heldZ = -0.41 + crouchAmount * 0.016 + slideAmount * 0.012;
 
     this.rootGroup.position.set(
       stowedX + (heldX - stowedX) * eased + walkX + this.swayX,
@@ -1443,12 +1396,12 @@ export class DoomFlashlight {
       stowedZ + (heldZ - stowedZ) * eased
     );
 
-    const stowedPitch = -0.78;
-    const heldPitch = 0.045;
-    const stowedYaw = -0.28;
-    const heldYaw = 0.11;
-    const stowedRoll = 0.42;
-    const heldRoll = -0.06;
+    const stowedPitch = -0.72;
+    const heldPitch = 0.03 + slideAmount * 0.05;
+    const stowedYaw = -0.24;
+    const heldYaw = 0.08 + slideAmount * 0.06;
+    const stowedRoll = 0.36;
+    const heldRoll = -0.04 - slideAmount * 0.18;
 
     this.animGroup.rotation.set(
       stowedPitch + (heldPitch - stowedPitch) * eased + this.swayY * 1.4,

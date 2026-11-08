@@ -6,6 +6,10 @@ import {
 } from '../src/doom/DoomAstronaut';
 import { DoomFlashlight, QuickHandheldKind } from '../src/doom/DoomFlashlight';
 import {
+  createInitialSlideState,
+  stepPlayerSlideState,
+} from '../src/doom/DoomGameApp';
+import {
   computeShortcutsHubState,
   ITEM_CATALOG,
   QUICK_SLOT_COUNT,
@@ -646,20 +650,22 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
     // Braço esquerdo possui manômetro analógico no pulso
     expect(astronaut.leftArm.gaugeNeedleMesh).not.toBeNull();
 
-    // Sincronização em 1ª pessoa e em pose supina de arrasto pela aranha
+    // Sincronização em 1ª pessoa e em pose supina: corpo próprio permanece oculto para o jogador local!
     const playerPos = new THREE.Vector3(2, 0, -4);
     astronaut.updateFirstPersonBody(playerPos, 0.5, 1.2, 4.0, 0, true, true);
+    expect(astronaut.root.visible).toBe(false);
     expect(astronaut.rightArm.metadata.currentlyInUse).toBe(true);
     expect(astronaut.leftArm.metadata.currentlyInUse).toBe(true);
     expect(astronaut.headGroup.visible).toBe(false);
 
     astronaut.updateSupineAbductionPose(playerPos, Math.PI, 1.5, true);
-    expect(astronaut.root.visible).toBe(true);
+    expect(astronaut.root.visible).toBe(false);
     expect(astronaut.rightArm.metadata.currentlyInUse).toBe(false);
     expect(astronaut.leftArm.metadata.currentlyInUse).toBe(false);
 
-    // Modo 3ª pessoa restaura capacete, mochila PLSS e ambos os braços EVA completos
+    // Modo 3ª pessoa restaura capacete, mochila PLSS e ambos os braços EVA completos para aliados Multiplayer
     astronaut.setFirstPersonMode(false);
+    expect(astronaut.root.visible).toBe(true);
     expect(astronaut.headGroup.visible).toBe(true);
     expect(astronaut.plssBackpack.visible).toBe(true);
     expect(astronaut.leftArm.root.visible).toBe(true);
@@ -901,7 +907,7 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
     expect(collectedIds.has('sector_b_key')).toBe(true);
   });
 
-  it('exibe pés, tronco e os dois braços com camuflagem astronáutica ao olhar para baixo e anima o canivete oxidado pelas juntas EVA do astronauta', () => {
+  it('mantém o corpo próprio invisível em 1ª pessoa mesmo ao olhar totalmente para baixo, corrige punho reto na lanterna simples e anima o canivete oxidado', () => {
     const scene = new THREE.Scene();
     const shared = createDoomSharedUniforms();
     const astronaut = new DoomAstronaut(scene, shared);
@@ -921,60 +927,56 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
     }
     expect(maxLum - minLum).toBeGreaterThan(120);
 
-    // 2) Olhando na horizontal (pitch = 0): tronco superior e braços ocultos para não invadir a visão frontal
-    astronaut.updateFirstPersonBody(
-      new THREE.Vector3(0, 0, 0),
-      0,
-      0,
-      0,
-      0,
-      false,
-      false,
-      0
-    );
-    const upperChest = astronaut.torsoGroup.getObjectByName(
-      'AstronautUpperChest'
-    )!;
-    expect(upperChest.visible).toBe(false);
-    expect(astronaut.leftArm.root.visible).toBe(false);
-    expect(astronaut.rightArm.root.visible).toBe(false);
+    // 2) Olhando na horizontal (pitch = 0) OU totalmente para baixo (pitch = -1.12):
+    //    o corpo próprio permanece 100% invisível para o jogador local (zero clipping/bugs visuais)!
+    for (const testPitch of [0, -0.6, -1.12]) {
+      for (const lanternEquipped of [false, true]) {
+        astronaut.updateFirstPersonBody(
+          new THREE.Vector3(0, 0, 0),
+          0,
+          0,
+          0,
+          0,
+          lanternEquipped,
+          false,
+          testPitch
+        );
+        const upperChest = astronaut.torsoGroup.getObjectByName(
+          'AstronautUpperChest'
+        )!;
+        expect(astronaut.root.visible).toBe(false);
+        expect(upperChest.visible).toBe(false);
+        expect(astronaut.leftArm.root.visible).toBe(false);
+        expect(astronaut.rightArm.root.visible).toBe(false);
+      }
+    }
 
-    // 3) Olhando para baixo (pitch = -1.12, lanterna guardada): pés + tronco + OS DOIS BRAÇOS visíveis dentro do frustum!
-    astronaut.updateFirstPersonBody(
-      new THREE.Vector3(0, 0, 0),
-      0,
-      0,
-      0,
-      0,
-      false,
-      false,
-      -1.12
-    );
-    expect(upperChest.visible).toBe(true);
-    expect(astronaut.leftArm.root.visible).toBe(true);
-    expect(astronaut.leftArm.elbowPivot.visible).toBe(true);
-    expect(astronaut.rightArm.root.visible).toBe(true);
-    expect(astronaut.rightArm.elbowPivot.visible).toBe(true);
+    // 3) Braço direito na lanterna possui punho reto coaxial (sem torção quebrada) e sem braço superior invadindo a lente!
+    const fl = new DoomFlashlight(16 / 9);
+    expect(fl.rightAstronautArm.upperArmGroup.children.length).toBe(0);
+    expect(
+      Math.hypot(
+        fl.rightAstronautArm.wristPivot.rotation.x,
+        fl.rightAstronautArm.wristPivot.rotation.z
+      )
+    ).toBeLessThan(0.05);
 
-    // Olhando para baixo com lanterna equipada: braço esquerdo completo no mundo + ombro direito conectado sem duplicar antebraço!
-    astronaut.updateFirstPersonBody(
-      new THREE.Vector3(0, 0, 0),
-      0,
-      0,
-      0,
-      0,
-      true,
-      false,
-      -1.12
-    );
-    expect(upperChest.visible).toBe(true);
-    expect(astronaut.leftArm.root.visible).toBe(true);
-    expect(astronaut.leftArm.elbowPivot.visible).toBe(true);
-    expect(astronaut.rightArm.root.visible).toBe(true);
-    expect(astronaut.rightArm.elbowPivot.visible).toBe(false);
+    // Verifica que todas as pontas dos dedos envolvem o tubo externo da lanterna sem atravessá-lo (r >= 0.026)
+    fl.toggle();
+    for (let i = 0; i < 12; i++) {
+      fl.update(0.04, 0, 0, () => {}, 0, 100);
+    }
+    fl.viewScene.updateMatrixWorld(true);
+    const lanternModel = fl.rightAstronautArm.root.parent!;
+    const invModel = lanternModel.matrixWorld.clone().invert();
+    for (const fg of fl.rightAstronautArm.fingers) {
+      const tipWorld = new THREE.Vector3();
+      fg.distPivot.children[2].getWorldPosition(tipWorld);
+      tipWorld.applyMatrix4(invModel);
+      expect(Math.hypot(tipWorld.x, tipWorld.y)).toBeGreaterThanOrEqual(0.026);
+    }
 
     // 4) Canivete Oxidado montado no gripSocket da luva EVA esquerda com abertura dobrável + golpe pelas juntas!
-    const fl = new DoomFlashlight(16 / 9);
     const bladePivot = fl.leftAstronautArm.gripSocket.getObjectByName(
       'AstronautPocketKnifeBladePivot'
     );
@@ -1575,5 +1577,185 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
     );
     expect(guestOut.playerDistance).toBeGreaterThan(0);
     expect(guestSpider.currentSurfaceMode).toBe(snap.surfaceMode);
+  });
+
+  it('desliza pelo chão ao correr e segurar Ctrl, desacelerando até agachar furtivamente', () => {
+    const slideState = createInitialSlideState();
+    const dt = 1 / 60;
+
+    // 1. Jogador está correndo para frente (Shift + W) a ~9.1 m/s
+    const sprintFrame = stepPlayerSlideState(slideState, {
+      dt,
+      holdingCtrl: false,
+      holdingShift: true,
+      wishX: 0,
+      wishZ: -1,
+      forwardX: 0,
+      forwardZ: -1,
+      velX: 0,
+      velZ: -9.1,
+      canStandUp: true,
+      ensnared: false,
+      injurySlow: 1,
+      webSpeedMultiplier: 1,
+    });
+    expect(sprintFrame.isSliding).toBe(false);
+    expect(sprintFrame.sprinting).toBe(true);
+
+    // 2. Pressiona e segura Ctrl durante a corrida -> inicia deslize com impulso rápido (> 10.5 m/s)!
+    const slideStart = stepPlayerSlideState(slideState, {
+      dt,
+      holdingCtrl: true,
+      holdingShift: true,
+      wishX: 0,
+      wishZ: -1,
+      forwardX: 0,
+      forwardZ: -1,
+      velX: 0,
+      velZ: -9.1,
+      canStandUp: true,
+      ensnared: false,
+      injurySlow: 1,
+      webSpeedMultiplier: 1,
+    });
+    expect(slideStart.startedSlide).toBe(true);
+    expect(slideStart.isSliding).toBe(true);
+    expect(slideStart.overrideVelocity).toBe(true);
+    const initialSlideSpeed = Math.hypot(
+      slideStart.outVelX,
+      slideStart.outVelZ
+    );
+    expect(initialSlideSpeed).toBeGreaterThan(10.5);
+
+    // 3. Mantém Ctrl segurado durante o deslize -> desliza desacelerando até transicionar suavemente para agachado
+    let vx = slideStart.outVelX;
+    let vz = slideStart.outVelZ;
+    let totalSlideDist = 0;
+    let lastRes = slideStart;
+    for (let i = 0; i < 65; i++) {
+      lastRes = stepPlayerSlideState(slideState, {
+        dt,
+        holdingCtrl: true,
+        holdingShift: true,
+        wishX: 0,
+        wishZ: -1,
+        forwardX: 0,
+        forwardZ: -1,
+        velX: vx,
+        velZ: vz,
+        canStandUp: true,
+        ensnared: false,
+        injurySlow: 1,
+        webSpeedMultiplier: 1,
+      });
+      if (lastRes.overrideVelocity) {
+        vx = lastRes.outVelX;
+        vz = lastRes.outVelZ;
+        totalSlideDist += Math.hypot(vx, vz) * dt;
+      }
+    }
+
+    // Deslizou vários metros pelo piso e agora está agachado sem reiniciar deslizes infinitos!
+    expect(totalSlideDist).toBeGreaterThan(4.5);
+    expect(lastRes.isSliding).toBe(false);
+    expect(lastRes.isCrouching).toBe(true);
+    expect(lastRes.startedSlide).toBe(false);
+  });
+
+  it('permite fugir correndo da aranha, quebrar a linha de visão direta e se esconder enquanto a aranha continua correndo e procurando', () => {
+    const scene = new THREE.Scene();
+    const shared = createDoomSharedUniforms();
+    const textures = createDoomTextures();
+    const { colliders } = buildDoomLabyrinth(scene, textures, shared);
+    const webs = new DoomSpiderWebManager(scene, shared);
+    const mockSound = {
+      playSpiderFootstep: () => {},
+      playSpiderScream: () => {},
+      playSpiderWebSpin: () => {},
+    } as unknown as SoundEngine;
+
+    const spider = new DoomSpider(scene, shared, colliders, webs, mockSound);
+    const spiderInternal = spider as unknown as {
+      placeAtCell: (
+        wx: number,
+        wz: number,
+        mode: 'FLOOR' | 'WALL' | 'CEILING'
+      ) => void;
+    };
+
+    // Encontra um cruzamento em L (célula A -> esquina B -> esconderijo C atrás de parede sólida entre A e C!)
+    let cellA = gridCellToWorld(1, 1);
+    let cornerB = gridCellToWorld(2, 1);
+    let hideC = gridCellToWorld(2, 2);
+    let foundCorner = false;
+
+    for (let gz = 2; gz < LABYRINTH_MAP.length - 3 && !foundCorner; gz++) {
+      for (let gx = 2; gx < LABYRINTH_MAP[gz].length - 3 && !foundCorner; gx++) {
+        // Corredor horizontal (gx-2, gz) -> (gx, gz) que dobra para (gx, gz+2) com parede sólida em (gx-1, gz+1)
+        if (
+          !isSolidCell(LABYRINTH_MAP, gx - 2, gz) &&
+          !isSolidCell(LABYRINTH_MAP, gx - 1, gz) &&
+          !isSolidCell(LABYRINTH_MAP, gx, gz) &&
+          !isSolidCell(LABYRINTH_MAP, gx, gz + 1) &&
+          !isSolidCell(LABYRINTH_MAP, gx, gz + 2) &&
+          isSolidCell(LABYRINTH_MAP, gx - 1, gz + 1) &&
+          isSolidCell(LABYRINTH_MAP, gx - 1, gz + 2)
+        ) {
+          cellA = gridCellToWorld(gx - 2, gz);
+          cornerB = gridCellToWorld(gx, gz);
+          hideC = gridCellToWorld(gx, gz + 2);
+          foundCorner = true;
+        }
+      }
+    }
+    expect(foundCorner).toBe(true);
+
+    // 1. Aranha inicia perseguição (FRENZY_CHASE) rumo à esquina onde viu o jogador por último
+    spiderInternal.placeAtCell(cellA.x, cellA.z, 'FLOOR');
+    spider.alertToWebTrap(
+      new THREE.Vector3(cornerB.x, 0, cornerB.z),
+      new THREE.Vector3(cornerB.x, 0, cornerB.z)
+    );
+    expect(spider.currentState).toBe('FRENZY_CHASE');
+
+    // 2. O jogador já dobrou a esquina e parou de correr, escondido e agachado em hideC (sem visão direta e lanterna apagada!)
+    const hiddenPlayerPos = new THREE.Vector3(hideC.x, 0, hideC.z);
+    let caughtHiddenPlayer = false;
+    let enteredSearchMode = false;
+    let searchTravelDist = 0;
+    const prevPos = spider.position.clone();
+    const dt = 1 / 60;
+
+    for (let step = 0; step < 210; step++) {
+      spider.update(
+        dt,
+        step * dt,
+        hiddenPlayerPos,
+        0,
+        false, // parou de correr!
+        true, // agachado escondido!
+        false, // lanterna apagada!
+        new THREE.Vector3(0, 0, 1),
+        [],
+        () => {
+          caughtHiddenPlayer = true;
+        }
+      );
+
+      const dMoved = Math.hypot(
+        spider.position.x - prevPos.x,
+        spider.position.z - prevPos.z
+      );
+      if (spider.isSearchingHiddenPlayer) {
+        enteredSearchMode = true;
+        searchTravelDist += dMoved;
+      }
+      prevPos.copy(spider.position);
+    }
+
+    // A aranha chega ao último ponto avistado (cornerB), entra em modo de busca ativa e continua correndo procurando!
+    expect(enteredSearchMode).toBe(true);
+    expect(searchTravelDist).toBeGreaterThan(2.5);
+    expect(caughtHiddenPlayer).toBe(false);
   });
 });

@@ -39,6 +39,196 @@ type ActiveHorrorSequence =
   | 'PERMADEATH_EXECUTION'
   | 'DEAD_TERMINATED';
 
+export interface PlayerSlideRuntimeState {
+  isSliding: boolean;
+  slideTimer: number;
+  slideCooldown: number;
+  slideSpeed: number;
+  slideDirX: number;
+  slideDirZ: number;
+  slideAmount: number;
+  wasHoldingCtrl: boolean;
+  wasSprinting: boolean;
+}
+
+export function createInitialSlideState(): PlayerSlideRuntimeState {
+  return {
+    isSliding: false,
+    slideTimer: 0,
+    slideCooldown: 0,
+    slideSpeed: 0,
+    slideDirX: 0,
+    slideDirZ: -1,
+    slideAmount: 0,
+    wasHoldingCtrl: false,
+    wasSprinting: false,
+  };
+}
+
+export interface SlideStepInput {
+  dt: number;
+  holdingCtrl: boolean;
+  holdingShift: boolean;
+  wishX: number;
+  wishZ: number;
+  forwardX: number;
+  forwardZ: number;
+  velX: number;
+  velZ: number;
+  canStandUp: boolean;
+  ensnared: boolean;
+  injurySlow: number;
+  webSpeedMultiplier: number;
+}
+
+export interface SlideStepResult {
+  startedSlide: boolean;
+  isSliding: boolean;
+  isCrouching: boolean;
+  sprinting: boolean;
+  overrideVelocity: boolean;
+  outVelX: number;
+  outVelZ: number;
+}
+
+/**
+ * Máquina de estados pura para Corrida + Segurar Ctrl => Deslizar no chão (`Slide`):
+ * - Quando o jogador está correndo (`Shift` + movimento ou velocidade de sprint) e segura `Ctrl`,
+ *   entra num deslize rápido rente ao chão com impulso inicial e desaceleração por atrito;
+ * - Ao terminar o deslize mantendo `Ctrl` pressionado, transiciona suavemente para o agachamento furtivo!
+ */
+export function stepPlayerSlideState(
+  state: PlayerSlideRuntimeState,
+  input: SlideStepInput
+): SlideStepResult {
+  const {
+    dt,
+    holdingCtrl,
+    holdingShift,
+    wishX,
+    wishZ,
+    forwardX,
+    forwardZ,
+    velX,
+    velZ,
+    canStandUp,
+    ensnared,
+    injurySlow,
+    webSpeedMultiplier,
+  } = input;
+
+  state.slideCooldown = Math.max(0, state.slideCooldown - dt);
+
+  const wishLenSq = wishX * wishX + wishZ * wishZ;
+  const planarSpeed = Math.hypot(velX, velZ);
+  const justPressedCtrl = holdingCtrl && !state.wasHoldingCtrl;
+
+  const runningNow =
+    !ensnared &&
+    ((holdingShift && wishLenSq > 0.01) ||
+      (state.wasSprinting && planarSpeed > 5.0) ||
+      planarSpeed >= 6.8);
+
+  let startedSlide = false;
+
+  if (
+    !state.isSliding &&
+    justPressedCtrl &&
+    runningNow &&
+    state.slideCooldown <= 0
+  ) {
+    startedSlide = true;
+    state.isSliding = true;
+    state.slideTimer = 0;
+
+    if (planarSpeed > 2.2) {
+      state.slideDirX = velX / planarSpeed;
+      state.slideDirZ = velZ / planarSpeed;
+    } else if (wishLenSq > 0.01) {
+      const wl = Math.sqrt(wishLenSq);
+      state.slideDirX = wishX / wl;
+      state.slideDirZ = wishZ / wl;
+    } else {
+      const fl = Math.hypot(forwardX, forwardZ) || 1;
+      state.slideDirX = forwardX / fl;
+      state.slideDirZ = forwardZ / fl;
+    }
+
+    state.slideSpeed =
+      Math.max(planarSpeed * 1.18, 11.5 * injurySlow) * webSpeedMultiplier;
+  }
+
+  if (state.isSliding) {
+    if (ensnared || (!holdingCtrl && canStandUp)) {
+      state.isSliding = false;
+      state.slideCooldown = 0.35;
+    } else {
+      state.slideTimer += dt;
+
+      if (wishLenSq > 0.01) {
+        const wl = Math.sqrt(wishLenSq);
+        const steer = Math.min(1, 2.2 * dt);
+        state.slideDirX += (wishX / wl - state.slideDirX) * steer;
+        state.slideDirZ += (wishZ / wl - state.slideDirZ) * steer;
+        const dl = Math.hypot(state.slideDirX, state.slideDirZ) || 1;
+        state.slideDirX /= dl;
+        state.slideDirZ /= dl;
+      }
+
+      const endFloorSpeed = 2.85 * injurySlow * webSpeedMultiplier;
+      state.slideSpeed = Math.max(
+        endFloorSpeed,
+        state.slideSpeed - 10.2 * dt
+      );
+
+      const hitSolidObstacle =
+        !startedSlide && state.slideTimer > 0.14 && planarSpeed < 1.9;
+      if (
+        state.slideTimer >= 0.82 ||
+        state.slideSpeed <= endFloorSpeed + 0.05 ||
+        hitSolidObstacle
+      ) {
+        state.isSliding = false;
+        state.slideCooldown = 0.42;
+      }
+    }
+  }
+
+  const slideTarget = state.isSliding ? 1 : 0;
+  const slideRate = state.isSliding ? 18.0 : 12.0;
+  state.slideAmount +=
+    (slideTarget - state.slideAmount) * (1 - Math.exp(-slideRate * dt));
+
+  const isCrouching = state.isSliding || holdingCtrl;
+  const sprinting =
+    !isCrouching && !ensnared && holdingShift && wishLenSq > 0.01;
+
+  state.wasHoldingCtrl = holdingCtrl;
+  state.wasSprinting = sprinting;
+
+  if (state.isSliding) {
+    return {
+      startedSlide,
+      isSliding: true,
+      isCrouching: true,
+      sprinting: false,
+      overrideVelocity: true,
+      outVelX: state.slideDirX * state.slideSpeed,
+      outVelZ: state.slideDirZ * state.slideSpeed,
+    };
+  }
+
+  return {
+    startedSlide,
+    isSliding: false,
+    isCrouching,
+    sprinting,
+    overrideVelocity: false,
+    outVelX: velX,
+    outVelZ: velZ,
+  };
+}
+
 /**
  * Aplicação 3D do Labirinto estilo DOOM Clássico integrada a:
  * - Lanterna 3D simples (Tecla F) + Agachamento furtivo (Segurar Ctrl)
@@ -78,11 +268,13 @@ export class DoomGameApp {
 
   private readonly standingEyeHeight = 1.62;
   private readonly crouchEyeHeight = 0.88;
+  private readonly slideEyeHeight = 0.64;
   private readonly playerRadius = 0.52;
   private readonly standingPlayerHeight = 1.8;
   private readonly crouchPlayerHeight = 1.05;
   private crouchAmount = 0;
   private wasCrouching = false;
+  private readonly slideState = createInitialSlideState();
 
   // Sinais vitais
   private playerHealth = 100;
@@ -729,6 +921,10 @@ export class DoomGameApp {
     this.inventory.setOpen(false);
     this.keys.clear();
     this.velocity.set(0, 0, 0);
+    this.slideState.isSliding = false;
+    this.slideState.slideAmount = 0;
+    this.slideState.wasHoldingCtrl = false;
+    this.slideState.wasSprinting = false;
     this.webManager.clearEnsnarement();
 
     // Derruba imediatamente a lanterna / itens em 1ª pessoa para que o jogador não fique segurando nada desmaiado!
@@ -1248,17 +1444,8 @@ export class DoomGameApp {
       this.keys.has('ControlLeft') ||
       this.keys.has('ControlRight') ||
       this.keys.has('KeyC');
-    const isCrouching =
-      holdingCtrl || (this.wasCrouching && !this.canStandUp());
-
-    if (isCrouching !== this.wasCrouching) {
-      this.sound.playCrouchMovement(isCrouching);
-      this.wasCrouching = isCrouching;
-    }
-
-    const crouchTarget = isCrouching ? 1 : 0;
-    this.crouchAmount +=
-      (crouchTarget - this.crouchAmount) * (1 - Math.exp(-12.5 * dt));
+    const holdingShift =
+      this.keys.has('ShiftLeft') || this.keys.has('ShiftRight');
 
     const hasKnife = this.inventory.hasItem('rusty_knife');
 
@@ -1281,20 +1468,62 @@ export class DoomGameApp {
       this.webManager.getWakingLairSilkFactor(this.position)
     );
 
-    const sprinting =
-      !isCrouching &&
-      !this.webManager.isPlayerEnsnared &&
-      (this.keys.has('ShiftLeft') || this.keys.has('ShiftRight'));
-
     // Levemente mais lento quando gravemente ferido (<28% vida) para reforçar sensação de ferimento
     const injurySlow = this.playerHealth < 28 ? 0.88 : 1.0;
-    const baseMaxSpeed = (isCrouching ? 2.65 : sprinting ? 8.6 : 6.2) * injurySlow;
-    const maxSpeed = baseMaxSpeed * webState.speedMultiplier;
+    const canStand = this.canStandUp();
 
-    const accel = wish.lengthSq() > 0 ? 18.0 : 12.0;
-    const blend = 1 - Math.exp(-accel * dt);
-    this.velocity.x += (wish.x * maxSpeed - this.velocity.x) * blend;
-    this.velocity.z += (wish.z * maxSpeed - this.velocity.z) * blend;
+    const slideStep = stepPlayerSlideState(this.slideState, {
+      dt,
+      holdingCtrl,
+      holdingShift,
+      wishX: wish.x,
+      wishZ: wish.z,
+      forwardX: forward.x,
+      forwardZ: forward.z,
+      velX: this.velocity.x,
+      velZ: this.velocity.z,
+      canStandUp: canStand,
+      ensnared: this.webManager.isPlayerEnsnared,
+      injurySlow,
+      webSpeedMultiplier: webState.speedMultiplier,
+    });
+
+    const isSliding = slideStep.isSliding;
+    const isCrouching =
+      slideStep.isCrouching || (this.wasCrouching && !canStand);
+
+    if (slideStep.startedSlide) {
+      const surface = isStoneSectorWorld(this.position.x, this.position.z)
+        ? 'stone'
+        : 'tech';
+      this.sound.playFloorSlide(surface);
+      this.wasCrouching = true;
+    } else if (isCrouching !== this.wasCrouching) {
+      this.sound.playCrouchMovement(isCrouching);
+      this.wasCrouching = isCrouching;
+    }
+
+    const crouchTarget = isCrouching ? 1 : 0;
+    this.crouchAmount +=
+      (crouchTarget - this.crouchAmount) *
+      (1 - Math.exp(-(isSliding ? 18.0 : 12.5) * dt));
+
+    // Corrida livre sem trava de fôlego para que o jogador consiga correr bastante e despistar a aranha!
+    const sprinting = !isCrouching && slideStep.sprinting;
+
+    if (slideStep.overrideVelocity) {
+      this.velocity.x = slideStep.outVelX;
+      this.velocity.z = slideStep.outVelZ;
+    } else {
+      const baseMaxSpeed =
+        (isCrouching ? 2.75 : sprinting ? 9.1 : 6.2) * injurySlow;
+      const maxSpeed = baseMaxSpeed * webState.speedMultiplier;
+
+      const accel = wish.lengthSq() > 0 ? 18.5 : 12.5;
+      const blend = 1 - Math.exp(-accel * dt);
+      this.velocity.x += (wish.x * maxSpeed - this.velocity.x) * blend;
+      this.velocity.z += (wish.z * maxSpeed - this.velocity.z) * blend;
+    }
 
     const speedBeforeCol = Math.hypot(this.velocity.x, this.velocity.z);
     const intendedX = this.position.x + this.velocity.x * dt;
@@ -1324,7 +1553,11 @@ export class DoomGameApp {
 
     const planarSpeed = Math.hypot(this.velocity.x, this.velocity.z);
     let bobOffset = 0;
-    if (planarSpeed > 0.28) {
+    if (isSliding) {
+      // Durante o deslize no chão, não há quique de passos — apenas deslize rente ao piso!
+      this.bobPhase = 0;
+      this.lastBobHalfCycle = 0;
+    } else if (planarSpeed > 0.28) {
       const bobRate = isCrouching
         ? 4.6 + planarSpeed * 0.9
         : 7.5 + planarSpeed * 0.75;
@@ -1333,7 +1566,7 @@ export class DoomGameApp {
       bobOffset =
         Math.sin(this.bobPhase) *
         bobAmp *
-        Math.min(1, planarSpeed / (isCrouching ? 2.65 : 5.5));
+        Math.min(1, planarSpeed / (isCrouching ? 2.75 : 5.5));
 
       const halfCycle = Math.floor(this.bobPhase / Math.PI);
       if (halfCycle !== this.lastBobHalfCycle) {
@@ -1365,8 +1598,12 @@ export class DoomGameApp {
         this.sound.playFlashlightClick(true);
       },
       this.crouchAmount,
-      this.lanternBattery
+      this.lanternBattery,
+      this.slideState.slideAmount
     );
+
+    const spiderHearsSprint =
+      sprinting || (isSliding && this.slideState.slideTimer < 0.2);
 
     let spiderOut: { cameraShakeAmount: number; playerDistance: number };
     if (this.multiplayer && !this.multiplayer.isHost) {
@@ -1388,7 +1625,7 @@ export class DoomGameApp {
           this.elapsed,
           this.position,
           this.yaw,
-          sprinting,
+          spiderHearsSprint,
           isCrouching,
           fl.beamIntensity > 0.05,
           this.sharedUniforms.uFlashlightDir.value,
@@ -1402,7 +1639,7 @@ export class DoomGameApp {
       const chosen = this.multiplayer.pickSpiderTargetPlayer(
         this.position,
         this.yaw,
-        sprinting,
+        spiderHearsSprint,
         isCrouching,
         fl.beamIntensity > 0.05,
         this.spider.position
@@ -1429,7 +1666,7 @@ export class DoomGameApp {
         this.elapsed,
         this.position,
         this.yaw,
-        sprinting,
+        spiderHearsSprint,
         isCrouching,
         fl.beamIntensity > 0.05,
         this.sharedUniforms.uFlashlightDir.value,
@@ -1636,9 +1873,15 @@ export class DoomGameApp {
   }
 
   private syncCamera(bobOffset: number): void {
-    const currentEyeHeight =
+    const baseCrouchEye =
       this.standingEyeHeight +
       (this.crouchEyeHeight - this.standingEyeHeight) * this.crouchAmount;
+    const slideAmt = this.slideState.slideAmount;
+    const currentEyeHeight =
+      baseCrouchEye + (this.slideEyeHeight - baseCrouchEye) * slideAmt;
+
+    // Impulso dinâmico sutil de FOV durante o deslize no chão
+    this.setCameraFov(74 + slideAmt * 5.5);
 
     const shakeX =
       this.cameraShake > 0.001
@@ -1649,9 +1892,10 @@ export class DoomGameApp {
         ? (Math.random() - 0.5) * 2 * this.cameraShake
         : 0;
 
-    // Leve oscilação sutil quando muito ferido (<26% vida)
+    // Leve oscilação sutil quando muito ferido (<26% vida) + inclinação tática do deslize
     const woundedSway =
       this.playerHealth < 26 ? Math.sin(this.elapsed * 2.1) * 0.016 : 0;
+    const slideTilt = -0.058 * slideAmt;
 
     this.camera.position.set(
       this.position.x + shakeX,
@@ -1661,7 +1905,7 @@ export class DoomGameApp {
     const euler = new THREE.Euler(
       this.pitch,
       this.yaw,
-      woundedSway,
+      woundedSway + slideTilt,
       'YXZ'
     );
     this.camera.quaternion.setFromEuler(euler);

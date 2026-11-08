@@ -1045,6 +1045,7 @@ export function createAstronautArmRig(
     for (let f = 0; f < 4; f++) {
       const fg = fingers[f];
       const stagger = f * 0.04;
+      fg.proxPivot.rotation.order = 'XYZ';
       if (pose === 'relaxed') {
         fg.proxPivot.rotation.set(0, 0, -sign * (0.28 + stagger));
         fg.distPivot.rotation.set(0, 0, -sign * (0.32 + stagger));
@@ -1052,8 +1053,13 @@ export function createAstronautArmRig(
         fg.proxPivot.rotation.set((f - 1.5) * 0.06, 0, -sign * 0.14);
         fg.distPivot.rotation.set(0, 0, -sign * 0.18);
       } else if (pose === 'flashlight') {
-        fg.proxPivot.rotation.set(0, 0, -sign * (1.08 + stagger * 0.5));
-        fg.distPivot.rotation.set(0, 0, -sign * 1.18);
+        const inv = 3 - f;
+        fg.proxPivot.rotation.set(
+          -0.32 - inv * 0.12,
+          sign * 0.14,
+          -sign * (0.28 + f * 0.08)
+        );
+        fg.distPivot.rotation.set(0, 0, -sign * (0.34 + f * 0.09));
       } else if (pose === 'knife' || pose === 'cylindrical') {
         fg.proxPivot.rotation.set(0, 0, -sign * (1.32 + stagger * 0.4));
         fg.distPivot.rotation.set(0, 0, -sign * 1.38);
@@ -1068,6 +1074,8 @@ export function createAstronautArmRig(
       }
     }
 
+    thumbPivot.rotation.order = 'XYZ';
+    thumbTipPivot.rotation.order = 'XYZ';
     if (pose === 'relaxed') {
       thumbPivot.rotation.set(0.32, 0, -sign * 0.25);
       thumbTipPivot.rotation.set(0.18, 0, -sign * 0.18);
@@ -1075,9 +1083,9 @@ export function createAstronautArmRig(
       thumbPivot.rotation.set(0.45, 0, -sign * 0.1);
       thumbTipPivot.rotation.set(0.1, 0, 0);
     } else if (pose === 'flashlight') {
-      // Polegar posicionado sobre a chave superior da lanterna!
-      thumbPivot.rotation.set(0.62, -sign * 0.24, -sign * 0.36);
-      thumbTipPivot.rotation.set(0.28, 0, -sign * 0.22);
+      // Polegar apoiado naturalmente ao longo do topo/lateral da lanterna próximo ao botão!
+      thumbPivot.rotation.set(-0.08, sign * 0.2, -sign * 0.38);
+      thumbTipPivot.rotation.set(-0.1, 0, -sign * 0.32);
     } else if (pose === 'knife' || pose === 'cylindrical') {
       thumbPivot.rotation.set(0.75, -sign * 0.35, -sign * 0.78);
       thumbTipPivot.rotation.set(0.35, 0, -sign * 0.55);
@@ -1552,11 +1560,13 @@ export class DoomAstronaut {
   }
 
   /**
-   * Alterna entre modo em 1ª pessoa (oculta capacete/mochila traseira para nunca invadir a câmera)
-   * e modo de corpo inteiro completo (inspeção externa / cenas).
+   * Alterna entre modo em 1ª pessoa (corpo próprio totalmente invisível para o jogador local,
+   * evitando qualquer obstrução/clipping ao olhar para baixo) e modo de corpo inteiro completo
+   * em 3ª pessoa (usado para aliados no Multiplayer Co-op).
    */
   setFirstPersonMode(enabled: boolean): void {
     this.firstPersonMode = enabled;
+    this.root.visible = !enabled;
     this.headGroup.visible = !enabled;
     this.plssBackpack.visible = !enabled;
     this.upperChestGroup.visible = !enabled;
@@ -1565,170 +1575,54 @@ export class DoomAstronaut {
       this.leftArm.elbowPivot.visible = true;
       this.rightArm.root.visible = true;
       this.rightArm.elbowPivot.visible = true;
+    } else {
+      this.leftArm.root.visible = false;
+      this.rightArm.root.visible = false;
     }
   }
 
   /**
-   * Atualiza o corpo 3D completo do Astronauta durante a locomoção em 1ª pessoa:
-   * - Em visão horizontal (`pitch >= -0.14`), mantém tronco superior e braços ocultos atrás da câmera
-   *   para nunca obstruir o campo de visão frontal;
-   * - Ao olhar para baixo (`pitch < -0.14`), articula progressivamente coluna, quadris, pernas e ombros
-   *   para que o jogador enxergue simultaneamente seus PÉS (botas lunares + pernas), seu TRONCO
-   *   (peitoral camuflado + módulo DCM + mangueiras + cinto tático) e OS DOIS BRAÇOS camuflados!
+   * Mantém o corpo 3D local completamente invisível para o próprio jogador em 1ª pessoa
+   * (mesmo ao olhar totalmente para baixo), preservando apenas a sincronização de estado
+   * dos braços ativos em uso pelo viewmodel (`DoomFlashlight`).
    */
   updateFirstPersonBody(
     position: THREE.Vector3,
     yaw: number,
-    bobPhase: number,
-    planarSpeed: number,
-    crouchAmount: number,
+    _bobPhase: number,
+    _planarSpeed: number,
+    _crouchAmount: number,
     rightArmActiveInViewmodel: boolean,
     leftArmActiveInViewmodel: boolean,
-    pitch = 0
+    _pitch = 0
   ): void {
-    this.root.visible = true;
     this.firstPersonMode = true;
+    this.root.visible = false;
     this.headGroup.visible = false;
     this.plssBackpack.visible = false;
+    this.upperChestGroup.visible = false;
+    this.leftArm.root.visible = false;
+    this.rightArm.root.visible = false;
 
-    const lookDown = Math.max(0, Math.min(1, (-pitch - 0.14) / 0.86));
-    const showUpperBody = lookDown > 0.01;
-    this.upperChestGroup.visible = showUpperBody;
-
-    // Posiciona a coluna 13cm atrás do globo ocular (+Z local) com inclinação frontal sutil (-0.05 rad),
-    // enquadrando simultaneamente na tela: Peitoral Camuflado + Módulo DCM + Mangueiras + Cinto Tático na base,
-    // Coxas Camufladas + Joelheiras + Botas Lunares logo à frente, e OS DOIS BRAÇOS camuflados nas laterais!
-    const backDist =
-      -0.08 * (1 - lookDown) + (0.162 - crouchAmount * 0.032) * lookDown;
-    const backX = Math.sin(yaw) * backDist;
-    const backZ = Math.cos(yaw) * backDist;
-    this.root.position.set(position.x + backX, position.y, position.z + backZ);
+    this.root.position.set(position.x, position.y, position.z);
     this.root.rotation.set(0, yaw, 0);
 
-    this.bodyPivot.position.set(0, -crouchAmount * 0.45, 0);
-    this.bodyPivot.rotation.set(0, 0, 0);
-
-    const stride = Math.min(1, planarSpeed / 5.2);
-    const legSwing = Math.sin(bobPhase * 0.5) * 0.48 * stride;
-    const armSwing = Math.sin(bobPhase * 0.5) * 0.24 * stride;
-    const breath = Math.sin(bobPhase * 0.25) * 0.018;
-    const leftLift = Math.max(0, Math.cos(bobPhase * 0.5)) * 0.42 * stride;
-    const rightLift = Math.max(0, -Math.cos(bobPhase * 0.5)) * 0.42 * stride;
-
-    const crouchHipBend = crouchAmount * 0.76;
-    const crouchKneeBend = crouchAmount * 1.16;
-    const lookHipForward = lookDown * (0.68 - crouchAmount * 0.18);
-    const lookKneeBend = lookDown * (0.12 - crouchAmount * 0.04);
-
-    this.hipsGroup.position.set(0, 0.85 - lookDown * 0.02, 0);
-    this.torsoGroup.rotation.set(
-      lookDown * 0.04 + crouchAmount * 0.04,
-      0,
-      0
-    );
-
-    // Para as pernas (-Y), rotação X positiva projeta coxas camufladas, joelheiras e botas lunares à frente (-Z)!
-    this.leftLeg.hipPivot.rotation.set(
-      crouchHipBend + lookHipForward + legSwing,
-      0.05 * lookDown,
-      -0.045 * lookDown
-    );
-    this.leftLeg.kneePivot.rotation.set(
-      -(crouchKneeBend + lookKneeBend + leftLift),
-      0,
-      0
-    );
-    this.leftLeg.anklePivot.rotation.set(
-      (crouchKneeBend - crouchHipBend) * 0.44 - lookDown * 0.38,
-      0,
-      0
-    );
-
-    this.rightLeg.hipPivot.rotation.set(
-      crouchHipBend + lookHipForward - legSwing,
-      -0.05 * lookDown,
-      0.045 * lookDown
-    );
-    this.rightLeg.kneePivot.rotation.set(
-      -(crouchKneeBend + lookKneeBend + rightLift),
-      0,
-      0
-    );
-    this.rightLeg.anklePivot.rotation.set(
-      (crouchKneeBend - crouchHipBend) * 0.44 - lookDown * 0.38,
-      0,
-      0
-    );
-
-    // Sincroniza e articula OS DOIS BRAÇOS camuflados do Astronauta ao olhar para baixo!
     this.rightArm.setInUse(rightArmActiveInViewmodel);
     this.leftArm.setInUse(leftArmActiveInViewmodel);
-
-    if (!showUpperBody) {
-      this.leftArm.root.visible = false;
-      this.rightArm.root.visible = false;
-      return;
-    }
-
-    // Braço ESQUERDO no mundo: totalmente visível (ombro + antebraço camuflado + manômetro O2 + luva 5 dedos)
-    this.leftArm.root.visible = true;
-    this.leftArm.elbowPivot.visible = !leftArmActiveInViewmodel;
-    this.leftArm.shoulderPivot.rotation.order = 'YXZ';
-    if (leftArmActiveInViewmodel) {
-      this.leftArm.shoulderPivot.rotation.set(0.95, 0.16, -0.2);
-    } else {
-      this.leftArm.shoulderPivot.rotation.set(
-        0.74 * lookDown - armSwing + breath,
-        0.16,
-        -0.18
-      );
-      this.leftArm.elbowPivot.rotation.order = 'YXZ';
-      this.leftArm.elbowPivot.rotation.set(
-        0.58 * lookDown + crouchAmount * 0.16,
-        -0.26,
-        0.16
-      );
-      this.leftArm.wristPivot.rotation.set(0.12, 0.22, 0.08);
-      this.leftArm.setGripPose('relaxed');
-    }
-
-    // Braço DIREITO no mundo: totalmente visível quando a lanterna está guardada;
-    // quando a lanterna está ativa na viewScene, conecta ombro/braço superior em direção à lanterna!
-    this.rightArm.root.visible = true;
-    this.rightArm.elbowPivot.visible = !rightArmActiveInViewmodel;
-    this.rightArm.shoulderPivot.rotation.order = 'YXZ';
-    if (rightArmActiveInViewmodel) {
-      this.rightArm.shoulderPivot.rotation.set(0.92, -0.18, 0.22);
-    } else {
-      this.rightArm.shoulderPivot.rotation.set(
-        0.74 * lookDown + armSwing + breath,
-        -0.16,
-        0.18
-      );
-      this.rightArm.elbowPivot.rotation.order = 'YXZ';
-      this.rightArm.elbowPivot.rotation.set(
-        0.58 * lookDown + crouchAmount * 0.16,
-        0.26,
-        -0.16
-      );
-      this.rightArm.wristPivot.rotation.set(0.12, -0.22, -0.08);
-      this.rightArm.setGripPose('relaxed');
-    }
   }
 
   /**
-   * Posiciona o corpo 3D do Astronauta deitado de costas no chão enquanto a Aranha Gigante
-   * o arrasta pelas botas até o Ninho de Teia ou tece seda sobre o traje!
+   * Mantém o corpo local invisível para o jogador também durante sequências em 1ª pessoa
+   * (desmaio / arrasto), evitando que pernas ou tronco invadam a câmera.
    */
   updateSupineAbductionPose(
     cameraFloorPos: THREE.Vector3,
     yawTowardsSpider: number,
-    pullCycles: number,
-    visible: boolean
+    _pullCycles: number,
+    _visible: boolean
   ): void {
-    this.root.visible = visible;
-    if (!visible) return;
-
+    this.firstPersonMode = true;
+    this.root.visible = false;
     this.headGroup.visible = false;
     this.plssBackpack.visible = false;
     this.upperChestGroup.visible = false;
@@ -1737,28 +1631,8 @@ export class DoomAstronaut {
     this.rightArm.root.visible = false;
     this.leftArm.root.visible = false;
 
-    // Estende as pernas EVA e botas lunares pelo chão na direção da Aranha (-Z local alinhado a yawTowardsSpider)
-    const forwardX = -Math.sin(yawTowardsSpider);
-    const forwardZ = -Math.cos(yawTowardsSpider);
-
-    this.root.position.set(
-      cameraFloorPos.x + forwardX * 0.32,
-      0.06,
-      cameraFloorPos.z + forwardZ * 0.32
-    );
+    this.root.position.set(cameraFloorPos.x, 0.06, cameraFloorPos.z);
     this.root.rotation.set(0, yawTowardsSpider, 0);
-
-    // Quadris abaixo da borda inferior da câmera (0.32m, y=0.06) emergindo até as botas lunares erguidas à frente (1.18m, y=0.28)!
-    this.bodyPivot.position.set(0, 0, 0);
-    this.bodyPivot.rotation.set(Math.PI * 0.42, 0, 0);
-    this.hipsGroup.position.set(0, 0, 0);
-    this.torsoGroup.rotation.set(0, 0, 0);
-
-    const tug = Math.sin(pullCycles * Math.PI * 2);
-    this.leftLeg.hipPivot.rotation.set(0.04 + tug * 0.07, 0, -0.08);
-    this.leftLeg.kneePivot.rotation.set(-0.08 + tug * 0.05, 0, 0);
-    this.rightLeg.hipPivot.rotation.set(0.06 - tug * 0.07, 0, 0.08);
-    this.rightLeg.kneePivot.rotation.set(-0.06 - tug * 0.05, 0, 0);
   }
 
   /**

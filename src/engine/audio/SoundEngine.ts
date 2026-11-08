@@ -36,6 +36,7 @@ export class SoundEngine {
   private pulseTimerId = 0;
   private lastWallThudMs = 0;
   private lastCrouchMs = 0;
+  private lastSlideMs = 0;
   private lastSparkMs = 0;
   private lastSpiderStepMs = 0;
   private lastHeartbeatMs = 0;
@@ -955,6 +956,69 @@ export class SoundEngine {
       false,
       this.reverbSend
     );
+  }
+
+  /**
+   * Som tático de deslizar pelo chão (Corrida + segurar Ctrl):
+   * impacto abafado de joelheira/traje seguido de atrito contínuo sobre metal ou pedra.
+   */
+  playFloorSlide(surface: FloorMaterialKind = 'tech'): void {
+    const nowMs = performance.now();
+    if (nowMs - this.lastSlideMs < 240) return;
+    this.lastSlideMs = nowMs;
+
+    if (
+      !this.isRunning() ||
+      !this.ctx ||
+      !this.worldDryBus ||
+      !this.reverbSend ||
+      !this.grittyNoiseBuffer
+    ) {
+      return;
+    }
+    const now = this.ctx.currentTime;
+
+    // 1. Toque grave inicial da bota/joelheira entrando no deslize
+    const thud = this.ctx.createOscillator();
+    const thudGain = this.ctx.createGain();
+    thud.type = 'triangle';
+    thud.frequency.setValueAtTime(surface === 'tech' ? 108 : 88, now);
+    thud.frequency.exponentialRampToValueAtTime(32, now + 0.14);
+
+    thudGain.gain.setValueAtTime(0.16, now);
+    thudGain.gain.exponentialRampToValueAtTime(0.0008, now + 0.15);
+
+    thud.connect(thudGain);
+    thudGain.connect(this.worldDryBus);
+    thudGain.connect(this.reverbSend);
+    thud.start(now);
+    thud.stop(now + 0.16);
+
+    // 2. Arrasto prolongado de atrito no piso desacelerando suavemente
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.grittyNoiseBuffer;
+    const dur = 0.52;
+    const offset = Math.random() * 0.35;
+
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.Q.value = surface === 'tech' ? 1.55 : 1.15;
+    filter.frequency.setValueAtTime(surface === 'tech' ? 1520 : 1040, now);
+    filter.frequency.exponentialRampToValueAtTime(
+      surface === 'tech' ? 390 : 280,
+      now + dur
+    );
+
+    const gain = this.ctx.createGain();
+    gain.gain.setValueAtTime(0.001, now);
+    gain.gain.linearRampToValueAtTime(0.16, now + 0.035);
+    gain.gain.exponentialRampToValueAtTime(0.0008, now + dur);
+
+    src.connect(filter);
+    filter.connect(gain);
+    gain.connect(this.worldDryBus);
+    gain.connect(this.reverbSend);
+    src.start(now, offset, dur + 0.02);
   }
 
   /**
