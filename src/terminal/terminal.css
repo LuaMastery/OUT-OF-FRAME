@@ -27,16 +27,6 @@
   display: none;
 }
 
-.tui-boot-logo {
-  display: block;
-  width: 300px;
-  max-width: 82vw;
-  height: auto;
-  margin-bottom: 22px;
-  image-rendering: pixelated;
-  image-rendering: crisp-edges;
-}
-
 /* Camada 2: Área de Trabalho versão Terminal (TUI Desktop) */
 #terminal-desktop {
   position: fixed;
@@ -55,26 +45,6 @@
   flex: 1;
   padding: 24px 28px;
   overflow: hidden;
-}
-
-/* Marca oficial sutil do Sistema/Jogo ao fundo da área de trabalho */
-.tui-desktop-watermark {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  pointer-events: none;
-  z-index: 0;
-}
-
-.tui-desktop-watermark img {
-  width: 360px;
-  max-width: 68vw;
-  height: auto;
-  opacity: 0.16;
-  image-rendering: pixelated;
-  image-rendering: crisp-edges;
 }
 
 /* Coluna de ícones em estilo terminal puro */
@@ -421,3 +391,14 @@
 #binary-ui-canvas.active {
   display: block;
 }
+
+/* Camada do efeito magnético de proximidade do cursor */
+#tui-proximity-canvas {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 95;
+}
+

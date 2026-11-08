@@ -1,4 +1,5 @@
 import { SoundEngine } from '../engine/audio/SoundEngine';
+import { CursorProximityFX } from './CursorProximityFX';
 
 export type TerminalPhase =
   | 'idle'
@@ -99,6 +100,7 @@ export class TerminalBootController {
   private taskWindowsEl!: HTMLElement;
   private clockEl!: HTMLElement;
   private zoomLayerEl!: HTMLElement;
+  private proximityFx: CursorProximityFX | null = null;
 
   private hiddenInputEl!: HTMLInputElement;
   private typedSpanEl: HTMLElement | null = null;
@@ -173,9 +175,6 @@ export class TerminalBootController {
     this.desktopEl.id = 'terminal-desktop';
     this.desktopEl.innerHTML = `
       <div class="tui-workspace">
-        <div class="tui-desktop-watermark" aria-hidden="true">
-          <img src="/system-logo.svg" alt="" />
-        </div>
         <div class="tui-icon-grid"></div>
         <div class="tui-start-popup"></div>
       </div>
@@ -224,6 +223,12 @@ export class TerminalBootController {
 
     this.renderDesktopIcons();
     this.renderStartMenu();
+
+    this.proximityFx = new CursorProximityFX(
+      this.rootEl,
+      () => this.phase === 'desktop' || this.phase === 'binary_interface',
+      () => (this.phase === 'binary_interface' ? this.menuHitboxes : [])
+    );
   }
 
   private renderDesktopIcons(): void {
@@ -561,12 +566,6 @@ export class TerminalBootController {
     this.bootLayerEl.classList.remove('hidden');
     this.desktopEl.classList.remove('active');
     this.bootLayerEl.innerHTML = '';
-
-    const bootLogo = document.createElement('img');
-    bootLogo.src = '/system-logo.svg';
-    bootLogo.alt = 'OUT-OF-FRAME';
-    bootLogo.className = 'tui-boot-logo';
-    this.bootLayerEl.appendChild(bootLogo);
 
     this.schedule(() => {
       this.appendBootLine('Iniciando terminal...');
@@ -1064,6 +1063,8 @@ export class TerminalBootController {
 
   private shutdownSystem(): void {
     this.clearZoomLayer();
+    this.proximityFx?.destroy();
+    this.proximityFx = null;
     this.openingProgram = false;
     this.transientTaskTab = null;
     this.phase = 'powered_off';
@@ -1514,6 +1515,8 @@ export class TerminalBootController {
   destroy(disposeAudio = false): void {
     this.clearTimers();
     this.clearZoomLayer();
+    this.proximityFx?.destroy();
+    this.proximityFx = null;
     if (this.clockIntervalId) window.clearInterval(this.clockIntervalId);
     cancelAnimationFrame(this.rafId);
     window.removeEventListener('keydown', this.boundKeyCapture, true);
