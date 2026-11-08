@@ -1,0 +1,294 @@
+#terminal-root {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: #000000;
+  color: #e5e5e5;
+  font-family: Consolas, 'Courier New', ui-monospace, monospace;
+  font-size: 15px;
+  line-height: 1.5;
+  overflow: hidden;
+  user-select: none;
+}
+
+#terminal-root.hidden {
+  display: none;
+}
+
+/* Camada 1: Tela simples de carregamento inicial do terminal */
+#terminal-boot-layer {
+  padding: 36px 42px;
+  max-width: 760px;
+  white-space: pre-wrap;
+}
+
+#terminal-boot-layer.hidden {
+  display: none;
+}
+
+/* Camada 2: Área de Trabalho versão Terminal (TUI Desktop) */
+#terminal-desktop {
+  position: fixed;
+  inset: 0;
+  display: none;
+  flex-direction: column;
+  background: #000000;
+}
+
+#terminal-desktop.active {
+  display: flex;
+}
+
+.tui-workspace {
+  position: relative;
+  flex: 1;
+  padding: 24px 28px;
+  overflow: hidden;
+}
+
+/* Coluna de ícones em estilo terminal puro */
+.tui-icon-grid {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 18px;
+  width: 170px;
+}
+
+.tui-icon {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 148px;
+  padding: 6px 8px;
+  cursor: pointer;
+  color: #e5e5e5;
+  border: 1px solid transparent;
+}
+
+.tui-icon-glyph {
+  white-space: pre;
+  line-height: 1.15;
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+
+.tui-icon-label {
+  font-size: 13.5px;
+  text-align: center;
+  padding: 0 4px;
+  word-break: break-all;
+}
+
+.tui-icon.selected {
+  border-color: #e5e5e5;
+}
+
+.tui-icon.selected .tui-icon-label {
+  background: #e5e5e5;
+  color: #000000;
+}
+
+/* Janelas em modo texto sobre a área de trabalho */
+.tui-window {
+  position: absolute;
+  background: #000000;
+  border: 1px solid #a8a8a8;
+  display: flex;
+  flex-direction: column;
+  min-width: 320px;
+}
+
+.tui-window.focused {
+  border-color: #ffffff;
+}
+
+.tui-window-titlebar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 10px;
+  border-bottom: 1px solid #a8a8a8;
+  background: #000000;
+  color: #e5e5e5;
+  cursor: move;
+  font-size: 14px;
+}
+
+.tui-window.focused .tui-window-titlebar {
+  background: #e5e5e5;
+  color: #000000;
+  border-bottom-color: #ffffff;
+}
+
+.tui-window-close {
+  background: transparent;
+  border: none;
+  color: inherit;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+.tui-window-close:hover {
+  text-decoration: underline;
+}
+
+.tui-window-body {
+  flex: 1;
+  padding: 12px 14px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.tui-cmd-body {
+  cursor: text;
+}
+
+.term-prompt-row {
+  display: flex;
+  align-items: center;
+  margin-top: 2px;
+}
+
+.term-prefix {
+  margin-right: 8px;
+}
+
+.term-typed {
+  white-space: pre;
+}
+
+.term-block-cursor {
+  display: inline-block;
+  width: 8px;
+  height: 15px;
+  background: #e5e5e5;
+  vertical-align: text-bottom;
+  margin-left: 1px;
+  animation: termBlink 0.9s steps(1) infinite;
+}
+
+@keyframes termBlink {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+
+/* Menu Iniciar estilo terminal acima da barra inferior */
+.tui-start-popup {
+  position: absolute;
+  left: 10px;
+  bottom: 0;
+  width: 230px;
+  background: #000000;
+  border: 1px solid #e5e5e5;
+  border-bottom: none;
+  z-index: 60;
+  display: none;
+  flex-direction: column;
+  padding: 4px 0;
+}
+
+.tui-start-popup.open {
+  display: flex;
+}
+
+.tui-start-item {
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 14px;
+  color: #e5e5e5;
+  display: flex;
+  justify-content: space-between;
+}
+
+.tui-start-item:hover,
+.tui-start-item.selected {
+  background: #e5e5e5;
+  color: #000000;
+}
+
+.tui-start-divider {
+  border-top: 1px solid #555555;
+  margin: 4px 0;
+}
+
+/* Barra de tarefas inferior em modo terminal */
+.tui-taskbar {
+  height: 34px;
+  border-top: 1px solid #e5e5e5;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 10px;
+  background: #000000;
+  font-size: 13.5px;
+}
+
+.tui-taskbar-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+}
+
+.tui-task-btn {
+  background: #000000;
+  color: #e5e5e5;
+  border: 1px solid #888888;
+  font-family: inherit;
+  font-size: 13px;
+  padding: 2px 10px;
+  cursor: pointer;
+}
+
+.tui-task-btn:hover,
+.tui-task-btn.active {
+  background: #e5e5e5;
+  color: #000000;
+  border-color: #e5e5e5;
+}
+
+.tui-clock {
+  color: #e5e5e5;
+  font-size: 13px;
+  letter-spacing: 0.05em;
+}
+
+/* Input oculto para digitação na janela do terminal */
+#terminal-hidden-input {
+  position: fixed;
+  left: -9999px;
+  top: 0;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  border: none;
+  outline: none;
+}
+
+/* Camada 3: Canvas da interface binária estilo Superhot (ao abrir out_of_frame.exe) */
+#binary-ui-canvas {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: none;
+  background: #000000;
+  z-index: 80;
+}
+
+#binary-ui-canvas.active {
+  display: block;
+}
