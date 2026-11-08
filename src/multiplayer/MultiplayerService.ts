@@ -7,6 +7,7 @@ const DEFAULT_SUPABASE_ANON_KEY =
 const PLAYER_NAME_STORAGE_KEY = 'oof_mp_player_name_v1';
 const PLAYER_SESSION_ID_KEY = 'oof_mp_session_player_id_v1';
 const LOCAL_ROOMS_STORAGE_KEY = 'oof_mp_local_rooms_v1';
+const ACTIVE_SESSIONS_LEDGER_KEY = 'oof_mp_active_sessions_v1';
 
 export interface RoomPlayerSummary {
   id: string;
@@ -81,7 +82,9 @@ export interface CreateRoomParams {
 
 export const AFK_IDLE_TIMEOUT_MS = 25_000;
 export const AFK_HIDDEN_GRACE_MS = 2_500;
-const ROOM_RETENTION_MS = 24 * 60 * 60 * 1000;
+export const STALE_HEARTBEAT_TTL_MS = 40_000;
+const PRESENCE_LEAVE_GRACE_MS = 3_200;
+const activeLocalClientPlayerIds = new Set<string>();
 
 /**
  * Determina de forma pura se o jogador deve receber o estado/ícone AFK (ausente/indisponível).
@@ -284,14 +287,17 @@ function getEnvString(key: string, fallback: string): string {
 
 let sharedSupabase: SupabaseClient | null = null;
 
+function getSupabaseCredentials(): { url: string; key: string } {
+  return {
+    url: getEnvString('VITE_SUPABASE_URL', DEFAULT_SUPABASE_URL),
+    key: getEnvString('VITE_SUPABASE_ANON_KEY', DEFAULT_SUPABASE_ANON_KEY),
+  };
+}
+
 function getSupabaseClient(): SupabaseClient | null {
   if (typeof fetch === 'undefined') return null;
   if (!sharedSupabase) {
-    const url = getEnvString('VITE_SUPABASE_URL', DEFAULT_SUPABASE_URL);
-    const key = getEnvString(
-      'VITE_SUPABASE_ANON_KEY',
-      DEFAULT_SUPABASE_ANON_KEY
-    );
+    const { url, key } = getSupabaseCredentials();
     sharedSupabase = createClient(url, key, {
       auth: {
         persistSession: false,
@@ -305,6 +311,179 @@ function getSupabaseClient(): SupabaseClient | null {
     });
   }
   return sharedSupabase;
+}
+
+interface ActiveSessionLedgerEntry {
+  roomCode: string;
+  accessToken: string;
+  playerId: string;
+  ts: number;
+}
+
+function readActiveSessionsLedger(): Record<string, ActiveSessionLedgerEntry> {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const raw = localStorage.getItem(ACTIVE_SESSIONS_LEDGER_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as Record<
+          string,
+          ActiveSessionLedgerEntry
+        >;
+        if (parsed && typeof parsed === 'object') {
+          return parsed;
+        }
+      }
+    }
+  } catch {
+    // Ignorar falha de storage
+  }
+  return {};
+}
+
+function writeActiveSessionsLedger(
+  ledger: Record<string, ActiveSessionLedgerEntry>
+): void {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const keys = Object.keys(ledger);
+      if (keys.length === 0) {
+        localStorage.removeItem(ACTIVE_SESSIONS_LEDGER_KEY);
+      } else {
+        localStorage.setItem(
+          ACTIVE_SESSIONS_LEDGER_KEY,
+          JSON.stringify(ledger)
+        );
+      }
+    }
+  } catch {
+    // Ignorar quota
+  }
+}
+
+function recordActiveLocalSession(
+  roomCode: string,
+  accessToken: string,
+  playerId: string
+): void {
+  const ledger = readActiveSessionsLedger();
+  ledger[playerId] = {
+    roomCode,
+    accessToken,
+    playerId,
+    ts: Date.now(),
+  };
+  writeActiveSessionsLedger(ledger);
+}
+
+function removeActiveLocalSessionRecord(playerId: string): void {
+  const ledger = readActiveSessionsLedger();
+  if (ledger[playerId]) {
+    delete ledger[playerId];
+    writeActiveSessionsLedger(ledger);
+  }
+}
+
+/**
+ * Envia `mp_leave_room` com `keepalive: true` para sobreviver ao fechamento da aba/navegador ou F5!
+ */
+function sendLeaveRoomReliable(
+  roomCode: string,
+  accessToken: string,
+  playerId: string,
+  forceLocalOnly = false
+): void {
+  removeActiveLocalSessionRecord(playerId);
+
+  // Remove imediatamente do espelho local caso exista
+  const map = loadLocalMirrorMap();
+  const local = map.get(roomCode);
+  if (local) {
+    local.players = local.players.filter((p) => p.id !== playerId);
+    if (local.players.length === 0) {
+      map.delete(roomCode);
+    } else if (local.hostId === playerId) {
+      local.hostId = local.players[0].id;
+      local.hostName = local.players[0].name;
+    }
+    persistLocalMirrorMap(map);
+  }
+
+  if (forceLocalOnly || !accessToken || accessToken.startsWith('local-')) {
+    return;
+  }
+
+  if (typeof fetch !== 'undefined') {
+    try {
+      const { url, key } = getSupabaseCredentials();
+      const endpoint = `${url.replace(/\/+$/, '')}/rest/v1/rpc/mp_leave_room`;
+      void fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          apikey: key,
+          Authorization: `Bearer ${key}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          p_room_code: roomCode,
+          p_access_token: accessToken,
+          p_player_id: playerId,
+        }),
+        keepalive: true,
+      }).catch(() => {
+        // Silencioso no unload
+      });
+      return;
+    } catch {
+      // Fallback para cliente Supabase abaixo
+    }
+  }
+
+  const sb = getSupabaseClient();
+  if (sb) {
+    void sb.rpc('mp_leave_room', {
+      p_room_code: roomCode,
+      p_access_token: accessToken,
+      p_player_id: playerId,
+    });
+  }
+}
+
+/**
+ * Limpa automaticamente sessões órfãs desta aba (ex: após F5/reload) ou de abas irmãs fechadas abruptamente.
+ */
+function flushLeftoverBrowserSessions(forceLocalOnly = false): void {
+  const ledger = readActiveSessionsLedger();
+  const entries = Object.values(ledger);
+  if (entries.length === 0) return;
+
+  let currentTabPlayerId = '';
+  try {
+    if (typeof sessionStorage !== 'undefined') {
+      currentTabPlayerId = sessionStorage.getItem(PLAYER_SESSION_ID_KEY) || '';
+    }
+  } catch {
+    currentTabPlayerId = '';
+  }
+
+  const now = Date.now();
+  for (const entry of entries) {
+    const isReloadedThisTab =
+      Boolean(currentTabPlayerId) &&
+      entry.playerId === currentTabPlayerId &&
+      !activeLocalClientPlayerIds.has(currentTabPlayerId);
+    const isStaleClosedTab =
+      !activeLocalClientPlayerIds.has(entry.playerId) &&
+      now - entry.ts > STALE_HEARTBEAT_TTL_MS;
+
+    if (isReloadedThisTab || isStaleClosedTab) {
+      sendLeaveRoomReliable(
+        entry.roomCode,
+        entry.accessToken,
+        entry.playerId,
+        forceLocalOnly
+      );
+    }
+  }
 }
 
 /**
@@ -391,6 +570,7 @@ export function setLocalPlayerName(rawName: string): string {
 
 function loadLocalMirrorMap(): Map<string, LocalMirrorRoomRecord> {
   const now = Date.now();
+  let mutatedStorage = false;
   try {
     if (typeof localStorage !== 'undefined') {
       const raw = localStorage.getItem(LOCAL_ROOMS_STORAGE_KEY);
@@ -398,11 +578,34 @@ function loadLocalMirrorMap(): Map<string, LocalMirrorRoomRecord> {
         const arr = JSON.parse(raw) as LocalMirrorRoomRecord[];
         if (Array.isArray(arr)) {
           for (const item of arr) {
+            // Apenas salas locais/offline (`local-...`) vivem no espelho localStorage;
+            // salas da nuvem têm o Supabase como fonte única da verdade para jamais ressuscitar jogadores fantasmas!
+            if (!item.accessToken || !item.accessToken.startsWith('local-')) {
+              mutatedStorage = true;
+              continue;
+            }
+            const livePlayers = Array.isArray(item.players)
+              ? item.players.filter(
+                  (p) => now - p.ts < STALE_HEARTBEAT_TTL_MS
+                )
+              : [];
             if (
-              now - item.updatedAtMs < ROOM_RETENTION_MS &&
-              item.players.length > 0
+              now - item.updatedAtMs < STALE_HEARTBEAT_TTL_MS &&
+              livePlayers.length > 0 &&
+              item.status !== 'CLOSED'
             ) {
+              if (livePlayers.length !== item.players.length) {
+                item.players = livePlayers;
+                if (!livePlayers.some((p) => p.id === item.hostId)) {
+                  item.hostId = livePlayers[0].id;
+                  item.hostName = livePlayers[0].name;
+                }
+                mutatedStorage = true;
+              }
               memoryLocalRooms.set(item.roomCode, item);
+            } else {
+              memoryLocalRooms.delete(item.roomCode);
+              mutatedStorage = true;
             }
           }
         }
@@ -413,8 +616,41 @@ function loadLocalMirrorMap(): Map<string, LocalMirrorRoomRecord> {
   }
 
   for (const [code, rec] of memoryLocalRooms.entries()) {
-    if (now - rec.updatedAtMs >= ROOM_RETENTION_MS || rec.players.length === 0) {
+    if (!rec.accessToken || !rec.accessToken.startsWith('local-')) {
       memoryLocalRooms.delete(code);
+      mutatedStorage = true;
+      continue;
+    }
+    const livePlayers = rec.players.filter(
+      (p) => now - p.ts < STALE_HEARTBEAT_TTL_MS
+    );
+    if (
+      now - rec.updatedAtMs >= STALE_HEARTBEAT_TTL_MS ||
+      livePlayers.length === 0 ||
+      rec.status === 'CLOSED'
+    ) {
+      memoryLocalRooms.delete(code);
+      mutatedStorage = true;
+    } else if (livePlayers.length !== rec.players.length) {
+      rec.players = livePlayers;
+      if (!livePlayers.some((p) => p.id === rec.hostId)) {
+        rec.hostId = livePlayers[0].id;
+        rec.hostName = livePlayers[0].name;
+      }
+      mutatedStorage = true;
+    }
+  }
+
+  if (mutatedStorage) {
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(
+          LOCAL_ROOMS_STORAGE_KEY,
+          JSON.stringify(Array.from(memoryLocalRooms.values()))
+        );
+      }
+    } catch {
+      // Ignorar
     }
   }
   return memoryLocalRooms;
@@ -451,6 +687,7 @@ export function clearLocalMirrorRoomsForTests(): void {
   try {
     if (typeof localStorage !== 'undefined') {
       localStorage.removeItem(LOCAL_ROOMS_STORAGE_KEY);
+      localStorage.removeItem(ACTIVE_SESSIONS_LEDGER_KEY);
     }
   } catch {
     // Ignorar
@@ -482,6 +719,7 @@ export class MultiplayerLobbyService {
   }
 
   async listPublicRooms(): Promise<PublicRoomEntry[]> {
+    flushLeftoverBrowserSessions(this.forceLocalOnly);
     const merged = new Map<string, PublicRoomEntry>();
 
     // 1. Espelho local ativo (abas locais / modo offline)
@@ -593,6 +831,7 @@ export class MultiplayerLobbyService {
     customPlayer?: { id: string; name: string }
   ): Promise<ActiveRoomSession> {
     const profile = customPlayer ?? getOrCreateLocalPlayerProfile();
+    flushLeftoverBrowserSessions(this.forceLocalOnly);
     const roomName =
       (params.roomName || '').trim().slice(0, 38) ||
       `Sala de ${profile.name}`;
@@ -632,32 +871,7 @@ export class MultiplayerLobbyService {
               localPlayerName: profile.name,
             };
 
-            // Registra também no espelho local para abas no mesmo navegador
-            const map = loadLocalMirrorMap();
-            map.set(roomCode, {
-              roomCode,
-              roomName: session.roomName,
-              hostId: session.hostId,
-              hostName: session.hostName,
-              isListed: session.isListed,
-              hasPassword: session.hasPassword,
-              passwordPlain: cleanPassword,
-              accessToken,
-              maxPlayers: session.maxPlayers,
-              players: [
-                {
-                  id: profile.id,
-                  name: profile.name,
-                  status: 'HOST',
-                  ts: Date.now(),
-                },
-              ],
-              status: 'OPEN',
-              region: 'BR-SP',
-              updatedAtMs: Date.now(),
-            });
-            persistLocalMirrorMap(map);
-
+            notifyDirectoryBroadcast();
             return session;
           }
         } catch {
@@ -714,6 +928,7 @@ export class MultiplayerLobbyService {
   }
 
   async inspectRoomByCode(rawCode: string): Promise<RoomInspectionResult> {
+    flushLeftoverBrowserSessions(this.forceLocalOnly);
     const code = normalizeRoomCode(rawCode);
     if (code.length < 4) {
       return { found: false, errorCode: 'NOT_FOUND' };
@@ -783,6 +998,7 @@ export class MultiplayerLobbyService {
     }
 
     const profile = customPlayer ?? getOrCreateLocalPlayerProfile();
+    flushLeftoverBrowserSessions(this.forceLocalOnly);
     const cleanPass = (password || '').trim();
 
     if (!this.forceLocalOnly) {
@@ -861,7 +1077,7 @@ export class MultiplayerLobbyService {
 
     const now = Date.now();
     const others = local.players.filter(
-      (p) => p.id !== profile.id && now - p.ts < ROOM_RETENTION_MS
+      (p) => p.id !== profile.id && now - p.ts < STALE_HEARTBEAT_TTL_MS
     );
     const alreadyIn = local.players.some((p) => p.id === profile.id);
     if (others.length >= local.maxPlayers && !alreadyIn) {
@@ -966,10 +1182,16 @@ function createBackgroundSafeInterval(
 
 export class MultiplayerRoomClient {
   private channel: RealtimeChannel | null = null;
+  private dirWatchChannel: RealtimeChannel | null = null;
   private localBc: BroadcastChannel | null = null;
   private stopKeepaliveLoop: (() => void) | null = null;
   private pingIntervalId = 0;
   private reconnectTimerId = 0;
+  private readonly pendingPresenceLeaveTimers = new Map<
+    string,
+    ReturnType<typeof setTimeout>
+  >();
+  private readonly recentIncomingJoinMs = new Map<string, number>();
   private disposed = false;
   private channelConnected = false;
   private estimatedPingMs = 18;
@@ -993,7 +1215,7 @@ export class MultiplayerRoomClient {
     this.currentHostName = session.hostName;
     this.currentPlayers = [...session.playersSummary];
     this.boundUnload = () => {
-      this.disconnect();
+      this.disconnect(true);
     };
     this.boundWakeUp = () => {
       if (this.disposed) return;
@@ -1048,6 +1270,182 @@ export class MultiplayerRoomClient {
     return `oof-room-${this.session.roomCode}-${this.session.accessToken.slice(0, 8)}`;
   }
 
+  private cancelPendingPresenceLeave(playerId: string | undefined): void {
+    if (!playerId) return;
+    const existing = this.pendingPresenceLeaveTimers.get(playerId);
+    if (existing !== undefined) {
+      clearTimeout(existing);
+      this.pendingPresenceLeaveTimers.delete(playerId);
+    }
+  }
+
+  private schedulePresenceLeaveCheck(playerId: string | undefined): void {
+    if (
+      this.disposed ||
+      !playerId ||
+      playerId === this.session.localPlayerId
+    ) {
+      return;
+    }
+
+    const activeState = this.channel?.presenceState() ?? {};
+    const remainingSockets = activeState[playerId];
+    if (Array.isArray(remainingSockets) && remainingSockets.length > 0) {
+      this.cancelPendingPresenceLeave(playerId);
+      return;
+    }
+
+    this.cancelPendingPresenceLeave(playerId);
+    const timer = setTimeout(() => {
+      this.pendingPresenceLeaveTimers.delete(playerId);
+      if (this.disposed) return;
+      const latestState = this.channel?.presenceState() ?? {};
+      const stillPresent = latestState[playerId];
+      if (Array.isArray(stillPresent) && stillPresent.length > 0) {
+        return;
+      }
+      this.handleConfirmedRemoteDeparture(playerId, true);
+    }, PRESENCE_LEAVE_GRACE_MS);
+
+    this.pendingPresenceLeaveTimers.set(playerId, timer);
+  }
+
+  private handleConfirmedRemoteDeparture(
+    playerId: string,
+    evictFromServerDb: boolean
+  ): void {
+    if (!playerId || playerId === this.session.localPlayerId) return;
+    this.cancelPendingPresenceLeave(playerId);
+    this.recentIncomingJoinMs.delete(playerId);
+
+    const hadPlayer = this.currentPlayers.some((p) => p.id === playerId);
+    this.currentPlayers = this.currentPlayers.filter((p) => p.id !== playerId);
+    if (this.currentHostId === playerId && this.currentPlayers.length > 0) {
+      this.currentHostId = this.currentPlayers[0].id;
+      this.currentHostName = this.currentPlayers[0].name;
+    }
+
+    this.callbacks.onRemotePlayerLeft(playerId);
+    if (hadPlayer) {
+      this.callbacks.onRosterUpdated(
+        this.currentPlayers,
+        this.currentHostId,
+        this.currentHostName
+      );
+    }
+
+    if (
+      evictFromServerDb &&
+      !this.forceLocalOnly &&
+      !this.session.accessToken.startsWith('local-')
+    ) {
+      const sb = getSupabaseClient();
+      if (sb) {
+        void sb.rpc('mp_evict_disconnected_player', {
+          p_room_code: this.session.roomCode,
+          p_access_token: this.session.accessToken,
+          p_target_player_id: playerId,
+        });
+      }
+    }
+  }
+
+  private applyAuthoritativeRoster(
+    serverPlayers: RoomPlayerSummary[],
+    nextHostId?: string,
+    nextHostName?: string
+  ): void {
+    if (this.disposed) return;
+    const now = Date.now();
+    const serverIds = new Set(serverPlayers.map((p) => p.id));
+    const merged: RoomPlayerSummary[] = [...serverPlayers];
+
+    for (const prev of this.currentPlayers) {
+      if (prev.id === this.session.localPlayerId || serverIds.has(prev.id)) {
+        continue;
+      }
+      const firstSeen = this.recentIncomingJoinMs.get(prev.id) ?? 0;
+      if (now - firstSeen < 3500) {
+        merged.push(prev);
+      } else {
+        this.cancelPendingPresenceLeave(prev.id);
+        this.recentIncomingJoinMs.delete(prev.id);
+        this.callbacks.onRemotePlayerLeft(prev.id);
+      }
+    }
+
+    if (nextHostId) this.currentHostId = nextHostId;
+    if (nextHostName) this.currentHostName = nextHostName;
+    if (
+      !merged.some((p) => p.id === this.currentHostId) &&
+      merged.length > 0
+    ) {
+      this.currentHostId = merged[0].id;
+      this.currentHostName = merged[0].name;
+    }
+
+    this.currentPlayers = merged;
+    this.callbacks.onRosterUpdated(
+      this.currentPlayers,
+      this.currentHostId,
+      this.currentHostName
+    );
+  }
+
+  private openDirectoryWatchChannel(): void {
+    if (
+      this.disposed ||
+      this.forceLocalOnly ||
+      this.session.accessToken.startsWith('local-')
+    ) {
+      return;
+    }
+    const sb = getSupabaseClient();
+    if (!sb) return;
+
+    if (this.dirWatchChannel) {
+      try {
+        sb.removeChannel(this.dirWatchChannel);
+      } catch {
+        // Ignorar
+      }
+      this.dirWatchChannel = null;
+    }
+
+    this.dirWatchChannel = sb
+      .channel(
+        `oof-room-dir-${this.session.roomCode}-${Math.random().toString(36).slice(2, 7)}`
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'mp_room_directory',
+          filter: `room_code=eq.${this.session.roomCode}`,
+        },
+        (payload) => {
+          if (this.disposed) return;
+          const row = payload.new as Record<string, unknown> | undefined;
+          if (row && Array.isArray(row.players_summary)) {
+            const summary = mapRawPlayersSummary(row.players_summary);
+            const hostName = row.host_name
+              ? String(row.host_name)
+              : undefined;
+            const hostEntry = summary.find(
+              (p) => p.status === 'HOST' || p.status === 'HOST_AFK'
+            );
+            this.applyAuthoritativeRoster(
+              summary,
+              hostEntry?.id,
+              hostName ?? hostEntry?.name
+            );
+          }
+        }
+      )
+      .subscribe();
+  }
+
   private openRealtimeChannel(): void {
     if (this.disposed || this.forceLocalOnly) return;
     const sb = getSupabaseClient();
@@ -1067,47 +1465,69 @@ export class MultiplayerRoomClient {
     const ch = sb.channel(chanKey, {
       config: {
         broadcast: { self: false, ack: false },
+        presence: { key: this.session.localPlayerId },
       },
     });
     this.channel = ch;
 
     ch.on('broadcast', { event: 'oof_pkt' }, ({ payload }) => {
       this.handleIncomingEnvelope(payload);
-    }).subscribe((status) => {
-      if (this.disposed || this.channel !== ch) return;
-      if (status === 'SUBSCRIBED') {
-        this.channelConnected = true;
-        this.sendEnvelope({
-          t: 'hello',
-          id: this.session.localPlayerId,
-          name: this.session.localPlayerName,
-          afk: this.localAfk,
-          ts: Date.now(),
-        });
-        if (this.lastSentPose) {
-          this.broadcastPlayerPose({
-            ...this.lastSentPose,
+    })
+      .on('presence', { event: 'join' }, ({ key }) => {
+        this.cancelPendingPresenceLeave(key);
+      })
+      .on('presence', { event: 'leave' }, ({ key }) => {
+        this.schedulePresenceLeaveCheck(key);
+      })
+      .subscribe((status) => {
+        if (this.disposed || this.channel !== ch) return;
+        if (status === 'SUBSCRIBED') {
+          this.channelConnected = true;
+          void ch.track({
+            id: this.session.localPlayerId,
+            name: this.session.localPlayerName,
             afk: this.localAfk,
+            ts: Date.now(),
           });
+          this.sendEnvelope({
+            t: 'hello',
+            id: this.session.localPlayerId,
+            name: this.session.localPlayerName,
+            afk: this.localAfk,
+            ts: Date.now(),
+          });
+          if (this.lastSentPose) {
+            this.broadcastPlayerPose({
+              ...this.lastSentPose,
+              afk: this.localAfk,
+            });
+          }
+          void this.sendRoomHeartbeat();
+        } else if (
+          status === 'TIMED_OUT' ||
+          status === 'CHANNEL_ERROR' ||
+          status === 'CLOSED'
+        ) {
+          this.channelConnected = false;
+          if (typeof window !== 'undefined' && !this.reconnectTimerId) {
+            this.reconnectTimerId = window.setTimeout(() => {
+              this.reconnectTimerId = 0;
+              this.openRealtimeChannel();
+            }, 2200);
+          }
         }
-      } else if (
-        status === 'TIMED_OUT' ||
-        status === 'CHANNEL_ERROR' ||
-        status === 'CLOSED'
-      ) {
-        this.channelConnected = false;
-        if (typeof window !== 'undefined' && !this.reconnectTimerId) {
-          this.reconnectTimerId = window.setTimeout(() => {
-            this.reconnectTimerId = 0;
-            this.openRealtimeChannel();
-          }, 2200);
-        }
-      }
-    });
+      });
   }
 
   connect(): void {
     if (this.disposed) return;
+
+    activeLocalClientPlayerIds.add(this.session.localPlayerId);
+    recordActiveLocalSession(
+      this.session.roomCode,
+      this.session.accessToken,
+      this.session.localPlayerId
+    );
 
     const chanKey = this.getChannelKey();
 
@@ -1123,8 +1543,9 @@ export class MultiplayerRoomClient {
       this.localBc = null;
     }
 
-    // 2. Canal global WebSocket Supabase Realtime (com reconexão automática se a rede/aba oscilar)
+    // 2. Canal global WebSocket Supabase Realtime + Presence + espelho do diretório da sala
     this.openRealtimeChannel();
+    this.openDirectoryWatchChannel();
 
     this.sendEnvelope({
       t: 'hello',
@@ -1135,6 +1556,7 @@ export class MultiplayerRoomClient {
     });
 
     if (typeof window !== 'undefined') {
+      window.addEventListener('pagehide', this.boundUnload);
       window.addEventListener('beforeunload', this.boundUnload);
       window.addEventListener('online', this.boundWakeUp);
       window.addEventListener('focus', this.boundWakeUp);
@@ -1159,11 +1581,11 @@ export class MultiplayerRoomClient {
             afk: this.localAfk || hiddenNow,
           });
         }
-        if (now - this.lastHeartbeatAtMs >= 10_500) {
+        if (now - this.lastHeartbeatAtMs >= 8_000) {
           this.lastHeartbeatAtMs = now;
           void this.sendRoomHeartbeat();
         }
-      }, 3000);
+      }, 2500);
 
       this.pingIntervalId = window.setInterval(() => {
         this.sendEnvelope({
@@ -1232,6 +1654,7 @@ export class MultiplayerRoomClient {
     if (type === 'pose' && msg.pkt) {
       const pkt = msg.pkt as NetworkPlayerPosePacket;
       if (pkt.id && pkt.id !== this.session.localPlayerId) {
+        this.cancelPendingPresenceLeave(pkt.id);
         this.ensurePlayerInRoster(pkt.id, pkt.name);
         this.callbacks.onRemotePlayerPose(pkt);
       }
@@ -1246,22 +1669,13 @@ export class MultiplayerRoomClient {
       const id = String(msg.id || '');
       const name = String(msg.name || 'Operador');
       if (id && id !== this.session.localPlayerId) {
+        this.cancelPendingPresenceLeave(id);
         this.ensurePlayerInRoster(id, name);
       }
     } else if (type === 'bye') {
       const id = String(msg.id || '');
       if (id && id !== this.session.localPlayerId) {
-        this.currentPlayers = this.currentPlayers.filter((p) => p.id !== id);
-        if (this.currentHostId === id && this.currentPlayers.length > 0) {
-          this.currentHostId = this.currentPlayers[0].id;
-          this.currentHostName = this.currentPlayers[0].name;
-        }
-        this.callbacks.onRemotePlayerLeft(id);
-        this.callbacks.onRosterUpdated(
-          this.currentPlayers,
-          this.currentHostId,
-          this.currentHostName
-        );
+        this.handleConfirmedRemoteDeparture(id, false);
       }
     } else if (type === 'ping_probe') {
       const senderId = String(msg.senderId || '');
@@ -1284,6 +1698,9 @@ export class MultiplayerRoomClient {
   }
 
   private ensurePlayerInRoster(id: string, name: string): void {
+    if (!this.recentIncomingJoinMs.has(id)) {
+      this.recentIncomingJoinMs.set(id, Date.now());
+    }
     const exists = this.currentPlayers.some((p) => p.id === id);
     if (!exists) {
       this.currentPlayers = [
@@ -1305,8 +1722,13 @@ export class MultiplayerRoomClient {
   private async sendRoomHeartbeat(): Promise<void> {
     if (this.disposed) return;
     const localStatus = this.getLocalRosterStatus();
+    recordActiveLocalSession(
+      this.session.roomCode,
+      this.session.accessToken,
+      this.session.localPlayerId
+    );
 
-    // Atualiza espelho local (sem remover jogadores inativos — apenas marca AFK após >32s sem pulso)
+    // Atualiza espelho local para salas locais (`local-...`), limpando abas mortas (>40s sem heartbeat)
     const map = loadLocalMirrorMap();
     const local = map.get(this.session.roomCode);
     if (local) {
@@ -1315,10 +1737,10 @@ export class MultiplayerRoomClient {
         .filter(
           (p) =>
             p.id !== this.session.localPlayerId &&
-            now - p.ts < ROOM_RETENTION_MS
+            now - p.ts < STALE_HEARTBEAT_TTL_MS
         )
         .map((p) => {
-          if (now - p.ts > 32_000) {
+          if (now - p.ts > 22_000) {
             return {
               ...p,
               status: p.id === local.hostId ? 'HOST_AFK' : 'AFK',
@@ -1337,6 +1759,17 @@ export class MultiplayerRoomClient {
       ];
       local.updatedAtMs = now;
       persistLocalMirrorMap(map);
+      if (this.session.accessToken.startsWith('local-')) {
+        this.applyAuthoritativeRoster(
+          local.players.map((p) => ({
+            id: p.id,
+            name: p.name,
+            status: p.status,
+          })),
+          local.hostId,
+          local.hostName
+        );
+      }
     }
 
     if (!this.forceLocalOnly) {
@@ -1352,15 +1785,10 @@ export class MultiplayerRoomClient {
           });
           const res = data as Record<string, unknown> | null;
           if (!error && res && res.ok) {
-            this.currentHostId = String(res.host_id || this.currentHostId);
-            this.currentHostName = String(
-              res.host_name || this.currentHostName
-            );
-            this.currentPlayers = mapRawPlayersSummary(res.players_summary);
-            this.callbacks.onRosterUpdated(
-              this.currentPlayers,
-              this.currentHostId,
-              this.currentHostName
+            this.applyAuthoritativeRoster(
+              mapRawPlayersSummary(res.players_summary),
+              res.host_id ? String(res.host_id) : undefined,
+              res.host_name ? String(res.host_name) : undefined
             );
           }
         } catch {
@@ -1370,10 +1798,18 @@ export class MultiplayerRoomClient {
     }
   }
 
-  disconnect(): void {
+  disconnect(isUnloading = false): void {
     if (this.disposed) return;
     this.disposed = true;
 
+    activeLocalClientPlayerIds.delete(this.session.localPlayerId);
+    for (const timer of this.pendingPresenceLeaveTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.pendingPresenceLeaveTimers.clear();
+    this.recentIncomingJoinMs.clear();
+
+    // Transmite imediatamente o aviso de saída antes de fechar os canais!
     this.sendEnvelope({
       t: 'bye',
       id: this.session.localPlayerId,
@@ -1383,6 +1819,7 @@ export class MultiplayerRoomClient {
     this.stopKeepaliveLoop = null;
 
     if (typeof window !== 'undefined') {
+      window.removeEventListener('pagehide', this.boundUnload);
       window.removeEventListener('beforeunload', this.boundUnload);
       window.removeEventListener('online', this.boundWakeUp);
       window.removeEventListener('focus', this.boundWakeUp);
@@ -1400,37 +1837,49 @@ export class MultiplayerRoomClient {
     }
     this.localBc = null;
 
+    const sb = getSupabaseClient();
+    if (this.dirWatchChannel) {
+      const closingDirCh = this.dirWatchChannel;
+      this.dirWatchChannel = null;
+      try {
+        sb?.removeChannel(closingDirCh);
+      } catch {
+        // Ignorar
+      }
+    }
+
     if (this.channel) {
-      const sb = getSupabaseClient();
-      sb?.removeChannel(this.channel);
+      const closingCh = this.channel;
       this.channel = null;
-    }
-
-    // Remove do espelho local
-    const map = loadLocalMirrorMap();
-    const local = map.get(this.session.roomCode);
-    if (local) {
-      local.players = local.players.filter(
-        (p) => p.id !== this.session.localPlayerId
-      );
-      if (local.players.length === 0) {
-        map.delete(this.session.roomCode);
-      } else if (local.hostId === this.session.localPlayerId) {
-        local.hostId = local.players[0].id;
-        local.hostName = local.players[0].name;
+      try {
+        void closingCh.untrack();
+      } catch {
+        // Ignorar
       }
-      persistLocalMirrorMap(map);
-    }
-
-    if (!this.forceLocalOnly && !this.session.accessToken.startsWith('local-')) {
-      const sb = getSupabaseClient();
-      if (sb) {
-        void sb.rpc('mp_leave_room', {
-          p_room_code: this.session.roomCode,
-          p_access_token: this.session.accessToken,
-          p_player_id: this.session.localPlayerId,
-        });
+      if (isUnloading) {
+        try {
+          sb?.removeChannel(closingCh);
+        } catch {
+          // Ignorar
+        }
+      } else {
+        // Aguarda 280ms para que o pacote `{ t: 'bye' }` + `untrack()` chegue aos aliados antes de encerrar o socket!
+        setTimeout(() => {
+          try {
+            sb?.removeChannel(closingCh);
+          } catch {
+            // Ignorar
+          }
+        }, 280);
       }
     }
+
+    // Dispara `mp_leave_room` com `keepalive: true` (funciona inclusive ao fechar a aba/navegador ou dar F5!)
+    sendLeaveRoomReliable(
+      this.session.roomCode,
+      this.session.accessToken,
+      this.session.localPlayerId,
+      this.forceLocalOnly
+    );
   }
 }

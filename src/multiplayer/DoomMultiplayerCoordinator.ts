@@ -22,6 +22,7 @@ import {
   NetworkSpiderPacket,
   NetworkWorldEvent,
   RoomPlayerSummary,
+  STALE_HEARTBEAT_TTL_MS,
 } from './MultiplayerService';
 
 interface RemoteAllyEntity {
@@ -53,6 +54,7 @@ interface RemoteAllyEntity {
   dead: boolean;
   afk: boolean;
   lastAfkNoticeMs: number;
+  joinedAtWallMs: number;
   lastSeenMs: number;
 }
 
@@ -217,8 +219,14 @@ export class DoomMultiplayerCoordinator {
       onWorldEvent: (ev) => this.handleWorldEvent(ev),
       onRosterUpdated: (players) => {
         this.roster = players;
-        // Se alguém saiu explicitamente via mp_leave_room e não está mais no roster do servidor,
-        // limpamos sua entidade; caso esteja como AFK/HOST_AFK, preservamos e marcamos AFK!
+        const activeIds = new Set(players.map((p) => p.id));
+        const nowWall = Date.now();
+        // Remove imediatamente qualquer aliado que saiu da sala e não consta mais no roster do servidor!
+        for (const [allyId, ally] of Array.from(this.allies.entries())) {
+          if (!activeIds.has(allyId) && nowWall - ally.joinedAtWallMs > 3500) {
+            this.removeAlly(allyId);
+          }
+        }
         for (const r of players) {
           const ally = this.allies.get(r.id);
           if (ally && (r.status === 'AFK' || r.status === 'HOST_AFK')) {
@@ -755,9 +763,15 @@ export class DoomMultiplayerCoordinator {
     const viewW = window.innerWidth;
     const viewH = window.innerHeight;
 
-    for (const ally of this.allies.values()) {
-      // Jamais derruba o jogador por ficar parado/inativo!
-      // Caso a aba remota congele sem pacotes por >= AFK_IDLE_TIMEOUT_MS, sinaliza AFK mantendo-o na partida.
+    for (const ally of Array.from(this.allies.values())) {
+      // Se o jogador saiu/fechou o jogo e parou totalmente de emitir pacotes e heartbeats (> 43s),
+      // remove-o da partida. (Jogadores apenas AFK com a aba aberta continuam emitindo pulso a cada ~2.5s!)
+      if (nowMs - ally.lastSeenMs >= STALE_HEARTBEAT_TTL_MS + 3000) {
+        this.removeAlly(ally.id);
+        continue;
+      }
+
+      // Caso fique parado/ausente (>= AFK_IDLE_TIMEOUT_MS), sinaliza AFK mantendo-o na partida.
       if (nowMs - ally.lastSeenMs >= AFK_IDLE_TIMEOUT_MS && !ally.afk) {
         this.applyAllyAfkTransition(ally, true);
       }
@@ -1054,6 +1068,7 @@ export class DoomMultiplayerCoordinator {
         dead: pkt.dead,
         afk: Boolean(pkt.afk),
         lastAfkNoticeMs: 0,
+        joinedAtWallMs: Date.now(),
         lastSeenMs: performance.now(),
       };
       this.allies.set(pkt.id, ent);
@@ -1099,14 +1114,27 @@ export class DoomMultiplayerCoordinator {
   }
 
   private removeAlly(playerId: string): void {
+    const hadInRoster = this.roster.some((r) => r.id === playerId);
+    const rosterEntry = this.roster.find((r) => r.id === playerId);
+    this.roster = this.roster.filter((r) => r.id !== playerId);
+
     const ent = this.allies.get(playerId);
-    if (!ent) return;
-    ent.astronaut.disposeFromScene(this.scene);
-    this.scene.remove(ent.beamGroup);
-    ent.labelEl.remove();
-    this.allies.delete(playerId);
-    this.pushRadioFeed(`${ent.name} desconectou-se da sala.`, false);
-    this.renderSquadHud();
+    if (ent) {
+      ent.astronaut.disposeFromScene(this.scene);
+      this.scene.remove(ent.beamGroup);
+      ent.labelEl.remove();
+      this.allies.delete(playerId);
+      this.pushRadioFeed(`${ent.name} desconectou-se da sala.`, false);
+      this.renderSquadHud();
+      return;
+    }
+
+    if (hadInRoster) {
+      if (rosterEntry) {
+        this.pushRadioFeed(`${rosterEntry.name} desconectou-se da sala.`, false);
+      }
+      this.renderSquadHud();
+    }
   }
 
   /**

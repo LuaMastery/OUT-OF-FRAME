@@ -228,7 +228,7 @@ export class MultiplayerMenuModal {
       if (this.isOpen && this.activeTab === 'BROWSER' && !this.busy) {
         void this.refreshRooms();
       }
-    }, 6000);
+    }, 3000);
 
     if (prefillRoomCode && normalizeRoomCode(prefillRoomCode).length >= 6) {
       void this.handleJoinByCodeSubmit();

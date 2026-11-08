@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   createAstronautMaterials,
   DoomAstronaut,
@@ -53,6 +53,7 @@ import {
   MultiplayerRoomClient,
   NetworkPlayerPosePacket,
   normalizeRoomCode,
+  STALE_HEARTBEAT_TTL_MS,
 } from '../src/multiplayer/MultiplayerService';
 import { BINARY_MENU_ITEMS } from '../src/terminal/TerminalBoot';
 
@@ -2244,5 +2245,126 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
       knifeRes.cutTrapPos!.z
     );
     expect(collapsedOnGuest).toBe(true);
+  });
+
+  it('remove imediatamente jogadores que saem da partida (desconexão explícita, fechamento de aba ou sessão órfã) sem deixar jogadores fantasmas na lista', async () => {
+    clearLocalMirrorRoomsForTests();
+    const lobby = new MultiplayerLobbyService({ forceLocalOnly: true });
+
+    const hostSession = await lobby.createRoom(
+      { roomName: 'Setor Sem Fantasmas', isListed: true, maxPlayers: 4 },
+      { id: 'astro-host-clean', name: 'HOST-REAL' }
+    );
+    const guestJoin = await lobby.joinRoom(
+      hostSession.roomCode,
+      undefined,
+      { id: 'astro-guest-leaving', name: 'CONVIDADO-SAINDO' }
+    );
+    expect(guestJoin.ok).toBe(true);
+
+    const leftIds: string[] = [];
+    let latestRosterIds: string[] = [];
+
+    const hostClient = new MultiplayerRoomClient(
+      hostSession,
+      {
+        onRemotePlayerPose: () => {},
+        onRemotePlayerLeft: (id) => leftIds.push(id),
+        onSpiderSync: () => {},
+        onWorldEvent: () => {},
+        onRosterUpdated: (players) => {
+          latestRosterIds = players.map((p) => p.id);
+        },
+      },
+      true
+    );
+    const guestClient = new MultiplayerRoomClient(
+      guestJoin.session!,
+      {
+        onRemotePlayerPose: () => {},
+        onRemotePlayerLeft: () => {},
+        onSpiderSync: () => {},
+        onWorldEvent: () => {},
+        onRosterUpdated: () => {},
+      },
+      true
+    );
+
+    hostClient.connect();
+    guestClient.connect();
+    await new Promise((r) => setTimeout(r, 35));
+
+    // Antes de sair: 2 jogadores na sala
+    const beforeLeave = await lobby.inspectRoomByCode(hostSession.roomCode);
+    expect(beforeLeave.found).toBe(true);
+    expect(beforeLeave.playerCount).toBe(2);
+
+    // 1) Convidado sai do jogo -> removido imediatamente da lista de jogadores do Host e do diretório da sala!
+    guestClient.disconnect(true);
+    await new Promise((r) => setTimeout(r, 35));
+
+    if (typeof BroadcastChannel !== 'undefined') {
+      expect(leftIds).toContain('astro-guest-leaving');
+      expect(latestRosterIds).not.toContain('astro-guest-leaving');
+    }
+
+    const afterGuestLeft = await lobby.inspectRoomByCode(hostSession.roomCode);
+    expect(afterGuestLeft.found).toBe(true);
+    expect(afterGuestLeft.playerCount).toBe(1);
+    expect(
+      afterGuestLeft.playersSummary?.some((p) => p.id === 'astro-guest-leaving')
+    ).toBe(false);
+
+    const listedAfterGuest = await lobby.listPublicRooms();
+    const listedRoom = listedAfterGuest.find(
+      (r) => r.roomCode === hostSession.roomCode
+    );
+    expect(listedRoom?.playerCount).toBe(1);
+    expect(
+      listedRoom?.playersSummary.some((p) => p.id === 'astro-guest-leaving')
+    ).toBe(false);
+
+    // 2) Simula um segundo convidado cuja aba travou/fechou sem disparar disconnect(), enquanto o Host permanece com a aba aberta (mesmo em AFK!)
+    const baseNow = Date.now();
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(baseNow);
+    try {
+      const ghostJoin = await lobby.joinRoom(
+        hostSession.roomCode,
+        undefined,
+        { id: 'astro-crashed-tab', name: 'ABA-FECHADA' }
+      );
+      expect(ghostJoin.ok).toBe(true);
+
+      // +20s: Host continua com a aba aberta (entra em AFK e envia heartbeat automático), mas ABA-FECHADA nunca mais enviou pulso!
+      nowSpy.mockReturnValue(baseNow + 20_000);
+      hostClient.setLocalAfk(true);
+      await new Promise((r) => setTimeout(r, 25));
+
+      // +43s: ABA-FECHADA ultrapassou STALE_HEARTBEAT_TTL_MS (40s) sem pulso, enquanto o Host tem pulso recente (23s atrás)!
+      nowSpy.mockReturnValue(baseNow + STALE_HEARTBEAT_TTL_MS + 3_000);
+
+      const afterGhostPruned = await lobby.inspectRoomByCode(
+        hostSession.roomCode
+      );
+      expect(afterGhostPruned.found).toBe(true);
+      expect(afterGhostPruned.playerCount).toBe(1);
+      expect(
+        afterGhostPruned.playersSummary?.some(
+          (p) => p.id === 'astro-crashed-tab'
+        )
+      ).toBe(false);
+      expect(
+        afterGhostPruned.playersSummary?.some(
+          (p) => p.id === 'astro-host-clean'
+        )
+      ).toBe(true);
+    } finally {
+      nowSpy.mockRestore();
+    }
+
+    // 3) Quando o último jogador (Host) sai, a sala inteira fecha sem sobrar fantasma!
+    hostClient.disconnect();
+    const afterAllLeft = await lobby.inspectRoomByCode(hostSession.roomCode);
+    expect(afterAllLeft.found).toBe(false);
   });
 });
