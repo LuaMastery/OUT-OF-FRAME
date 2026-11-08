@@ -69,6 +69,10 @@
   border: 1px solid transparent;
 }
 
+.tui-icon:active {
+  cursor: var(--cursor-pointer-active);
+}
+
 .tui-icon-glyph {
   white-space: pre;
   line-height: 1.15;
@@ -175,6 +179,10 @@
   font-size: 14px;
 }
 
+.tui-window-titlebar:active {
+  cursor: var(--cursor-grabbing);
+}
+
 .tui-window.focused .tui-window-titlebar {
   background: #e5e5e5;
   color: #000000;
@@ -190,6 +198,10 @@
   font-weight: 700;
   cursor: var(--cursor-pointer);
   padding: 0 4px;
+}
+
+.tui-window-close:active {
+  cursor: var(--cursor-pointer-active);
 }
 
 .tui-window-close:hover {
@@ -290,6 +302,10 @@
   justify-content: space-between;
 }
 
+.tui-start-item:active {
+  cursor: var(--cursor-pointer-active);
+}
+
 .tui-start-item:hover,
 .tui-start-item.selected {
   background: #e5e5e5;
@@ -328,6 +344,10 @@
   font-size: 13px;
   padding: 2px 10px;
   cursor: var(--cursor-pointer);
+}
+
+.tui-task-btn:active {
+  cursor: var(--cursor-pointer-active);
 }
 
 .tui-task-btn.tab-opening {
@@ -386,6 +406,11 @@
 
 #binary-ui-canvas.cursor-pointer {
   cursor: var(--cursor-pointer);
+}
+
+#binary-ui-canvas.cursor-pointer:active,
+#binary-ui-canvas.cursor-pointer.cursor-pressing {
+  cursor: var(--cursor-pointer-active);
 }
 
 #binary-ui-canvas.active {

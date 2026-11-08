@@ -1,8 +1,10 @@
 :root {
-  --cursor-default: url('/cursors/cursor-arrow.png') 2 1, default;
-  --cursor-pointer: url('/cursors/cursor-pointer.png') 6 4, pointer;
-  --cursor-move: url('/cursors/cursor-move.png') 11 11, move;
-  --cursor-text: url('/cursors/cursor-text.png') 11 11, text;
+  --cursor-default: url('/cursors/cursor-blade.png?v=gauntlet1') 2 2, default;
+  --cursor-pointer: url('/cursors/cursor-gauntlet-point.png?v=gauntlet1') 8 2, pointer;
+  --cursor-pointer-active: url('/cursors/cursor-gauntlet-press.png?v=gauntlet1') 8 4, pointer;
+  --cursor-move: url('/cursors/cursor-gauntlet-open.png?v=gauntlet1') 15 10, grab;
+  --cursor-grabbing: url('/cursors/cursor-gauntlet-grab.png?v=gauntlet1') 15 12, grabbing;
+  --cursor-text: url('/cursors/cursor-dos-text.png?v=gauntlet1') 15 13, text;
 }
 
 * {
@@ -20,6 +22,11 @@ body,
   background: #000000;
   color: #e5e5e5;
   cursor: var(--cursor-default);
+}
+
+body.tui-dragging-window,
+body.tui-dragging-window * {
+  cursor: var(--cursor-grabbing) !important;
 }
 
 #game-viewport {

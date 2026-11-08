@@ -391,6 +391,7 @@ export class TerminalBootController {
 
     this.boundMouseUp = () => {
       this.draggingWin = null;
+      document.body.classList.remove('tui-dragging-window');
     };
     window.addEventListener('mouseup', this.boundMouseUp);
 
@@ -838,6 +839,7 @@ export class TerminalBootController {
             offsetX: e.clientX - rect.left,
             offsetY: e.clientY - rect.top,
           };
+          document.body.classList.add('tui-dragging-window');
         });
 
         const state: OpenWindowState = {
@@ -1209,7 +1211,8 @@ export class TerminalBootController {
     cancelAnimationFrame(this.rafId);
     this.sound.stopCoalesceDrone();
     this.canvasEl.classList.remove('active');
-    this.canvasEl.classList.remove('cursor-pointer');
+    this.canvasEl.classList.remove('cursor-pointer', 'cursor-pressing');
+    document.body.classList.remove('tui-dragging-window');
     this.phase = 'desktop';
     this.sound.keyBackspace();
 
