@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { DoomInventory } from './DoomInventory';
 import { gridCellToWorld } from './DoomMazeBuilder';
+import { ProbableEquipmentSignal } from './DoomRadar';
 import { createDoomPropMaterial, DoomSharedUniforms } from './DoomShader';
 
 interface WorldPickupInstance {
@@ -9,6 +10,8 @@ interface WorldPickupInstance {
   group: THREE.Group;
   itemMesh: THREE.Object3D;
   position: THREE.Vector3;
+  cellWorldX: number;
+  cellWorldZ: number;
   collected: boolean;
 }
 
@@ -79,6 +82,8 @@ export class DoomWorldItems {
   private readonly matRustFuller: THREE.ShaderMaterial;
   private readonly matFlareRed: THREE.ShaderMaterial;
   private readonly matPaper: THREE.ShaderMaterial;
+  private readonly matRadarCase: THREE.ShaderMaterial;
+  private readonly matRadarScreen: THREE.ShaderMaterial;
   private readonly matFlameOuter: THREE.MeshBasicMaterial;
   private readonly matFlameMid: THREE.MeshBasicMaterial;
   private readonly matFlameCore: THREE.MeshBasicMaterial;
@@ -473,6 +478,59 @@ export class DoomWorldItems {
       { baseLight: 0.68, emissiveBoost: 0.1, doubleSided: true }
     );
 
+    // 9. Carcaça blindada verde-oliva e tela CRT fosforescente do Radar Topográfico
+    this.matRadarCase = createDoomPropMaterial(
+      makeDetailedPixelTex(32, 32, (px) => {
+        for (let y = 0; y < 32; y++) {
+          for (let x = 0; x < 32; x++) {
+            const seam = y === 3 || y === 28 || x === 3 || x === 28 ? -12 : 0;
+            const grip = y >= 16 && y % 3 === 0 ? -7 : 0;
+            const grit = ((x * 7 + y * 13) % 7) - 3;
+            px(
+              x,
+              y,
+              64 + seam + grip + grit,
+              80 + seam + grip + grit,
+              68 + seam + grip + grit
+            );
+          }
+        }
+      }),
+      sharedUniforms,
+      { baseLight: 0.62, emissiveBoost: 0.08 }
+    );
+
+    this.matRadarScreen = createDoomPropMaterial(
+      makeDetailedPixelTex(32, 32, (px) => {
+        for (let y = 0; y < 32; y++) {
+          for (let x = 0; x < 32; x++) {
+            const dx = x - 15.5;
+            const dy = y - 15.5;
+            const d = Math.hypot(dx, dy);
+            const ring = Math.abs(d - 6.5) < 0.7 || Math.abs(d - 12.2) < 0.7;
+            const cross = x === 16 || y === 16;
+            const sweep = dx > 0 && dy < 0 && Math.abs(dx + dy) < 2.2 && d < 13;
+            const blip =
+              Math.hypot(x - 21, y - 10) < 1.5 ||
+              Math.hypot(x - 10, y - 21) < 1.5;
+            if (d < 1.5) {
+              px(x, y, 235, 255, 240);
+            } else if (blip) {
+              px(x, y, 250, 200, 82);
+            } else if (sweep) {
+              px(x, y, 76, 236, 158);
+            } else if (ring || cross) {
+              px(x, y, 36, 128, 88);
+            } else {
+              px(x, y, 10, 28, 20);
+            }
+          }
+        }
+      }),
+      sharedUniforms,
+      { baseLight: 0.92, emissiveBoost: 0.42 }
+    );
+
     this.matFlameOuter = new THREE.MeshBasicMaterial({
       color: 0xff541c,
       transparent: true,
@@ -502,6 +560,7 @@ export class DoomWorldItems {
     }> = [
       // 1. Setor Noroeste — Corredor de Chegada & Enfermaria Médica
       { gx: 3, gz: 1, ox: 0.35, oz: -0.58, itemId: 'torn_log_04' },
+      { gx: 5, gz: 1, ox: 0.12, oz: 0.54, itemId: 'field_radar' },
       { gx: 6, gz: 1, ox: 0.45, oz: -0.58, itemId: 'industrial_battery' },
       { gx: 5, gz: 3, ox: -0.52, oz: -0.52, itemId: 'sterile_bandage' },
       { gx: 9, gz: 5, ox: 0.52, oz: 0.52, itemId: 'old_morphine' },
@@ -563,6 +622,8 @@ export class DoomWorldItems {
         group,
         itemMesh,
         position: new THREE.Vector3(wx, 0.18, wz),
+        cellWorldX: world.x,
+        cellWorldZ: world.z,
         collected: false,
       });
     });
@@ -1072,6 +1133,55 @@ export class DoomWorldItems {
         keyTag
       );
       holder.add(key);
+    } else if (itemId === 'field_radar') {
+      // Radar Topográfico EVA deitado na bandeja do caixote (carcaça oliva, visor CRT brilhante, antena e seletores)
+      const radar = new THREE.Group();
+
+      const chassis = new THREE.Mesh(
+        new THREE.BoxGeometry(0.18, 0.046, 0.23),
+        this.matRadarCase
+      );
+      chassis.position.set(-0.01, 0.023, 0.01);
+
+      const bezel = new THREE.Mesh(
+        new THREE.BoxGeometry(0.146, 0.012, 0.142),
+        this.matDarkIron
+      );
+      bezel.position.set(-0.01, 0.049, -0.02);
+
+      const screen = new THREE.Mesh(
+        new THREE.PlaneGeometry(0.124, 0.12),
+        this.matRadarScreen
+      );
+      screen.rotation.x = -Math.PI * 0.5;
+      screen.position.set(-0.01, 0.056, -0.02);
+
+      const bncConnector = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.012, 0.014, 0.032, 8),
+        this.matBrass
+      );
+      bncConnector.rotation.x = Math.PI * 0.5;
+      bncConnector.position.set(0.052, 0.028, -0.118);
+
+      const whipAntenna = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.0045, 0.0065, 0.17, 6),
+        this.matCleanSteel
+      );
+      whipAntenna.rotation.z = Math.PI * 0.5;
+      whipAntenna.rotation.y = 0.25;
+      whipAntenna.position.set(0.105, 0.028, -0.05);
+
+      for (const kx of [-0.05, 0.01]) {
+        const dial = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.014, 0.014, 0.014, 10),
+          this.matBrass
+        );
+        dial.position.set(kx, 0.052, 0.082);
+        radar.add(dial);
+      }
+
+      radar.add(chassis, bezel, screen, bncConnector, whipAntenna);
+      holder.add(radar);
     } else {
       // Prancheta de campo cabendo folgadamente dentro da bandeja do caixote + folha única (sem duplicar mancha!)
       const board = new THREE.Mesh(
@@ -1215,6 +1325,37 @@ export class DoomWorldItems {
   }
 
   /**
+   * Retorna os pontos prováveis de varredura eletromagnética para todos os equipamentos ainda não coletados.
+   */
+  getUncollectedEquipmentSignals(): ProbableEquipmentSignal[] {
+    const signals: ProbableEquipmentSignal[] = [];
+    for (let i = 0; i < this.pickups.length; i++) {
+      const p = this.pickups[i];
+      if (p.collected) continue;
+
+      // Desvio determinístico sutil dentro da própria célula aberta (~0.4m) para leitura orgânica de "ponto provável"
+      const seedA = Math.sin((i + 1) * 12.9898) * 43758.5453;
+      const seedB = Math.sin((i + 1) * 78.233) * 24634.6345;
+      const jx = ((seedA - Math.floor(seedA)) * 2 - 1) * 0.42;
+      const jz = ((seedB - Math.floor(seedB)) * 2 - 1) * 0.42;
+
+      const isHighSignature =
+        p.itemId === 'rusty_knife' ||
+        p.itemId === 'sector_b_key' ||
+        p.itemId === 'field_radar';
+
+      signals.push({
+        id: p.id,
+        probableX: p.cellWorldX + jx,
+        probableZ: p.cellWorldZ + jz,
+        uncertaintyRadiusM: isHighSignature ? 1.15 : 1.45,
+        signalStrength: isHighSignature ? 1.0 : 0.84,
+      });
+    }
+    return signals;
+  }
+
+  /**
    * Tenta pegar um objeto próximo (automaticamente ao encostar a <1.02m
    * ou intencionalmente ao pressionar E / clicar olhando até <2.4m).
    */
@@ -1225,7 +1366,8 @@ export class DoomWorldItems {
     cameraPos: THREE.Vector3,
     cameraForward: THREE.Vector3,
     interactPressed: boolean,
-    inventory: DoomInventory
+    inventory: DoomInventory,
+    onItemCollected?: (itemId: string) => void
   ): void {
     for (let i = 0; i < this.pickups.length; i++) {
       const p = this.pickups[i];
@@ -1250,6 +1392,7 @@ export class DoomWorldItems {
         if (inventory.addItem(p.itemId, 1, false)) {
           p.collected = true;
           p.itemMesh.visible = false;
+          onItemCollected?.(p.itemId);
         }
       }
     }

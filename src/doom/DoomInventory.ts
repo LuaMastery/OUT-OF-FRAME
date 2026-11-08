@@ -12,6 +12,7 @@ export type InventoryItemKind =
   | 'knife'
   | 'flare'
   | 'key'
+  | 'radar'
   | 'note';
 
 export interface InventoryItemDef {
@@ -40,6 +41,7 @@ export interface PlayerVitalsSnapshot {
   /** 0..100 carga da lanterna */
   battery: number;
   flashlightEquipped: boolean;
+  radarActive?: boolean;
   trappedInWeb: boolean;
   bleeding: boolean;
   crouching: boolean;
@@ -57,6 +59,7 @@ export interface DoomInventoryCallbacks {
   onUseFlare: () => boolean;
   onUseKnife: () => { cutWeb: boolean };
   onUseKey?: () => void;
+  onToggleRadar?: () => boolean;
   onCloseRequest: () => void;
   onPermanentDeathTerminate: () => void;
 }
@@ -149,6 +152,18 @@ export const ITEM_CATALOG: Record<string, InventoryItemDef> = {
     actionLabel: 'Empunhar chave',
     droppable: false,
   },
+  field_radar: {
+    id: 'field_radar',
+    kind: 'radar',
+    name: 'Radar topográfico',
+    category: 'Rastreamento',
+    description:
+      'Unidade portátil EVA de varredura eletromagnética. Exibe o minimapa do complexo subterrâneo, sua localização exata e os pontos prováveis de outros equipamentos. Pressione [M] para ligar/ocultar e [N] para alternar o zoom.',
+    stackable: false,
+    usable: true,
+    actionLabel: 'Alternar [M]',
+    droppable: false,
+  },
   torn_log_04: {
     id: 'torn_log_04',
     kind: 'note',
@@ -228,6 +243,7 @@ function buildItemIcons(): Record<InventoryItemKind, string> {
     'knife',
     'flare',
     'key',
+    'radar',
     'note',
   ];
 
@@ -432,6 +448,29 @@ function buildItemIcons(): Record<InventoryItemKind, string> {
       box(23, 16, 1, 3, '#8c723e');
       box(25, 16, 2, 5, '#ab8f54');
       px(25, 16, '#cfb374');
+    } else if (kind === 'radar') {
+      // Radar Topográfico Portátil: antena chicote, carcaça oliva blindada, tela CRT verde + ecos âmbar
+      box(21, 3, 2, 6, '#8d9891');
+      px(21, 2, '#d98a3b'); // ponteira da antena
+      box(20, 8, 4, 2, '#b89a58'); // conector BNC de latão
+      // Carcaça robusta com chanfros
+      box(7, 9, 18, 19, '#39463c');
+      box(8, 8, 16, 20, '#49594d');
+      line(8, 8, 23, 8, '#6e8273');
+      // Moldura do visor CRT
+      box(9, 10, 14, 12, '#1a211d');
+      box(10, 11, 12, 10, '#0a1c14');
+      // Retículo e linha de varredura fosforescente + ponto do jogador e ecos de equipamentos
+      line(10, 16, 21, 16, '#1c523b');
+      line(16, 11, 16, 20, '#1c523b');
+      line(16, 16, 20, 12, '#4ce89e');
+      px(16, 16, '#ffffff');
+      px(19, 13, '#ffd269');
+      px(12, 18, '#f0b846');
+      // Botões seletores inferiores
+      box(10, 24, 3, 3, '#ab8f54');
+      box(15, 24, 3, 2, '#252c27');
+      box(20, 24, 2, 2, '#59b889');
     } else {
       // Página arrancada de caderno com orelha dobrada e mancha seca de sangue
       box(7, 4, 17, 22, '#bfb49f');
@@ -2265,10 +2304,14 @@ export class DoomInventory {
       if (entry) {
         const iconSrc = this.icons[entry.def.kind];
         const showEquipDot =
-          entry.def.kind === 'lantern' || entry.def.kind === 'knife';
+          entry.def.kind === 'lantern' ||
+          entry.def.kind === 'knife' ||
+          entry.def.kind === 'radar';
         const dotActive =
           (entry.def.kind === 'lantern' &&
             this.latestVitals.flashlightEquipped) ||
+          (entry.def.kind === 'radar' &&
+            Boolean(this.latestVitals.radarActive)) ||
           entry.def.kind === 'knife';
         const boundShortcut = this.getShortcutForItem(entry.def.id);
 
@@ -2510,6 +2553,17 @@ export class DoomInventory {
         this.feedbackEl.textContent =
           'Chave empunhada pelo astronauta. Nenhuma fechadura compatível por perto.';
         this.callbacks.onCloseRequest();
+      }
+      return true;
+    }
+
+    if (def.id === 'field_radar') {
+      const nowActive = this.callbacks.onToggleRadar?.() ?? false;
+      if (!fromQuickShortcut) {
+        this.feedbackEl.textContent = nowActive
+          ? 'Radar topográfico ligado no canto superior direito.'
+          : 'Radar topográfico recolhido.';
+        this.renderGrid();
       }
       return true;
     }

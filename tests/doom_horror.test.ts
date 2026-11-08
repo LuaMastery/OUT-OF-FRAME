@@ -22,6 +22,12 @@ import {
   worldToGridCell,
 } from '../src/doom/DoomMazeBuilder';
 import {
+  DoomRadar,
+  getSectorNameForCell,
+  RADAR_CANVAS_SIZE,
+  renderRadarMinimapCanvas,
+} from '../src/doom/DoomRadar';
+import {
   createDoomSharedUniforms,
   MAX_DOOM_LIGHTS,
 } from '../src/doom/DoomShader';
@@ -681,6 +687,7 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
       'battery',
       'flare',
       'key',
+      'radar',
     ];
     for (const kind of handheldKinds) {
       flashlight.triggerQuickItemAction(kind);
@@ -878,8 +885,9 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
         );
       }
     }
-    expect(collectedCount).toBe(24);
+    expect(collectedCount).toBe(25);
     expect(collectedIds.has('torn_log_04')).toBe(true);
+    expect(collectedIds.has('field_radar')).toBe(true);
     expect(collectedIds.has('rusty_knife')).toBe(true);
     expect(collectedIds.has('arachnid_report_09')).toBe(true);
     expect(collectedIds.has('sector_b_key')).toBe(true);
@@ -976,5 +984,129 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
     expect(
       Math.abs(fl.leftAstronautArm.wristPivot.rotation.y - initialWristRoll)
     ).toBeGreaterThan(0.25);
+  });
+
+  it('permite encontrar o Radar Topográfico e exibe minimapa com posição exata do jogador e pontos prováveis de equipamentos', () => {
+    expect(ITEM_CATALOG.field_radar).toBeDefined();
+    expect(ITEM_CATALOG.field_radar.usable).toBe(true);
+    expect(ITEM_CATALOG.field_radar.droppable).toBe(false);
+
+    const scene = new THREE.Scene();
+    const shared = createDoomSharedUniforms();
+    const items = new DoomWorldItems(scene, shared);
+
+    // 1) Todos os sinais prováveis iniciais situam-se dentro de células abertas transitáveis
+    const initialSignals = items.getUncollectedEquipmentSignals();
+    expect(initialSignals.length).toBe(25);
+    for (const sig of initialSignals) {
+      const cell = worldToGridCell(sig.probableX, sig.probableZ);
+      expect(isSolidCell(LABYRINTH_MAP, cell.gx, cell.gz)).toBe(false);
+      expect(sig.uncertaintyRadiusM).toBeGreaterThan(1.0);
+    }
+
+    // 2) Ao caminhar até (5, 1) no corredor inicial, o jogador encontra e ativa o Radar Topográfico!
+    const radar = new DoomRadar(null);
+    expect(radar.hasRadar).toBe(false);
+    expect(radar.isActive).toBe(false);
+
+    const radarCellWorld = gridCellToWorld(5, 1);
+    let radarPicked = false;
+    items.updateAndCheckPickups(
+      0.016,
+      0,
+      new THREE.Vector3(radarCellWorld.x + 0.12, 0, radarCellWorld.z + 0.54),
+      new THREE.Vector3(radarCellWorld.x + 0.12, 1.72, radarCellWorld.z + 0.54),
+      new THREE.Vector3(1, 0, 0),
+      false,
+      { addItem: () => true } as never,
+      (itemId) => {
+        if (itemId === 'field_radar') {
+          radarPicked = true;
+          radar.unlockAndActivate();
+        }
+      }
+    );
+
+    expect(radarPicked).toBe(true);
+    expect(radar.hasRadar).toBe(true);
+    expect(radar.isActive).toBe(true);
+
+    // O item coletado deixa de emitir sinal provável no radar (25 -> 24)
+    const remainingSignals = items.getUncollectedEquipmentSignals();
+    expect(remainingSignals.length).toBe(24);
+
+    // 3) Alternância de visibilidade [M], escala [N] (GERAL <-> ZOOM) e nomes táticos de setores
+    expect(radar.mode).toBe('FULL');
+    expect(radar.cycleScaleMode()).toBe('LOCAL');
+    expect(radar.cycleScaleMode()).toBe('FULL');
+    expect(radar.toggleActive()).toBe(false);
+    expect(radar.toggleActive()).toBe(true);
+
+    expect(getSectorNameForCell(2, 1)).toBe('ESCLUSA NOROESTE');
+    expect(getSectorNameForCell(22, 5)).toBe('SALÃO DOS REATORES');
+    expect(getSectorNameForCell(14, 11)).toBe('ÁTRIO CENTRAL');
+    expect(getSectorNameForCell(14, 23)).toBe('GRANDE NINHO SUL');
+
+    // 4) Renderização 2D do minimapa (203x203) desenha a planta, o marcador exato do jogador e os ecos de equipamentos
+    const drawOps: Array<{ style: string; x: number; y: number; w: number; h: number }> = [];
+    let arcCalls = 0;
+    const mockCtx = {
+      fillStyle: '#000000',
+      strokeStyle: '#000000',
+      lineWidth: 1,
+      fillRect: function (
+        this: { fillStyle: string },
+        x: number,
+        y: number,
+        w: number,
+        h: number
+      ) {
+        drawOps.push({ style: String(this.fillStyle), x, y, w, h });
+      },
+      save: () => {},
+      restore: () => {},
+      beginPath: () => {},
+      moveTo: () => {},
+      lineTo: () => {},
+      closePath: () => {},
+      fill: () => {},
+      stroke: () => {},
+      setLineDash: () => {},
+      arc: () => {
+        arcCalls++;
+      },
+    } as unknown as CanvasRenderingContext2D;
+
+    const explored = new Uint8Array(29 * 29);
+    explored[1 * 29 + 5] = 1;
+    renderRadarMinimapCanvas(mockCtx, {
+      playerX: radarCellWorld.x,
+      playerZ: radarCellWorld.z,
+      playerYaw: -Math.PI * 0.5,
+      elapsedSec: 2.5,
+      mode: 'FULL',
+      exploredMask: explored,
+      signals: remainingSignals,
+    });
+
+    // Verifica que os 24 anéis prováveis + feixe + cone direcional foram desenhados, além do núcleo branco na posição exata do jogador!
+    expect(arcCalls).toBeGreaterThanOrEqual(26);
+    const expectedPxX = Math.round(
+      ((radarCellWorld.x + (29 * 3) / 2) / (29 * 3)) * RADAR_CANVAS_SIZE
+    );
+    const expectedPxY = Math.round(
+      ((radarCellWorld.z + (29 * 3) / 2) / (29 * 3)) * RADAR_CANVAS_SIZE
+    );
+    const playerCoreDraw = drawOps.find(
+      (op) =>
+        op.style === '#ffffff' &&
+        op.x === expectedPxX - 1 &&
+        op.y === expectedPxY - 1 &&
+        op.w === 3 &&
+        op.h === 3
+    );
+    expect(playerCoreDraw).toBeDefined();
+
+    radar.destroy();
   });
 });

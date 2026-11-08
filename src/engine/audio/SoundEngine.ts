@@ -1829,6 +1829,35 @@ export class SoundEngine {
     );
   }
 
+  /** Bip tático de sonar CRT ao ligar, recolher ou calibrar o Radar Topográfico */
+  playRadarPing(activating: boolean): void {
+    if (!this.isRunning() || !this.ctx || !this.worldDryBus) return;
+    const now = this.ctx.currentTime;
+    const notes: Array<[number, number, number]> = activating
+      ? [
+          [0, 660, 0.055],
+          [0.065, 990, 0.07],
+        ]
+      : [[0, 520, 0.05]];
+
+    for (const [delay, freq, vol] of notes) {
+      const t = now + delay;
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, t);
+      osc.frequency.exponentialRampToValueAtTime(freq * 1.04, t + 0.09);
+
+      gain.gain.setValueAtTime(vol, t);
+      gain.gain.exponentialRampToValueAtTime(0.0008, t + 0.14);
+
+      osc.connect(gain);
+      gain.connect(this.worldDryBus);
+      osc.start(t);
+      osc.stop(t + 0.15);
+    }
+  }
+
   /** Batimento cardíaco abafado e discreto durante perseguição intensa ou saúde crítica */
   playTensionHeartbeat(intensity: number): void {
     const clamped = Math.max(0, Math.min(1, intensity));

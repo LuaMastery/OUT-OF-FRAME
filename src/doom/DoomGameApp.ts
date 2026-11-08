@@ -19,6 +19,7 @@ import {
   DoomLightSource,
   isStoneSectorWorld,
 } from './DoomMazeBuilder';
+import { DoomRadar } from './DoomRadar';
 import {
   createDoomSharedUniforms,
   DoomRetroCompositor,
@@ -55,6 +56,7 @@ export class DoomGameApp {
   private readonly astronaut: DoomAstronaut;
   private readonly flashlight: DoomFlashlight;
   private readonly inventory: DoomInventory;
+  private readonly radar: DoomRadar;
   private readonly worldItems: DoomWorldItems;
   private readonly webManager: DoomSpiderWebManager;
   private readonly spider: DoomSpider;
@@ -166,6 +168,8 @@ export class DoomGameApp {
       false
     );
     this.worldItems = new DoomWorldItems(this.scene, this.sharedUniforms);
+    this.radar = new DoomRadar(this.viewportEl);
+    this.radar.markExploredAtWorld(this.position.x, this.position.z);
     this.webManager = new DoomSpiderWebManager(this.scene, this.sharedUniforms);
     this.spider = new DoomSpider(
       this.scene,
@@ -235,6 +239,9 @@ export class DoomGameApp {
       onUseKey: () => {
         this.flashlight.triggerQuickItemAction('key');
         this.astronaut.setArmInUse('left', true);
+      },
+      onToggleRadar: () => {
+        return this.toggleRadarHud();
       },
       onCloseRequest: () => {
         this.closeInventoryAndLock();
@@ -429,6 +436,15 @@ export class DoomGameApp {
           if (!equipping) {
             this.sound.playFlashlightClick(false);
           }
+        }
+
+        if (e.code === 'KeyM' && !e.repeat && this.radar.hasRadar) {
+          this.toggleRadarHud();
+        }
+
+        if (e.code === 'KeyN' && !e.repeat && this.radar.isActive) {
+          this.radar.cycleScaleMode();
+          this.sound.playRadarPing(true);
         }
       },
       { capture: true, passive: false, signal: this.abortCtrl.signal }
@@ -1225,6 +1241,14 @@ export class DoomGameApp {
     );
 
     if (this.activeSequence !== 'NONE') {
+      this.radar.update(
+        this.position.x,
+        this.position.z,
+        this.yaw,
+        this.elapsed,
+        [],
+        true
+      );
       this.updateHorrorSequence(0);
       this.updateFlickeringLightsAndAudio();
       return;
@@ -1258,7 +1282,24 @@ export class DoomGameApp {
       this.camera.position,
       camForward,
       interactPressed,
-      this.inventory
+      this.inventory,
+      (pickedItemId) => {
+        if (pickedItemId === 'field_radar') {
+          this.radar.unlockAndActivate();
+          this.flashlight.triggerQuickItemAction('radar');
+          this.sound.playRadarPing(true);
+          this.syncInventoryVitals();
+        }
+      }
+    );
+
+    this.radar.update(
+      this.position.x,
+      this.position.z,
+      this.yaw,
+      this.elapsed,
+      this.worldItems.getUncollectedEquipmentSignals(),
+      !this.engaged || this.inventory.open || this.inventory.gameOverVisible
     );
 
     this.sharedUniforms.uFlashlightIntensity.value = fl.beamIntensity;
@@ -1322,12 +1363,24 @@ export class DoomGameApp {
     this.syncInventoryVitals();
   }
 
+  private toggleRadarHud(): boolean {
+    if (!this.radar.hasRadar) return false;
+    const nowActive = this.radar.toggleActive();
+    this.sound.playRadarPing(nowActive);
+    if (nowActive) {
+      this.flashlight.triggerQuickItemAction('radar');
+    }
+    this.syncInventoryVitals();
+    return nowActive;
+  }
+
   private syncInventoryVitals(): void {
     this.inventory.updateVitalsAndDiegeticFX({
       health: this.playerHealth,
       sanity: this.playerSanity,
       battery: this.lanternBattery,
       flashlightEquipped: this.flashlight.isEquipped,
+      radarActive: this.radar.isActive,
       trappedInWeb: this.webManager.isPlayerEnsnared,
       bleeding: this.playerBleeding,
       crouching: this.wasCrouching,
@@ -1488,6 +1541,7 @@ export class DoomGameApp {
     cancelAnimationFrame(this.rafId);
     this.abortCtrl.abort();
     unlockSystemKeyboardKeys();
+    this.radar.destroy();
     this.inventory.destroy();
     this.compositor.dispose();
     this.renderer.dispose();

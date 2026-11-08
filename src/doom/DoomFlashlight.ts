@@ -11,7 +11,8 @@ export type QuickHandheldKind =
   | 'morphine'
   | 'battery'
   | 'flare'
-  | 'key';
+  | 'key'
+  | 'radar';
 
 /**
  * Textura pixel-art 32x32 (NearestFilter) de alumínio anodizado usinado com recartilhado tático.
@@ -76,6 +77,61 @@ function createKnifeBladeViewTexture(): THREE.DataTexture {
       data[idx + 3] = 255;
     }
   }
+  const tex = new THREE.DataTexture(data, size, size, THREE.RGBAFormat);
+  tex.magFilter = THREE.NearestFilter;
+  tex.minFilter = THREE.NearestFilter;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+/**
+ * Textura pixel-art 32x32 de visor CRT fosforescente para o Radar Topográfico em 1ª pessoa.
+ */
+function createRadarScreenViewTexture(): THREE.DataTexture {
+  const size = 32;
+  const data = new Uint8Array(size * size * 4);
+  const cx = 15.5;
+  const cy = 15.5;
+
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const idx = (y * size + x) * 4;
+      const dx = x - cx;
+      const dy = y - cy;
+      const dist = Math.hypot(dx, dy);
+      const ring = Math.abs(dist - 6.5) < 0.65 || Math.abs(dist - 12.5) < 0.65;
+      const cross = x === 16 || y === 16;
+      const sweep = dx > 0 && dy < 0 && Math.abs(dx + dy) < 2.2 && dist < 13.5;
+      const blipA = Math.hypot(x - 22, y - 10) < 1.5;
+      const blipB = Math.hypot(x - 10, y - 21) < 1.4;
+      const centerDot = dist < 1.6;
+
+      if (centerDot) {
+        data[idx] = 235;
+        data[idx + 1] = 255;
+        data[idx + 2] = 242;
+      } else if (blipA || blipB) {
+        data[idx] = 250;
+        data[idx + 1] = 202;
+        data[idx + 2] = 84;
+      } else if (sweep) {
+        data[idx] = 74;
+        data[idx + 1] = 232;
+        data[idx + 2] = 156;
+      } else if (ring || cross) {
+        data[idx] = 32;
+        data[idx + 1] = 118;
+        data[idx + 2] = 82;
+      } else {
+        const scan = y % 2 === 0 ? 0 : -4;
+        data[idx] = 8;
+        data[idx + 1] = Math.max(10, 26 + scan);
+        data[idx + 2] = Math.max(8, 18 + scan);
+      }
+      data[idx + 3] = 255;
+    }
+  }
+
   const tex = new THREE.DataTexture(data, size, size, THREE.RGBAFormat);
   tex.magFilter = THREE.NearestFilter;
   tex.minFilter = THREE.NearestFilter;
@@ -736,6 +792,52 @@ export class DoomFlashlight {
     keyTag.rotation.z = -0.35;
     keyProp.add(keyBow, keyCollar, keyStem, keyBitA, keyBitB, keyTag);
 
+    // 7. Radar Topográfico Portátil (carcaça blindada oliva, visor CRT fosforescente, antena chicote e seletores)
+    const radarProp = new THREE.Group();
+    const radarCaseMat = new THREE.MeshLambertMaterial({ color: 0x3b483d });
+    const radarScreenMat = new THREE.MeshBasicMaterial({
+      map: createRadarScreenViewTexture(),
+    });
+    const radarBody = new THREE.Mesh(
+      new THREE.BoxGeometry(0.088, 0.122, 0.036),
+      radarCaseMat
+    );
+    radarBody.position.set(0.014, 0.048, -0.01);
+    const radarFrame = new THREE.Mesh(
+      new THREE.BoxGeometry(0.076, 0.076, 0.008),
+      bezelMat
+    );
+    radarFrame.position.set(0.014, 0.058, 0.01);
+    const radarScreen = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.064, 0.064),
+      radarScreenMat
+    );
+    radarScreen.position.set(0.014, 0.058, 0.0145);
+    const radarAntennaBase = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.007, 0.009, 0.018, 8),
+      brassMat
+    );
+    radarAntennaBase.position.set(0.042, 0.118, -0.01);
+    const radarWhip = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.0024, 0.0038, 0.11, 6),
+      bezelMat
+    );
+    radarWhip.position.set(0.042, 0.178, -0.01);
+    const radarDial = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.009, 0.009, 0.01, 10),
+      brassMat
+    );
+    radarDial.rotation.x = Math.PI * 0.5;
+    radarDial.position.set(-0.01, 0.005, 0.011);
+    radarProp.add(
+      radarBody,
+      radarFrame,
+      radarScreen,
+      radarAntennaBase,
+      radarWhip,
+      radarDial
+    );
+
     this.quickPropMeshes = {
       knife: knifeProp,
       bandage: bandageProp,
@@ -743,6 +845,7 @@ export class DoomFlashlight {
       battery: batteryProp,
       flare: flareProp,
       key: keyProp,
+      radar: radarProp,
     };
 
     for (const k of Object.keys(this.quickPropMeshes) as QuickHandheldKind[]) {
@@ -938,11 +1041,13 @@ export class DoomFlashlight {
             ? 0.54
             : kind === 'key'
               ? 0.58
-              : 0.62;
+              : kind === 'radar'
+                ? 0.68
+                : 0.62;
 
     if (kind === 'knife' || kind === 'flare') {
       this.leftAstronautArm.setGripPose('knife');
-    } else if (kind === 'battery') {
+    } else if (kind === 'battery' || kind === 'radar') {
       this.leftAstronautArm.setGripPose('box');
     } else if (kind === 'key') {
       this.leftAstronautArm.setGripPose('key');
@@ -1192,6 +1297,29 @@ export class DoomFlashlight {
         -0.18,
         0.18 + turn * 0.85,
         -0.12 + turn * 0.22
+      );
+    } else if (kind === 'radar') {
+      const scanTilt = Math.sin(u * Math.PI * 2) * 0.06 * raise;
+      this.quickRootGroup.position.set(
+        -0.29 + raise * 0.03,
+        -0.26 + raise * 0.105,
+        0.065
+      );
+      this.leftAstronautArm.shoulderPivot.rotation.set(
+        0.74 + raise * 0.54,
+        -0.02 - raise * 0.05,
+        0.06 + raise * 0.08
+      );
+      this.leftAstronautArm.elbowPivot.rotation.set(
+        0.58 + raise * 0.24,
+        -0.1,
+        0.18 + raise * 0.08
+      );
+      // Gira o punho EVA para que o visor CRT verde do Radar fique voltado diretamente para o capacete do jogador!
+      this.leftAstronautArm.wristPivot.rotation.set(
+        0.18 + scanTilt,
+        0.48,
+        -0.08
       );
     } else {
       this.quickRootGroup.position.set(
