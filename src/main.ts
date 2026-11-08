@@ -1,9 +1,11 @@
 import './style.css';
 import './terminal/terminal.css';
 import './doom/inventory.css';
+import './multiplayer/multiplayer.css';
 import { DoomGameApp } from './doom/DoomGameApp';
 import { SoundEngine } from './engine/audio/SoundEngine';
 import { acquireFullscreenAndKeyboardLock } from './engine/input/BrowserShortcutGuard';
+import { ActiveRoomSession } from './multiplayer/MultiplayerService';
 import { TerminalBootController } from './terminal/TerminalBoot';
 
 const appRoot = document.getElementById('app') as HTMLElement;
@@ -15,7 +17,7 @@ let doomApp: DoomGameApp | null = null;
 function createTerminalController(skipBootToDesktop: boolean): void {
   const terminal = new TerminalBootController(appRoot, {
     sound: soundEngine,
-    onLaunchImmediateGesture: () => {
+    onLaunchImmediateGesture: (multiplayerSession?: ActiveRoomSession) => {
       // Solicita Tela Cheia + Keyboard Lock no primeiro microssegundo do gesto do usuário
       // para que o navegador capture Ctrl+W diretamente para o jogo sem fechar a aba!
       acquireFullscreenAndKeyboardLock(() => {
@@ -25,7 +27,7 @@ function createTerminalController(skipBootToDesktop: boolean): void {
       gameViewport.classList.remove('dormant');
       if (!doomApp) {
         doomApp = new DoomGameApp(soundEngine, () => {
-          // Morte permanente: destrói toda a sessão/itens/mundo e encerra o .exe de volta ao Terminal!
+          // Morte permanente ou saída da sala: destrói a sessão/mundo e retorna ao Terminal!
           doomApp?.destroy();
           doomApp = null;
 
@@ -41,7 +43,7 @@ function createTerminalController(skipBootToDesktop: boolean): void {
         });
         doomApp.start();
       }
-      doomApp.engageFromTerminal();
+      doomApp.engageFromTerminal(multiplayerSession);
     },
   });
 

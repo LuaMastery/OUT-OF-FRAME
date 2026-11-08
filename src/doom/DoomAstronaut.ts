@@ -1760,4 +1760,110 @@ export class DoomAstronaut {
     this.rightLeg.hipPivot.rotation.set(0.06 - tug * 0.07, 0, 0.08);
     this.rightLeg.kneePivot.rotation.set(-0.06 - tug * 0.05, 0, 0);
   }
+
+  /**
+   * Atualiza o Astronauta em 3ª pessoa completa (capacete + viseira dourada + mochila PLSS + braços + pernas)
+   * para renderizar aliados conectados em sessões Multiplayer Co-op!
+   */
+  updateThirdPersonAlly(
+    position: THREE.Vector3,
+    yaw: number,
+    pitch: number,
+    bobPhase: number,
+    planarSpeed: number,
+    crouchAmount: number,
+    flashlightOn: boolean,
+    trappedOrDowned: boolean
+  ): void {
+    this.root.visible = true;
+    this.setFirstPersonMode(false);
+
+    this.root.position.set(position.x, position.y, position.z);
+    this.root.rotation.set(0, yaw, 0);
+
+    if (trappedOrDowned) {
+      const struggle = Math.sin(bobPhase * 3.2) * 0.09;
+      this.bodyPivot.position.set(0, -0.36, 0);
+      this.bodyPivot.rotation.set(0.28, struggle * 0.5, struggle * 0.35);
+      this.hipsGroup.position.set(0, 0.82, 0);
+      this.torsoGroup.rotation.set(0.22, 0, 0);
+      this.headGroup.rotation.set(-0.18 + struggle, struggle, 0);
+      this.leftLeg.hipPivot.rotation.set(0.55, 0, -0.08);
+      this.leftLeg.kneePivot.rotation.set(-0.95, 0, 0);
+      this.rightLeg.hipPivot.rotation.set(0.55, 0, 0.08);
+      this.rightLeg.kneePivot.rotation.set(-0.95, 0, 0);
+      this.leftArm.shoulderPivot.rotation.set(0.85 + struggle, 0.35, -0.25);
+      this.leftArm.elbowPivot.rotation.set(0.8, 0, 0);
+      this.rightArm.shoulderPivot.rotation.set(0.85 - struggle, -0.35, 0.25);
+      this.rightArm.elbowPivot.rotation.set(0.8, 0, 0);
+      return;
+    }
+
+    const stride = Math.min(1, planarSpeed / 5.4);
+    const legSwing = Math.sin(bobPhase * 0.5) * 0.52 * stride;
+    const armSwing = Math.sin(bobPhase * 0.5) * 0.32 * stride;
+    const leftLift = Math.max(0, Math.cos(bobPhase * 0.5)) * 0.44 * stride;
+    const rightLift = Math.max(0, -Math.cos(bobPhase * 0.5)) * 0.44 * stride;
+
+    const crouchHipBend = crouchAmount * 0.72;
+    const crouchKneeBend = crouchAmount * 1.12;
+
+    this.bodyPivot.position.set(0, -crouchAmount * 0.44, 0);
+    this.bodyPivot.rotation.set(0, 0, 0);
+    this.hipsGroup.position.set(0, 0.85, 0);
+    this.torsoGroup.rotation.set(crouchAmount * 0.14 + stride * 0.06, 0, 0);
+    this.headGroup.rotation.set(
+      Math.max(-0.55, Math.min(0.55, pitch * 0.65)),
+      0,
+      0
+    );
+
+    this.leftLeg.hipPivot.rotation.set(crouchHipBend + legSwing, 0, -0.03);
+    this.leftLeg.kneePivot.rotation.set(-(crouchKneeBend + leftLift), 0, 0);
+    this.leftLeg.anklePivot.rotation.set(
+      (crouchKneeBend - crouchHipBend) * 0.4,
+      0,
+      0
+    );
+
+    this.rightLeg.hipPivot.rotation.set(crouchHipBend - legSwing, 0, 0.03);
+    this.rightLeg.kneePivot.rotation.set(-(crouchKneeBend + rightLift), 0, 0);
+    this.rightLeg.anklePivot.rotation.set(
+      (crouchKneeBend - crouchHipBend) * 0.4,
+      0,
+      0
+    );
+
+    this.leftArm.shoulderPivot.rotation.order = 'YXZ';
+    this.leftArm.shoulderPivot.rotation.set(
+      0.14 - armSwing + crouchAmount * 0.18,
+      0.08,
+      -0.12
+    );
+    this.leftArm.elbowPivot.rotation.set(0.32 + stride * 0.16, 0, 0);
+    this.leftArm.setGripPose('relaxed');
+
+    this.rightArm.shoulderPivot.rotation.order = 'YXZ';
+    if (flashlightOn) {
+      this.rightArm.shoulderPivot.rotation.set(
+        0.72 + Math.max(-0.45, Math.min(0.45, pitch * 0.65)),
+        -0.08,
+        0.1
+      );
+      this.rightArm.elbowPivot.rotation.set(0.52, 0.12, -0.08);
+      this.rightArm.setGripPose('flashlight');
+    } else {
+      this.rightArm.shoulderPivot.rotation.set(
+        0.14 + armSwing + crouchAmount * 0.18,
+        -0.08,
+        0.12
+      );
+      this.rightArm.elbowPivot.rotation.set(0.32 + stride * 0.16, 0, 0);
+      this.rightArm.setGripPose('relaxed');
+    }
+  }
+
+  disposeFromScene(scene: THREE.Scene): void {
+    scene.remove(this.root);
+  }
 }

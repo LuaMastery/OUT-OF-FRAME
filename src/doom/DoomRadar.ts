@@ -22,6 +22,15 @@ export interface ProbableEquipmentSignal {
   signalStrength: number;
 }
 
+export interface RadarAllyBlip {
+  id: string;
+  name: string;
+  x: number;
+  z: number;
+  yaw: number;
+  trapped: boolean;
+}
+
 export interface RadarRenderState {
   playerX: number;
   playerZ: number;
@@ -30,6 +39,7 @@ export interface RadarRenderState {
   mode: RadarScaleMode;
   exploredMask: Uint8Array;
   signals: readonly ProbableEquipmentSignal[];
+  allies?: readonly RadarAllyBlip[];
 }
 
 export const RADAR_CANVAS_SIZE = 203; // 29 células × 7 px = 203 px exatos!
@@ -269,6 +279,23 @@ export function renderRadarMinimapCanvas(
     }
   }
 
+  // 3.5. ALIADOS CONECTADOS NO MULTIPLAYER CO-OP (Diamantes ciano ou alerta rubro se presos na teia!)
+  if (state.allies && state.allies.length > 0) {
+    for (const ally of state.allies) {
+      const ax = worldToPxX(ally.x);
+      const ay = worldToPxY(ally.z);
+      if (ax < -4 || ax > S + 4 || ay < -4 || ay > S + 4) continue;
+      const ix = Math.round(ax);
+      const iy = Math.round(ay);
+      ctx.fillStyle = '#04120d';
+      ctx.fillRect(ix - 3, iy - 3, 7, 7);
+      ctx.fillStyle = ally.trapped ? '#ff5959' : '#3ee6ff';
+      ctx.fillRect(ix - 2, iy - 2, 5, 5);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(ix - 1, iy - 1, 3, 3);
+    }
+  }
+
   // 4. CONE DIRECIONAL DE VISÃO + PONTO EXATO DE LOCALIZAÇÃO DO JOGADOR
   // Convenção Three.js YXZ da câmera: frente no plano XZ = (-sin(yaw), -cos(yaw))
   const fwdX = -Math.sin(state.playerYaw);
@@ -449,7 +476,8 @@ export class DoomRadar {
     playerYaw: number,
     elapsedSec: number,
     signals: readonly ProbableEquipmentSignal[],
-    suppressHud: boolean
+    suppressHud: boolean,
+    allies?: readonly RadarAllyBlip[]
   ): void {
     this.markExploredAtWorld(playerX, playerZ);
     this.syncVisibility(suppressHud);
@@ -490,6 +518,7 @@ export class DoomRadar {
       mode: this.scaleMode,
       exploredMask: this.exploredMask,
       signals,
+      allies,
     });
   }
 

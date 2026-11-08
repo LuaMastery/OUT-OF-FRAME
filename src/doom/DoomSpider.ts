@@ -309,6 +309,125 @@ export class DoomSpider {
   }
 
   /**
+   * Snapshot compacto do estado da Aranha Gigante para replicação multiplayer pelo Host.
+   */
+  getNetworkSnapshot(): {
+    x: number;
+    y: number;
+    z: number;
+    upX: number;
+    upY: number;
+    upZ: number;
+    fwdX: number;
+    fwdY: number;
+    fwdZ: number;
+    state: SpiderBehaviorState;
+    surfaceMode: SpiderSurfaceMode;
+  } {
+    return {
+      x: this.bodyPos.x,
+      y: this.bodyPos.y,
+      z: this.bodyPos.z,
+      upX: this.currentUp.x,
+      upY: this.currentUp.y,
+      upZ: this.currentUp.z,
+      fwdX: this.currentForward.x,
+      fwdY: this.currentForward.y,
+      fwdZ: this.currentForward.z,
+      state: this.state,
+      surfaceMode: this.surfaceMode,
+    };
+  }
+
+  /**
+   * Aplica suavemente o estado da Aranha recebido do Host nos clientes conectados,
+   * mantendo animação completa de 8 patas FABRIK IK e detecção de alcance ao jogador local!
+   */
+  applyRemoteNetworkState(
+    dt: number,
+    elapsed: number,
+    pkt: {
+      x: number;
+      y: number;
+      z: number;
+      upX: number;
+      upY: number;
+      upZ: number;
+      fwdX: number;
+      fwdY: number;
+      fwdZ: number;
+      state: string;
+      surfaceMode: 'FLOOR' | 'WALL' | 'CEILING';
+    },
+    localPlayerPos: THREE.Vector3,
+    localPlayerYaw: number,
+    onCatchLocalPlayer: () => void
+  ): { cameraShakeAmount: number; playerDistance: number } {
+    if (this.state === 'CINEMATIC_SEQUENCE') {
+      return { cameraShakeAmount: 0, playerDistance: 0 };
+    }
+
+    const blend = 1 - Math.exp(-14 * dt);
+    const targetPos = this.tmpB.set(pkt.x, pkt.y, pkt.z);
+    if (this.bodyPos.distanceToSquared(targetPos) > 36) {
+      this.bodyPos.copy(targetPos);
+      this.prevBodyPos.copy(targetPos);
+      this.snapAllFeetAroundBody();
+    } else {
+      this.bodyPos.lerp(targetPos, blend);
+    }
+
+    this.targetUp.set(pkt.upX, pkt.upY, pkt.upZ).normalize();
+    this.currentUp.lerp(this.targetUp, blend).normalize();
+    this.tmpC.set(pkt.fwdX, pkt.fwdY, pkt.fwdZ);
+    if (this.tmpC.lengthSq() > 1e-4) {
+      this.currentForward.lerp(this.tmpC.normalize(), blend).normalize();
+    }
+
+    if (pkt.state !== 'CINEMATIC_SEQUENCE') {
+      this.state = pkt.state as SpiderBehaviorState;
+    }
+    this.surfaceMode = pkt.surfaceMode;
+
+    this.tmpA
+      .subVectors(this.bodyPos, this.prevBodyPos)
+      .multiplyScalar(1 / Math.max(0.0005, dt));
+    this.smoothVel.lerp(this.tmpA, Math.min(1, dt * 16));
+    this.prevBodyPos.copy(this.bodyPos);
+
+    const distToPlayer = Math.hypot(
+      localPlayerPos.x - this.bodyPos.x,
+      localPlayerPos.z - this.bodyPos.z
+    );
+    const stereoPan = this.computeStereoPan(localPlayerPos, localPlayerYaw);
+
+    const targetRage = this.isChasingOrAlert ? 1.0 : 0.0;
+    this.chitinMat.uniforms.uRageGlow.value +=
+      (targetRage - this.chitinMat.uniforms.uRageGlow.value) *
+      Math.min(1, dt * 6);
+
+    this.updateBodyAndLimbsIK(
+      dt,
+      elapsed,
+      localPlayerPos,
+      stereoPan,
+      distToPlayer
+    );
+
+    let cameraShakeAmount = 0;
+    if (this.isChasingOrAlert && distToPlayer < 10.0) {
+      cameraShakeAmount = (1 - distToPlayer / 10.0) * 0.026;
+    }
+
+    if (this.state === 'FRENZY_CHASE' && distToPlayer < 1.55) {
+      onCatchLocalPlayer();
+      return { cameraShakeAmount: 0.12, playerDistance: distToPlayer };
+    }
+
+    return { cameraShakeAmount, playerDistance: distToPlayer };
+  }
+
+  /**
    * Garante que a aranha saia de qualquer estado cinemático caso ainda esteja nele.
    */
   ensureExitedCinematic(): void {

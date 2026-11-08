@@ -1,5 +1,12 @@
 import { SoundEngine } from '../engine/audio/SoundEngine';
+import { MultiplayerMenuModal } from '../multiplayer/MultiplayerMenuModal';
+import {
+  ActiveRoomSession,
+  normalizeRoomCode,
+} from '../multiplayer/MultiplayerService';
 import { CursorProximityFX } from './CursorProximityFX';
+
+export const BINARY_MENU_ITEMS = ['INICIAR', 'MULTIPLAYER', 'SAIR'] as const;
 
 export type TerminalPhase =
   | 'idle'
@@ -12,10 +19,10 @@ export type TerminalPhase =
 export interface TerminalBootOptions {
   sound: SoundEngine;
   /**
-   * Acionado sincronamente dentro do gesto do usuário ao iniciar pela interface binária,
+   * Acionado ao iniciar pela interface binária (Solo ou conectado a uma Sala Multiplayer),
    * abrindo o ambiente 3D sem modais extras.
    */
-  onLaunchImmediateGesture: () => void;
+  onLaunchImmediateGesture: (multiplayerSession?: ActiveRoomSession) => void;
 }
 
 type DesktopItemId = 'out_of_frame' | 'terminal' | 'notas' | 'desligar';
@@ -97,6 +104,7 @@ export class TerminalBootController {
   private clockEl!: HTMLElement;
   private zoomLayerEl!: HTMLElement;
   private proximityFx: CursorProximityFX | null = null;
+  private multiplayerModal: MultiplayerMenuModal | null = null;
 
   private hiddenInputEl!: HTMLInputElement;
   private typedSpanEl: HTMLElement | null = null;
@@ -222,9 +230,25 @@ export class TerminalBootController {
 
     this.proximityFx = new CursorProximityFX(
       this.rootEl,
-      () => this.phase === 'desktop' || this.phase === 'binary_interface',
-      () => (this.phase === 'binary_interface' ? this.menuHitboxes : [])
+      () =>
+        this.phase === 'desktop' ||
+        (this.phase === 'binary_interface' && !this.multiplayerModal?.visible),
+      () =>
+        this.phase === 'binary_interface' && !this.multiplayerModal?.visible
+          ? this.menuHitboxes
+          : []
     );
+
+    this.multiplayerModal = new MultiplayerMenuModal(this.rootEl, {
+      sound: this.sound,
+      onJoinSuccess: (session) => {
+        this.destroy(false);
+        this.options.onLaunchImmediateGesture(session);
+      },
+      onClose: () => {
+        // Permanece na interface binária de out_of_frame.exe
+      },
+    });
   }
 
   private renderDesktopIcons(): void {
@@ -425,6 +449,9 @@ export class TerminalBootController {
 
     // Teclado global para navegar na Área de Trabalho ou na Interface Binária
     this.boundKeyCapture = (e: KeyboardEvent) => {
+      if (this.multiplayerModal?.visible) {
+        return;
+      }
       this.sound.unlock();
 
       if (this.phase === 'desktop') {
@@ -501,13 +528,14 @@ export class TerminalBootController {
           this.activateDesktopItem(DESKTOP_ITEMS[this.selectedIconIndex].id);
         }
       } else if (this.phase === 'binary_interface') {
+        const count = BINARY_MENU_ITEMS.length;
         if (e.key === 'ArrowUp' || e.code === 'KeyW') {
           e.preventDefault();
-          this.menuIndex = (this.menuIndex + 1) % 2;
+          this.menuIndex = (this.menuIndex - 1 + count) % count;
           this.sound.menuMove();
         } else if (e.key === 'ArrowDown' || e.code === 'KeyS') {
           e.preventDefault();
-          this.menuIndex = (this.menuIndex + 1) % 2;
+          this.menuIndex = (this.menuIndex + 1) % count;
           this.sound.menuMove();
         } else if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
@@ -1190,6 +1218,14 @@ export class TerminalBootController {
               if (this.phase !== 'desktop') return;
 
               this.phase = 'program_starting';
+              try {
+                const params = new URLSearchParams(window.location.search);
+                if (normalizeRoomCode(params.get('room') || '').length >= 4) {
+                  this.menuIndex = 1; // Pré-seleciona MULTIPLAYER se abriu por link de convite!
+                }
+              } catch {
+                // Ignorar
+              }
               this.setupCanvasMetrics();
               this.rebuildBinaryBlueprint(false);
               this.canvasEl.classList.add('active');
@@ -1270,7 +1306,7 @@ export class TerminalBootController {
     const rows = this.gridRows;
 
     const boxW = Math.min(58, cols - 6);
-    const boxH = 16;
+    const boxH = 18;
     const left = Math.floor((cols - boxW) * 0.5);
     const top = Math.floor((rows - boxH) * 0.5);
     this.boxTop = top;
@@ -1331,10 +1367,15 @@ export class TerminalBootController {
       devLine
     );
 
-    const opt0 = 'INICIAR';
-    const opt1 = 'SAIR';
-    writeText(Math.floor((cols - opt0.length) * 0.5), top + 8, opt0, true);
-    writeText(Math.floor((cols - opt1.length) * 0.5), top + 10, opt1, true);
+    for (let idx = 0; idx < BINARY_MENU_ITEMS.length; idx++) {
+      const opt = BINARY_MENU_ITEMS[idx];
+      writeText(
+        Math.floor((cols - opt.length) * 0.5),
+        top + 8 + idx * 2,
+        opt,
+        true
+      );
+    }
 
     const hint = '[SETAS] MOVER   [ENTER] CONFIRMAR';
     writeText(Math.floor((cols - hint.length) * 0.5), bottom - 2, hint);
@@ -1469,7 +1510,7 @@ export class TerminalBootController {
   }
 
   private drawAssembledMenuItems(): void {
-    const items = ['INICIAR', 'SAIR'];
+    const items = BINARY_MENU_ITEMS;
     const baseRow = this.boxTop + 8;
     this.menuHitboxes = [];
 
@@ -1499,6 +1540,7 @@ export class TerminalBootController {
   }
 
   private handleCanvasClick(clientX: number, clientY: number): void {
+    if (this.multiplayerModal?.visible) return;
     for (const box of this.menuHitboxes) {
       if (
         clientX >= box.x &&
@@ -1515,9 +1557,20 @@ export class TerminalBootController {
 
   private executeMenuSelection(): void {
     if (this.menuIndex === 0) {
-      // Mantém o SoundEngine vivo para fazer o crossfade contínuo com o Labirinto DOOM!
+      // INICIAR (Modo Solo) — mantém o SoundEngine vivo para crossfade contínuo com o Labirinto DOOM!
       this.destroy(false);
       this.options.onLaunchImmediateGesture();
+    } else if (this.menuIndex === 1) {
+      // MULTIPLAYER — abre a Central de Salas, Servidores, Número da Sala e Senha!
+      let urlRoom = '';
+      try {
+        const params = new URLSearchParams(window.location.search);
+        urlRoom = normalizeRoomCode(params.get('room') || '');
+      } catch {
+        urlRoom = '';
+      }
+      this.sound.windowOpen();
+      this.multiplayerModal?.open(urlRoom || undefined);
     } else {
       // SAIR retorna para a Área de Trabalho versão Terminal
       this.returnToDesktopFromBinary();
@@ -1527,6 +1580,8 @@ export class TerminalBootController {
   destroy(disposeAudio = false): void {
     this.clearTimers();
     this.clearZoomLayer();
+    this.multiplayerModal?.destroy();
+    this.multiplayerModal = null;
     this.proximityFx?.destroy();
     this.proximityFx = null;
     if (this.clockIntervalId) window.clearInterval(this.clockIntervalId);

@@ -11,6 +11,8 @@ import {
   resolveCylinderWorldCollisions,
   StaticColliderBox,
 } from '../engine/physics/SpatialSweep';
+import { DoomMultiplayerCoordinator } from '../multiplayer/DoomMultiplayerCoordinator';
+import { ActiveRoomSession } from '../multiplayer/MultiplayerService';
 import { DoomAstronaut } from './DoomAstronaut';
 import { DoomFlashlight } from './DoomFlashlight';
 import { DoomInventory } from './DoomInventory';
@@ -60,6 +62,7 @@ export class DoomGameApp {
   private readonly worldItems: DoomWorldItems;
   private readonly webManager: DoomSpiderWebManager;
   private readonly spider: DoomSpider;
+  private multiplayer: DoomMultiplayerCoordinator | null = null;
 
   private colliders: StaticColliderBox[] = [];
   private lights: DoomLightSource[] = [];
@@ -214,6 +217,7 @@ export class DoomGameApp {
       onUseFlare: () => {
         this.flashlight.triggerQuickItemAction('flare');
         this.worldItems.spawnLitFlare(this.position, this.yaw);
+        this.multiplayer?.notifyFlareSpawned(this.position, this.yaw);
         return true;
       },
       onUseKnife: () => {
@@ -231,11 +235,15 @@ export class DoomGameApp {
           lookForward,
           this.sound
         );
+        const rescuedAlly =
+          this.multiplayer?.tryRescueNearbyTrappedAlly(this.position) ?? false;
         if (res.cutActiveSnare) {
           this.inventory.setAbductionScreenFX(0, 0, 0, 0);
           this.syncInventoryVitals();
         }
-        return { cutWeb: res.cutActiveSnare || res.cutNearbyTrap };
+        return {
+          cutWeb: res.cutActiveSnare || res.cutNearbyTrap || rescuedAlly,
+        };
       },
       onUseKey: () => {
         this.flashlight.triggerQuickItemAction('key');
@@ -272,7 +280,8 @@ export class DoomGameApp {
     });
   }
 
-  engageFromTerminal(): void {
+  engageFromTerminal(multiplayerSession?: ActiveRoomSession): void {
+    this.attachMultiplayerSession(multiplayerSession);
     this.engaged = true;
     this.onResize();
     this.sound.unlock();
@@ -284,6 +293,47 @@ export class DoomGameApp {
       this.camera,
       this.flashlight.viewScene,
       this.flashlight.viewCamera
+    );
+  }
+
+  private attachMultiplayerSession(session?: ActiveRoomSession): void {
+    if (this.multiplayer) {
+      this.multiplayer.destroy();
+      this.multiplayer = null;
+    }
+    if (!session) return;
+
+    this.multiplayer = new DoomMultiplayerCoordinator(
+      session,
+      this.scene,
+      this.sharedUniforms,
+      this.viewportEl,
+      this.sound,
+      {
+        onReceiveFlare: (pos, yaw) => {
+          this.worldItems.spawnLitFlare(pos, yaw);
+        },
+        onRescuedByAlly: () => {
+          const lookForward = new THREE.Vector3(
+            -Math.sin(this.yaw),
+            0,
+            -Math.cos(this.yaw)
+          );
+          this.webManager.slashWebWithKnife(
+            this.position,
+            lookForward,
+            this.sound
+          );
+          this.inventory.setAbductionScreenFX(0, 0, 0, 0);
+          this.syncInventoryVitals();
+        },
+        onNotifyHud: (text) => {
+          this.multiplayer?.pushHudNotice(text);
+        },
+        onLeaveRoomRequested: () => {
+          this.finalizePermanentDeath();
+        },
+      }
     );
   }
 
@@ -362,6 +412,11 @@ export class DoomGameApp {
       (e) => {
         if (!this.engaged || this.disposed) return;
 
+        // Se estiver digitando mensagem de rádio multiplayer, não captura teclas de movimento!
+        if (this.multiplayer?.isChatTyping) {
+          return;
+        }
+
         if (shouldPreventBrowserShortcut(e)) {
           e.preventDefault();
           if (!this.inventory.open) {
@@ -430,6 +485,26 @@ export class DoomGameApp {
         // Tecla [Q]: aciona imediatamente o atalho destacado na HUB inferior
         if (e.code === 'KeyQ' && !e.repeat) {
           this.inventory.useSelectedQuickSlot();
+          return;
+        }
+
+        // Atalhos Multiplayer Co-op: [T] Rádio / Chat rápido e [V] Sinalizador 3D de posição!
+        if (this.multiplayer && e.code === 'KeyT' && !e.repeat) {
+          e.preventDefault();
+          this.keys.clear();
+          this.multiplayer.openRadioChatInput();
+          return;
+        }
+        if (this.multiplayer && e.code === 'KeyV' && !e.repeat) {
+          const camDir = new THREE.Vector3(0, 0, -1).applyQuaternion(
+            this.camera.quaternion
+          );
+          this.multiplayer.emitTacticalPing(
+            this.camera.position,
+            camDir,
+            this.spider.position,
+            this.elapsed
+          );
           return;
         }
 
@@ -1101,6 +1176,28 @@ export class DoomGameApp {
       this.interactQueued = false;
       this.struggleQueued = false;
       this.updateHorrorSequence(dt);
+      this.multiplayer?.update(
+        dt,
+        this.elapsed,
+        this.camera,
+        {
+          pos: this.position,
+          yaw: this.yaw,
+          pitch: this.pitch,
+          speed: 0,
+          bobPhase: this.bobPhase,
+          crouch: this.crouchAmount,
+          flashlightOn: false,
+          flashDir: this.sharedUniforms.uFlashlightDir.value,
+          health: this.playerHealth,
+          bleeding: this.playerBleeding,
+          ensnared: true,
+          inSequence: true,
+          dead: this.activeSequence === 'PERMADEATH_EXECUTION',
+        },
+        this.spider.getNetworkSnapshot(),
+        true
+      );
       this.updateFlickeringLightsAndAudio();
       return;
     }
@@ -1271,20 +1368,77 @@ export class DoomGameApp {
       this.lanternBattery
     );
 
-    const spiderOut = this.spider.update(
-      dt,
-      this.elapsed,
-      this.position,
-      this.yaw,
-      sprinting,
-      isCrouching,
-      fl.beamIntensity > 0.05,
-      this.sharedUniforms.uFlashlightDir.value,
-      this.worldItems.getActiveFlares(),
-      () => {
-        this.triggerSpiderCatch();
+    let spiderOut: { cameraShakeAmount: number; playerDistance: number };
+    if (this.multiplayer && !this.multiplayer.isHost) {
+      const remotePkt = this.multiplayer.consumeLatestRemoteSpiderPacket();
+      if (remotePkt) {
+        spiderOut = this.spider.applyRemoteNetworkState(
+          dt,
+          this.elapsed,
+          remotePkt,
+          this.position,
+          this.yaw,
+          () => {
+            this.triggerSpiderCatch();
+          }
+        );
+      } else {
+        spiderOut = this.spider.update(
+          dt,
+          this.elapsed,
+          this.position,
+          this.yaw,
+          sprinting,
+          isCrouching,
+          fl.beamIntensity > 0.05,
+          this.sharedUniforms.uFlashlightDir.value,
+          this.worldItems.getActiveFlares(),
+          () => {
+            this.triggerSpiderCatch();
+          }
+        );
       }
-    );
+    } else if (this.multiplayer && this.multiplayer.isHost) {
+      const chosen = this.multiplayer.pickSpiderTargetPlayer(
+        this.position,
+        this.yaw,
+        sprinting,
+        isCrouching,
+        fl.beamIntensity > 0.05,
+        this.spider.position
+      );
+      spiderOut = this.spider.update(
+        dt,
+        this.elapsed,
+        chosen.targetPos,
+        chosen.targetYaw,
+        chosen.sprinting,
+        chosen.crouching,
+        chosen.flashlightOn,
+        this.sharedUniforms.uFlashlightDir.value,
+        this.worldItems.getActiveFlares(),
+        () => {
+          if (chosen.targetingLocal) {
+            this.triggerSpiderCatch();
+          }
+        }
+      );
+    } else {
+      spiderOut = this.spider.update(
+        dt,
+        this.elapsed,
+        this.position,
+        this.yaw,
+        sprinting,
+        isCrouching,
+        fl.beamIntensity > 0.05,
+        this.sharedUniforms.uFlashlightDir.value,
+        this.worldItems.getActiveFlares(),
+        () => {
+          this.triggerSpiderCatch();
+        }
+      );
+    }
 
     if (this.activeSequence !== 'NONE') {
       this.radar.update(
@@ -1318,6 +1472,10 @@ export class DoomGameApp {
 
     this.syncCamera(bobOffset);
 
+    if (interactPressed && this.multiplayer) {
+      this.multiplayer.tryRescueNearbyTrappedAlly(this.position);
+    }
+
     const camForward = new THREE.Vector3(0, 0, -1).applyQuaternion(
       this.camera.quaternion
     );
@@ -1345,6 +1503,30 @@ export class DoomGameApp {
       this.yaw,
       this.elapsed,
       this.worldItems.getUncollectedEquipmentSignals(),
+      !this.engaged || this.inventory.open || this.inventory.gameOverVisible,
+      this.multiplayer?.getRadarAllyBlips()
+    );
+
+    this.multiplayer?.update(
+      dt,
+      this.elapsed,
+      this.camera,
+      {
+        pos: this.position,
+        yaw: this.yaw,
+        pitch: this.pitch,
+        speed: planarSpeed,
+        bobPhase: this.bobPhase,
+        crouch: this.crouchAmount,
+        flashlightOn: fl.beamIntensity > 0.05,
+        flashDir: this.sharedUniforms.uFlashlightDir.value,
+        health: this.playerHealth,
+        bleeding: this.playerBleeding,
+        ensnared: this.webManager.isPlayerEnsnared,
+        inSequence: false,
+        dead: false,
+      },
+      this.spider.getNetworkSnapshot(),
       !this.engaged || this.inventory.open || this.inventory.gameOverVisible
     );
 
@@ -1587,6 +1769,8 @@ export class DoomGameApp {
     cancelAnimationFrame(this.rafId);
     this.abortCtrl.abort();
     unlockSystemKeyboardKeys();
+    this.multiplayer?.destroy();
+    this.multiplayer = null;
     this.radar.destroy();
     this.inventory.destroy();
     this.compositor.dispose();

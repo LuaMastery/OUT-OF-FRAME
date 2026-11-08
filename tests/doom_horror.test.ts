@@ -37,6 +37,13 @@ import { DoomSpiderWebManager } from '../src/doom/DoomSpiderWebs';
 import { createDoomTextures } from '../src/doom/DoomTextures';
 import { DoomWorldItems } from '../src/doom/DoomWorldItems';
 import { SoundEngine } from '../src/engine/audio/SoundEngine';
+import {
+  clearLocalMirrorRoomsForTests,
+  formatRoomCodeDisplay,
+  MultiplayerLobbyService,
+  normalizeRoomCode,
+} from '../src/multiplayer/MultiplayerService';
+import { BINARY_MENU_ITEMS } from '../src/terminal/TerminalBoot';
 
 describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', () => {
   it('mantém correspondência exata entre células da grade e coordenadas do mundo', () => {
@@ -1424,5 +1431,149 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
     }
 
     expect(cumulativeTravel).toBeGreaterThan(14.0);
+  });
+
+  it('expõe a opção MULTIPLAYER no menu principal e suporta salas públicas, privadas com senha, salas ocultas da lista e entrada por número da sala', async () => {
+    expect(BINARY_MENU_ITEMS).toEqual(['INICIAR', 'MULTIPLAYER', 'SAIR']);
+
+    expect(normalizeRoomCode('#482-910')).toBe('482910');
+    expect(normalizeRoomCode('https://out-of-frame-tan.vercel.app/?room=739-104')).toBe(
+      '739104'
+    );
+    expect(formatRoomCodeDisplay('482910')).toBe('482-910');
+
+    clearLocalMirrorRoomsForTests();
+    const lobby = new MultiplayerLobbyService({ forceLocalOnly: true });
+
+    // 1. Sala Pública Aberta (aparece na lista pública, entra direto)
+    const pubOpen = await lobby.createRoom(
+      { roomName: 'Servidor Público Alfa', isListed: true, maxPlayers: 4 },
+      { id: 'host-a', name: 'Rhuan' }
+    );
+    expect(pubOpen.roomCode).toHaveLength(6);
+    expect(pubOpen.isListed).toBe(true);
+    expect(pubOpen.hasPassword).toBe(false);
+
+    // 2. Sala Pública com Senha (aparece na lista pública com cadeado, exige senha)
+    const pubLocked = await lobby.createRoom(
+      {
+        roomName: 'Servidor Público Com Senha',
+        isListed: true,
+        password: '4321',
+        maxPlayers: 3,
+      },
+      { id: 'host-b', name: 'Carla' }
+    );
+    expect(pubLocked.isListed).toBe(true);
+    expect(pubLocked.hasPassword).toBe(true);
+
+    // 3. Sala Oculta com Senha (NÃO aparece na lista pública — apenas pelo Número da Sala + Senha!)
+    const hiddenLocked = await lobby.createRoom(
+      {
+        roomName: 'Esquadrão Secreto',
+        isListed: false,
+        password: 'omega',
+        maxPlayers: 2,
+      },
+      { id: 'host-c', name: 'Vitor' }
+    );
+    expect(hiddenLocked.isListed).toBe(false);
+    expect(hiddenLocked.hasPassword).toBe(true);
+
+    // Verifica que apenas as salas marcadas para listagem aparecem na aba pública
+    const publicList = await lobby.listPublicRooms();
+    const listedCodes = publicList.map((r) => r.roomCode);
+    expect(listedCodes).toContain(pubOpen.roomCode);
+    expect(listedCodes).toContain(pubLocked.roomCode);
+    expect(listedCodes).not.toContain(hiddenLocked.roomCode);
+
+    // Entrada direta em sala pública aberta funciona imediatamente
+    const joinOpen = await lobby.joinRoom(pubOpen.roomCode, undefined, {
+      id: 'guest-1',
+      name: 'Lucas',
+    });
+    expect(joinOpen.ok).toBe(true);
+    expect(joinOpen.session?.playerCount).toBe(2);
+
+    // Entrada pelo Número da Sala em sala oculta com senha:
+    // Passo 1: inspeciona pelo número -> encontra a sala e detecta que exige senha!
+    const inspectedHidden = await lobby.inspectRoomByCode(
+      formatRoomCodeDisplay(hiddenLocked.roomCode)
+    );
+    expect(inspectedHidden.found).toBe(true);
+    expect(inspectedHidden.isListed).toBe(false);
+    expect(inspectedHidden.hasPassword).toBe(true);
+
+    // Passo 2: tentar sem senha solicita senha; senha incorreta bloqueia; senha certa entra com sucesso!
+    const missingPw = await lobby.joinRoom(hiddenLocked.roomCode, '', {
+      id: 'guest-2',
+      name: 'Ana',
+    });
+    expect(missingPw.ok).toBe(false);
+    expect(missingPw.errorCode).toBe('PASSWORD_REQUIRED');
+
+    const wrongPw = await lobby.joinRoom(hiddenLocked.roomCode, 'errada', {
+      id: 'guest-2',
+      name: 'Ana',
+    });
+    expect(wrongPw.ok).toBe(false);
+    expect(wrongPw.errorCode).toBe('WRONG_PASSWORD');
+
+    const rightPw = await lobby.joinRoom(hiddenLocked.roomCode, 'omega', {
+      id: 'guest-2',
+      name: 'Ana',
+    });
+    expect(rightPw.ok).toBe(true);
+    expect(rightPw.session?.roomCode).toBe(hiddenLocked.roomCode);
+    expect(rightPw.session?.playerCount).toBe(2);
+
+    // Capacidade máxima respeitada (2/2 lotada para um 3º jogador)
+    const thirdTry = await lobby.joinRoom(hiddenLocked.roomCode, 'omega', {
+      id: 'guest-3',
+      name: 'Pedro',
+    });
+    expect(thirdTry.ok).toBe(false);
+    expect(thirdTry.errorCode).toBe('ROOM_FULL');
+  });
+
+  it('renderiza Astronautas aliados em 3ª pessoa completa e sincroniza estado de rede da Aranha Gigante', () => {
+    const scene = new THREE.Scene();
+    const shared = createDoomSharedUniforms();
+    const textures = createDoomTextures();
+    const { colliders } = buildDoomLabyrinth(scene, textures, shared);
+
+    const ally = new DoomAstronaut(scene, shared);
+    ally.updateThirdPersonAlly(
+      new THREE.Vector3(3, 0, -6),
+      Math.PI * 0.25,
+      -0.2,
+      1.8,
+      4.5,
+      0,
+      true,
+      false
+    );
+    expect(ally.isFirstPersonMode).toBe(false);
+
+    const mockSound = {
+      playSpiderFootstep: () => {},
+      playSpiderScream: () => {},
+      playSpiderWebSpin: () => {},
+    } as unknown as SoundEngine;
+    const webs = new DoomSpiderWebManager(scene, shared);
+    const hostSpider = new DoomSpider(scene, shared, colliders, webs, mockSound);
+    const guestSpider = new DoomSpider(scene, shared, colliders, webs, mockSound);
+
+    const snap = hostSpider.getNetworkSnapshot();
+    const guestOut = guestSpider.applyRemoteNetworkState(
+      1 / 60,
+      1.0,
+      snap,
+      new THREE.Vector3(25, 0, 25),
+      0,
+      () => {}
+    );
+    expect(guestOut.playerDistance).toBeGreaterThan(0);
+    expect(guestSpider.currentSurfaceMode).toBe(snap.surfaceMode);
   });
 });
