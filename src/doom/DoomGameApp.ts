@@ -4,6 +4,7 @@ import {
   resolveCylinderWorldCollisions,
   StaticColliderBox,
 } from '../engine/physics/SpatialSweep';
+import { DoomFlashlight } from './DoomFlashlight';
 import {
   buildDoomLabyrinth,
   DoomLightSource,
@@ -16,7 +17,8 @@ import {
 import { createDoomTextures } from './DoomTextures';
 
 /**
- * Aplicação 3D do Labirinto estilo DOOM Clássico integrada ao SoundEngine unificado.
+ * Aplicação 3D do Labirinto estilo DOOM Clássico integrada ao SoundEngine unificado
+ * e à lanterna 3D simples acionada pela tecla F.
  */
 export class DoomGameApp {
   private readonly canvas: HTMLCanvasElement;
@@ -25,6 +27,7 @@ export class DoomGameApp {
   private readonly camera: THREE.PerspectiveCamera;
   private readonly compositor: DoomRetroCompositor;
   private readonly sharedUniforms: DoomSharedUniforms;
+  private readonly flashlight: DoomFlashlight;
 
   private colliders: StaticColliderBox[] = [];
   private lights: DoomLightSource[] = [];
@@ -42,6 +45,7 @@ export class DoomGameApp {
   private readonly playerHeight = 1.8;
 
   private keys = new Set<string>();
+  private engaged = false;
   private pointerLocked = false;
   private isDragging = false;
   private lastMouseX = 0;
@@ -61,19 +65,18 @@ export class DoomGameApp {
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.setClearColor(0x000000, 1);
 
+    const aspect =
+      Math.max(1, window.innerWidth) / Math.max(1, window.innerHeight);
+
     this.scene = new THREE.Scene();
-    this.camera = new THREE.PerspectiveCamera(
-      74,
-      window.innerWidth / window.innerHeight,
-      0.12,
-      55
-    );
+    this.camera = new THREE.PerspectiveCamera(74, aspect, 0.12, 55);
 
     this.compositor = new DoomRetroCompositor(
       window.innerWidth,
       window.innerHeight
     );
     this.sharedUniforms = createDoomSharedUniforms();
+    this.flashlight = new DoomFlashlight(aspect);
 
     const textures = createDoomTextures();
     const maze = buildDoomLabyrinth(
@@ -94,11 +97,18 @@ export class DoomGameApp {
   }
 
   engageFromTerminal(): void {
+    this.engaged = true;
     this.onResize();
     this.sound.unlock();
     this.sound.enterDoomLabyrinth();
     this.tryPointerLock();
-    this.compositor.render(this.renderer, this.scene, this.camera);
+    this.compositor.render(
+      this.renderer,
+      this.scene,
+      this.camera,
+      this.flashlight.viewScene,
+      this.flashlight.viewCamera
+    );
   }
 
   private tryPointerLock(): void {
@@ -118,6 +128,14 @@ export class DoomGameApp {
     window.addEventListener('keydown', (e) => {
       this.keys.add(e.code);
       this.sound.unlock();
+
+      if (this.engaged && e.code === 'KeyF' && !e.repeat) {
+        const equipping = this.flashlight.toggle();
+        this.sound.playFlashlightMotion(equipping);
+        if (!equipping) {
+          this.sound.playFlashlightClick(false);
+        }
+      }
     });
 
     window.addEventListener('keyup', (e) => {
@@ -150,21 +168,27 @@ export class DoomGameApp {
     window.addEventListener('mousemove', (e) => {
       const sens = 0.0022;
       if (this.pointerLocked) {
-        this.yaw -= e.movementX * sens;
+        const dYaw = -e.movementX * sens;
+        const prevPitch = this.pitch;
+        this.yaw += dYaw;
         this.pitch = Math.max(
           -0.38,
           Math.min(0.38, this.pitch - e.movementY * sens * 0.7)
         );
+        this.flashlight.addLookImpulse(dYaw, this.pitch - prevPitch);
       } else if (this.isDragging) {
         const dx = e.clientX - this.lastMouseX;
         const dy = e.clientY - this.lastMouseY;
         this.lastMouseX = e.clientX;
         this.lastMouseY = e.clientY;
-        this.yaw -= dx * sens * 1.3;
+        const dYaw = -dx * sens * 1.3;
+        const prevPitch = this.pitch;
+        this.yaw += dYaw;
         this.pitch = Math.max(
           -0.38,
           Math.min(0.38, this.pitch - dy * sens * 0.8)
         );
+        this.flashlight.addLookImpulse(dYaw, this.pitch - prevPitch);
       }
     });
   }
@@ -172,8 +196,10 @@ export class DoomGameApp {
   private onResize(): void {
     const w = window.innerWidth;
     const h = window.innerHeight;
-    this.camera.aspect = Math.max(1, w) / Math.max(1, h);
+    const aspect = Math.max(1, w) / Math.max(1, h);
+    this.camera.aspect = aspect;
     this.camera.updateProjectionMatrix();
+    this.flashlight.setAspect(aspect);
     this.renderer.setSize(w, h);
     this.compositor.resize(w, h);
   }
@@ -184,7 +210,13 @@ export class DoomGameApp {
       const dt = Math.min(0.08, Math.max(0.0005, (now - this.lastRaf) / 1000));
       this.lastRaf = now;
       this.update(dt);
-      this.compositor.render(this.renderer, this.scene, this.camera);
+      this.compositor.render(
+        this.renderer,
+        this.scene,
+        this.camera,
+        this.flashlight.viewScene,
+        this.flashlight.viewCamera
+      );
       requestAnimationFrame(loop);
     };
     requestAnimationFrame(loop);
@@ -194,8 +226,16 @@ export class DoomGameApp {
     this.elapsed += dt;
 
     const turnSpeed = 2.35;
-    if (this.keys.has('ArrowLeft')) this.yaw += turnSpeed * dt;
-    if (this.keys.has('ArrowRight')) this.yaw -= turnSpeed * dt;
+    if (this.keys.has('ArrowLeft')) {
+      const dYaw = turnSpeed * dt;
+      this.yaw += dYaw;
+      this.flashlight.addLookImpulse(dYaw * 0.35, 0);
+    }
+    if (this.keys.has('ArrowRight')) {
+      const dYaw = -turnSpeed * dt;
+      this.yaw += dYaw;
+      this.flashlight.addLookImpulse(dYaw * 0.35, 0);
+    }
 
     const forward = new THREE.Vector3(
       -Math.sin(this.yaw),
@@ -255,7 +295,6 @@ export class DoomGameApp {
       const halfCycle = Math.floor(this.bobPhase / Math.PI);
       if (halfCycle !== this.lastBobHalfCycle) {
         this.lastBobHalfCycle = halfCycle;
-        // Ala Sul (z >= 4.5) é pavimentada em pedra rústica; Ala Norte é base metálica STARTAN
         const surface = this.position.z >= 4.5 ? 'stone' : 'tech';
         this.sound.playLabyrinthFootstep(
           halfCycle % 2 === 0,
@@ -269,6 +308,38 @@ export class DoomGameApp {
     }
 
     this.syncCamera(bobOffset);
+
+    // Atualiza modelagem/animação da lanterna (F) e projeta seu feixe no mundo 3D
+    const fl = this.flashlight.update(dt, this.bobPhase, planarSpeed, () => {
+      this.sound.playFlashlightClick(true);
+    });
+
+    this.sharedUniforms.uFlashlightIntensity.value = fl.beamIntensity;
+    if (fl.beamIntensity > 0.005) {
+      // Origem do feixe levemente à direita/abaixo da câmera (posição da mão)
+      const camRight = new THREE.Vector3(1, 0, 0).applyQuaternion(
+        this.camera.quaternion
+      );
+      const camUp = new THREE.Vector3(0, 1, 0).applyQuaternion(
+        this.camera.quaternion
+      );
+      this.sharedUniforms.uFlashlightPos.value
+        .copy(this.camera.position)
+        .addScaledVector(camRight, 0.18)
+        .addScaledVector(camUp, -0.14);
+
+      const beamEuler = new THREE.Euler(
+        this.pitch + fl.aimPitchOffset,
+        this.yaw + fl.aimYawOffset,
+        0,
+        'YXZ'
+      );
+      this.sharedUniforms.uFlashlightDir.value
+        .set(0, 0, -1)
+        .applyEuler(beamEuler)
+        .normalize();
+    }
+
     this.updateFlickeringLightsAndAudio();
   }
 

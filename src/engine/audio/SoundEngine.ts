@@ -952,6 +952,76 @@ export class SoundEngine {
     );
   }
 
+  /** Roçar rápido de empunhadura ao sacar ou guardar a lanterna (Tecla F) */
+  playFlashlightMotion(equipping: boolean): void {
+    if (
+      !this.isRunning() ||
+      !this.ctx ||
+      !this.worldDryBus ||
+      !this.reverbSend
+    ) {
+      return;
+    }
+    const now = this.ctx.currentTime;
+
+    this.triggerFilteredNoise(
+      this.worldDryBus,
+      now,
+      0.085,
+      equipping ? 680 : 480,
+      1.2,
+      0.075,
+      false,
+      this.reverbSend
+    );
+  }
+
+  /** Clique mecânico duplo do botão superior da lanterna (ligar / desligar) */
+  playFlashlightClick(turningOn: boolean): void {
+    if (
+      !this.isRunning() ||
+      !this.ctx ||
+      !this.worldDryBus ||
+      !this.reverbSend
+    ) {
+      return;
+    }
+    const now = this.ctx.currentTime;
+
+    // 1. Transiente metálico seco do interruptor
+    this.triggerFilteredNoise(
+      this.worldDryBus,
+      now,
+      0.014,
+      turningOn ? 3400 : 2500,
+      3.0,
+      0.13,
+      false,
+      this.reverbSend
+    );
+
+    // 2. Mola interna (dois pulsos curtos característicos de botão de lanterna)
+    const freqs = turningOn ? [520, 920] : [860, 440];
+    freqs.forEach((f, i) => {
+      if (!this.ctx || !this.worldDryBus || !this.reverbSend) return;
+      const t = now + i * 0.022;
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(f, t);
+      osc.frequency.exponentialRampToValueAtTime(f * 0.65, t + 0.024);
+
+      gain.gain.setValueAtTime(0.08, t);
+      gain.gain.exponentialRampToValueAtTime(0.0008, t + 0.028);
+
+      osc.connect(gain);
+      gain.connect(this.worldDryBus);
+      gain.connect(this.reverbSend);
+      osc.start(t);
+      osc.stop(t + 0.03);
+    });
+  }
+
   /**
    * Atualiza a espacialização estéreo do zumbido das luminárias LITE5 próximas
    * e dispara estalos elétricos suaves quando uma luminária pisca perto do jogador!

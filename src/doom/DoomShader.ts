@@ -6,6 +6,9 @@ export interface DoomSharedUniforms {
   uLightPositions: { value: THREE.Vector3[] };
   uLightIntensities: { value: number[] };
   uLightCount: { value: number };
+  uFlashlightPos: { value: THREE.Vector3 };
+  uFlashlightDir: { value: THREE.Vector3 };
+  uFlashlightIntensity: { value: number };
 }
 
 export function createDoomSharedUniforms(): DoomSharedUniforms {
@@ -19,6 +22,9 @@ export function createDoomSharedUniforms(): DoomSharedUniforms {
     uLightPositions: { value: positions },
     uLightIntensities: { value: intensities },
     uLightCount: { value: 0 },
+    uFlashlightPos: { value: new THREE.Vector3(0, 1.5, 0) },
+    uFlashlightDir: { value: new THREE.Vector3(0, 0, -1) },
+    uFlashlightIntensity: { value: 0 },
   };
 }
 
@@ -26,8 +32,8 @@ export function createDoomSharedUniforms(): DoomSharedUniforms {
  * Material GLSL fiel ao id Tech 1 (DOOM Clássico, 1993):
  * - Coordenadas UV em espaço do mundo (ladrilhos nunca esticam, rodapés sempre alinhados)
  * - "Fake Contrast" original do DOOM (paredes Norte/Sul +claras, Leste/Oeste -escuras)
- * - Diminuição de luz por distância quantizada em bandas discretas estilo tabela COLORMAP (32 níveis)
- * - Iluminação de setores/luminárias com suporte a cintilação clássica de corredor
+ * - Diminuição de luz por distância quantizada em bandas discretas estilo tabela COLORMAP
+ * - Suporte a cone de Lanterna (F) quantizado nas mesmas bandas COLORMAP
  */
 export function createDoomSurfaceMaterial(
   texture: THREE.Texture,
@@ -54,6 +60,9 @@ export function createDoomSurfaceMaterial(
       uLightPositions: shared.uLightPositions,
       uLightIntensities: shared.uLightIntensities,
       uLightCount: shared.uLightCount,
+      uFlashlightPos: shared.uFlashlightPos,
+      uFlashlightDir: shared.uFlashlightDir,
+      uFlashlightIntensity: shared.uFlashlightIntensity,
     },
     vertexShader: /* glsl */ `
       varying vec3 vWorldPos;
@@ -66,7 +75,6 @@ export function createDoomSurfaceMaterial(
         vWorldNormal = normalize(mat3(modelMatrix) * normal);
 
         vec4 viewPos = viewMatrix * worldPos;
-        // No DOOM clássico, a distância de atenuação usa profundidade perpendicular Z!
         vViewDist = abs(viewPos.z);
 
         gl_Position = projectionMatrix * viewPos;
@@ -83,6 +91,9 @@ export function createDoomSurfaceMaterial(
       uniform vec3 uLightPositions[MAX_LIGHTS];
       uniform float uLightIntensities[MAX_LIGHTS];
       uniform int uLightCount;
+      uniform vec3 uFlashlightPos;
+      uniform vec3 uFlashlightDir;
+      uniform float uFlashlightIntensity;
 
       varying vec3 vWorldPos;
       varying vec3 vWorldNormal;
@@ -105,14 +116,13 @@ export function createDoomSurfaceMaterial(
         vec4 texel = texture2D(uMap, uv);
 
         if (uFullBright > 0.5) {
-          // Luminárias embutidas LITE5: mantêm brilho alto mas ainda escurecem levemente muito longe
           float farDim = clamp(1.15 - vViewDist * 0.028, 0.28, 1.0);
           float q = floor(farDim * 16.0) / 16.0;
           gl_FragColor = vec4(texel.rgb * q, 1.0);
           return;
         }
 
-        // 1. Luz base do setor + contribuição das luminárias de parede do labirinto
+        // 1. Luz base do setor + luminárias de parede
         float sectorLight = uBaseLight;
         for (int i = 0; i < MAX_LIGHTS; i++) {
           if (i >= uLightCount) break;
@@ -122,8 +132,7 @@ export function createDoomSurfaceMaterial(
         }
         sectorLight = clamp(sectorLight, 0.08, 1.0);
 
-        // 2. "Fake Contrast" autêntico do id Tech 1:
-        // Paredes Norte/Sul ganham +contraste, Leste/Oeste ficam levemente mais escuras
+        // 2. "Fake Contrast" autêntico do id Tech 1
         float fakeContrast = 0.0;
         if (an.z > 0.7) {
           fakeContrast = 0.075;
@@ -133,21 +142,51 @@ export function createDoomSurfaceMaterial(
           fakeContrast = -0.05;
         }
 
-        // 3. Curva de profundidade "Light Diminishing" do DOOM:
-        // Perto do jogador há um reforço de visibilidade; ao longe cai para escuridão total
+        // 3. Curva de profundidade "Light Diminishing" do DOOM
         float nearBoost = clamp((5.2 - vViewDist) * 0.065, 0.0, 0.28);
         float distFalloff = clamp(1.08 - vViewDist * 0.048, 0.0, 1.0);
 
-        float rawShade = (sectorLight * distFalloff) + nearBoost + fakeContrast;
+        // 4. Contribuição do feixe da Lanterna (Tecla F)
+        float flashContribution = 0.0;
+        if (uFlashlightIntensity > 0.01) {
+          vec3 toFrag = vWorldPos - uFlashlightPos;
+          float flashDist = length(toFrag);
+          vec3 fragDir = toFrag / max(0.0001, flashDist);
+          float cosCone = dot(fragDir, normalize(uFlashlightDir));
+
+          // Núcleo central forte + halo externo mais amplo
+          float coreSpot = smoothstep(0.93, 0.985, cosCone);
+          float outerHalo = smoothstep(0.77, 0.935, cosCone) * 0.42;
+          float distAtten = clamp(1.0 - flashDist / 21.0, 0.0, 1.0);
+          float facing = clamp(dot(nrm, -fragDir) * 0.75 + 0.35, 0.2, 1.0);
+
+          flashContribution =
+            (coreSpot + outerHalo) *
+            distAtten *
+            facing *
+            uFlashlightIntensity *
+            0.88;
+        }
+
+        float rawShade =
+          (sectorLight * distFalloff) +
+          nearBoost +
+          fakeContrast +
+          flashContribution;
         rawShade = clamp(rawShade, 0.0, 1.0);
 
-        // 4. Quantização em 24 degraus discretos imitando a tabela COLORMAP de 32 níveis!
+        // 5. Quantização em 24 degraus discretos estilo COLORMAP
         float colormapBand = floor(rawShade * 24.0) / 24.0;
 
-        // Sutil aquecimento nas faixas escuras (característico da paleta PLAYPAL do DOOM)
         vec3 shaded = texel.rgb * colormapBand;
         shaded.r *= mix(1.06, 1.0, colormapBand);
         shaded.b *= mix(0.88, 1.0, colormapBand);
+
+        // Leve tom halógeno quente onde o foco da lanterna incide
+        if (flashContribution > 0.02) {
+          float warmMix = clamp(flashContribution * 0.55, 0.0, 0.35);
+          shaded *= mix(vec3(1.0), vec3(1.08, 1.03, 0.90), warmMix);
+        }
 
         gl_FragColor = vec4(shaded, 1.0);
       }
@@ -156,9 +195,8 @@ export function createDoomSurfaceMaterial(
 }
 
 /**
- * Pipeline de pós-processamento Low-Res estilo DOOM DOS (320x200 / 260p Widescreen):
- * Renderiza a cena 3D em resolução baixa crocante (`NearestFilter`, sem AA borrado)
- * e aplica matriz ordenada Bayer 4x4 + quantização de paleta de 256 cores (`PLAYPAL`).
+ * Pipeline de pós-processamento Low-Res estilo DOOM DOS (250p NearestFilter + Bayer 4x4 + PLAYPAL),
+ * com suporte a renderização da cena em 1ª pessoa (lanterna) sem atravessar paredes!
  */
 export class DoomRetroCompositor {
   private renderTarget: THREE.WebGLRenderTarget;
@@ -196,7 +234,6 @@ export class DoomRetroCompositor {
         uniform vec2 uResolution;
         varying vec2 vUv;
 
-        // Matriz ordenada de Bayer 4x4 clássica
         float bayer4x4(vec2 pixel) {
           int x = int(mod(pixel.x, 4.0));
           int y = int(mod(pixel.y, 4.0));
@@ -223,11 +260,9 @@ export class DoomRetroCompositor {
           vec2 pixelCoord = floor(vUv * uResolution);
           vec4 col = texture2D(tDiffuse, (pixelCoord + 0.5) / uResolution);
 
-          // Dithering ordenado sutil + quantização de cores estilo VGA 256-color PLAYPAL
           float dither = (bayer4x4(pixelCoord) - 0.5) / 28.0;
           vec3 c = clamp(col.rgb + dither, 0.0, 1.0);
 
-          // Quantiza canais simulando paleta indexada rica do DOOM
           c.r = floor(c.r * 24.0 + 0.5) / 24.0;
           c.g = floor(c.g * 24.0 + 0.5) / 24.0;
           c.b = floor(c.b * 20.0 + 0.5) / 20.0;
@@ -255,11 +290,22 @@ export class DoomRetroCompositor {
   render(
     renderer: THREE.WebGLRenderer,
     scene: THREE.Scene,
-    camera: THREE.Camera
+    camera: THREE.Camera,
+    viewScene?: THREE.Scene,
+    viewCamera?: THREE.Camera
   ): void {
     renderer.setRenderTarget(this.renderTarget);
     renderer.clear();
     renderer.render(scene, camera);
+
+    // Renderiza a lanterna em 1ª pessoa limpando apenas o depth buffer (nunca atravessa paredes!)
+    if (viewScene && viewCamera) {
+      const prevAutoClear = renderer.autoClear;
+      renderer.autoClear = false;
+      renderer.clearDepth();
+      renderer.render(viewScene, viewCamera);
+      renderer.autoClear = prevAutoClear;
+    }
 
     renderer.setRenderTarget(null);
     renderer.render(this.postScene, this.postCamera);
