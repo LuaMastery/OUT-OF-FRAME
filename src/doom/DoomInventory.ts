@@ -61,10 +61,10 @@ export const ITEM_CATALOG: Record<string, InventoryItemDef> = {
   tactical_lantern: {
     id: 'tactical_lantern',
     kind: 'lantern',
-    name: 'Lanterna Tática',
-    category: 'Equipamento Essencial',
+    name: 'Lanterna de bolso',
+    category: 'Iluminação',
     description:
-      'Lanterna de alumínio anodizado com foco halógeno concentrado. Pressione [F] a qualquer momento para empunhar ou apagar o feixe no escuro.',
+      'Corpo cilíndrico de alumínio riscado com foco halógeno curto. Pressione [F] durante a exploração para acender ou guardar.',
     stackable: false,
     usable: true,
     actionLabel: 'Alternar [F]',
@@ -73,46 +73,46 @@ export const ITEM_CATALOG: Record<string, InventoryItemDef> = {
   sterile_bandage: {
     id: 'sterile_bandage',
     kind: 'bandage',
-    name: 'Bandagem Estéril',
-    category: 'Suprimento Médico',
+    name: 'Rolo de gaze',
+    category: 'Curativo',
     description:
-      'Rolo de gaze espessa ainda selado. Estanca cortes profundos deixados pelas pontas ósseas da criatura e restaura boa parte do vigor físico.',
+      'Atadura de algodão grosso ainda limpa. Estanca cortes abertos deixados pelas garras e devolve firmeza ao corpo.',
     stackable: true,
     usable: true,
-    actionLabel: 'Enfaixar Feridas',
+    actionLabel: 'Enfaixar feridas',
     droppable: true,
   },
   old_morphine: {
     id: 'old_morphine',
     kind: 'morphine',
-    name: 'Frasco de Láudano & Analgésico',
-    category: 'Tônico Vital',
+    name: 'Frasco de láudano',
+    category: 'Tônico',
     description:
-      'Frasco âmbar pesado usado por equipes subterrâneas antigas. Entorpece a dor aguda rapidamente, recupera vitalidade alta e acalma a tremedeira dos nervos.',
+      'Vidro âmbar pesado deixado por equipes antigas. Ameniza a dor profunda rapidamente e reduz o tremor das mãos.',
     stackable: true,
     usable: true,
-    actionLabel: 'Ingerir Dose',
+    actionLabel: 'Beber dose',
     droppable: true,
   },
   industrial_battery: {
     id: 'industrial_battery',
     kind: 'battery',
-    name: 'Bateria Industrial 9V',
-    category: 'Fonte de Energia',
+    name: 'Bateria seca 9V',
+    category: 'Carga elétrica',
     description:
-      'Célula alcalina blindada de alta densidade. Recarrega imediatamente o acumulador da Lanterna Tática para manter os corredores e o teto visíveis.',
+      'Célula industrial blindada com polos de latão. Restaura boa parte da carga da lanterna.',
     stackable: true,
     usable: true,
-    actionLabel: 'Recarregar Lanterna',
+    actionLabel: 'Trocar bateria',
     droppable: true,
   },
   rusty_knife: {
     id: 'rusty_knife',
     kind: 'knife',
-    name: 'Canivete de Manutenção',
-    category: 'Ferramenta de Sobrevivência',
+    name: 'Canivete oxidado',
+    category: 'Ferramenta',
     description:
-      'Lâmina curta oxidada, mas ainda afiada. Mantê-la na bolsa permite rasgar armadilhas de teia e se soltar do bote da aranha muito mais depressa.',
+      'Lâmina curta marcada de ferrugem, mas ainda afiada. Permite cortar fios de teia nos corredores com muito mais rapidez.',
     stackable: false,
     usable: false,
     droppable: false,
@@ -120,22 +120,22 @@ export const ITEM_CATALOG: Record<string, InventoryItemDef> = {
   magnesium_flare: {
     id: 'magnesium_flare',
     kind: 'flare',
-    name: 'Sinalizador de Magnésio',
-    category: 'Defesa / Iluminação',
+    name: 'Bastão de magnésio',
+    category: 'Chama química',
     description:
-      'Bastão químico que queima em chama rubra intensa no chão. Ilumina todo o corredor ao redor e afugenta temporariamente a aranha sensível ao calor intenso.',
+      'Queima no chão em luz rubra forte por vários segundos. Ilumina a galeria inteira e faz a criatura recuar do calor.',
     stackable: true,
     usable: true,
-    actionLabel: 'Acender no Chão',
+    actionLabel: 'Riscar e jogar',
     droppable: true,
   },
   sector_b_key: {
     id: 'sector_b_key',
     kind: 'key',
-    name: 'Chave de Inspeção — Setor B',
-    category: 'Objeto Coletado',
+    name: 'Chave de latão — Ala B',
+    category: 'Chave antiga',
     description:
-      'Chave pesada de latão escuro encontrada junto às galerias de pedra. Traz gravado o código da antiga ala de contenção subterrânea.',
+      'Chave maciça recolhida entre os blocos úmidos de pedra, com plaqueta gravada da antiga galeria sul.',
     stackable: false,
     usable: false,
     droppable: false,
@@ -143,12 +143,12 @@ export const ITEM_CATALOG: Record<string, InventoryItemDef> = {
   torn_log_04: {
     id: 'torn_log_04',
     kind: 'note',
-    name: 'Diário Rasgado #04',
-    category: 'Registro Encontrado',
+    name: 'Folha arrancada #04',
+    category: 'Anotação',
     description:
-      'Folha manchada arrancada de uma prancheta técnica no corredor norte.',
+      'Página manchada destacada de um caderno de manutenção no setor norte.',
     noteContent:
-      '“14/OUT — Não olhe apenas para o chão. A coisa caminha devagar pelas grades do teto e escala os blocos de pedra sem fazer quase barulho. Ela tece fios quase invisíveis nos vãos dos arcos para sentir a vibração de quem pisa. Se ela gritar... não tente encarar. CORRA.”',
+      '14/OUT — Não olhe só para o chão. Ela anda devagar pelas vigas do teto e desce pelas paredes sem fazer quase barulho. Estica fios nos vãos escuros para sentir quem passa. Se ouvir o guincho, não pare.',
     stackable: false,
     usable: false,
     droppable: false,
@@ -156,12 +156,12 @@ export const ITEM_CATALOG: Record<string, InventoryItemDef> = {
   arachnid_report_09: {
     id: 'arachnid_report_09',
     kind: 'note',
-    name: 'Relatório de Contenção #09',
-    category: 'Registro Encontrado',
+    name: 'Nota de contenção #09',
+    category: 'Anotação',
     description:
-      'Anotação apressada deixada na galeria sul de alvenaria.',
+      'Rascunho apressado encontrado perto das arcadas de alvenaria.',
     noteContent:
-      '“Observação final: Agachar no escuro reduz a chance de ela notar sua presença à distância. Sinalizadores de magnésio fazem suas patas recuarem por alguns segundos. Nunca fique preso numa teia sem uma lâmina por perto.”',
+      'Andar abaixado no escuro diminui a chance de ela perceber seus passos. O clarão quente do magnésio afasta as patas dela por alguns instantes. Se ela te arrastar para o ninho... saia antes que volte.',
     stackable: false,
     usable: false,
     droppable: false,
@@ -169,7 +169,46 @@ export const ITEM_CATALOG: Record<string, InventoryItemDef> = {
 };
 
 /**
- * Desenha ícones pixel-art 24x24 sombrios e nítidos para cada tipo de objeto do inventário.
+ * Adiciona contorno pixel-art 1px ao redor de qualquer pixel opaco para acabamento autêntico de sprite.
+ */
+function applyPixelOutline(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  outlineHex: [number, number, number]
+): void {
+  const img = ctx.getImageData(0, 0, w, h);
+  const src = new Uint8ClampedArray(img.data);
+  const dst = img.data;
+
+  const isSolid = (x: number, y: number): boolean => {
+    if (x < 0 || y < 0 || x >= w || y >= h) return false;
+    return src[(y * w + x) * 4 + 3] > 0;
+  };
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (isSolid(x, y)) continue;
+      if (
+        isSolid(x - 1, y) ||
+        isSolid(x + 1, y) ||
+        isSolid(x, y - 1) ||
+        isSolid(x, y + 1)
+      ) {
+        const idx = (y * w + x) * 4;
+        dst[idx] = outlineHex[0];
+        dst[idx + 1] = outlineHex[1];
+        dst[idx + 2] = outlineHex[2];
+        dst[idx + 3] = 255;
+      }
+    }
+  }
+
+  ctx.putImageData(img, 0, 0);
+}
+
+/**
+ * Desenha sprites pixel-art 32x32 detalhados à mão (com sombreamento Bayer, chanfros e contorno 1px).
  */
 function buildItemIcons(): Record<InventoryItemKind, string> {
   const kinds: InventoryItemKind[] = [
@@ -187,86 +226,229 @@ function buildItemIcons(): Record<InventoryItemKind, string> {
 
   for (const kind of kinds) {
     const c = document.createElement('canvas');
-    c.width = 24;
-    c.height = 24;
+    c.width = 32;
+    c.height = 32;
     const ctx = c.getContext('2d')!;
-    ctx.clearRect(0, 0, 24, 24);
+    ctx.clearRect(0, 0, 32, 32);
 
-    const rect = (x: number, y: number, w: number, h: number, col: string) => {
+    const px = (x: number, y: number, col: string) => {
+      ctx.fillStyle = col;
+      ctx.fillRect(x, y, 1, 1);
+    };
+    const box = (x: number, y: number, w: number, h: number, col: string) => {
       ctx.fillStyle = col;
       ctx.fillRect(x, y, w, h);
     };
+    const line = (
+      x0: number,
+      y0: number,
+      x1: number,
+      y1: number,
+      col: string
+    ) => {
+      let cx = x0;
+      let cy = y0;
+      const dx = Math.abs(x1 - x0);
+      const dy = Math.abs(y1 - y0);
+      const sx = x0 < x1 ? 1 : -1;
+      const sy = y0 < y1 ? 1 : -1;
+      let err = dx - dy;
+      for (;;) {
+        px(cx, cy, col);
+        if (cx === x1 && cy === y1) break;
+        const e2 = 2 * err;
+        if (e2 > -dy) {
+          err -= dy;
+          cx += sx;
+        }
+        if (e2 < dx) {
+          err += dx;
+          cy += sy;
+        }
+      }
+    };
 
     if (kind === 'lantern') {
-      rect(3, 10, 12, 5, '#595f6a');
-      rect(3, 10, 12, 1, '#8c94a3');
-      rect(5, 11, 1, 3, '#282b31');
-      rect(8, 11, 1, 3, '#282b31');
-      rect(11, 11, 1, 3, '#282b31');
-      rect(10, 8, 3, 2, '#9e3232');
-      rect(15, 8, 4, 9, '#707784');
-      rect(19, 9, 2, 7, '#ffd984');
-      rect(21, 10, 1, 5, '#fff5d1');
+      // Lanterna metálica robusta levemente inclinada + lente amarelada
+      box(4, 13, 14, 6, '#484d54');
+      box(4, 13, 14, 1, '#8b929c');
+      box(4, 18, 14, 1, '#2b2e33');
+      // Ranhuras recartilhadas do cabo
+      for (let gx = 6; gx <= 14; gx += 2) {
+        box(gx, 14, 1, 4, '#32363c');
+      }
+      // Tampa traseira + argola
+      box(3, 14, 1, 4, '#676d75');
+      px(2, 16, '#7c828b');
+      // Botão deslizante rubro-escuro
+      box(12, 11, 4, 2, '#8d2d2b');
+      px(13, 11, '#bf4945');
+      // Cabeça refletora chanfrada
+      box(18, 11, 3, 10, '#5a6069');
+      box(18, 11, 3, 2, '#9aa2ad');
+      box(18, 19, 3, 2, '#34383e');
+      box(21, 10, 4, 12, '#69707a');
+      box(21, 10, 4, 2, '#aeb6c2');
+      box(21, 20, 4, 2, '#393d44');
+      // Lente de vidro quente
+      box(25, 11, 2, 10, '#d8be7d');
+      box(25, 12, 1, 6, '#f6e7b8');
+      px(26, 13, '#fff8dc');
     } else if (kind === 'bandage') {
-      rect(5, 6, 14, 12, '#cfc6b4');
-      rect(6, 5, 12, 1, '#e4dccb');
-      rect(6, 18, 12, 1, '#8d8475');
-      rect(5, 9, 14, 1, '#a99f8e');
-      rect(5, 14, 14, 1, '#a99f8e');
-      // Cruz médica vinho-escura
-      rect(11, 8, 2, 8, '#8f2626');
-      rect(8, 11, 8, 2, '#8f2626');
-      rect(18, 15, 3, 2, '#bfb5a2');
+      // Rolo cilíndrico de gaze com espiral superior e ponta solta
+      box(7, 9, 14, 14, '#bfb6a4');
+      box(8, 8, 12, 2, '#ded6c6');
+      box(9, 7, 10, 1, '#d1c8b6');
+      box(8, 23, 12, 1, '#857d6e');
+      // Miolo escuro da espiral do rolo
+      box(11, 8, 6, 2, '#6e6659');
+      box(12, 8, 4, 1, '#3d3831');
+      // Sombreamento lateral direito pontilhado
+      for (let y = 10; y <= 22; y++) {
+        px(20, y, '#857d6e');
+        px(19, y, y % 2 === 0 ? '#9c9383' : '#bfb6a4');
+        px(7, y, '#d8d0c0');
+      }
+      // Linhas sutis da trama de tecido
+      box(8, 13, 12, 1, '#a69d8c');
+      box(8, 18, 12, 1, '#a69d8c');
+      // Faixa/cruz médica carmim seca
+      box(13, 12, 2, 8, '#872624');
+      box(10, 15, 8, 2, '#872624');
+      px(13, 15, '#a83432');
+      // Ponta de gaze desenrolada ao lado
+      box(21, 19, 5, 4, '#b5ac9a');
+      box(22, 20, 4, 2, '#cfc6b4');
+      px(26, 21, '#9c9383');
     } else if (kind === 'morphine') {
-      rect(10, 3, 4, 3, '#8b6d4b'); // rolha
-      rect(9, 6, 6, 2, '#9ca8b5'); // gargalo
-      rect(7, 8, 10, 12, '#6e3b1e'); // vidro âmbar
-      rect(8, 9, 2, 9, '#b87339'); // reflexo
-      rect(8, 12, 8, 5, '#cbbba0'); // rótulo antigo
-      rect(9, 14, 6, 1, '#6a2323');
-      rect(8, 20, 8, 1, '#3d2010');
+      // Frasco apotecário âmbar com rolha de cortiça e rótulo envelhecido
+      box(13, 4, 6, 3, '#947451');
+      box(14, 4, 2, 2, '#b5926b');
+      // Gargalo de vidro
+      box(12, 7, 8, 2, '#8c969e');
+      box(13, 9, 6, 2, '#6b737a');
+      // Ombros do frasco
+      box(10, 11, 12, 2, '#7d4422');
+      box(9, 13, 14, 13, '#5e3016');
+      box(10, 26, 12, 1, '#3b1d0c');
+      // Líquido interno mais denso + reflexo especular vertical
+      box(10, 16, 12, 9, '#47210d');
+      box(10, 12, 2, 12, '#a86434');
+      line(11, 12, 11, 22, '#d48d55');
+      // Rótulo de papel gasto
+      box(11, 15, 10, 7, '#c9bda6');
+      box(12, 16, 8, 5, '#dfd5c1');
+      box(13, 17, 6, 1, '#7a2522');
+      box(13, 19, 5, 1, '#595247');
     } else if (kind === 'battery') {
-      rect(8, 4, 3, 2, '#c8a86b');
-      rect(13, 4, 3, 2, '#c8a86b');
-      rect(6, 6, 12, 14, '#2d3138');
-      rect(6, 6, 12, 4, '#9e6b2b');
-      rect(7, 7, 10, 1, '#d49d49');
-      rect(11, 11, 2, 6, '#d6c69e');
-      rect(9, 13, 6, 2, '#d6c69e');
+      // Bateria industrial 9V com polos de latão
+      box(10, 5, 3, 3, '#b89a5e');
+      px(10, 5, '#e0c589');
+      box(18, 6, 4, 2, '#9e824c');
+      px(19, 6, '#cfb276');
+      // Corpo metálico blindado
+      box(8, 8, 16, 18, '#2b2e33');
+      box(8, 8, 16, 5, '#9c6b2e');
+      box(8, 8, 16, 1, '#cfa05d');
+      box(8, 13, 16, 1, '#181a1d');
+      // Brilho lateral esquerdo e sombra direita
+      box(8, 9, 2, 16, '#3c4047');
+      box(9, 9, 2, 4, '#b88340');
+      box(22, 9, 2, 16, '#1f2125');
+      // Símbolo gravado + / -
+      box(11, 16, 1, 3, '#c8bfa8');
+      box(10, 17, 3, 1, '#c8bfa8');
+      box(19, 17, 3, 1, '#8c8577');
+      box(11, 22, 10, 1, '#575248');
     } else if (kind === 'knife') {
-      // Cabo escuro diagonal + lâmina chanfrada
-      rect(4, 15, 7, 4, '#4b3628');
-      rect(5, 16, 5, 2, '#6b4e3b');
-      rect(10, 14, 2, 4, '#8d8579');
-      rect(12, 10, 4, 4, '#aeb6c2');
-      rect(15, 7, 4, 4, '#cfd6e0');
-      rect(18, 5, 3, 3, '#e8eef5');
-      rect(13, 12, 2, 1, '#7a3326'); // ponto de ferrugem
+      // Canivete diagonal com cabo de madeira rebitado e lâmina chanfrada
+      for (let i = 0; i < 10; i++) {
+        const hx = 5 + i;
+        const hy = 24 - i;
+        box(hx, hy - 2, 4, 4, '#4f3829');
+        px(hx, hy - 2, '#73533e');
+        px(hx + 3, hy + 1, '#302118');
+      }
+      // Rebites de latão no cabo
+      px(8, 21, '#bfa269');
+      px(12, 17, '#bfa269');
+      // Guarda / virola de aço
+      box(14, 13, 4, 4, '#7d828a');
+      px(14, 13, '#b5bcc7');
+      // Lâmina de aço com fio claro e pontos de oxidação
+      for (let i = 0; i < 11; i++) {
+        const bx = 16 + i;
+        const by = 13 - i;
+        const w = i > 8 ? 2 : 3;
+        box(bx, by, w, w, '#969da6');
+        px(bx, by, '#dce3ec'); // fio iluminado
+      }
+      px(20, 10, '#783426');
+      px(21, 10, '#5e281d');
+      px(23, 7, '#783426');
     } else if (kind === 'flare') {
-      rect(4, 11, 14, 4, '#9c2626');
-      rect(4, 11, 14, 1, '#cc433b');
-      rect(6, 11, 1, 4, '#2a2424');
-      rect(13, 11, 1, 4, '#2a2424');
-      rect(18, 10, 2, 6, '#5c5552');
-      rect(20, 9, 2, 2, '#ffb347');
-      rect(21, 12, 2, 2, '#fff0a8');
-      rect(20, 15, 2, 1, '#ff7733');
+      // Bastão químico de magnésio na diagonal + faíscas
+      for (let i = 0; i < 14; i++) {
+        const fx = 5 + i;
+        const fy = 23 - Math.floor(i * 0.85);
+        box(fx, fy - 2, 4, 4, '#8f2523');
+        px(fx, fy - 2, '#c4423d');
+        px(fx + 3, fy + 1, '#571514');
+      }
+      // Anéis pretos antiderrapantes
+      line(7, 20, 9, 22, '#242222');
+      line(12, 16, 14, 18, '#242222');
+      // Cabeça cinza de fósforo + brasa viva
+      box(19, 9, 4, 4, '#5e5854');
+      box(22, 7, 3, 3, '#d97834');
+      px(23, 8, '#ffe79e');
+      px(25, 6, '#ffb85c');
+      px(26, 9, '#e0562b');
+      px(21, 5, '#ffd27d');
     } else if (kind === 'key') {
-      rect(4, 9, 6, 6, '#9c824a');
-      rect(6, 11, 2, 2, '#0c0c0e');
-      rect(10, 11, 10, 2, '#b89b5c');
-      rect(15, 13, 2, 3, '#9c824a');
-      rect(18, 13, 2, 4, '#9c824a');
+      // Chave antiga de latão com argola trabalhada e etiqueta pendurada
+      box(5, 11, 8, 8, '#967c46');
+      box(6, 10, 6, 10, '#967c46');
+      box(7, 12, 4, 6, '#000000');
+      ctx.clearRect(7, 12, 4, 6);
+      line(6, 10, 11, 10, '#cfb374');
+      line(5, 11, 5, 17, '#cfb374');
+      // Plaqueta metálica pendurada na argola
+      box(6, 20, 4, 6, '#595349');
+      box(7, 21, 2, 4, '#7d7567');
+      // Haste cilíndrica e segredos da chave
+      box(13, 14, 14, 2, '#ab8f54');
+      line(13, 14, 26, 14, '#d9be82');
+      box(20, 16, 2, 4, '#8c723e');
+      box(23, 16, 1, 3, '#8c723e');
+      box(25, 16, 2, 5, '#ab8f54');
+      px(25, 16, '#cfb374');
     } else {
-      // Nota / papel rasgado
-      rect(6, 4, 12, 16, '#c7bca6');
-      rect(7, 5, 10, 14, '#d8ceb9');
-      rect(8, 7, 7, 1, '#574e43');
-      rect(8, 10, 8, 1, '#574e43');
-      rect(8, 13, 6, 1, '#574e43');
-      rect(13, 15, 4, 3, '#7d2020'); // mancha de sangue seco
+      // Página arrancada de caderno com orelha dobrada e mancha seca de sangue
+      box(7, 4, 17, 22, '#bfb49f');
+      box(8, 5, 15, 20, '#d4c9b4');
+      // Recorte rasgado irregular na base
+      ctx.clearRect(7, 25, 3, 2);
+      ctx.clearRect(13, 25, 4, 2);
+      ctx.clearRect(21, 24, 3, 3);
+      // Canto superior direito dobrado
+      ctx.clearRect(21, 4, 3, 3);
+      box(20, 4, 1, 4, '#968c79');
+      box(20, 7, 4, 1, '#968c79');
+      box(21, 5, 2, 2, '#afa48f');
+      // Linhas manuscritas de tinta escura
+      box(10, 9, 9, 1, '#4a4339');
+      box(10, 12, 11, 1, '#4a4339');
+      box(10, 15, 10, 1, '#4a4339');
+      box(10, 18, 7, 1, '#4a4339');
+      box(10, 21, 6, 1, '#5e564a');
+      // Mancha carmim seca na borda inferior direita
+      box(17, 19, 5, 4, '#75201e');
+      box(18, 18, 3, 5, '#591615');
+      px(16, 21, '#8c2b28');
     }
 
+    applyPixelOutline(ctx, 32, 32, [9, 8, 10]);
     out[kind] = c.toDataURL();
   }
 
@@ -274,9 +456,318 @@ function buildItemIcons(): Record<InventoryItemKind, string> {
 }
 
 /**
- * Gerenciador completo de Inventário de Terror (Tecla Tab) inspirado em Amnesia,
- * mostrando Sinais Vitais, Estado Psicológico, Carga da Lanterna e todos os
- * objetos coletados pelo jogador ao longo do tempo — sem poluir a tela durante o jogo.
+ * Desenha a radiografia / placa anatômica pixel-art (96x116 -> exibida em 192x232px):
+ * Silhueta humana sombria em meio-tom Bayer 2x2, caixa torácica anatômica real
+ * envolvendo os pulmões e coração pulsando por trás das costelas.
+ */
+function renderAnatomyCanvas(
+  ctx: CanvasRenderingContext2D,
+  vitals: PlayerVitalsSnapshot,
+  elapsedSec: number
+): void {
+  const W = 96;
+  const H = 116;
+
+  ctx.fillStyle = '#050506';
+  ctx.fillRect(0, 0, W, H);
+
+  const px = (x: number, y: number, col: string) => {
+    const ix = Math.round(x);
+    const iy = Math.round(y);
+    if (ix < 0 || iy < 0 || ix >= W || iy >= H) return;
+    ctx.fillStyle = col;
+    ctx.fillRect(ix, iy, 1, 1);
+  };
+
+  const hp = Math.max(0, Math.min(100, vitals.health));
+  const san = Math.max(0, Math.min(100, vitals.sanity));
+
+  const panicShake =
+    san < 32 && Math.floor(elapsedSec * 12) % 4 === 0
+      ? Math.floor(elapsedSec * 25) % 2 === 0
+        ? 1
+        : -1
+      : 0;
+  const cx = 48 + panicShake;
+
+  // Grade radiográfica quase imperceptível ao fundo
+  ctx.fillStyle = '#0a0a0c';
+  for (let gx = 16; gx < W; gx += 16) ctx.fillRect(gx, 0, 1, H);
+  for (let gy = 16; gy < H; gy += 16) ctx.fillRect(0, gy, W, 1);
+
+  // 1. SILHUETA HUMANA EXTERNA (cabeça, pescoço, trapézio, ombros e tronco em pontilhado escuro)
+  const silhouetteHalfWidth = (y: number): number => {
+    if (y < 6 || y > 110) return 0;
+    if (y <= 22) {
+      // Crânio superior ovalado
+      const ny = (y - 19) / 13.5;
+      return Math.sqrt(Math.max(0, 1 - ny * ny)) * 12.2;
+    }
+    if (y <= 34) {
+      // Maçãs do rosto afunilando até o queixo humano (sem bloco quadrado!)
+      const t = (y - 22) / 12;
+      return 11.5 * (1 - t * 0.58);
+    }
+    if (y <= 39) {
+      // Pescoço
+      const t = (y - 34) / 5;
+      return 5.8 + t * 1.1;
+    }
+    if (y <= 47) {
+      // Trapézio descendo suavemente até as clavículas
+      const t = (y - 39) / 8;
+      return 6.9 + Math.pow(t, 1.35) * 16.5;
+    }
+    if (y <= 58) {
+      // Curva arredondada dos deltoides / ombros
+      const t = (y - 47) / 11;
+      return 23.4 + Math.sin(t * Math.PI * 0.5) * 7.2;
+    }
+    if (y <= 72) {
+      const t = (y - 58) / 14;
+      return 30.6 - t * 2.2;
+    }
+    // Tronco e braços descendo suavemente
+    const t = (y - 72) / 38;
+    return 28.4 - t * 3.8;
+  };
+
+  for (let y = 6; y <= 110; y++) {
+    const hw = silhouetteHalfWidth(y);
+    if (hw <= 0.5) continue;
+    const fadeBottom = y > 96 ? (110 - y) / 14 : 1;
+    const minX = Math.ceil(cx - hw);
+    const maxX = Math.floor(cx + hw);
+    for (let x = minX; x <= maxX; x++) {
+      const distEdge = hw - Math.abs(x - cx);
+      if (fadeBottom < 0.5 && (x + y) % 2 !== 0) continue;
+      if (distEdge < 1.3) {
+        px(x, y, '#292621');
+      } else if (distEdge < 3.2) {
+        px(x, y, (x + y) % 2 === 0 ? '#1b1916' : '#121110');
+      } else {
+        // Interior escuro de raio-X
+        px(x, y, (x + y * 3) % 4 === 0 ? '#121110' : '#0b0b0c');
+      }
+    }
+  }
+
+  const boneBright = '#968d7d';
+  const boneLight = '#756d60';
+  const boneMid = '#4f4940';
+  const boneDark = '#2d2a25';
+
+  // 2. ROSTO SOMBRIO & CRÂNIO EM MEIO-TOM (sutil e humano)
+  for (let y = 8; y <= 33; y++) {
+    const hw = silhouetteHalfWidth(y) - 1.5;
+    if (hw <= 1) continue;
+    for (let x = Math.ceil(cx - hw); x <= Math.floor(cx + hw); x++) {
+      const dx = x - cx;
+      const adx = Math.abs(dx);
+      // Arco frontal / têmporas suavemente iluminadas em pontilhado
+      if (y <= 16) {
+        const crown = 1 - Math.hypot(dx / 10, (y - 13) / 7);
+        if (crown > 0.28 && (x + y) % 2 === 0) {
+          px(x, y, crown > 0.55 ? boneLight : boneMid);
+        }
+      } else if (y >= 17 && y <= 21) {
+        // Cavidades oculares fundas e sombreadas
+        const inEyeSocket = adx >= 2 && adx <= 7;
+        if (inEyeSocket) {
+          px(x, y, '#060607');
+        } else if (adx < 2 && (x + y) % 2 === 0) {
+          px(x, y, boneMid); // Dorso nasal
+        }
+      } else if (y >= 22 && y <= 27) {
+        // Maçãs do rosto zigomáticas sutis + sombra nasal central
+        if (adx <= 1 && y <= 25) {
+          px(x, y, '#070708');
+        } else if (adx >= 5 && adx <= 8 && y <= 25 && (x + y) % 2 === 0) {
+          px(x, y, boneMid);
+        } else if (adx <= 5 && (x + y) % 2 === 0) {
+          px(x, y, boneDark);
+        }
+      } else if (y >= 29 && adx <= 4 && (x + y) % 2 === 0) {
+        // Contorno suave do queixo em sombra
+        px(x, y, boneDark);
+      }
+    }
+  }
+
+  // Olhar discreto nas órbitas em sombra (contrai/avermelha apenas sob pânico intenso)
+  const eyeShift = san < 50 ? Math.round(Math.sin(elapsedSec * 9) * 1) : 0;
+  const irisCol = san < 30 ? '#b83b37' : san < 62 ? '#9e8b67' : '#8f8879';
+  px(cx - 5 + eyeShift, 19, irisCol);
+  px(cx + 5 + eyeShift, 19, irisCol);
+
+  // 3. COLUNA VERTEBRAL AO FUNDO (visível entre as cavidades pulmonares)
+  for (let vy = 35; vy <= 98; vy += 3) {
+    const shade = vy < 45 || vy > 76 ? boneMid : boneDark;
+    px(cx - 1, vy, shade);
+    px(cx, vy, vy > 76 ? boneLight : boneMid);
+    px(cx + 1, vy, shade);
+    px(cx, vy + 1, boneDark);
+  }
+
+  // Cavidades pulmonares escuras (dão profundidade real por trás das costelas)
+  for (let y = 47; y <= 82; y++) {
+    const t = (y - 47) / 35;
+    const lungW = Math.sin(t * Math.PI) * 17.5 + 3;
+    for (let s = 4; s <= lungW; s++) {
+      px(cx - s, y, '#070708');
+      px(cx + s, y, '#070708');
+    }
+  }
+
+  // 4. CORAÇÃO ANATÔMICO (posicionado DENTRO da caixa torácica, atrás das costelas!)
+  const bpm = hp < 25 ? 138 : hp < 55 ? 104 : vitals.beingChased ? 122 : 64;
+  const cycle = (elapsedSec * (bpm / 60)) % 1;
+  const expand = cycle < 0.16 || (cycle > 0.28 && cycle < 0.38) ? 1 : 0;
+
+  const hx = cx + 5;
+  const hy = 65;
+  const hr = 5.6 + expand * 0.85;
+
+  const heartOuter = hp < 28 ? '#8f1d1b' : hp < 60 ? '#782220' : '#571d1d';
+  const heartInner = hp < 28 ? '#cf3e3a' : hp < 60 ? '#a33330' : '#7d2c2a';
+  const heartCore = hp < 28 ? '#f0766e' : '#a84b47';
+
+  // Vasos da base / arco aórtico
+  px(hx - 1, Math.round(hy - hr - 2), heartOuter);
+  px(hx, Math.round(hy - hr - 2), heartInner);
+  px(hx - 1, Math.round(hy - hr - 1), heartInner);
+  px(hx, Math.round(hy - hr - 1), heartOuter);
+  px(hx + 2, Math.round(hy - hr - 1), heartOuter);
+
+  for (let dy = -7; dy <= 8; dy++) {
+    for (let dx = -7; dx <= 7; dx++) {
+      const nx = (dx + dy * 0.26) / hr;
+      const ny = dy / (hr + 1.1);
+      const d = nx * nx + ny * ny;
+      if (d <= 1.0) {
+        if (d < 0.24 && expand > 0) {
+          px(hx + dx, hy + dy, heartCore);
+        } else if (d < 0.62) {
+          px(hx + dx, hy + dy, (dx + dy) % 2 === 0 ? heartInner : heartOuter);
+        } else {
+          px(hx + dx, hy + dy, heartOuter);
+        }
+      }
+    }
+  }
+
+  // 5. CLAVÍCULAS EM "S", ESTERNO E 7 PARES DE COSTELAS CURVADAS SOBRE O PEITO
+  for (let dx = 2; dx <= 23; dx++) {
+    const f = dx / 23;
+    const cyClav = 45 - Math.round(Math.sin(f * Math.PI * 0.85) * 2.2);
+    px(cx - dx, cyClav, dx % 2 === 0 ? boneBright : boneLight);
+    px(cx + dx, cyClav, dx % 2 === 0 ? boneBright : boneLight);
+    px(cx - dx, cyClav + 1, boneDark);
+    px(cx + dx, cyClav + 1, boneDark);
+  }
+
+  // Manúbrio + corpo do esterno
+  for (let sy = 45; sy <= 73; sy++) {
+    const halfSt = sy < 50 ? 2 : sy < 69 ? 1.5 : 0.6;
+    for (let sx = -Math.floor(halfSt); sx <= Math.floor(halfSt); sx++) {
+      px(
+        cx + sx,
+        sy,
+        sx === 0 ? boneBright : (sx + sy) % 2 === 0 ? boneLight : boneMid
+      );
+    }
+  }
+
+  // 7 pares de costelas envolvendo o tórax (passam NA FRENTE do coração, integrando-o ao peito!)
+  const ribWidths = [13, 17, 20, 21, 20, 18, 14];
+  for (let r = 0; r < ribWidths.length; r++) {
+    const maxW = ribWidths[r];
+    const backY = 47 + r * 5.4;
+    const attachY = r < 5 ? 49 + r * 5.2 : 71 + (r - 5) * 2;
+
+    // Arco costal lateral -> anterior
+    for (let s = 2; s <= maxW; s++) {
+      const f = s / maxW;
+      // Desce na lateral e sobe levemente ao conectar na cartilagem costal do esterno
+      const archDrop = Math.sin(f * Math.PI * 0.82) * (3.2 + r * 0.25);
+      const yRib = Math.round(
+        attachY * (1 - f) + (backY + 2.5) * f + archDrop * 0.55
+      );
+
+      // Costelas falsas inferiores (r >= 5) abrem no centro formando o arco subcostal real!
+      if (r >= 5 && s < (r - 4) * 4 + 2) continue;
+
+      const cTop = f > 0.25 && f < 0.88 ? boneBright : boneLight;
+      px(cx - s, yRib, (s + r) % 2 === 0 ? cTop : boneLight);
+      px(cx - s, yRib + 1, boneDark);
+      px(cx + s, yRib, (s + r) % 2 === 0 ? cTop : boneLight);
+      px(cx + s, yRib + 1, boneDark);
+    }
+  }
+
+  // Contorno pélvico / ilíaco sutil na base
+  for (let dx = 10; dx <= 20; dx++) {
+    const py = 97 + Math.round(Math.pow((dx - 15) / 5, 2) * 3);
+    if (dx % 2 === 0) {
+      px(cx - dx, py, boneMid);
+      px(cx + dx, py, boneMid);
+    }
+  }
+
+  // 6. LACERAÇÕES ORGÂNICAS E MANCHAS DE HEMORRAGIA QUANDO FERIDO
+  if (hp < 82 || vitals.bleeding) {
+    const woundPts: Array<[number, number]> = [
+      [-9, 55],
+      [-8, 56],
+      [-6, 57],
+      [-5, 59],
+      [-3, 60],
+      [-2, 62],
+      [0, 63],
+    ];
+    const mainBlood = vitals.bleeding ? '#c42b28' : '#852724';
+    const deepBlood = '#591615';
+    for (const [wx, wy] of woundPts) {
+      px(cx + wx, wy, mainBlood);
+      px(cx + wx + 1, wy + 1, deepBlood);
+    }
+    if (hp < 48) {
+      const gash2: Array<[number, number]> = [
+        [-12, 63],
+        [-10, 64],
+        [-9, 65],
+        [-7, 67],
+        [-5, 68],
+        [-4, 70],
+      ];
+      for (const [wx, wy] of gash2) {
+        px(cx + wx, wy, '#d63d39');
+        px(cx + wx, wy + 1, '#7a1c1a');
+      }
+    }
+    if (vitals.bleeding) {
+      const drip = Math.floor(elapsedSec * 3.5) % 5;
+      px(cx - 5, 69 + drip, '#bd2825');
+      px(cx - 9, 67 + ((drip + 2) % 5), '#96201e');
+    }
+  }
+
+  // 7. FIOS DE SEDA ORGÂNICOS EM CATENÁRIA SE PRESO NA TEIA
+  if (vitals.trappedInWeb) {
+    for (let dx = -24; dx <= 24; dx++) {
+      const f = dx / 24;
+      const sag1 = Math.round(76 + f * 5 + (1 - f * f) * 4);
+      const sag2 = Math.round(87 - f * 6 + (1 - f * f) * 3);
+      if (Math.abs(dx) % 2 === 0) px(cx + dx, sag1, '#babfb4');
+      if (Math.abs(dx + 1) % 3 !== 0) px(cx + dx, sag2, '#8d9188');
+    }
+  }
+}
+
+/**
+ * Inventário Tátil de Sobrevivência (Tecla Tab):
+ * - Sem cartões de dashboard, sem barras de progresso genéricas e sem rótulos truncados nos slots.
+ * - Placa anatômica pixel-art viva + condição qualitativa + grade 4x3 pixel-perfect (2x/3x inteiro).
  */
 export class DoomInventory {
   private readonly overlayEl: HTMLElement;
@@ -291,36 +782,27 @@ export class DoomInventory {
   private readonly blackoutVeilEl: HTMLElement;
   private readonly gameOverEl: HTMLElement;
 
-  private readonly heartSvgEl: SVGElement;
-  private readonly heartPathEl: SVGPathElement;
-  private readonly healthTitleEl: HTMLElement;
-  private readonly healthDescEl: HTMLElement;
-  private readonly healthPctEl: HTMLElement;
-  private readonly healthBarEl: HTMLElement;
-  private readonly vitalTagsEl: HTMLElement;
-
-  private readonly eyeSvgEl: SVGElement;
-  private readonly eyeIrisEl: SVGCircleElement;
-  private readonly sanityTitleEl: HTMLElement;
-  private readonly sanityDescEl: HTMLElement;
-  private readonly sanityBarEl: HTMLElement;
-
-  private readonly gearStateEl: HTMLElement;
-  private readonly batteryPctEl: HTMLElement;
-  private readonly batteryBarEl: HTMLElement;
+  private readonly anatomyCanvas: HTMLCanvasElement;
+  private readonly anatomyCtx: CanvasRenderingContext2D;
+  private readonly healthValEl: HTMLElement;
+  private readonly sanityValEl: HTMLElement;
+  private readonly proseNoteEl: HTMLElement;
+  private readonly afflictionsEl: HTMLElement;
+  private readonly lanternStateEl: HTMLElement;
+  private readonly lanternCellsEl: HTMLElement;
 
   private readonly slotCounterEl: HTMLElement;
   private readonly gridEl: HTMLElement;
-  private readonly inspectorPreviewEl: HTMLElement;
-  private readonly inspectorCatEl: HTMLElement;
-  private readonly inspectorTitleEl: HTMLElement;
-  private readonly inspectorDescEl: HTMLElement;
-  private readonly inspectorNoteWrapEl: HTMLElement;
-  private readonly feedbackMsgEl: HTMLElement;
-  private readonly btnRowEl: HTMLElement;
+  private readonly examineFigureEl: HTMLElement;
+  private readonly examineTitleEl: HTMLElement;
+  private readonly examineDescEl: HTMLElement;
+  private readonly paperExcerptEl: HTMLElement;
+  private readonly feedbackEl: HTMLElement;
+  private readonly actionsEl: HTMLElement;
 
   private readonly icons: Record<InventoryItemKind, string>;
   private readonly proximityFX: CursorProximityFX;
+  private readonly keyNavAbort = new AbortController();
 
   private slots: Array<InventorySlotEntry | null> = new Array(TOTAL_SLOTS).fill(
     null
@@ -329,6 +811,8 @@ export class DoomInventory {
   private isOpen = false;
   private isGameOver = false;
   private pickupFlashTimer = 0;
+  private animRafId = 0;
+  private lastPlateTick = -1;
 
   private latestVitals: PlayerVitalsSnapshot = {
     health: 100,
@@ -348,7 +832,7 @@ export class DoomInventory {
   ) {
     this.icons = buildItemIcons();
 
-    // 1. Camada atmosférica diegética (zero números ou HUD durante exploração limpa)
+    // 1. Camada diegética em tela cheia (invisível na exploração saudável)
     this.diegeticEl = document.createElement('div');
     this.diegeticEl.id = 'doom-diegetic-fx';
     this.diegeticEl.innerHTML = `
@@ -388,119 +872,67 @@ export class DoomInventory {
       '.doom-blackout-veil'
     ) as HTMLElement;
 
-    // 2. Overlay principal do Inventário (Tecla Tab)
+    // 2. Inventário Aberto e Tátil (Tecla Tab)
     this.overlayEl = document.createElement('div');
     this.overlayEl.id = 'doom-inventory-overlay';
     this.overlayEl.innerHTML = `
-      <div class="amnesia-shell" role="dialog" aria-label="Inventário e Estado Vital">
-        <div class="amnesia-header">
-          <div class="amnesia-title-group">
-            <span class="amnesia-title">Inventário</span>
-            <span class="amnesia-subtitle">Pertences &amp; Condição Vital</span>
-          </div>
-          <button type="button" class="amnesia-close-hint" data-inv-close="1">[ TAB ] Retornar</button>
-        </div>
+      <div class="inv-stage" role="dialog" aria-label="Inventário">
+        <header class="inv-topbar">
+          <span class="inv-topbar-title">INVENTÁRIO</span>
+          <button type="button" class="inv-close-btn" data-inv-close="1">[Tab] voltar</button>
+        </header>
 
-        <div class="amnesia-body">
-          <aside class="amnesia-vitals-col">
-            <div class="vital-card">
-              <div class="vital-card-label">
-                <span>Vitalidade Física</span>
-                <span data-health-pct>100%</span>
-              </div>
-              <div class="vital-portrait-row">
-                <div class="vital-organ-frame">
-                  <svg class="vital-heart-svg" viewBox="0 0 48 48" fill="none">
-                    <path
-                      data-heart-path
-                      d="M24 41C24 41 8 30.5 8 18.2C8 12.6 12.4 8.5 17.6 8.5C20.7 8.5 23.1 10.2 24 12.4C24.9 10.2 27.3 8.5 30.4 8.5C35.6 8.5 40 12.6 40 18.2C40 30.5 24 41 24 41Z"
-                      fill="#7d2323"
-                      stroke="#d99b91"
-                      stroke-width="1.6"
-                    />
-                    <polyline
-                      points="9,24 17,24 20,17 24,31 27,21 30,24 39,24"
-                      stroke="#f2ded9"
-                      stroke-width="1.5"
-                      fill="none"
-                      opacity="0.82"
-                    />
-                  </svg>
-                </div>
-                <div class="vital-status-info">
-                  <div class="vital-state-title" data-health-title>Saudável</div>
-                  <div class="vital-state-desc" data-health-desc>Batimentos firmes. Apenas marcas leves pelo corpo.</div>
-                </div>
-              </div>
-              <div class="vital-bar-track">
-                <div class="vital-bar-fill" data-health-bar style="width: 100%"></div>
-              </div>
-              <div class="vital-tags" data-vital-tags></div>
+        <div class="inv-layout">
+          <aside class="inv-condition-pane">
+            <div class="inv-anatomy-plate">
+              <canvas class="inv-anatomy-canvas" width="96" height="116"></canvas>
             </div>
 
-            <div class="vital-card">
-              <div class="vital-card-label">
-                <span>Estado Psicológico</span>
-                <span>Nervos</span>
+            <div class="inv-status-block">
+              <div class="inv-status-line">
+                <span class="inv-status-key">Corpo</span>
+                <span class="inv-status-val" data-health-val>Íntegro</span>
               </div>
-              <div class="vital-portrait-row">
-                <div class="vital-organ-frame">
-                  <svg class="vital-eye-svg" viewBox="0 0 48 48" fill="none">
-                    <path
-                      d="M5 24C10.5 14.5 17.2 11 24 11C30.8 11 37.5 14.5 43 24C37.5 33.5 30.8 37 24 37C17.2 37 10.5 33.5 5 24Z"
-                      fill="#121418"
-                      stroke="#b5ad9e"
-                      stroke-width="1.6"
-                    />
-                    <circle data-eye-iris cx="24" cy="24" r="7" fill="#6f7f94" />
-                    <circle cx="24" cy="24" r="3.1" fill="#070709" />
-                    <circle cx="21.8" cy="21.8" r="1.3" fill="#e8e2d5" />
-                  </svg>
-                </div>
-                <div class="vital-status-info">
-                  <div class="vital-state-title" data-sanity-title>Mente Lúcida</div>
-                  <div class="vital-state-desc" data-sanity-desc>Os sentidos permanecem atentos ao silêncio do labirinto.</div>
-                </div>
+              <div class="inv-status-line">
+                <span class="inv-status-key">Nervos</span>
+                <span class="inv-status-val" data-sanity-val>Firmes</span>
               </div>
-              <div class="vital-bar-track">
-                <div class="vital-bar-fill sanity" data-sanity-bar style="width: 100%"></div>
+              <div class="inv-prose-note" data-prose-note>
+                Respiração controlada. Nenhum ferimento grave por enquanto.
               </div>
-            </div>
+              <div class="inv-afflictions" data-afflictions></div>
 
-            <div class="vital-card">
-              <div class="vital-card-label">
-                <span>Lanterna Tática [F]</span>
-                <span data-battery-pct>100%</span>
-              </div>
-              <div class="vital-state-desc" data-gear-state>Guardada — carga máxima disponível.</div>
-              <div class="vital-bar-track">
-                <div class="vital-bar-fill battery" data-battery-bar style="width: 100%"></div>
+              <div class="inv-lantern-row">
+                <div class="inv-lantern-top">
+                  <span class="inv-status-key">Lanterna [F]</span>
+                  <span class="inv-status-key" data-lantern-state>apagada</span>
+                </div>
+                <div class="inv-lantern-cells" data-lantern-cells></div>
               </div>
             </div>
           </aside>
 
-          <section class="amnesia-bag-col">
+          <section class="inv-items-pane">
             <div>
-              <div class="amnesia-grid-header">
-                <span class="amnesia-section-heading">Objetos Coletados</span>
-                <span class="amnesia-slot-counter" data-slot-counter>1 / 12 espaços</span>
+              <div class="inv-pocket-header">
+                <span>Bolsos</span>
+                <span data-slot-counter>1 / 12</span>
               </div>
-              <div class="amnesia-grid" data-inv-grid style="margin-top: 10px;"></div>
+              <div class="inv-grid" data-inv-grid style="margin-top: 8px;"></div>
             </div>
 
-            <div class="amnesia-inspector">
-              <div class="amnesia-inspector-top">
-                <div class="amnesia-inspector-preview" data-inspector-preview></div>
-                <div class="amnesia-inspector-text">
-                  <div class="amnesia-item-cat" data-inspector-cat>Selecione um objeto</div>
-                  <div class="amnesia-item-title" data-inspector-title>Bolsa de Suprimentos</div>
-                  <div class="amnesia-item-desc" data-inspector-desc>Clique em qualquer objeto recolhido no mapa para inspecionar seus detalhes ou utilizá-lo.</div>
-                  <div class="amnesia-note-paper" data-inspector-note style="display: none;"></div>
+            <div class="inv-examine">
+              <div class="inv-examine-main">
+                <div class="inv-examine-figure" data-examine-figure></div>
+                <div class="inv-examine-copy">
+                  <div class="inv-examine-title" data-examine-title></div>
+                  <div class="inv-examine-desc" data-examine-desc></div>
+                  <div class="inv-paper-excerpt" data-paper-excerpt style="display: none;"></div>
                 </div>
               </div>
-              <div class="amnesia-inspector-actions">
-                <span class="amnesia-feedback-msg" data-feedback-msg></span>
-                <div class="amnesia-btn-row" data-btn-row></div>
+              <div class="inv-examine-footer">
+                <span class="inv-feedback" data-feedback></span>
+                <div class="inv-actions" data-actions></div>
               </div>
             </div>
           </section>
@@ -509,65 +941,41 @@ export class DoomInventory {
     `;
     parentViewport.appendChild(this.overlayEl);
 
-    // 3. Tela de Morte Permanente (sem renascimento na partida — se morrer, morre mesmo!)
+    // 3. Tela de Morte Permanente
     this.gameOverEl = document.createElement('div');
     this.gameOverEl.id = 'doom-capture-gameover';
     this.gameOverEl.innerHTML = `
-      <div class="gameover-title">Você Morreu</div>
+      <div class="gameover-title">Você morreu</div>
       <div class="gameover-sub">
-        Seu corpo não resistiu ao ataque. Nas galerias escuras, ninguém jamais ouvirá seu último fôlego.
+        Seu corpo não resistiu ao ataque nas galerias subterrâneas.
       </div>
-      <div class="gameover-perm-note">Sinal vital perdido permanentemente — encerrando processo...</div>
-      <button type="button" class="amnesia-action-btn" data-terminate-btn="1">[ Encerrar Sessão ]</button>
+      <div class="gameover-perm-note">sessão encerrada permanentemente</div>
+      <button type="button" class="inv-action-btn" data-terminate-btn="1">[ encerrar ]</button>
     `;
     parentViewport.appendChild(this.gameOverEl);
 
-    this.heartSvgEl = this.overlayEl.querySelector(
-      '.vital-heart-svg'
-    ) as SVGElement;
-    this.heartPathEl = this.overlayEl.querySelector(
-      '[data-heart-path]'
-    ) as SVGPathElement;
-    this.healthTitleEl = this.overlayEl.querySelector(
-      '[data-health-title]'
-    ) as HTMLElement;
-    this.healthDescEl = this.overlayEl.querySelector(
-      '[data-health-desc]'
-    ) as HTMLElement;
-    this.healthPctEl = this.overlayEl.querySelector(
-      '[data-health-pct]'
-    ) as HTMLElement;
-    this.healthBarEl = this.overlayEl.querySelector(
-      '[data-health-bar]'
-    ) as HTMLElement;
-    this.vitalTagsEl = this.overlayEl.querySelector(
-      '[data-vital-tags]'
-    ) as HTMLElement;
+    this.anatomyCanvas = this.overlayEl.querySelector(
+      '.inv-anatomy-canvas'
+    ) as HTMLCanvasElement;
+    this.anatomyCtx = this.anatomyCanvas.getContext('2d')!;
 
-    this.eyeSvgEl = this.overlayEl.querySelector(
-      '.vital-eye-svg'
-    ) as SVGElement;
-    this.eyeIrisEl = this.overlayEl.querySelector(
-      '[data-eye-iris]'
-    ) as SVGCircleElement;
-    this.sanityTitleEl = this.overlayEl.querySelector(
-      '[data-sanity-title]'
+    this.healthValEl = this.overlayEl.querySelector(
+      '[data-health-val]'
     ) as HTMLElement;
-    this.sanityDescEl = this.overlayEl.querySelector(
-      '[data-sanity-desc]'
+    this.sanityValEl = this.overlayEl.querySelector(
+      '[data-sanity-val]'
     ) as HTMLElement;
-    this.sanityBarEl = this.overlayEl.querySelector(
-      '[data-sanity-bar]'
+    this.proseNoteEl = this.overlayEl.querySelector(
+      '[data-prose-note]'
     ) as HTMLElement;
-
-    this.gearStateEl = this.overlayEl.querySelector(
-      '[data-gear-state]'
+    this.afflictionsEl = this.overlayEl.querySelector(
+      '[data-afflictions]'
     ) as HTMLElement;
-    this.batteryPctEl = this.overlayEl.querySelector(
-      '[data-battery-pct]'
+    this.lanternStateEl = this.overlayEl.querySelector(
+      '[data-lantern-state]'
     ) as HTMLElement;
-    this.batteryBarEl = this.overlayEl.querySelector(
-      '[data-battery-bar]'
+    this.lanternCellsEl = this.overlayEl.querySelector(
+      '[data-lantern-cells]'
     ) as HTMLElement;
 
     this.slotCounterEl = this.overlayEl.querySelector(
@@ -576,34 +984,31 @@ export class DoomInventory {
     this.gridEl = this.overlayEl.querySelector(
       '[data-inv-grid]'
     ) as HTMLElement;
-    this.inspectorPreviewEl = this.overlayEl.querySelector(
-      '[data-inspector-preview]'
+    this.examineFigureEl = this.overlayEl.querySelector(
+      '[data-examine-figure]'
     ) as HTMLElement;
-    this.inspectorCatEl = this.overlayEl.querySelector(
-      '[data-inspector-cat]'
+    this.examineTitleEl = this.overlayEl.querySelector(
+      '[data-examine-title]'
     ) as HTMLElement;
-    this.inspectorTitleEl = this.overlayEl.querySelector(
-      '[data-inspector-title]'
+    this.examineDescEl = this.overlayEl.querySelector(
+      '[data-examine-desc]'
     ) as HTMLElement;
-    this.inspectorDescEl = this.overlayEl.querySelector(
-      '[data-inspector-desc]'
+    this.paperExcerptEl = this.overlayEl.querySelector(
+      '[data-paper-excerpt]'
     ) as HTMLElement;
-    this.inspectorNoteWrapEl = this.overlayEl.querySelector(
-      '[data-inspector-note]'
+    this.feedbackEl = this.overlayEl.querySelector(
+      '[data-feedback]'
     ) as HTMLElement;
-    this.feedbackMsgEl = this.overlayEl.querySelector(
-      '[data-feedback-msg]'
-    ) as HTMLElement;
-    this.btnRowEl = this.overlayEl.querySelector(
-      '[data-btn-row]'
+    this.actionsEl = this.overlayEl.querySelector(
+      '[data-actions]'
     ) as HTMLElement;
 
-    // Botão fechar no topo e clique no fundo escuro externo
     this.overlayEl
       .querySelector('[data-inv-close]')
       ?.addEventListener('click', () => {
         this.callbacks.onCloseRequest();
       });
+
     this.overlayEl.addEventListener('mousedown', (e) => {
       if (e.target === this.overlayEl) {
         this.callbacks.onCloseRequest();
@@ -616,14 +1021,43 @@ export class DoomInventory {
         this.callbacks.onPermanentDeathTerminate();
       });
 
-    // Cursor magnético de proximidade ativo sobre os slots e botões do inventário!
+    // Navegação por teclado dentro da grade de bolsos quando o inventário está aberto
+    window.addEventListener(
+      'keydown',
+      (e) => {
+        if (!this.isOpen || this.isGameOver) return;
+        let nextIdx = this.selectedIndex;
+        if (e.code === 'ArrowRight' || e.code === 'KeyD') {
+          nextIdx = (this.selectedIndex + 1) % TOTAL_SLOTS;
+        } else if (e.code === 'ArrowLeft' || e.code === 'KeyA') {
+          nextIdx = (this.selectedIndex + TOTAL_SLOTS - 1) % TOTAL_SLOTS;
+        } else if (e.code === 'ArrowDown' || e.code === 'KeyS') {
+          nextIdx = (this.selectedIndex + 4) % TOTAL_SLOTS;
+        } else if (e.code === 'ArrowUp' || e.code === 'KeyW') {
+          nextIdx = (this.selectedIndex + TOTAL_SLOTS - 4) % TOTAL_SLOTS;
+        } else if (e.code === 'Enter' || e.code === 'KeyE') {
+          e.preventDefault();
+          this.useSelectedItem();
+          return;
+        } else {
+          return;
+        }
+        e.preventDefault();
+        this.selectedIndex = nextIdx;
+        this.feedbackEl.textContent = '';
+        this.sound.playInventorySelect(false);
+        this.renderGrid();
+        this.renderInspector();
+      },
+      { signal: this.keyNavAbort.signal }
+    );
+
     this.proximityFX = new CursorProximityFX(
       parentViewport,
       () => this.isOpen || this.isGameOver,
       () => this.collectInteractiveRects()
     );
 
-    // Inicia com a Lanterna Tática já presente no primeiro espaço
     this.addItem('tactical_lantern', 1, true);
     this.renderGrid();
     this.renderInspector();
@@ -645,7 +1079,7 @@ export class DoomInventory {
     if (!this.isOpen) return rects;
 
     const nodes = this.overlayEl.querySelectorAll(
-      '.amnesia-slot.filled, .amnesia-action-btn:not(:disabled), .amnesia-close-hint'
+      '.inv-slot.filled, .inv-action-btn:not(:disabled), .inv-close-btn'
     );
     nodes.forEach((node) => {
       const el = node as HTMLElement;
@@ -674,16 +1108,41 @@ export class DoomInventory {
   setOpen(next: boolean): void {
     if (this.isOpen === next) return;
     this.isOpen = next;
-    this.feedbackMsgEl.textContent = '';
+    this.feedbackEl.textContent = '';
     if (next) {
       this.overlayEl.classList.add('open');
       this.renderVitals();
       this.renderGrid();
       this.renderInspector();
+      this.startAnatomyLoop();
     } else {
       this.overlayEl.classList.remove('open');
+      this.stopAnatomyLoop();
     }
     this.sound.playInventoryToggle(next);
+  }
+
+  private startAnatomyLoop(): void {
+    this.stopAnatomyLoop();
+    this.lastPlateTick = -1;
+    const step = (now: number) => {
+      if (!this.isOpen) return;
+      // Atualiza a chapa pixel-art em ~12 quadros/segundo para estética retrô autêntica
+      const tick = Math.floor(now / 82);
+      if (tick !== this.lastPlateTick) {
+        this.lastPlateTick = tick;
+        renderAnatomyCanvas(this.anatomyCtx, this.latestVitals, now / 1000);
+      }
+      this.animRafId = requestAnimationFrame(step);
+    };
+    this.animRafId = requestAnimationFrame(step);
+  }
+
+  private stopAnatomyLoop(): void {
+    if (this.animRafId) {
+      cancelAnimationFrame(this.animRafId);
+      this.animRafId = 0;
+    }
   }
 
   showGameOver(): void {
@@ -692,9 +1151,11 @@ export class DoomInventory {
     this.gameOverEl.classList.add('visible');
   }
 
-  /**
-   * Controla os efeitos visuais de ataque, pálpebras de desmaio, escurecimento e fios do ninho de teia.
-   */
+  hideGameOver(): void {
+    this.isGameOver = false;
+    this.gameOverEl.classList.remove('visible');
+  }
+
   setAbductionScreenFX(
     slashOpacity: number,
     eyelidClosed: number,
@@ -720,19 +1181,12 @@ export class DoomInventory {
     ).toFixed(3);
   }
 
-  hideGameOver(): void {
-    this.isGameOver = false;
-    this.gameOverEl.classList.remove('visible');
-  }
-
   hasItem(itemId: string): boolean {
-    return this.slots.some((s) => s !== null && s.def.id === itemId && s.quantity > 0);
+    return this.slots.some(
+      (s) => s !== null && s.def.id === itemId && s.quantity > 0
+    );
   }
 
-  /**
-   * Adiciona um objeto coletado no labirinto à bolsa do jogador.
-   * Retorna `true` se coube na bolsa.
-   */
   addItem(itemId: string, amount = 1, silent = false): boolean {
     const def = ITEM_CATALOG[itemId];
     if (!def) return false;
@@ -787,7 +1241,6 @@ export class DoomInventory {
   updateVitalsAndDiegeticFX(snapshot: PlayerVitalsSnapshot): void {
     this.latestVitals = { ...snapshot };
 
-    // Atualiza vinheta diegética periférica (invisível quando saudável e livre!)
     const injuryRatio = Math.max(0, (78 - snapshot.health) / 78);
     const bloodOpacity = snapshot.bleeding
       ? Math.min(0.92, 0.32 + injuryRatio * 0.62)
@@ -806,138 +1259,121 @@ export class DoomInventory {
 
   private renderVitals(): void {
     const v = this.latestVitals;
-    const hp = Math.max(0, Math.min(100, Math.round(v.health)));
-    const san = Math.max(0, Math.min(100, Math.round(v.sanity)));
-    const bat = Math.max(0, Math.min(100, Math.round(v.battery)));
+    const hp = Math.max(0, Math.min(100, v.health));
+    const san = Math.max(0, Math.min(100, v.sanity));
+    const bat = Math.max(0, Math.min(100, v.battery));
 
-    this.healthPctEl.textContent = `${hp}%`;
-    this.healthBarEl.style.width = `${hp}%`;
+    renderAnatomyCanvas(this.anatomyCtx, v, performance.now() / 1000);
 
-    let hpTitle = 'Saudável';
-    let hpDesc = 'Batimentos firmes. Tudo parece sob controle por enquanto.';
-    let pulseDur = '1.25s';
-    let heartColor = '#7d2626';
-    let pulseGlow = 'rgba(155, 48, 42, 0.35)';
+    // Estado físico (qualitativo, sem "100%" ou barra genérica)
+    let hpLabel = 'Íntegro';
+    let hpClass = 'inv-status-val';
+    let prose = 'Respiração firme. Nenhum ferimento grave por enquanto.';
 
-    if (hp < 22) {
-      hpTitle = 'À Beira da Morte';
-      hpDesc = 'A visão escurece nas bordas. Mais um ataque será o fim.';
-      pulseDur = '0.46s';
-      heartColor = '#c92828';
-      pulseGlow = 'rgba(220, 38, 38, 0.78)';
-    } else if (hp < 50) {
-      hpTitle = 'Sangrando Gravemente';
-      hpDesc = 'Ferimentos fundos ardem a cada passo. Preciso de bandagens.';
-      pulseDur = '0.68s';
-      heartColor = '#a82929';
-      pulseGlow = 'rgba(195, 42, 42, 0.58)';
-    } else if (hp < 80) {
-      hpTitle = 'Ferido';
-      hpDesc = 'Escoriações e hematomas doloridos, mas ainda consigo correr.';
-      pulseDur = '0.92s';
-      heartColor = '#8f3229';
-      pulseGlow = 'rgba(175, 62, 46, 0.45)';
+    if (hp < 26) {
+      hpLabel = 'Quase morto';
+      hpClass = 'inv-status-val critical';
+      prose =
+        'A vista escurece a cada passo. Não vou sobreviver a outro ataque.';
+    } else if (hp < 52) {
+      hpLabel = 'Muito ferido';
+      hpClass = 'inv-status-val critical';
+      prose =
+        'Cortes fundos ardem sob a roupa. Preciso estancar isso com gaze.';
+    } else if (hp < 82) {
+      hpLabel = 'Machucado';
+      hpClass = 'inv-status-val warn';
+      prose = 'Escoriações doloridas pelo tronco, mas consigo continuar.';
     }
 
-    this.healthTitleEl.textContent = hpTitle;
-    this.healthDescEl.textContent = hpDesc;
-    this.heartSvgEl.style.setProperty('--pulse-dur', pulseDur);
-    this.heartSvgEl.style.setProperty('--pulse-glow', pulseGlow);
-    this.heartPathEl.setAttribute('fill', heartColor);
+    this.healthValEl.className = hpClass;
+    this.healthValEl.textContent = hpLabel;
 
-    // Tags de status ativos
-    const tags: Array<{ text: string; danger?: boolean }> = [];
-    if (v.trappedInWeb) tags.push({ text: 'PRESO NA TEIA', danger: true });
-    if (v.bleeding) tags.push({ text: 'SANGRAMENTO', danger: true });
-    if (v.beingChased) tags.push({ text: 'CAÇADO', danger: true });
-    if (v.crouching) tags.push({ text: 'PASSO FURTIVO [CTRL]' });
-    if (this.hasItem('rusty_knife')) tags.push({ text: 'LÂMINA PRONTA' });
-    if (tags.length === 0) tags.push({ text: 'PULSO ESTÁVEL' });
+    // Estado dos nervos
+    let sanLabel = 'Firmes';
+    let sanClass = 'inv-status-val';
+    if (san < 30) {
+      sanLabel = 'Em pânico';
+      sanClass = 'inv-status-val critical';
+      if (hp >= 52) {
+        prose = 'O coração dispara nos ouvidos. Ela está perto demais.';
+      }
+    } else if (san < 62) {
+      sanLabel = 'Abalados';
+      sanClass = 'inv-status-val warn';
+    } else if (san < 84) {
+      sanLabel = 'Tensos';
+      sanClass = 'inv-status-val';
+    }
 
-    this.vitalTagsEl.innerHTML = tags
-      .map(
-        (t) =>
-          `<span class="vital-tag${t.danger ? ' danger' : ''}">${t.text}</span>`
-      )
+    this.sanityValEl.className = sanClass;
+    this.sanityValEl.textContent = sanLabel;
+    this.proseNoteEl.textContent = prose;
+
+    // Aflições reais — nada de pills decorativas quando saudável!
+    const afflictions: string[] = [];
+    if (v.bleeding) afflictions.push('• sangramento ativo');
+    if (v.trappedInWeb) afflictions.push('• preso em fios de teia');
+    if (v.beingChased) afflictions.push('• passos rápidos atrás de você');
+
+    this.afflictionsEl.innerHTML = afflictions
+      .map((line) => `<div class="inv-affliction-item">${line}</div>`)
       .join('');
 
-    // Sanidade / Nervos
-    this.sanityBarEl.style.width = `${san}%`;
-    let sanTitle = 'Mente Lúcida';
-    let sanDesc = 'Os sentidos permanecem atentos ao silêncio das galerias.';
-    let tremorDur = '3.4s';
-    let irisRadius = '6.8';
-    let irisColor = '#6f7f94';
-
-    if (san < 28) {
-      sanTitle = 'Terror Absoluto';
-      sanDesc = 'O coração martela nos ouvidos. Ela está logo atrás de mim!';
-      tremorDur = '0.26s';
-      irisRadius = '4.4';
-      irisColor = '#b34747';
-    } else if (san < 58) {
-      sanTitle = 'Perturbado';
-      sanDesc = 'Mãos trêmulas. Passos secos ecoam entre paredes e teto.';
-      tremorDur = '0.75s';
-      irisRadius = '5.3';
-      irisColor = '#8f6b64';
-    } else if (san < 82) {
-      sanTitle = 'Inquieto';
-      sanDesc = 'A escuridão pesa. Tenho certeza de que não estou sozinho.';
-      tremorDur = '1.6s';
-      irisRadius = '6.1';
-      irisColor = '#7b808c';
-    }
-
-    this.sanityTitleEl.textContent = sanTitle;
-    this.sanityDescEl.textContent = sanDesc;
-    this.eyeSvgEl.style.setProperty('--tremor-dur', tremorDur);
-    this.eyeIrisEl.setAttribute('r', irisRadius);
-    this.eyeIrisEl.setAttribute('fill', irisColor);
-
-    // Equipamento / Lanterna
-    this.batteryPctEl.textContent = `${bat}%`;
-    this.batteryBarEl.style.width = `${bat}%`;
-    this.gearStateEl.textContent =
-      bat <= 0
-        ? 'Bateria esgotada — use uma Bateria 9V no inventário.'
+    // Medidor físico de 10 células discretas para a lanterna
+    const litCells = Math.round(bat / 10);
+    const lowBattery = bat > 0 && bat <= 22;
+    this.lanternStateEl.textContent =
+      bat <= 0.5
+        ? 'sem carga'
         : v.flashlightEquipped
-          ? 'Empunhada e acesa — consumindo carga lentamente.'
-          : 'Guardada na cintura — pressione [F] para iluminar.';
+          ? 'acesa'
+          : 'guardada';
+
+    let cellsHtml = '';
+    for (let c = 0; c < 10; c++) {
+      const isLit = c < litCells;
+      cellsHtml += `<div class="inv-cell-seg${isLit ? ' lit' : ''}${
+        isLit && lowBattery ? ' low' : ''
+      }"></div>`;
+    }
+    this.lanternCellsEl.innerHTML = cellsHtml;
   }
 
   private renderGrid(): void {
     const occupied = this.slots.filter((s) => s !== null).length;
-    this.slotCounterEl.textContent = `${occupied} / ${TOTAL_SLOTS} espaços`;
+    this.slotCounterEl.textContent = `${occupied} / ${TOTAL_SLOTS}`;
 
     this.gridEl.innerHTML = '';
     for (let i = 0; i < TOTAL_SLOTS; i++) {
       const entry = this.slots[i];
       const slotEl = document.createElement('div');
-      slotEl.className = `amnesia-slot${entry ? ' filled' : ''}${
-        i === this.selectedIndex && entry ? ' selected' : ''
+      slotEl.className = `inv-slot${entry ? ' filled' : ''}${
+        i === this.selectedIndex ? ' selected' : ''
       }`;
 
       if (entry) {
         const iconSrc = this.icons[entry.def.kind];
-        const badge =
-          entry.def.kind === 'lantern'
-            ? this.latestVitals.flashlightEquipped
-              ? 'ACESO'
-              : '[F]'
-            : entry.def.kind === 'knife'
-              ? 'CINTO'
-              : '';
+        const showEquipDot =
+          entry.def.kind === 'lantern' || entry.def.kind === 'knife';
+        const dotActive =
+          (entry.def.kind === 'lantern' &&
+            this.latestVitals.flashlightEquipped) ||
+          entry.def.kind === 'knife';
 
+        slotEl.title = entry.def.name;
         slotEl.innerHTML = `
-          ${badge ? `<span class="amnesia-slot-badge">${badge}</span>` : ''}
           ${
-            entry.quantity > 1
-              ? `<span class="amnesia-slot-qty">x${entry.quantity}</span>`
+            showEquipDot
+              ? `<span class="inv-slot-equip-dot${dotActive ? ' active' : ''}"></span>`
               : ''
           }
-          <img class="amnesia-slot-icon" src="${iconSrc}" alt="${entry.def.name}" />
-          <div class="amnesia-slot-name">${entry.def.name}</div>
+          <img class="inv-slot-sprite" src="${iconSrc}" alt="${entry.def.name}" />
+          ${
+            entry.quantity > 1
+              ? `<span class="inv-slot-qty">×${entry.quantity}</span>`
+              : ''
+          }
         `;
 
         slotEl.addEventListener('mouseenter', () => {
@@ -946,7 +1382,7 @@ export class DoomInventory {
 
         slotEl.addEventListener('click', () => {
           this.selectedIndex = i;
-          this.feedbackMsgEl.textContent = '';
+          this.feedbackEl.textContent = '';
           this.sound.playInventorySelect(true);
           this.renderGrid();
           this.renderInspector();
@@ -957,7 +1393,12 @@ export class DoomInventory {
           this.useSelectedItem();
         });
       } else {
-        slotEl.innerHTML = `<div class="amnesia-slot-empty-mark"></div>`;
+        slotEl.addEventListener('click', () => {
+          this.selectedIndex = i;
+          this.feedbackEl.textContent = '';
+          this.renderGrid();
+          this.renderInspector();
+        });
       }
 
       this.gridEl.appendChild(slotEl);
@@ -966,52 +1407,50 @@ export class DoomInventory {
 
   private renderInspector(): void {
     const entry = this.slots[this.selectedIndex];
-    this.btnRowEl.innerHTML = '';
+    this.actionsEl.innerHTML = '';
 
     if (!entry) {
-      this.inspectorPreviewEl.innerHTML = `<div class="amnesia-slot-empty-mark"></div>`;
-      this.inspectorCatEl.textContent = 'Espaço Vazio';
-      this.inspectorTitleEl.textContent = 'Nenhum Objeto Selecionado';
-      this.inspectorDescEl.textContent =
-        'Explore os corredores e câmaras do labirinto para recolher bandagens, baterias, sinalizadores, ferramentas e registros.';
-      this.inspectorNoteWrapEl.style.display = 'none';
+      this.examineFigureEl.innerHTML = '';
+      this.examineTitleEl.textContent = 'Bolso vazio';
+      this.examineDescEl.textContent =
+        'Nenhum objeto guardado neste espaço. Vasculhe os cantos das galerias para recolher suprimentos.';
+      this.paperExcerptEl.style.display = 'none';
       return;
     }
 
     const { def } = entry;
-    this.inspectorPreviewEl.innerHTML = `<img src="${this.icons[def.kind]}" alt="${def.name}" />`;
-    this.inspectorCatEl.textContent = def.category;
-    this.inspectorTitleEl.textContent =
-      entry.quantity > 1 ? `${def.name} (x${entry.quantity})` : def.name;
-    this.inspectorDescEl.textContent = def.description;
+    this.examineFigureEl.innerHTML = `<img src="${this.icons[def.kind]}" alt="${def.name}" />`;
+    this.examineTitleEl.textContent =
+      entry.quantity > 1 ? `${def.name}  (×${entry.quantity})` : def.name;
+    this.examineDescEl.textContent = def.description;
 
     if (def.noteContent) {
-      this.inspectorNoteWrapEl.style.display = 'block';
-      this.inspectorNoteWrapEl.textContent = def.noteContent;
+      this.paperExcerptEl.style.display = 'block';
+      this.paperExcerptEl.textContent = def.noteContent;
     } else {
-      this.inspectorNoteWrapEl.style.display = 'none';
+      this.paperExcerptEl.style.display = 'none';
     }
 
     if (def.usable) {
       const useBtn = document.createElement('button');
       useBtn.type = 'button';
-      useBtn.className = 'amnesia-action-btn';
-      useBtn.textContent = `[ ${def.actionLabel ?? 'Usar'} ]`;
+      useBtn.className = 'inv-action-btn';
+      useBtn.textContent = def.actionLabel ?? 'Usar';
       useBtn.addEventListener('click', () => this.useSelectedItem());
-      this.btnRowEl.appendChild(useBtn);
+      this.actionsEl.appendChild(useBtn);
     }
 
     if (def.droppable) {
       const dropBtn = document.createElement('button');
       dropBtn.type = 'button';
-      dropBtn.className = 'amnesia-action-btn subtle';
-      dropBtn.textContent = 'Descartar';
+      dropBtn.className = 'inv-action-btn muted';
+      dropBtn.textContent = 'Largar';
       dropBtn.addEventListener('click', () => {
         this.consumeAt(this.selectedIndex, 1);
-        this.feedbackMsgEl.textContent = `${def.name} descartado.`;
+        this.feedbackEl.textContent = `${def.name} deixado para trás.`;
         this.sound.playInventorySelect(true);
       });
-      this.btnRowEl.appendChild(dropBtn);
+      this.actionsEl.appendChild(dropBtn);
     }
   }
 
@@ -1022,7 +1461,9 @@ export class DoomInventory {
 
     if (def.kind === 'lantern') {
       this.callbacks.onToggleFlashlightFromUI();
-      this.feedbackMsgEl.textContent = 'Estado da lanterna alternado.';
+      this.feedbackEl.textContent = this.latestVitals.flashlightEquipped
+        ? 'Lanterna acesa.'
+        : 'Lanterna guardada.';
       this.renderVitals();
       this.renderGrid();
       return;
@@ -1031,39 +1472,39 @@ export class DoomInventory {
     if (def.id === 'sterile_bandage') {
       const used = this.callbacks.onUseHeal(38, 12);
       if (!used) {
-        this.feedbackMsgEl.textContent = 'Você já está sem ferimentos.';
+        this.feedbackEl.textContent = 'Não há cortes para enfaixar agora.';
         this.sound.invalidInput();
         return;
       }
       this.sound.playItemUse('heal');
       this.consumeAt(this.selectedIndex, 1);
-      this.feedbackMsgEl.textContent = 'Ferimentos enfaixados (+Vitalidade).';
+      this.feedbackEl.textContent = 'Ferimentos enfaixados.';
       return;
     }
 
     if (def.id === 'old_morphine') {
       const used = this.callbacks.onUseHeal(62, 42);
       if (!used) {
-        this.feedbackMsgEl.textContent = 'Vitalidade e nervos já estão estáveis.';
+        this.feedbackEl.textContent = 'Seu corpo já está estável.';
         this.sound.invalidInput();
         return;
       }
       this.sound.playItemUse('heal');
       this.consumeAt(this.selectedIndex, 1);
-      this.feedbackMsgEl.textContent = 'Tônico ingerido (+Vitalidade e Calma).';
+      this.feedbackEl.textContent = 'A dor cedeu.';
       return;
     }
 
     if (def.id === 'industrial_battery') {
       const used = this.callbacks.onUseBattery(55);
       if (!used) {
-        this.feedbackMsgEl.textContent = 'A bateria da lanterna já está cheia.';
+        this.feedbackEl.textContent = 'A carga da lanterna já está cheia.';
         this.sound.invalidInput();
         return;
       }
       this.sound.playItemUse('battery');
       this.consumeAt(this.selectedIndex, 1);
-      this.feedbackMsgEl.textContent = 'Carga da lanterna restaurada.';
+      this.feedbackEl.textContent = 'Bateria substituída.';
       return;
     }
 
@@ -1072,8 +1513,7 @@ export class DoomInventory {
       if (used) {
         this.sound.playItemUse('flare');
         this.consumeAt(this.selectedIndex, 1);
-        this.feedbackMsgEl.textContent =
-          'Sinalizador aceso no chão! O calor afasta a criatura.';
+        this.feedbackEl.textContent = 'Bastão de magnésio aceso no chão.';
       }
     }
   }
@@ -1093,6 +1533,8 @@ export class DoomInventory {
   }
 
   destroy(): void {
+    this.stopAnatomyLoop();
+    this.keyNavAbort.abort();
     this.proximityFX.destroy();
     this.overlayEl.remove();
     this.diegeticEl.remove();

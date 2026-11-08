@@ -162,6 +162,7 @@ export class DoomGameApp {
         if (!equipping) {
           this.sound.playFlashlightClick(false);
         }
+        this.syncInventoryVitals();
       },
       onUseHeal: (healAmount, calmAmount) => {
         if (
