@@ -62,28 +62,46 @@ function createOrbTrapWebTexture(): THREE.DataTexture {
   }
   spokeAngles.sort((a, b) => a - b);
 
-  // Pré-calcula segmentos de ancoragem em "Y" nas extremidades dos raios
+  // Pré-calcula segmentos de ancoragem em "Y" nas extremidades dos raios até as bordas reais de fixação
   const forkSegs: Array<[number, number, number, number]> = [];
   const spokeMaxR: number[] = [];
   for (let i = 0; i < numSpokes; i++) {
     const a = spokeAngles[i];
-    // Alcance maior nas diagonais para ancorar naturalmente nos cantos do plano
-    const diagBoost =
-      1 + 0.24 * Math.pow(Math.sin(2 * a), 2);
-    const maxR = Math.min(62, (48 + hash2D(i, 2.3) * 11) * diagBoost);
+    const cosA = Math.cos(a);
+    const sinA = Math.sin(a);
+    const distX =
+      Math.abs(cosA) > 1e-3
+        ? (cosA > 0 ? size - 1 - cx : cx) / Math.abs(cosA)
+        : 999;
+    const distY =
+      Math.abs(sinA) > 1e-3
+        ? (sinA > 0 ? size - 1 - cy : cy) / Math.abs(sinA)
+        : 999;
+    const borderReach = Math.min(distX, distY);
+
+    // Os raios principais e suas bifurcações em "Y" alcançam até a borda de ancoragem (parede/piso/cabo superior),
+    // enquanto os anéis espirais permanecem orgânicos e côncavos mais ao centro!
+    const maxR = borderReach * (0.96 + hash2D(i, 2.3) * 0.04);
     spokeMaxR.push(maxR);
 
-    const forkR = maxR * 0.74;
-    const fx = cx + Math.cos(a) * forkR;
-    const fy = cy + Math.sin(a) * forkR;
+    const ringLimitR = Math.min(58, 47 + hash2D(i, 4.1) * 9);
+    const forkR = Math.min(ringLimitR * 0.82, maxR * 0.72);
+    const fx = cx + cosA * forkR;
+    const fy = cy + sinA * forkR;
     for (const side of [-1, 1]) {
-      const fa = a + side * (0.14 + hash2D(i, side + 5) * 0.07);
-      forkSegs.push([
-        fx,
-        fy,
-        cx + Math.cos(fa) * (maxR + 3),
-        cy + Math.sin(fa) * (maxR + 3),
-      ]);
+      const fa = a + side * (0.13 + hash2D(i, side + 5) * 0.06);
+      const fCos = Math.cos(fa);
+      const fSin = Math.sin(fa);
+      const fDx =
+        Math.abs(fCos) > 1e-3
+          ? (fCos > 0 ? size - 1 - cx : cx) / Math.abs(fCos)
+          : 999;
+      const fDy =
+        Math.abs(fSin) > 1e-3
+          ? (fSin > 0 ? size - 1 - cy : cy) / Math.abs(fSin)
+          : 999;
+      const fReach = Math.min(fDx, fDy);
+      forkSegs.push([fx, fy, cx + fCos * fReach, cy + fSin * fReach]);
     }
   }
 
@@ -417,6 +435,11 @@ function buildCatenarySilkGroup(
   segments = 4
 ): THREE.Group {
   const grp = new THREE.Group();
+  grp.userData = {
+    webPart: 'catenary_cable',
+    anchorA: a.clone(),
+    anchorB: b.clone(),
+  };
   let prev = a.clone();
   const cur = new THREE.Vector3();
   for (let i = 1; i <= segments; i++) {
@@ -428,6 +451,105 @@ function buildCatenarySilkGroup(
     prev = cur.clone();
   }
   return grp;
+}
+
+/**
+ * Constrói uma malha de manto de quina (`sheetWebMat`) ancorada explicitamente em 3 pontos reais:
+ * - `cornerOrigin` (UV 0,0): quina densa onde as duas superfícies sólidas se encontram (ex.: Parede ∩ Piso).
+ * - `edgeAlongU0`  (UV 0,1): extremidade ao longo da superfície sólida A (ex.: subindo rente à parede real).
+ * - `edgeAlongV0`  (UV 1,0): extremidade ao longo da superfície sólida B (ex.: avançando sobre o piso/teto/2ª parede).
+ * A curva catenária aberta da textura conecta `edgeAlongU0` a `edgeAlongV0` sem JAMAIS gerar borda reta flutuando no ar!
+ */
+function buildAnchoredCornerSheet(
+  cornerOrigin: THREE.Vector3,
+  edgeAlongU0: THREE.Vector3,
+  edgeAlongV0: THREE.Vector3,
+  mat: THREE.Material
+): THREE.Mesh {
+  const outer = new THREE.Vector3()
+    .addVectors(edgeAlongU0, edgeAlongV0)
+    .sub(cornerOrigin);
+
+  const positions = new Float32Array([
+    cornerOrigin.x,
+    cornerOrigin.y,
+    cornerOrigin.z,
+    edgeAlongV0.x,
+    edgeAlongV0.y,
+    edgeAlongV0.z,
+    edgeAlongU0.x,
+    edgeAlongU0.y,
+    edgeAlongU0.z,
+    outer.x,
+    outer.y,
+    outer.z,
+  ]);
+  const uvs = new Float32Array([0, 0, 1, 0, 0, 1, 1, 1]);
+  const indices = new Uint16Array([0, 1, 2, 2, 1, 3]);
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+  geo.setIndex(new THREE.BufferAttribute(indices, 1));
+  geo.computeVertexNormals();
+  geo.computeBoundingSphere();
+
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.userData = {
+    webPart: 'anchored_corner_sheet',
+    cornerOrigin: cornerOrigin.clone(),
+    edgeAlongU0: edgeAlongU0.clone(),
+    edgeAlongV0: edgeAlongV0.clone(),
+  };
+  return mesh;
+}
+
+/**
+ * Constrói uma teia orbital (`orbWebMat`) tensionada entre DOIS suportes laterais reais verificados:
+ * - Borda esquerda (`botA -> topA`) ancorada 100% na Parede Sólida A.
+ * - Borda direita  (`botB -> topB`) ancorada 100% na Parede Sólida B.
+ * - Base (`botA -> botB`) rente ao piso sólido.
+ */
+function buildAnchoredOrbQuad(
+  botA: THREE.Vector3,
+  botB: THREE.Vector3,
+  topA: THREE.Vector3,
+  topB: THREE.Vector3,
+  mat: THREE.Material
+): THREE.Mesh {
+  const positions = new Float32Array([
+    botA.x,
+    botA.y,
+    botA.z,
+    botB.x,
+    botB.y,
+    botB.z,
+    topA.x,
+    topA.y,
+    topA.z,
+    topB.x,
+    topB.y,
+    topB.z,
+  ]);
+  const uvs = new Float32Array([0, 0, 1, 0, 0, 1, 1, 1]);
+  const indices = new Uint16Array([0, 1, 2, 2, 1, 3]);
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+  geo.setIndex(new THREE.BufferAttribute(indices, 1));
+  geo.computeVertexNormals();
+  geo.computeBoundingSphere();
+
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.userData = {
+    webPart: 'anchored_orb_quad',
+    botA: botA.clone(),
+    botB: botB.clone(),
+    topA: topA.clone(),
+    topB: topB.clone(),
+  };
+  return mesh;
 }
 
 /**
@@ -519,19 +641,20 @@ export class DoomSpiderWebManager {
   }
 
   /**
-   * Constrói o feixe 3D de fios viscosos que se agarram da armadilha ao tronco do jogador quando preso.
+   * Constrói o feixe 3D de fios viscosos que puxam do manto do piso ao tronco do jogador quando preso
+   * (todas as bases partem 100% do piso real `y = 0.03`, nunca flutuando no ar em corredores abertos).
    */
   private buildPlayerSnareTethers(): void {
     this.playerSnareTetherGroup.visible = false;
     const anchors: Array<[number, number, number, number, number]> = [
-      [-0.95, 0.03, -0.75, -0.26, 0.92],
-      [0.98, 0.03, -0.68, 0.28, 0.86],
-      [-0.88, 0.03, 0.84, -0.24, 0.78],
-      [0.92, 0.03, 0.78, 0.25, 0.96],
-      [-1.12, 0.48, 0.05, -0.3, 1.08],
-      [1.12, 0.52, -0.06, 0.3, 1.04],
-      [0.08, 0.03, -1.05, 0.04, 0.74],
-      [-0.12, 0.03, 1.02, -0.05, 0.82],
+      [-0.86, 0.03, -0.72, -0.26, 0.92],
+      [0.88, 0.03, -0.66, 0.28, 0.86],
+      [-0.82, 0.03, 0.78, -0.24, 0.78],
+      [0.84, 0.03, 0.74, 0.25, 0.96],
+      [-0.92, 0.03, 0.05, -0.3, 1.06],
+      [0.92, 0.03, -0.06, 0.3, 1.02],
+      [0.08, 0.03, -0.94, 0.04, 0.74],
+      [-0.12, 0.03, 0.92, -0.05, 0.82],
     ];
     for (const [ax, ay, az, tx, ty] of anchors) {
       this.playerSnareTetherGroup.add(
@@ -581,30 +704,41 @@ export class DoomSpiderWebManager {
       lairGroup.add(canopy);
     }
 
-    // 3. Mantos de funil nas 4 quinas + cabos catenários curvos 3D
-    const cornerOffsets: Array<[number, number, number]> = [
-      [-1.52, -1.44, 0.72],
-      [1.52, -1.44, -0.72],
-      [-1.52, 1.44, -0.72],
-      [1.52, 1.44, 0.72],
+    // 3. Mantos de funil nas 4 quinas sólidas de pedra (±1.49, ±1.49) varrendo para DENTRO do ninho (sem invadir corredores laterais!)
+    const cornerSigns: Array<[number, number]> = [
+      [-1, -1],
+      [1, -1],
+      [-1, 1],
+      [1, 1],
     ];
-    for (const [cx, cz, rotY] of cornerOffsets) {
-      const drape = new THREE.Mesh(
-        new THREE.PlaneGeometry(2.45, 2.8),
-        this.sheetWebMat
-      );
-      drape.position.set(cx, 1.44, cz);
-      drape.rotation.y = rotY;
-      drape.rotation.x = cz < 0 ? 0.22 : -0.22;
-      // Espelha no lado +X para que o vértice denso (UV 0,0) sempre encoste na quina da parede externa!
-      drape.scale.x = cx > 0 ? -1 : 1;
-      lairGroup.add(drape);
+    for (const [sx, sz] of cornerSigns) {
+      const px = sx * (CELL_SIZE * 0.5 - 0.01);
+      const pz = sz * (CELL_SIZE * 0.5 - 0.01);
 
-      // Cabos curvos catenários ligando piso, colunas e teto
+      // Manto inferior ancorado na aresta vertical da coluna de pedra + piso do ninho
+      lairGroup.add(
+        buildAnchoredCornerSheet(
+          new THREE.Vector3(px, 0.03, pz),
+          new THREE.Vector3(px, 2.48, pz),
+          new THREE.Vector3(sx * 0.28, 0.035, sz * 0.28),
+          this.sheetWebMat
+        )
+      );
+      // Manto superior ancorado na aresta vertical da coluna de pedra + teto do ninho
+      lairGroup.add(
+        buildAnchoredCornerSheet(
+          new THREE.Vector3(px, WALL_HEIGHT - 0.04, pz),
+          new THREE.Vector3(px, 1.56, pz),
+          new THREE.Vector3(sx * 0.24, WALL_HEIGHT - 0.04, sz * 0.24),
+          this.sheetWebMat
+        )
+      );
+
+      // Cabos curvos catenários ligando piso, quinas sólidas de pedra e teto
       lairGroup.add(
         buildCatenarySilkGroup(
-          new THREE.Vector3(cx * 0.62, 0.03, cz * 0.62),
-          new THREE.Vector3(cx * 1.12, WALL_HEIGHT - 0.1, cz * 1.12),
+          new THREE.Vector3(sx * 0.88, 0.03, sz * 0.88),
+          new THREE.Vector3(px, WALL_HEIGHT - 0.1, pz),
           0.14,
           0.013,
           this.silkSolidMat,
@@ -614,7 +748,7 @@ export class DoomSpiderWebManager {
       lairGroup.add(
         buildCatenarySilkGroup(
           new THREE.Vector3(0, WALL_HEIGHT - 0.07, 0),
-          new THREE.Vector3(cx * 1.16, 1.82, cz * 1.16),
+          new THREE.Vector3(px, 1.82, pz),
           0.18,
           0.01,
           this.silkSolidMat,
@@ -798,7 +932,8 @@ export class DoomSpiderWebManager {
       this.ensnaredRemaining = 0;
       this.playerSnareTetherGroup.visible = false;
       if (this.activeSnareTrapGroup) {
-        this.activeSnareTrapGroup.scale.set(0.5, 0.12, 0.5);
+        // Colapsa apenas verticalmente para nunca descolar as âncoras laterais das paredes reais!
+        this.activeSnareTrapGroup.scale.set(1, 0.14, 1);
         this.activeSnareTrapGroup = null;
       }
       this.webSnapBurstSeq++;
@@ -825,7 +960,7 @@ export class DoomSpiderWebManager {
 
       if (dist < 1.25 || toTrap.dot(flatFwd) > 0.35) {
         trap.triggered = true;
-        trap.group.scale.set(0.55, 0.15, 0.55);
+        trap.group.scale.set(1, 0.16, 1);
         const grp = trap.group;
         setTimeout(() => {
           this.root.remove(grp);
@@ -850,6 +985,10 @@ export class DoomSpiderWebManager {
     return Math.max(0, Math.min(1, 1 - d / 1.75)) * 0.92;
   }
 
+  getActiveTraps(): readonly SpiderWebTrap[] {
+    return this.traps;
+  }
+
   hasTrapNear(x: number, z: number, minRadius = 3.2): boolean {
     if (Math.hypot(this.lairCenter.x - x, this.lairCenter.z - z) < 4.2) {
       return true;
@@ -864,10 +1003,22 @@ export class DoomSpiderWebManager {
   }
 
   /**
-   * Cria uma nova armadilha 3D de teia no piso + mantos irregulares laterais + cabos catenários ancorados às paredes.
+   * Cria uma nova armadilha 3D de teia cuja modelagem adapta-se EXATAMENTE às superfícies reais da célula `(gx, gz)`:
+   * - Centraliza na célula para alinhamento milimétrico com paredes (`±1.47m`), piso (`0.025m`) e teto (`3.16m`).
+   * - Corredor reto (2 paredes opostas): teia orbital inclinada ancorada de parede a parede + cabo catenário superior + mantos laterais.
+   * - Curva em "L" (2 paredes adjacentes perpendiculares): teia orbital diagonal ancorada entre as duas paredes reais + manto de quina interna.
+   * - Parede única (bifurcação em "T" / borda de câmara): funis inclinados e cabos catenários da única parede real para o piso/teto (ZERO planos tentando prender no ar!).
+   * - Cruzamento aberto sem paredes cardinais: ancoragem exclusiva nas quinas diagonais sólidas reais e no piso/teto.
    */
   spawnWebTrap(wx: number, wz: number, instant = false): SpiderWebTrap | null {
-    if (this.hasTrapNear(wx, wz, 2.8)) return null;
+    const { gx, gz } = worldToGridCell(wx, wz);
+    if (isSolidCell(LABYRINTH_MAP, gx, gz)) return null;
+
+    const cellCenter = gridCellToWorld(gx, gz);
+    const cx = cellCenter.x;
+    const cz = cellCenter.z;
+
+    if (this.hasTrapNear(cx, cz, 2.8)) return null;
 
     const activeCount = this.traps.filter((t) => !t.triggered).length;
     if (activeCount >= this.maxActiveTraps) {
@@ -880,9 +1031,10 @@ export class DoomSpiderWebManager {
     }
 
     const group = new THREE.Group();
-    group.position.set(wx, 0, wz);
+    group.name = `SpiderWebTrap_${gx}_${gz}`;
+    group.position.set(cx, 0, cz);
 
-    // 1. Teia orbital assimétrica no chão
+    // 1. Teia orbital assimétrica rente ao piso sólido
     const floorWeb = new THREE.Mesh(
       new THREE.PlaneGeometry(2.6, 2.6),
       this.orbWebMat
@@ -890,136 +1042,407 @@ export class DoomSpiderWebManager {
     floorWeb.rotation.x = -Math.PI * 0.5;
     floorWeb.rotation.z = (this.nextTrapId * 0.83) % (Math.PI * 2);
     floorWeb.position.y = 0.026;
+    floorWeb.userData = { webPart: 'floor_orb_web' };
     group.add(floorWeb);
 
-    const { gx, gz } = worldToGridCell(wx, wz);
     const solidN = isSolidCell(LABYRINTH_MAP, gx, gz - 1);
     const solidS = isSolidCell(LABYRINTH_MAP, gx, gz + 1);
     const solidW = isSolidCell(LABYRINTH_MAP, gx - 1, gz);
     const solidE = isSolidCell(LABYRINTH_MAP, gx + 1, gz);
 
-    const nsWallsCount = (solidN ? 1 : 0) + (solidS ? 1 : 0);
-    const ewWallsCount = (solidW ? 1 : 0) + (solidE ? 1 : 0);
+    const WALL_D = CELL_SIZE * 0.5 + 0.01; // 1.51m: crava 1cm dentro da face sólida da parede (±1.50m) eliminando qualquer fresta!
 
-    // Eixo longitudinal do corredor: se há mais paredes a Norte/Sul, o jogador caminha em X (cortina encara X)
-    const corridorFacesX = nsWallsCount > ewWallsCount;
-    const baseYaw = corridorFacesX ? Math.PI * 0.5 : 0;
+    // Helper: adiciona um manto de quina + 2 cabos catenários 100% ancorados numa parede cardinal REAL (wallNx, wallNz) e no piso!
+    const addVerifiedWallDrape = (
+      wallNx: number,
+      wallNz: number,
+      tangentShiftSign: number
+    ): void => {
+      const tx = -wallNz;
+      const tz = wallNx;
 
-    // 2. Cortina inclinada de captura atravessando o corredor na altura dos joelhos/quadril (sempre visível de frente!)
-    const crossSnare = new THREE.Mesh(
-      new THREE.PlaneGeometry(2.35, 1.55),
-      this.orbWebMat
-    );
-    crossSnare.position.set(0, 0.64, 0);
-    crossSnare.rotation.order = 'YXZ';
-    crossSnare.rotation.y = baseYaw + ((this.nextTrapId % 2 === 0 ? 1 : -1) * 0.28);
-    crossSnare.rotation.x = -0.46;
-    group.add(crossSnare);
-
-    // 3. Mantos irregulares de quina + cabos catenários APENAS nas paredes laterais realmente sólidas (nunca flutuando em cruzamentos!)
-    for (const sign of [-1, 1]) {
-      const sideHasWall = !corridorFacesX
-        ? sign < 0
-          ? solidW
-          : solidE
-        : sign < 0
-          ? solidN
-          : solidS;
-      if (!sideHasWall) continue;
-
-      const cornerWeb = new THREE.Mesh(
-        new THREE.PlaneGeometry(1.68, 1.64),
-        this.sheetWebMat
+      const cornerOrigin = new THREE.Vector3(
+        wallNx * WALL_D + tx * (tangentShiftSign * 0.18),
+        0.025,
+        wallNz * WALL_D + tz * (tangentShiftSign * 0.18)
       );
-      cornerWeb.rotation.order = 'YXZ';
-      cornerWeb.scale.x = sign > 0 ? -1 : 1;
+      const wallTop = new THREE.Vector3(
+        wallNx * WALL_D + tx * (tangentShiftSign * 0.28),
+        1.52,
+        wallNz * WALL_D + tz * (tangentShiftSign * 0.28)
+      );
+      const floorInner = new THREE.Vector3(
+        wallNx * 0.08 - tx * (tangentShiftSign * 0.16),
+        0.028,
+        wallNz * 0.08 - tz * (tangentShiftSign * 0.16)
+      );
 
-      if (!corridorFacesX) {
-        cornerWeb.position.set(sign * (CELL_SIZE * 0.28), 0.82, sign * 0.14);
-        cornerWeb.rotation.y = -sign * 0.32;
-        cornerWeb.rotation.x = -0.18;
+      group.add(
+        buildAnchoredCornerSheet(
+          cornerOrigin,
+          wallTop,
+          floorInner,
+          this.sheetWebMat
+        )
+      );
+      group.add(
+        buildCatenarySilkGroup(
+          wallTop,
+          floorInner,
+          0.11,
+          0.009,
+          this.silkSolidMat,
+          3
+        )
+      );
 
+      const secondWallAnchor = new THREE.Vector3(
+        wallNx * WALL_D - tx * (tangentShiftSign * 0.42),
+        1.12,
+        wallNz * WALL_D - tz * (tangentShiftSign * 0.42)
+      );
+      const secondFloorAnchor = new THREE.Vector3(
+        wallNx * 0.22 - tx * (tangentShiftSign * 0.34),
+        0.03,
+        wallNz * 0.22 - tz * (tangentShiftSign * 0.34)
+      );
+      group.add(
+        buildCatenarySilkGroup(
+          secondWallAnchor,
+          secondFloorAnchor,
+          0.09,
+          0.009,
+          this.silkSolidMat,
+          3
+        )
+      );
+    };
+
+    const hasOppositeWE = solidW && solidE;
+    const hasOppositeNS = solidN && solidS;
+
+    if (hasOppositeWE || hasOppositeNS) {
+      // ======================================================================
+      // TOPOLOGIA 1: CORREDOR RETO / BECO COM PAREDES OPOSTAS REAIS
+      // ======================================================================
+      // Se WE são paredes sólidas, o vão transversal vai de -X a +X; caso contrário vai de -Z a +Z.
+      const sideX = hasOppositeWE ? 1 : 0;
+      const sideZ = hasOppositeWE ? 0 : 1;
+      const alongX = hasOppositeWE ? 0 : 1;
+      const alongZ = hasOppositeWE ? 1 : 0;
+      const skew = (this.nextTrapId % 2 === 0 ? 1 : -1) * 0.2;
+
+      const botA = new THREE.Vector3(
+        -sideX * WALL_D + alongX * (0.28 + skew),
+        0.03,
+        -sideZ * WALL_D + alongZ * (0.28 + skew)
+      );
+      const botB = new THREE.Vector3(
+        sideX * WALL_D + alongX * (0.28 - skew),
+        0.03,
+        sideZ * WALL_D + alongZ * (0.28 - skew)
+      );
+      const topA = new THREE.Vector3(
+        -sideX * WALL_D + alongX * (-0.26 + skew),
+        1.48,
+        -sideZ * WALL_D + alongZ * (-0.26 + skew)
+      );
+      const topB = new THREE.Vector3(
+        sideX * WALL_D + alongX * (-0.26 - skew),
+        1.4,
+        sideZ * WALL_D + alongZ * (-0.26 - skew)
+      );
+
+      group.add(buildAnchoredOrbQuad(botA, botB, topA, topB, this.orbWebMat));
+      group.add(
+        buildCatenarySilkGroup(
+          topA,
+          topB,
+          0.18,
+          0.01,
+          this.silkSolidMat,
+          4
+        )
+      );
+
+      if (solidW) addVerifiedWallDrape(-1, 0, 1);
+      if (solidE) addVerifiedWallDrape(1, 0, -1);
+      if (solidN) addVerifiedWallDrape(0, -1, 1);
+      if (solidS) addVerifiedWallDrape(0, 1, -1);
+    } else {
+      const solidWalls: Array<[number, number]> = [];
+      if (solidN) solidWalls.push([0, -1]);
+      if (solidS) solidWalls.push([0, 1]);
+      if (solidW) solidWalls.push([-1, 0]);
+      if (solidE) solidWalls.push([1, 0]);
+
+      if (solidWalls.length === 2) {
+        // ====================================================================
+        // TOPOLOGIA 2: CURVA EM "L" (2 PAREDES ADJACENTES PERPENDICULARES REAIS)
+        // Ancora a teia orbital DIAGONALMENTE da Parede A até a Parede B!
+        // ====================================================================
+        const [ax, az] = solidWalls[0];
+        const [bx, bz] = solidWalls[1];
+
+        const botA = new THREE.Vector3(
+          ax * WALL_D - bx * 0.86,
+          0.03,
+          az * WALL_D - bz * 0.86
+        );
+        const botB = new THREE.Vector3(
+          bx * WALL_D - ax * 0.86,
+          0.03,
+          bz * WALL_D - az * 0.86
+        );
+        const topA = new THREE.Vector3(
+          ax * WALL_D - bx * 0.58,
+          1.48,
+          az * WALL_D - bz * 0.58
+        );
+        const topB = new THREE.Vector3(
+          bx * WALL_D - ax * 0.58,
+          1.4,
+          bz * WALL_D - az * 0.58
+        );
+
+        group.add(buildAnchoredOrbQuad(botA, botB, topA, topB, this.orbWebMat));
         group.add(
           buildCatenarySilkGroup(
-            new THREE.Vector3(-sign * 0.22, 0.04, -0.34),
-            new THREE.Vector3(sign * (CELL_SIZE * 0.48), 1.52, -0.42),
-            0.12,
-            0.009,
+            topA,
+            topB,
+            0.16,
+            0.01,
             this.silkSolidMat,
-            3
+            4
+          )
+        );
+
+        // Manto triangular suspenso bem na quina interna sólida onde Parede A e Parede B se encontram
+        const innerCornerHigh = new THREE.Vector3(
+          (ax + bx) * WALL_D,
+          1.62,
+          (az + bz) * WALL_D
+        );
+        group.add(
+          buildAnchoredCornerSheet(
+            innerCornerHigh,
+            topA,
+            topB,
+            this.sheetWebMat
+          )
+        );
+
+        addVerifiedWallDrape(ax, az, 1);
+        addVerifiedWallDrape(bx, bz, -1);
+      } else if (solidWalls.length === 1) {
+        // ====================================================================
+        // TOPOLOGIA 3: BIFURCAÇÃO EM "T" / BORDA DE SALA (APENAS 1 PAREDE REAL)
+        // ZERO planos verticais soltos no ar! Ancora funis inclinados e cabos
+        // exclusivamente entre a única parede sólida existente, o piso e o teto.
+        // ====================================================================
+        const [wxDir, wzDir] = solidWalls[0];
+        const tx = -wzDir;
+        const tz = wxDir;
+
+        // Funil esquerdo: Parede Sólida -> Piso Sólido
+        const originL = new THREE.Vector3(
+          wxDir * WALL_D - tx * 0.76,
+          0.025,
+          wzDir * WALL_D - tz * 0.76
+        );
+        const wallTopL = new THREE.Vector3(
+          wxDir * WALL_D - tx * 0.5,
+          1.6,
+          wzDir * WALL_D - tz * 0.5
+        );
+        const floorOutL = new THREE.Vector3(
+          -wxDir * 0.58 + tx * 0.34,
+          0.028,
+          -wzDir * 0.58 + tz * 0.34
+        );
+        group.add(
+          buildAnchoredCornerSheet(
+            originL,
+            wallTopL,
+            floorOutL,
+            this.sheetWebMat
           )
         );
         group.add(
           buildCatenarySilkGroup(
-            new THREE.Vector3(0, 0.04, 0.34),
-            new THREE.Vector3(sign * (CELL_SIZE * 0.48), 1.08, 0.42),
-            0.1,
-            0.009,
+            wallTopL,
+            floorOutL,
+            0.14,
+            0.01,
             this.silkSolidMat,
-            3
+            4
           )
         );
+
+        // Funil direito: Parede Sólida -> Piso Sólido
+        const originR = new THREE.Vector3(
+          wxDir * WALL_D + tx * 0.76,
+          0.025,
+          wzDir * WALL_D + tz * 0.76
+        );
+        const wallTopR = new THREE.Vector3(
+          wxDir * WALL_D + tx * 0.5,
+          1.52,
+          wzDir * WALL_D + tz * 0.5
+        );
+        const floorOutR = new THREE.Vector3(
+          -wxDir * 0.58 - tx * 0.34,
+          0.028,
+          -wzDir * 0.58 - tz * 0.34
+        );
+        group.add(
+          buildAnchoredCornerSheet(
+            originR,
+            wallTopR,
+            floorOutR,
+            this.sheetWebMat
+          )
+        );
+        group.add(
+          buildCatenarySilkGroup(
+            wallTopR,
+            floorOutR,
+            0.14,
+            0.01,
+            this.silkSolidMat,
+            4
+          )
+        );
+
+        // Cabo central inclinado da Parede Sólida até o manto do Piso + manto superior Parede-Teto
+        const wallMidHigh = new THREE.Vector3(
+          wxDir * WALL_D,
+          1.76,
+          wzDir * WALL_D
+        );
+        const floorMidOut = new THREE.Vector3(
+          -wxDir * 0.74,
+          0.03,
+          -wzDir * 0.74
+        );
+        group.add(
+          buildCatenarySilkGroup(
+            wallMidHigh,
+            floorMidOut,
+            0.16,
+            0.011,
+            this.silkSolidMat,
+            4
+          )
+        );
+
+        group.add(
+          buildAnchoredCornerSheet(
+            new THREE.Vector3(wxDir * WALL_D, WALL_HEIGHT - 0.04, wzDir * WALL_D),
+            new THREE.Vector3(wxDir * WALL_D, WALL_HEIGHT - 1.15, wzDir * WALL_D),
+            new THREE.Vector3(-wxDir * 0.14, WALL_HEIGHT - 0.04, -wzDir * 0.14),
+            this.sheetWebMat
+          )
+        );
+
+        // Cabos baixos adicionais APENAS para quinas diagonais opostas realmente sólidas
+        for (const diagSign of [-1, 1]) {
+          const dx = -wxDir + tx * diagSign;
+          const dz = -wzDir + tz * diagSign;
+          if (isSolidCell(LABYRINTH_MAP, gx + dx, gz + dz)) {
+            group.add(
+              buildCatenarySilkGroup(
+                new THREE.Vector3(
+                  dx * (CELL_SIZE * 0.5 - 0.01),
+                  0.92,
+                  dz * (CELL_SIZE * 0.5 - 0.01)
+                ),
+                new THREE.Vector3(dx * 0.28, 0.03, dz * 0.28),
+                0.09,
+                0.009,
+                this.silkSolidMat,
+                3
+              )
+            );
+          }
+        }
       } else {
-        cornerWeb.position.set(sign * 0.14, 0.82, sign * (CELL_SIZE * 0.28));
-        cornerWeb.rotation.y = Math.PI * 0.5 - sign * 0.32;
-        cornerWeb.rotation.x = -0.18;
+        // ====================================================================
+        // TOPOLOGIA 4: CRUZAMENTO ABERTO DE 4 VIAS / CÂMARA SEM PAREDES CARDINAIS
+        // Ancora exclusivamente nas quinas diagonais sólidas reais (±1.49, ±1.49)
+        // e no piso/teto — JAMAIS nos vãos abertos!
+        // ====================================================================
+        const diagCorners: Array<[number, number]> = [
+          [-1, -1],
+          [1, -1],
+          [-1, 1],
+          [1, 1],
+        ];
+        let anchoredAnyPillar = false;
+        for (const [dx, dz] of diagCorners) {
+          if (!isSolidCell(LABYRINTH_MAP, gx + dx, gz + dz)) continue;
+          anchoredAnyPillar = true;
+          const px = dx * (CELL_SIZE * 0.5 - 0.01);
+          const pz = dz * (CELL_SIZE * 0.5 - 0.01);
+          const originPillar = new THREE.Vector3(px, 0.025, pz);
+          const pillarHigh = new THREE.Vector3(px, 1.38, pz);
+          const floorHub = new THREE.Vector3(dx * 0.18, 0.028, dz * 0.18);
 
-        group.add(
-          buildCatenarySilkGroup(
-            new THREE.Vector3(-0.34, 0.04, -sign * 0.22),
-            new THREE.Vector3(-0.42, 1.52, sign * (CELL_SIZE * 0.48)),
-            0.12,
-            0.009,
-            this.silkSolidMat,
-            3
-          )
-        );
-        group.add(
-          buildCatenarySilkGroup(
-            new THREE.Vector3(0.34, 0.04, 0),
-            new THREE.Vector3(0.42, 1.08, sign * (CELL_SIZE * 0.48)),
-            0.1,
-            0.009,
-            this.silkSolidMat,
-            3
-          )
-        );
+          group.add(
+            buildAnchoredCornerSheet(
+              originPillar,
+              pillarHigh,
+              floorHub,
+              this.sheetWebMat
+            )
+          );
+          group.add(
+            buildCatenarySilkGroup(
+              pillarHigh,
+              floorHub,
+              0.12,
+              0.0095,
+              this.silkSolidMat,
+              3
+            )
+          );
+        }
+
+        if (!anchoredAnyPillar) {
+          // Fallback puro teto -> piso caso nem pilares diagonais existam
+          for (let k = 0; k < 3; k++) {
+            const ang = (k / 3) * Math.PI * 2 + 0.4;
+            group.add(
+              buildCatenarySilkGroup(
+                new THREE.Vector3(
+                  Math.cos(ang) * 0.45,
+                  WALL_HEIGHT - 0.04,
+                  Math.sin(ang) * 0.45
+                ),
+                new THREE.Vector3(
+                  Math.cos(ang + 0.6) * 0.72,
+                  0.03,
+                  Math.sin(ang + 0.6) * 0.72
+                ),
+                0.08,
+                0.01,
+                this.silkSolidMat,
+                4
+              )
+            );
+          }
+        }
       }
-      group.add(cornerWeb);
     }
 
-    // Cabo superior pendente de parede a parede apenas se AMBAS as paredes opostas existirem!
-    if (!corridorFacesX && solidW && solidE) {
-      group.add(
-        buildCatenarySilkGroup(
-          new THREE.Vector3(-CELL_SIZE * 0.48, 1.56, -0.12),
-          new THREE.Vector3(CELL_SIZE * 0.48, 1.48, 0.14),
-          0.26,
-          0.01,
-          this.silkSolidMat,
-          4
-        )
-      );
-    } else if (corridorFacesX && solidN && solidS) {
-      group.add(
-        buildCatenarySilkGroup(
-          new THREE.Vector3(-0.12, 1.56, -CELL_SIZE * 0.48),
-          new THREE.Vector3(0.14, 1.48, CELL_SIZE * 0.48),
-          0.26,
-          0.01,
-          this.silkSolidMat,
-          4
-        )
-      );
-    }
-
-    const initScale = instant ? 1 : 0.08;
-    group.scale.setScalar(initScale);
+    const initScaleY = instant ? 1 : 0.08;
+    // Escala apenas em Y durante a tecelagem para que as âncoras laterais já fiquem 100% cravadas nas paredes desde o frame 0!
+    group.scale.set(1, initScaleY, 1);
     this.root.add(group);
 
     const trap: SpiderWebTrap = {
       id: this.nextTrapId++,
-      position: new THREE.Vector3(wx, 0.05, wz),
+      position: new THREE.Vector3(cx, 0.05, cz),
       group,
       triggered: false,
       weaveProgress: instant ? 1 : 0.08,
@@ -1076,7 +1499,7 @@ export class DoomSpiderWebManager {
 
       if (trap.weaveProgress < 1) {
         trap.weaveProgress = Math.min(1, trap.weaveProgress + dt * 0.65);
-        trap.group.scale.setScalar(trap.weaveProgress);
+        trap.group.scale.set(1, trap.weaveProgress, 1);
       }
 
       if (trap.weaveProgress < 0.75) continue;
@@ -1087,7 +1510,7 @@ export class DoomSpiderWebManager {
       );
       if (dist < 1.05) {
         trap.triggered = true;
-        trap.group.scale.set(0.82, 0.42, 0.82);
+        trap.group.scale.set(1, 0.36, 1);
         this.activeSnareTrapGroup = trap.group;
         const grp = trap.group;
         setTimeout(() => {

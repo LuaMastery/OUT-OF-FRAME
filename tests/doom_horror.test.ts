@@ -12,6 +12,7 @@ import {
   gridCellToWorld,
   isSolidCell,
   LABYRINTH_MAP,
+  WALL_HEIGHT,
   worldToGridCell,
 } from '../src/doom/DoomMazeBuilder';
 import { createDoomSharedUniforms } from '../src/doom/DoomShader';
@@ -687,5 +688,88 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
     expect(flashlight.rightAstronautArm.metadata.currentlyInUse).toBe(false);
     expect(flashlight.leftAstronautArm.metadata.currentlyInUse).toBe(false);
     expect(flashlight.isLeftArmAnimating).toBe(false);
+  });
+
+  it('ancora 100% da modelagem 3D das armadilhas de teia apenas em paredes, colunas, piso e teto realmente existentes em todas as células do mapa', () => {
+    const baseScene = new THREE.Scene();
+    const shared = createDoomSharedUniforms();
+    const textures = createDoomTextures();
+    const maze = buildDoomLabyrinth(baseScene, textures, shared);
+    const clampTmp = new THREE.Vector3();
+
+    const distToNearestSolidSurface = (ptWorld: THREE.Vector3): number => {
+      let minD = Math.min(
+        Math.abs(ptWorld.y),
+        Math.abs(WALL_HEIGHT - ptWorld.y)
+      );
+      for (const col of maze.colliders) {
+        col.box.clampPoint(ptWorld, clampTmp);
+        const d = clampTmp.distanceTo(ptWorld);
+        if (d < minD) minD = d;
+      }
+      return minD;
+    };
+
+    let testedCells = 0;
+    let verifiedAnchorPoints = 0;
+
+    for (let gz = 0; gz < LABYRINTH_MAP.length; gz++) {
+      for (let gx = 0; gx < LABYRINTH_MAP[gz].length; gx++) {
+        if (isSolidCell(LABYRINTH_MAP, gx, gz)) continue;
+
+        const cellScene = new THREE.Scene();
+        const wm = new DoomSpiderWebManager(cellScene, shared);
+        const w = gridCellToWorld(gx, gz);
+        // Testa também chamada levemente deslocada do centro e tecelagem progressiva (instant = false)
+        const trap = wm.spawnWebTrap(w.x + 0.18, w.z - 0.14, false);
+        if (!trap) continue;
+
+        testedCells++;
+        // Mesmo durante a tecelagem (weaveProgress < 1), X e Z permanecem 1.0 (cravados nas paredes!)
+        expect(trap.group.scale.x).toBe(1);
+        expect(trap.group.scale.z).toBe(1);
+
+        trap.group.scale.set(1, 1, 1);
+        trap.group.updateMatrixWorld(true);
+
+        trap.group.traverse((obj) => {
+          const ud = obj.userData as Record<string, THREE.Vector3 | string>;
+          const assertAnchored = (localPt: THREE.Vector3) => {
+            const worldPt = localPt.clone().applyMatrix4(trap.group.matrixWorld);
+            const dist = distToNearestSolidSurface(worldPt);
+            expect(dist).toBeLessThanOrEqual(0.05);
+            verifiedAnchorPoints++;
+          };
+
+          if (ud.webPart === 'catenary_cable') {
+            assertAnchored(ud.anchorA as THREE.Vector3);
+            assertAnchored(ud.anchorB as THREE.Vector3);
+          } else if (ud.webPart === 'anchored_corner_sheet') {
+            const c0 = ud.cornerOrigin as THREE.Vector3;
+            const u0 = ud.edgeAlongU0 as THREE.Vector3;
+            const v0 = ud.edgeAlongV0 as THREE.Vector3;
+            assertAnchored(c0);
+            assertAnchored(u0);
+            assertAnchored(v0);
+            assertAnchored(c0.clone().lerp(u0, 0.5));
+            assertAnchored(c0.clone().lerp(v0, 0.5));
+          } else if (ud.webPart === 'anchored_orb_quad') {
+            const bA = ud.botA as THREE.Vector3;
+            const bB = ud.botB as THREE.Vector3;
+            const tA = ud.topA as THREE.Vector3;
+            const tB = ud.topB as THREE.Vector3;
+            assertAnchored(bA);
+            assertAnchored(bB);
+            assertAnchored(tA);
+            assertAnchored(tB);
+            assertAnchored(bA.clone().lerp(tA, 0.5));
+            assertAnchored(bB.clone().lerp(tB, 0.5));
+          }
+        });
+      }
+    }
+
+    expect(testedCells).toBeGreaterThan(95);
+    expect(verifiedAnchorPoints).toBeGreaterThan(2500);
   });
 });

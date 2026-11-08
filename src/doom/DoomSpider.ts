@@ -1041,6 +1041,7 @@ export class DoomSpider {
           } else if (
             this.webCooldownTimer <= 0 &&
             distToPlayer > 7.5 &&
+            this.hasWallForWebAt(this.bodyPos.x, this.bodyPos.z) &&
             !this.webManager.hasTrapNear(this.bodyPos.x, this.bodyPos.z, 3.6) &&
             Math.random() < 0.38
           ) {
@@ -1070,6 +1071,17 @@ export class DoomSpider {
       cameraShakeAmount,
       playerDistance: distToPlayer,
     };
+  }
+
+  private hasWallForWebAt(wx: number, wz: number): boolean {
+    const { gx, gz } = worldToGridCell(wx, wz);
+    if (isSolidCell(LABYRINTH_MAP, gx, gz)) return false;
+    return (
+      isSolidCell(LABYRINTH_MAP, gx, gz - 1) ||
+      isSolidCell(LABYRINTH_MAP, gx, gz + 1) ||
+      isSolidCell(LABYRINTH_MAP, gx - 1, gz) ||
+      isSolidCell(LABYRINTH_MAP, gx + 1, gz)
+    );
   }
 
   private triggerAlertScream(stereoPan: number, distToPlayer: number): void {
