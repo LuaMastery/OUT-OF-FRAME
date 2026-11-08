@@ -132,6 +132,63 @@
   min-width: 320px;
 }
 
+.tui-window.opening .tui-window-body {
+  animation: tuiBodyStepReveal 110ms steps(2, end);
+}
+
+@keyframes tuiBodyStepReveal {
+  0% {
+    opacity: 0;
+  }
+  50% {
+    opacity: 0.45;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+/* Camada de quadros em degraus retrô (estilo ZoomRect DOS / Terminal) */
+#tui-zoom-layer {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 92;
+  overflow: hidden;
+}
+
+.tui-zoom-rect {
+  position: fixed;
+  box-sizing: border-box;
+  pointer-events: none;
+}
+
+.tui-zoom-rect.trail {
+  border: 1px dashed #6e6e6e;
+  background: transparent;
+}
+
+.tui-zoom-rect.current {
+  border: 1px solid #e5e5e5;
+  background: rgba(0, 0, 0, 0.72);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.tui-zoom-rect-header {
+  height: 24px;
+  padding: 2px 8px;
+  background: #e5e5e5;
+  color: #000000;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
 .tui-window.focused {
   border-color: #ffffff;
 }
@@ -235,6 +292,23 @@
 
 .tui-start-popup.open {
   display: flex;
+  transform-origin: bottom left;
+  animation: tuiMenuStepOpen 105ms steps(3, end);
+}
+
+@keyframes tuiMenuStepOpen {
+  0% {
+    transform: scaleY(0.25);
+    opacity: 0.35;
+  }
+  60% {
+    transform: scaleY(0.72);
+    opacity: 0.8;
+  }
+  100% {
+    transform: scaleY(1);
+    opacity: 1;
+  }
 }
 
 .tui-start-item {
@@ -284,6 +358,23 @@
   font-size: 13px;
   padding: 2px 10px;
   cursor: var(--cursor-pointer);
+}
+
+.tui-task-btn.tab-opening {
+  animation: tuiTabStepIn 120ms steps(3, end);
+}
+
+@keyframes tuiTabStepIn {
+  0% {
+    transform: scaleX(0.35);
+    transform-origin: left center;
+    opacity: 0.4;
+  }
+  100% {
+    transform: scaleX(1);
+    transform-origin: left center;
+    opacity: 1;
+  }
 }
 
 .tui-task-btn:hover,

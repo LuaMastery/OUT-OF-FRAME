@@ -98,6 +98,7 @@ export class TerminalBootController {
   private startBtnEl!: HTMLButtonElement;
   private taskWindowsEl!: HTMLElement;
   private clockEl!: HTMLElement;
+  private zoomLayerEl!: HTMLElement;
 
   private hiddenInputEl!: HTMLInputElement;
   private typedSpanEl: HTMLElement | null = null;
@@ -108,6 +109,11 @@ export class TerminalBootController {
   private selectedIconIndex = 0;
   private startMenuOpen = false;
   private windows = new Map<'terminal' | 'notas', OpenWindowState>();
+  private openingWindows = new Set<'terminal' | 'notas'>();
+  private openingProgram = false;
+  private transientTaskTab: string | null = null;
+  private newlyOpenedTabId: string | null = null;
+  private zoomTimers: number[] = [];
   private focusedWindowId: 'terminal' | 'notas' | null = null;
   private topZ = 10;
   private clockIntervalId = 0;
@@ -198,11 +204,15 @@ export class TerminalBootController {
     this.canvasEl = document.createElement('canvas');
     this.canvasEl.id = 'binary-ui-canvas';
 
+    this.zoomLayerEl = document.createElement('div');
+    this.zoomLayerEl.id = 'tui-zoom-layer';
+
     this.rootEl.append(
       this.bootLayerEl,
       this.desktopEl,
       this.hiddenInputEl,
-      this.canvasEl
+      this.canvasEl,
+      this.zoomLayerEl
     );
     this.mountParent.appendChild(this.rootEl);
 
@@ -223,6 +233,7 @@ export class TerminalBootController {
       iconEl.className =
         index === this.selectedIconIndex ? 'tui-icon selected' : 'tui-icon';
       iconEl.dataset.index = String(index);
+      iconEl.dataset.itemId = item.id;
 
       const glyphEl = document.createElement('div');
       glyphEl.className = 'tui-icon-glyph';
@@ -622,93 +633,241 @@ export class TerminalBootController {
     }
   }
 
+  private getIconScreenRect(id: DesktopItemId): {
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+  } {
+    const el = this.iconGridEl.querySelector(
+      `[data-item-id="${id}"]`
+    ) as HTMLElement | null;
+    if (el) {
+      const r = el.getBoundingClientRect();
+      if (r.width > 0 && r.height > 0) {
+        return { x: r.left, y: r.top, w: r.width, h: r.height };
+      }
+    }
+    return { x: 36, y: 36, w: 120, h: 72 };
+  }
+
+  private clearZoomLayer(): void {
+    for (const id of this.zoomTimers) {
+      window.clearTimeout(id);
+    }
+    this.zoomTimers = [];
+    if (this.zoomLayerEl) {
+      this.zoomLayerEl.innerHTML = '';
+    }
+  }
+
+  /**
+   * Animação retrô em degraus (estilo ZoomRect DOS / Terminal):
+   * desenha quadros discretos interpolados do retângulo inicial até o final,
+   * deixando 1 quadro fantasma pontilhado atrás e avançando em passos nítidos.
+   */
+  private runSteppedFrameSequence(opts: {
+    from: { x: number; y: number; w: number; h: number };
+    to: { x: number; y: number; w: number; h: number };
+    steps: number;
+    stepMs: number;
+    title: string;
+    expanding: boolean;
+    onComplete: () => void;
+  }): void {
+    const { from, to, steps, stepMs, title, expanding, onComplete } = opts;
+    const snap = (v: number) => Math.round(v / 4) * 4;
+
+    let prevBox: { x: number; y: number; w: number; h: number } | null = null;
+
+    for (let k = 0; k < steps; k++) {
+      const tid = window.setTimeout(() => {
+        const u = (k + 1) / steps;
+        const cur = {
+          x: k === steps - 1 ? Math.round(to.x) : snap(from.x + (to.x - from.x) * u),
+          y: k === steps - 1 ? Math.round(to.y) : snap(from.y + (to.y - from.y) * u),
+          w: Math.max(
+            24,
+            k === steps - 1 ? Math.round(to.w) : snap(from.w + (to.w - from.w) * u)
+          ),
+          h: Math.max(
+            18,
+            k === steps - 1 ? Math.round(to.h) : snap(from.h + (to.h - from.h) * u)
+          ),
+        };
+
+        this.zoomLayerEl.innerHTML = '';
+
+        if (prevBox) {
+          const trailEl = document.createElement('div');
+          trailEl.className = 'tui-zoom-rect trail';
+          trailEl.style.left = `${prevBox.x}px`;
+          trailEl.style.top = `${prevBox.y}px`;
+          trailEl.style.width = `${prevBox.w}px`;
+          trailEl.style.height = `${prevBox.h}px`;
+          this.zoomLayerEl.appendChild(trailEl);
+        }
+
+        const curEl = document.createElement('div');
+        curEl.className = 'tui-zoom-rect current';
+        curEl.style.left = `${cur.x}px`;
+        curEl.style.top = `${cur.y}px`;
+        curEl.style.width = `${cur.w}px`;
+        curEl.style.height = `${cur.h}px`;
+
+        if (cur.w >= 136 && cur.h >= 42) {
+          const hdr = document.createElement('div');
+          hdr.className = 'tui-zoom-rect-header';
+          const leftSpan = document.createElement('span');
+          leftSpan.textContent = `[ ${title} ]`;
+          const rightSpan = document.createElement('span');
+          rightSpan.textContent = '[X]';
+          hdr.append(leftSpan, rightSpan);
+          curEl.appendChild(hdr);
+        }
+
+        this.zoomLayerEl.appendChild(curEl);
+        prevBox = cur;
+        this.sound.windowFrameStep(k, steps, expanding);
+      }, k * stepMs);
+
+      this.zoomTimers.push(tid);
+    }
+
+    const doneId = window.setTimeout(() => {
+      this.zoomLayerEl.innerHTML = '';
+      onComplete();
+    }, steps * stepMs);
+    this.zoomTimers.push(doneId);
+  }
+
   private openOrFocusWindow(id: 'terminal' | 'notas'): void {
     const existing = this.windows.get(id);
     if (existing) {
       this.focusWindow(id);
       return;
     }
-
-    this.sound.windowOpen();
-    const winEl = document.createElement('div');
-    winEl.className = 'tui-window';
+    if (this.openingWindows.has(id)) return;
+    this.openingWindows.add(id);
 
     const isCmd = id === 'terminal';
     const title = isCmd ? 'terminal' : 'notas.txt';
+    const winW = isCmd ? 480 : 400;
+    const winH = isCmd ? 290 : 210;
 
-    winEl.style.width = isCmd ? '480px' : '400px';
-    winEl.style.height = isCmd ? '290px' : '210px';
-    winEl.style.left = isCmd ? '220px' : '260px';
-    winEl.style.top = isCmd ? '48px' : '96px';
+    const wsRect = this.workspaceEl.getBoundingClientRect();
+    const targetLeft = Math.min(
+      isCmd ? 220 : 260,
+      Math.max(12, wsRect.width - winW - 12)
+    );
+    const targetTop = Math.min(
+      isCmd ? 48 : 96,
+      Math.max(12, wsRect.height - winH - 12)
+    );
 
-    const titlebar = document.createElement('div');
-    titlebar.className = 'tui-window-titlebar';
-
-    const titleSpan = document.createElement('span');
-    titleSpan.textContent = `[ ${title} ]`;
-
-    const closeBtn = document.createElement('button');
-    closeBtn.type = 'button';
-    closeBtn.className = 'tui-window-close';
-    closeBtn.textContent = '[X]';
-    closeBtn.addEventListener('mousedown', (e) => e.stopPropagation());
-    closeBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      this.closeWindow(id);
-    });
-
-    titlebar.append(titleSpan, closeBtn);
-
-    const bodyEl = document.createElement('div');
-    bodyEl.className = isCmd
-      ? 'tui-window-body tui-cmd-body'
-      : 'tui-window-body';
-
-    winEl.append(titlebar, bodyEl);
-    this.workspaceEl.appendChild(winEl);
-
-    winEl.addEventListener('mousedown', (e) => {
-      e.stopPropagation();
-      this.closeStartMenu();
-      this.focusWindow(id);
-    });
-
-    titlebar.addEventListener('mousedown', (e) => {
-      if (e.button !== 0) return;
-      this.closeStartMenu();
-      this.focusWindow(id);
-      const rect = winEl.getBoundingClientRect();
-      this.draggingWin = {
-        el: winEl,
-        offsetX: e.clientX - rect.left,
-        offsetY: e.clientY - rect.top,
-      };
-    });
-
-    const state: OpenWindowState = {
-      id,
-      title,
-      el: winEl,
-      bodyEl,
-      z: ++this.topZ,
+    const fromRect = this.getIconScreenRect(id);
+    const toRect = {
+      x: wsRect.left + targetLeft,
+      y: wsRect.top + targetTop,
+      w: winW,
+      h: winH,
     };
-    winEl.style.zIndex = String(state.z);
-    this.windows.set(id, state);
 
-    if (isCmd) {
-      this.appendCmdLine(bodyEl, 'Digite "ajuda" para ver os comandos.');
-      this.openCmdPrompt(bodyEl);
-    } else {
-      bodyEl.textContent =
-        'ARQUIVO: notas.txt\n' +
-        '------------------------------------\n' +
-        'Sistema operacional em modo terminal.\n\n' +
-        'Aplicativo disponível:\n' +
-        '- out_of_frame.exe (em desenvolvimento)';
-    }
+    this.runSteppedFrameSequence({
+      from: fromRect,
+      to: toRect,
+      steps: 5,
+      stepMs: 36,
+      title,
+      expanding: true,
+      onComplete: () => {
+        this.openingWindows.delete(id);
+        if (this.phase !== 'desktop') return;
 
-    this.focusWindow(id);
-    this.renderTaskbarWindows();
+        this.sound.windowOpen();
+        const winEl = document.createElement('div');
+        winEl.className = 'tui-window opening';
+
+        winEl.style.width = `${winW}px`;
+        winEl.style.height = `${winH}px`;
+        winEl.style.left = `${targetLeft}px`;
+        winEl.style.top = `${targetTop}px`;
+
+        window.setTimeout(() => {
+          winEl.classList.remove('opening');
+        }, 140);
+
+        const titlebar = document.createElement('div');
+        titlebar.className = 'tui-window-titlebar';
+
+        const titleSpan = document.createElement('span');
+        titleSpan.textContent = `[ ${title} ]`;
+
+        const closeBtn = document.createElement('button');
+        closeBtn.type = 'button';
+        closeBtn.className = 'tui-window-close';
+        closeBtn.textContent = '[X]';
+        closeBtn.addEventListener('mousedown', (e) => e.stopPropagation());
+        closeBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.closeWindow(id);
+        });
+
+        titlebar.append(titleSpan, closeBtn);
+
+        const bodyEl = document.createElement('div');
+        bodyEl.className = isCmd
+          ? 'tui-window-body tui-cmd-body'
+          : 'tui-window-body';
+
+        winEl.append(titlebar, bodyEl);
+        this.workspaceEl.appendChild(winEl);
+
+        winEl.addEventListener('mousedown', (e) => {
+          e.stopPropagation();
+          this.closeStartMenu();
+          this.focusWindow(id);
+        });
+
+        titlebar.addEventListener('mousedown', (e) => {
+          if (e.button !== 0) return;
+          this.closeStartMenu();
+          this.focusWindow(id);
+          const rect = winEl.getBoundingClientRect();
+          this.draggingWin = {
+            el: winEl,
+            offsetX: e.clientX - rect.left,
+            offsetY: e.clientY - rect.top,
+          };
+        });
+
+        const state: OpenWindowState = {
+          id,
+          title,
+          el: winEl,
+          bodyEl,
+          z: ++this.topZ,
+        };
+        winEl.style.zIndex = String(state.z);
+        this.windows.set(id, state);
+
+        if (isCmd) {
+          this.appendCmdLine(bodyEl, 'Digite "ajuda" para ver os comandos.');
+          this.openCmdPrompt(bodyEl);
+        } else {
+          bodyEl.textContent =
+            'ARQUIVO: notas.txt\n' +
+            '------------------------------------\n' +
+            'Sistema operacional em modo terminal.\n\n' +
+            'Aplicativo disponível:\n' +
+            '- out_of_frame.exe (em desenvolvimento)';
+        }
+
+        this.newlyOpenedTabId = id;
+        this.focusWindow(id);
+        this.newlyOpenedTabId = null;
+      },
+    });
   }
 
   private focusWindow(id: 'terminal' | 'notas' | null): void {
@@ -736,6 +895,10 @@ export class TerminalBootController {
     const state = this.windows.get(id);
     if (!state) return;
 
+    const r = state.el.getBoundingClientRect();
+    const fromRect = { x: r.left, y: r.top, w: r.width, h: r.height };
+    const toRect = this.getIconScreenRect(id);
+
     this.sound.keyBackspace();
     state.el.remove();
     this.windows.delete(id);
@@ -755,6 +918,16 @@ export class TerminalBootController {
     } else {
       this.renderTaskbarWindows();
     }
+
+    this.runSteppedFrameSequence({
+      from: fromRect,
+      to: toRect,
+      steps: 4,
+      stepMs: 28,
+      title: state.title,
+      expanding: false,
+      onComplete: () => {},
+    });
   }
 
   private renderTaskbarWindows(): void {
@@ -762,8 +935,14 @@ export class TerminalBootController {
     for (const [id, state] of this.windows.entries()) {
       const btn = document.createElement('button');
       btn.type = 'button';
-      btn.className =
-        this.focusedWindowId === id ? 'tui-task-btn active' : 'tui-task-btn';
+      const classes = ['tui-task-btn'];
+      if (this.focusedWindowId === id && !this.transientTaskTab) {
+        classes.push('active');
+      }
+      if (this.newlyOpenedTabId === id) {
+        classes.push('tab-opening');
+      }
+      btn.className = classes.join(' ');
       btn.textContent = state.title;
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -772,6 +951,14 @@ export class TerminalBootController {
         this.focusWindow(id);
       });
       this.taskWindowsEl.appendChild(btn);
+    }
+
+    if (this.transientTaskTab) {
+      const appBtn = document.createElement('button');
+      appBtn.type = 'button';
+      appBtn.className = 'tui-task-btn active tab-opening';
+      appBtn.textContent = this.transientTaskTab;
+      this.taskWindowsEl.appendChild(appBtn);
     }
   }
 
@@ -876,6 +1063,9 @@ export class TerminalBootController {
   }
 
   private shutdownSystem(): void {
+    this.clearZoomLayer();
+    this.openingProgram = false;
+    this.transientTaskTab = null;
     this.phase = 'powered_off';
     this.closeStartMenu();
     this.hiddenInputEl.blur();
@@ -896,30 +1086,122 @@ export class TerminalBootController {
 
   /**
    * 3. Abre o aplicativo `out_of_frame.exe`:
-   *    mostra que ainda está em desenvolvimento e junta os dígitos binários na interface Superhot.
+   *    1º expande em quadros retrô do ícone para uma janela/aba `[ out_of_frame.exe ]` na Área de Trabalho;
+   *    2º expande em quadros retrô da janela para a tela cheia e inicia a convergência binária Superhot.
    */
   private startProgramSequence(): void {
-    this.phase = 'program_starting';
+    if (this.openingProgram || this.phase !== 'desktop') return;
+    this.openingProgram = true;
     this.closeStartMenu();
     this.hiddenInputEl.blur();
 
-    this.setupCanvasMetrics();
-    this.rebuildBinaryBlueprint(false);
-    this.canvasEl.classList.add('active');
-    this.sound.startBinaryProgramSequence();
+    const wsRect = this.workspaceEl.getBoundingClientRect();
+    const midW = Math.min(520, Math.max(280, wsRect.width - 48));
+    const midH = Math.min(280, Math.max(180, wsRect.height - 48));
+    const midLocalLeft = Math.floor((wsRect.width - midW) * 0.5);
+    const midLocalTop = Math.floor((wsRect.height - midH) * 0.5);
 
-    this.coalescingStart = performance.now();
-    const tick = (now: number) => {
-      if (
-        this.phase !== 'program_starting' &&
-        this.phase !== 'binary_interface'
-      ) {
-        return;
-      }
-      this.renderBinaryFrame(now);
-      this.rafId = requestAnimationFrame(tick);
+    const iconRect = this.getIconScreenRect('out_of_frame');
+    const midScreenRect = {
+      x: wsRect.left + midLocalLeft,
+      y: wsRect.top + midLocalTop,
+      w: midW,
+      h: midH,
     };
-    this.rafId = requestAnimationFrame(tick);
+
+    // Etapa 1: Quadros DOS expandindo do ícone até a janela/aba [ out_of_frame.exe ]
+    this.runSteppedFrameSequence({
+      from: iconRect,
+      to: midScreenRect,
+      steps: 4,
+      stepMs: 36,
+      title: 'out_of_frame.exe',
+      expanding: true,
+      onComplete: () => {
+        if (this.phase !== 'desktop') {
+          this.openingProgram = false;
+          return;
+        }
+
+        this.sound.windowOpen();
+        this.transientTaskTab = 'out_of_frame.exe';
+        this.renderTaskbarWindows();
+
+        // Mostra brevemente a janela/aba do aplicativo aberta antes de maximizar
+        const appWinEl = document.createElement('div');
+        appWinEl.className = 'tui-window focused opening';
+        appWinEl.style.width = `${midW}px`;
+        appWinEl.style.height = `${midH}px`;
+        appWinEl.style.left = `${midLocalLeft}px`;
+        appWinEl.style.top = `${midLocalTop}px`;
+        appWinEl.style.zIndex = String(++this.topZ);
+
+        const tb = document.createElement('div');
+        tb.className = 'tui-window-titlebar';
+        tb.innerHTML = '<span>[ out_of_frame.exe ]</span><span>[□] [X]</span>';
+
+        const body = document.createElement('div');
+        body.className = 'tui-window-body';
+        body.textContent = '> Executando out_of_frame.exe...';
+
+        appWinEl.append(tb, body);
+        this.workspaceEl.appendChild(appWinEl);
+
+        const latchId = window.setTimeout(() => {
+          appWinEl.remove();
+          if (this.phase !== 'desktop') {
+            this.openingProgram = false;
+            this.transientTaskTab = null;
+            this.renderTaskbarWindows();
+            return;
+          }
+
+          // Etapa 2: Maximiza em quadros retrô até ocupar 100% da tela!
+          const fullRect = {
+            x: 0,
+            y: 0,
+            w: window.innerWidth,
+            h: window.innerHeight,
+          };
+
+          this.runSteppedFrameSequence({
+            from: midScreenRect,
+            to: fullRect,
+            steps: 5,
+            stepMs: 38,
+            title: 'out_of_frame.exe',
+            expanding: true,
+            onComplete: () => {
+              this.openingProgram = false;
+              this.transientTaskTab = null;
+              this.renderTaskbarWindows();
+              if (this.phase !== 'desktop') return;
+
+              this.phase = 'program_starting';
+              this.setupCanvasMetrics();
+              this.rebuildBinaryBlueprint(false);
+              this.canvasEl.classList.add('active');
+              this.sound.startBinaryProgramSequence();
+
+              this.coalescingStart = performance.now();
+              const tick = (now: number) => {
+                if (
+                  this.phase !== 'program_starting' &&
+                  this.phase !== 'binary_interface'
+                ) {
+                  return;
+                }
+                this.renderBinaryFrame(now);
+                this.rafId = requestAnimationFrame(tick);
+              };
+              this.rafId = requestAnimationFrame(tick);
+            },
+          });
+        }, 160);
+
+        this.zoomTimers.push(latchId);
+      },
+    });
   }
 
   private returnToDesktopFromBinary(): void {
@@ -929,9 +1211,27 @@ export class TerminalBootController {
     this.canvasEl.classList.remove('cursor-pointer');
     this.phase = 'desktop';
     this.sound.keyBackspace();
-    if (this.focusedWindowId === 'terminal') {
-      window.setTimeout(() => this.hiddenInputEl.focus(), 0);
-    }
+
+    const fullRect = {
+      x: 0,
+      y: 0,
+      w: window.innerWidth,
+      h: window.innerHeight,
+    };
+    const iconRect = this.getIconScreenRect('out_of_frame');
+    this.runSteppedFrameSequence({
+      from: fullRect,
+      to: iconRect,
+      steps: 5,
+      stepMs: 30,
+      title: 'out_of_frame.exe',
+      expanding: false,
+      onComplete: () => {
+        if (this.focusedWindowId === 'terminal') {
+          window.setTimeout(() => this.hiddenInputEl.focus(), 0);
+        }
+      },
+    });
   }
 
   private setupCanvasMetrics(): void {
@@ -1213,6 +1513,7 @@ export class TerminalBootController {
 
   destroy(disposeAudio = false): void {
     this.clearTimers();
+    this.clearZoomLayer();
     if (this.clockIntervalId) window.clearInterval(this.clockIntervalId);
     cancelAnimationFrame(this.rafId);
     window.removeEventListener('keydown', this.boundKeyCapture, true);

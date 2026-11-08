@@ -428,6 +428,37 @@ export class SoundEngine {
     osc.stop(now + 0.065);
   }
 
+  /** Estalido discreto em degraus para cada quadro da moldura DOS expandindo/recolhendo */
+  windowFrameStep(
+    stepIndex: number,
+    totalSteps: number,
+    expanding = true
+  ): void {
+    if (!this.isRunning() || !this.ctx || !this.terminalBus) return;
+    const now = this.ctx.currentTime;
+    const u =
+      totalSteps > 1 ? stepIndex / (totalSteps - 1) : expanding ? 1 : 0;
+    const ratio = expanding ? u : 1 - u;
+
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'square';
+    osc.frequency.setValueAtTime(220 + ratio * 310, now);
+
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.value = 1250;
+
+    gain.gain.setValueAtTime(0.024, now);
+    gain.gain.exponentialRampToValueAtTime(0.0008, now + 0.018);
+
+    osc.connect(filter);
+    filter.connect(gain);
+    gain.connect(this.terminalBus);
+    osc.start(now);
+    osc.stop(now + 0.02);
+  }
+
   invalidInput(): void {
     if (!this.isRunning() || !this.ctx || !this.terminalBus) return;
     const now = this.ctx.currentTime;
