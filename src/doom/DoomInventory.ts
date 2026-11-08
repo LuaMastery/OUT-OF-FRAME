@@ -759,16 +759,593 @@ function renderAnatomyCanvas(
     }
   }
 
-  // 7. FIOS DE SEDA ORGÂNICOS EM CATENÁRIA SE PRESO NA TEIA
+  // 7. FIOS DE SEDA ORGÂNICOS ENTRECRUZADOS E CABOS DE ANCORAGEM SE PRESO NA TEIA
   if (vitals.trappedInWeb) {
-    for (let dx = -24; dx <= 24; dx++) {
-      const f = dx / 24;
-      const sag1 = Math.round(76 + f * 5 + (1 - f * f) * 4);
-      const sag2 = Math.round(87 - f * 6 + (1 - f * f) * 3);
-      if (Math.abs(dx) % 2 === 0) px(cx + dx, sag1, '#babfb4');
-      if (Math.abs(dx + 1) % 3 !== 0) px(cx + dx, sag2, '#8d9188');
+    const drawXRaySilk = (
+      x0: number,
+      y0: number,
+      mx: number,
+      my: number,
+      x1: number,
+      y1: number,
+      bright: boolean
+    ) => {
+      for (let s = 0; s <= 38; s++) {
+        const t = s / 38;
+        const it = 1 - t;
+        const x = Math.round(it * it * x0 + 2 * it * t * mx + t * t * x1);
+        const y = Math.round(it * it * y0 + 2 * it * t * my + t * t * y1);
+        px(x, y + 1, '#121311');
+        px(
+          x,
+          y,
+          s % 7 === 0 ? '#e3e8dc' : bright ? '#b9bfb2' : '#8a9083'
+        );
+      }
+    };
+
+    // Voltas catenárias prendendo ombros, caixa torácica e cintura + fios tensos às bordas
+    drawXRaySilk(cx - 29, 49, cx - 2, 60, cx + 29, 53, true);
+    drawXRaySilk(cx - 28, 63, cx + 4, 56, cx + 28, 66, false);
+    drawXRaySilk(cx - 26, 73, cx, 83, cx + 27, 71, true);
+    drawXRaySilk(cx - 24, 86, cx - 3, 93, cx + 25, 84, false);
+    // Cabos de ancoragem puxando para as quinas da chapa
+    drawXRaySilk(2, 18, 18, 38, cx - 23, 50, false);
+    drawXRaySilk(93, 22, 76, 40, cx + 23, 52, false);
+    drawXRaySilk(3, 108, 20, 95, cx - 20, 86, false);
+    drawXRaySilk(92, 106, 74, 94, cx + 21, 84, false);
+  }
+}
+
+interface CornerSpokeSpec {
+  endX: number;
+  endY: number;
+  forkAX: number;
+  forkAY: number;
+  forkBX: number;
+  forkBY: number;
+  seed: number;
+}
+
+/**
+ * Desenha a moldura orgânica pixel-art de Teia de Aranha em 1ª pessoa (384x240, escala inteira nítida):
+ * - Substitui completamente qualquer gradiente CSS repetitivo por fios de seda reais e assimétricos!
+ * - Quatro cantos com mantos fibrosos distintos, raios irregulares bifurcados em "Y", espirais
+ *   catenárias curvas sob tensão, nós de seda, gotículas viscosas e cabos periféricos.
+ * - No casulo do Ninho (`cocoonAmount > 0`), acrescenta faixas cruzadas densas envolvendo as bordas.
+ * - Ao cortar com a faca ou romper a teia (`ripProgress > 0`), os fios se partem do centro para as quinas!
+ */
+export function renderFirstPersonWebOverlay(
+  ctx: CanvasRenderingContext2D,
+  snareAmount: number,
+  cocoonAmount: number,
+  ripProgress: number,
+  elapsedSec: number
+): void {
+  const W = 384;
+  const H = 240;
+  const img = ctx.createImageData(W, H);
+  const data = img.data;
+
+  const strength = Math.max(snareAmount, cocoonAmount);
+  if (strength <= 0.005 && ripProgress <= 0) {
+    ctx.putImageData(img, 0, 0);
+    return;
+  }
+
+  const fadeAlpha =
+    ripProgress > 0 ? Math.max(0, 1 - Math.pow(ripProgress, 1.35)) : Math.min(1, strength * 1.15);
+
+  const hash = (a: number, b: number): number => {
+    const n = Math.sin(a * 127.1 + b * 311.7) * 43758.5453;
+    return n - Math.floor(n);
+  };
+
+  const blendPx = (
+    x: number,
+    y: number,
+    r: number,
+    g: number,
+    b: number,
+    a: number
+  ) => {
+    const ix = x | 0;
+    const iy = y | 0;
+    if (ix < 0 || iy < 0 || ix >= W || iy >= H || a <= 0.01) return;
+    const idx = (iy * W + ix) * 4;
+    const sa = Math.min(1, a * fadeAlpha);
+    const da = data[idx + 3] / 255;
+    const outA = sa + da * (1 - sa);
+    if (outA <= 1e-4) return;
+    data[idx] = Math.round((r * sa + data[idx] * da * (1 - sa)) / outA);
+    data[idx + 1] = Math.round((g * sa + data[idx + 1] * da * (1 - sa)) / outA);
+    data[idx + 2] = Math.round((b * sa + data[idx + 2] * da * (1 - sa)) / outA);
+    data[idx + 3] = Math.round(outA * 255);
+  };
+
+  // 1. Sombra viscosa sutil APENAS na borda extrema para destacar a seda clara sem esbranquiçar a tela
+  const edgeBand = cocoonAmount > 0.2 ? 26 : 16;
+  for (let y = 0; y < H; y++) {
+    const dyEdge = Math.min(y, H - 1 - y);
+    for (let x = 0; x < W; x++) {
+      const dxEdge = Math.min(x, W - 1 - x);
+      const dMin = Math.min(dxEdge, dyEdge);
+      if (dMin < edgeBand) {
+        const u = 1 - dMin / edgeBand;
+        const cornerBoost =
+          dxEdge < 56 && dyEdge < 46
+            ? (1 - dxEdge / 56) * (1 - dyEdge / 46) * 0.28
+            : 0;
+        const vigA = (u * u * 0.26 + cornerBoost) * (0.65 + cocoonAmount * 0.35);
+        blendPx(x, y, 12, 13, 11, vigA);
+      }
     }
   }
+
+  // Vibração viva de tensão enquanto o jogador força os fios
+  const vibAmp = ripProgress > 0 ? 2.4 : 0.75;
+
+  /**
+   * Rasteriza um fio orgânico curvo (Bézier quadrática) com sombra 1px, variação fibrosa,
+   * gotículas pegajosas e retração física quando cortado pela lâmina (`ripProgress > 0`).
+   */
+  const drawSilkStrand = (
+    x0: number,
+    y0: number,
+    cx: number,
+    cy: number,
+    x1: number,
+    y1: number,
+    thick: boolean,
+    alphaMul: number,
+    seed: number,
+    withDew: boolean,
+    recoilFromTip: boolean
+  ) => {
+    const approxLen =
+      Math.hypot(cx - x0, cy - y0) + Math.hypot(x1 - cx, y1 - cy);
+    const steps = Math.max(12, Math.ceil(approxLen * 1.35));
+
+    // Ao cortar/romper a teia, a ponta interna se retrai rapidamente de volta à ancoragem!
+    const maxT =
+      ripProgress > 0 && recoilFromTip
+        ? Math.max(0.06, 1 - ripProgress * (0.78 + hash(seed, 3.7) * 0.2))
+        : 1.0;
+
+    // Se cortado no meio (cabo de borda a borda), abre fenda assimétrica e os lados caem frouxos!
+    const cutCenter = 0.44 + (hash(seed, 7.1) - 0.5) * 0.16;
+    const splitCenterGap =
+      ripProgress > 0 && !recoilFromTip ? ripProgress * 0.36 : 0;
+
+    const nx = -(y1 - y0) / Math.max(1, approxLen);
+    const ny = (x1 - x0) / Math.max(1, approxLen);
+
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      if (t > maxT) break;
+      if (splitCenterGap > 0 && Math.abs(t - cutCenter) < splitCenterGap) {
+        continue;
+      }
+
+      const it = 1 - t;
+      let px = it * it * x0 + 2 * it * t * cx + t * t * x1;
+      let py = it * it * y0 + 2 * it * t * cy + t * t * y1;
+
+      // Micro-ondulação orgânica da fibra + vibração elástica sob esforço
+      const midEnv = Math.sin(t * Math.PI);
+      const wave =
+        Math.sin(t * 15.0 + seed * 5.3) * 0.65 * midEnv +
+        Math.sin(elapsedSec * (17 + (seed % 5) * 2) + seed * 4.1) *
+          vibAmp *
+          midEnv;
+
+      // Ao romper, os fios perdem tensão, caem com a gravidade e chicoteiam enrolados!
+      let whip = 0;
+      let slackDropY = 0;
+      if (ripProgress > 0) {
+        if (recoilFromTip) {
+          const tipFrac = Math.max(0, (t - (maxT - 0.22)) / 0.22);
+          whip = Math.sin(tipFrac * 9.5 + seed) * 3.8 * ripProgress * tipFrac;
+          slackDropY = (t / Math.max(0.1, maxT)) ** 2 * 11 * ripProgress;
+        } else {
+          const armFrac =
+            t < cutCenter
+              ? t / Math.max(0.06, cutCenter - splitCenterGap)
+              : (1 - t) / Math.max(0.06, 1 - (cutCenter + splitCenterGap));
+          slackDropY = armFrac * armFrac * 24 * ripProgress;
+          whip =
+            Math.sin(armFrac * 8.5 + seed * 2.1) *
+            4.6 *
+            ripProgress *
+            armFrac;
+        }
+      }
+
+      px += nx * (wave + whip);
+      py += ny * (wave + whip) + slackDropY;
+
+      const ix = Math.round(px);
+      const iy = Math.round(py);
+
+      const fiberNoise = hash(i * 1.7 + seed, seed * 2.9);
+      const baseA = alphaMul * (0.76 + fiberNoise * 0.24);
+
+      // Sombra escura de contraste 1px abaixo/direita para leitura nítida sobre qualquer parede/luz
+      blendPx(ix + 1, iy + 1, 9, 10, 9, baseA * 0.68);
+
+      // Fibra principal de seda (varia entre osso pálido, cinza-seda e nós brilhantes)
+      const lum =
+        fiberNoise > 0.86
+          ? 234
+          : fiberNoise > 0.42
+            ? 198
+            : 162;
+      blendPx(
+        ix,
+        iy,
+        Math.round(lum * 0.98),
+        lum,
+        Math.round(lum * 0.93),
+        baseA
+      );
+
+      // Cabos mestres possuem uma segunda fibra trançada sutil
+      if (thick && i % 2 === 0) {
+        blendPx(
+          ix + Math.round(nx),
+          iy + Math.round(ny),
+          172,
+          176,
+          165,
+          baseA * 0.58
+        );
+      }
+
+      // Gotículas viscosas reluzentes espaçadas ao longo dos fios de captura
+      if (
+        withDew &&
+        i > 4 &&
+        i < steps - 4 &&
+        i % 17 === Math.floor((seed * 11) % 13)
+      ) {
+        blendPx(ix, iy, 246, 250, 238, Math.min(1, baseA * 1.15));
+        blendPx(ix - 1, iy, 196, 202, 188, baseA * 0.62);
+        blendPx(ix, iy - 1, 212, 218, 204, baseA * 0.62);
+      }
+    }
+  };
+
+  // 2. QUATRO TEIAS ASSIMÉTRICAS DE CANTO (cada canto tem arquitetura e angulação próprias!)
+  const corners: Array<{
+    ox: number;
+    oy: number;
+    sx: number;
+    sy: number;
+    seed: number;
+    reachX: number;
+    reachY: number;
+  }> = [
+    { ox: 0, oy: 0, sx: 1, sy: 1, seed: 1.1, reachX: 168, reachY: 118 },
+    { ox: W - 1, oy: 0, sx: -1, sy: 1, seed: 4.7, reachX: 158, reachY: 126 },
+    { ox: 0, oy: H - 1, sx: 1, sy: -1, seed: 8.3, reachX: 174, reachY: 114 },
+    {
+      ox: W - 1,
+      oy: H - 1,
+      sx: -1,
+      sy: -1,
+      seed: 12.9,
+      reachX: 164,
+      reachY: 122,
+    },
+  ];
+
+  const expandCocoon = 1 + cocoonAmount * 0.24;
+
+  for (const c of corners) {
+    // A) Pequeno manto fibroso emaranhado no vértice extremo do canto
+    for (let m = 0; m < 16; m++) {
+      const mx0 = c.ox + c.sx * Math.round(hash(m, c.seed) * 28);
+      const my0 = c.oy;
+      const mx1 = c.ox;
+      const my1 = c.oy + c.sy * Math.round(hash(m + 9, c.seed) * 24);
+      drawSilkStrand(
+        mx0,
+        my0,
+        c.ox + c.sx * 6,
+        c.oy + c.sy * 6,
+        mx1,
+        my1,
+        false,
+        0.58,
+        c.seed + m * 0.4,
+        false,
+        false
+      );
+    }
+
+    // B) 6 raios mestres irregulares abrindo em leque da quina pelas bordas (deixando o centro limpo!)
+    const numSpokes = 6;
+    const spokes: CornerSpokeSpec[] = [];
+    for (let s = 0; s < numSpokes; s++) {
+      const baseFrac = (s + 0.18 + (hash(s * 3.1, c.seed) - 0.5) * 0.22) / numSpokes;
+      const ang = baseFrac * (Math.PI * 0.5);
+      // Nas diagonais centrais (ang ~ 45°), recua o alcance para manter a mira central limpa!
+      const diagHollow = 1 - 0.42 * Math.sin(ang * 2);
+      const rx = c.reachX * expandCocoon * diagHollow * (0.88 + hash(s, c.seed + 2) * 0.24);
+      const ry = c.reachY * expandCocoon * diagHollow * (0.88 + hash(s + 4, c.seed) * 0.24);
+
+      const endX = c.ox + c.sx * Math.cos(ang) * rx;
+      const endY = c.oy + c.sy * Math.sin(ang) * ry;
+
+      // Bifurcação em "Y" no terço externo de cada raio
+      const forkStartX = c.ox + (endX - c.ox) * 0.72;
+      const forkStartY = c.oy + (endY - c.oy) * 0.72;
+      const spreadA = ang - 0.09;
+      const spreadB = ang + 0.09;
+
+      spokes.push({
+        endX,
+        endY,
+        forkAX: c.ox + c.sx * Math.cos(spreadA) * rx * 1.06,
+        forkAY: c.oy + c.sy * Math.sin(spreadA) * ry * 1.06,
+        forkBX: c.ox + c.sx * Math.cos(spreadB) * rx * 1.06,
+        forkBY: c.oy + c.sy * Math.sin(spreadB) * ry * 1.06,
+        seed: c.seed + s * 1.9,
+      });
+
+      const rootX = c.ox + c.sx * (2 + (s % 2) * 3);
+      const rootY = c.oy + c.sy * (2 + ((s + 1) % 2) * 3);
+      const midX = (rootX + endX) * 0.5 + c.sx * 3;
+      const midY = (rootY + endY) * 0.5 + c.sy * 4;
+
+      drawSilkStrand(
+        rootX,
+        rootY,
+        midX,
+        midY,
+        endX,
+        endY,
+        s === 1 || s === 4,
+        0.9,
+        c.seed + s * 2.3,
+        true,
+        true
+      );
+
+      // Ramos bifurcados em "Y"
+      drawSilkStrand(
+        forkStartX,
+        forkStartY,
+        (forkStartX + spokes[s].forkAX) * 0.5,
+        (forkStartY + spokes[s].forkAY) * 0.5,
+        spokes[s].forkAX,
+        spokes[s].forkAY,
+        false,
+        0.66,
+        c.seed + s * 3.1,
+        false,
+        true
+      );
+      drawSilkStrand(
+        forkStartX,
+        forkStartY,
+        (forkStartX + spokes[s].forkBX) * 0.5,
+        (forkStartY + spokes[s].forkBY) * 0.5,
+        spokes[s].forkBX,
+        spokes[s].forkBY,
+        false,
+        0.62,
+        c.seed + s * 3.7,
+        false,
+        true
+      );
+    }
+
+    // C) 5 níveis de arcos catenários curvos ligando cada par de raios vizinhos + fios partidos pendentes
+    const ringFracs = [0.2, 0.36, 0.53, 0.71, 0.89];
+    for (let s = 0; s < numSpokes - 1; s++) {
+      const spA = spokes[s];
+      const spB = spokes[s + 1];
+      for (let rIdx = 0; rIdx < ringFracs.length; rIdx++) {
+        // Deixa algumas aberturas irregulares para parecer teia real de caverna
+        if (hash(s * 11 + rIdx * 7, c.seed) > 0.86) continue;
+
+        const fA =
+          ringFracs[rIdx] + (hash(s, rIdx + c.seed) - 0.5) * 0.06;
+        const fB =
+          ringFracs[rIdx] + (hash(s + 1, rIdx + c.seed) - 0.5) * 0.06;
+
+        const ax = c.ox + (spA.endX - c.ox) * fA;
+        const ay = c.oy + (spA.endY - c.oy) * fA;
+        const bx = c.ox + (spB.endX - c.ox) * fB;
+        const by = c.oy + (spB.endY - c.oy) * fB;
+
+        // O ponto de controle curva-se em direção ao canto (tensão radial real da teia!)
+        const mx = (ax + bx) * 0.5;
+        const my = (ay + by) * 0.5;
+        const pullIn = 0.18 + rIdx * 0.025;
+        const ctrlX = mx + (c.ox - mx) * pullIn;
+        const ctrlY = my + (c.oy - my) * pullIn + 2.5; // leve peso da gravidade
+
+        drawSilkStrand(
+          ax,
+          ay,
+          ctrlX,
+          ctrlY,
+          bx,
+          by,
+          false,
+          0.78 - rIdx * 0.05,
+          c.seed + s * 5 + rIdx * 1.3,
+          rIdx >= 2,
+          true
+        );
+
+        // Pequeno nó de seda esbranquiçado na junção com o raio
+        if (ripProgress <= 0.1) {
+          blendPx(Math.round(ax), Math.round(ay), 232, 236, 224, 0.82);
+        }
+
+        // Ocasionalmente um fio fino rasgado pendendo para baixo (+Y)
+        if (rIdx === 3 && hash(s + 3, c.seed * 2) > 0.55) {
+          const wx = (ax + bx) * 0.5;
+          const wy = (ay + by) * 0.5 + 2;
+          drawSilkStrand(
+            wx,
+            wy,
+            wx + c.sx * 2,
+            wy + 9,
+            wx - c.sx * 1,
+            wy + 17,
+            false,
+            0.52,
+            c.seed + s * 9,
+            true,
+            true
+          );
+        }
+      }
+    }
+  }
+
+  // 3. CABOS CATENÁRIOS PERIFÉRICOS & SUB-TEIAS INTERLIGANDO AS 4 QUINAS (mantendo o centro livre!)
+  const perimeterBridges: Array<
+    [number, number, number, number, number, number, boolean, number]
+  > = [
+    // Pontes catenárias superiores pendentes com peso real
+    [42, 0, 188, 30, 344, 0, true, 21.1],
+    [98, 0, 198, 18, 294, 0, false, 22.4],
+    // Tirantes diagonais curvos conectando as quinas superiores ao dossel (sem linha reta!)
+    [0, 58, 66, 36, 152, 0, false, 28.1],
+    [232, 0, 314, 38, W - 1, 64, false, 29.3],
+    // Cabos inferiores curvos onde peito/braços esbarraram na armadilha
+    [34, H - 1, 186, H - 31, 348, H - 1, true, 23.7],
+    [96, H - 1, 198, H - 17, 296, H - 1, false, 24.9],
+    [0, H - 56, 68, H - 34, 158, H - 1, false, 30.6],
+    [228, H - 1, 316, H - 36, W - 1, H - 62, false, 31.8],
+    // Fios tensos curvos nas margens esquerda e direita
+    [0, 44, 31, 120, 0, 196, true, 26.2],
+    [0, 78, 17, 124, 0, 168, false, 26.9],
+    [W - 1, 42, W - 32, 118, W - 1, 194, true, 27.5],
+    [W - 1, 74, W - 18, 122, W - 1, 166, false, 27.9],
+  ];
+
+  for (const [x0, y0, cx, cy, x1, y1, thick, seed] of perimeterBridges) {
+    drawSilkStrand(
+      x0,
+      y0,
+      cx,
+      cy,
+      x1,
+      y1,
+      thick,
+      0.82,
+      seed,
+      true,
+      false
+    );
+  }
+
+  // Tirantes catenários curtos + fios soltos pendendo do dossel superior e ligando as margens
+  for (const tx of [108, 148, 186, 224, 266]) {
+    const bridgeY = Math.round(22 - Math.pow((tx - 190) / 128, 2) * 16);
+    drawSilkStrand(
+      tx + ((tx % 5) - 2) * 4,
+      0,
+      tx - 2,
+      bridgeY * 0.55,
+      tx,
+      bridgeY,
+      false,
+      0.66,
+      tx * 0.3,
+      false,
+      true
+    );
+    if (tx === 148 || tx === 224) {
+      drawSilkStrand(
+        tx,
+        bridgeY,
+        tx + 3,
+        bridgeY + 8,
+        tx - 1,
+        bridgeY + 15,
+        false,
+        0.5,
+        tx * 0.7,
+        true,
+        true
+      );
+    }
+  }
+
+  for (const bx of [118, 166, 214, 262]) {
+    const lowY = H - 1 - Math.round(23 - Math.pow((bx - 190) / 132, 2) * 17);
+    drawSilkStrand(
+      bx + ((bx % 3) - 1) * 5,
+      H - 1,
+      bx + 2,
+      (H - 1 + lowY) * 0.5,
+      bx,
+      lowY,
+      false,
+      0.62,
+      bx * 0.4,
+      false,
+      true
+    );
+  }
+
+  // 4. ENVOLTÓRIO CURVO E ORGÂNICO DE CASULO QUANDO NO NINHO DA ARANHA (sem losango rígido!)
+  if (cocoonAmount > 0.04) {
+    const cocoonWraps: Array<[number, number, number, number, number, number, number]> = [
+      // Arcos profundamente curvos (côncavos em direção às quinas, NUNCA retas de losango!)
+      [0, 112, 52, 32, 208, 0, 0.08],
+      [172, 0, W - 56, 36, W - 1, 116, 0.18],
+      [0, H - 114, 56, H - 34, 218, H - 1, 0.28],
+      [166, H - 1, W - 54, H - 36, W - 1, H - 112, 0.38],
+      // Arcos catenários pendentes largos envolvendo dossel, peito e laterais
+      [18, 0, 186, 56, 362, 0, 0.5],
+      [14, H - 1, 196, H - 54, 368, H - 1, 0.62],
+      [0, 58, 62, 118, 0, 186, 0.74],
+      [W - 1, 54, W - 64, 122, W - 1, 188, 0.84],
+    ];
+
+    for (let b = 0; b < cocoonWraps.length; b++) {
+      const [x0, y0, cx, cy, x1, y1, threshold] = cocoonWraps[b];
+      if (cocoonAmount < threshold) continue;
+      const localA = Math.min(1, (cocoonAmount - threshold) / 0.22);
+      drawSilkStrand(
+        x0,
+        y0,
+        cx,
+        cy,
+        x1,
+        y1,
+        b % 2 === 0,
+        0.84 * localA,
+        40 + b * 2.7,
+        true,
+        false
+      );
+      // Fio orgânico secundário com curvatura distinta (formando feixe trançado irregular, não linha dupla paralela!)
+      drawSilkStrand(
+        x0,
+        Math.min(H - 1, Math.max(0, y0 + (b % 2 === 0 ? 7 : -6))),
+        cx + (b % 2 === 0 ? 9 : -8),
+        cy + (b < 5 ? 8 : -7),
+        x1,
+        Math.min(H - 1, Math.max(0, y1 + (b % 2 === 0 ? -5 : 6))),
+        false,
+        0.54 * localA,
+        55 + b * 3.1,
+        true,
+        false
+      );
+    }
+  }
+
+  ctx.putImageData(img, 0, 0);
 }
 
 /**
@@ -780,10 +1357,10 @@ export class DoomInventory {
   private readonly overlayEl: HTMLElement;
   private readonly diegeticEl: HTMLElement;
   private readonly bloodVignetteEl: HTMLElement;
-  private readonly webSnareEl: HTMLElement;
+  private readonly webOverlayCanvas: HTMLCanvasElement;
+  private readonly webOverlayCtx: CanvasRenderingContext2D | null;
   private readonly pickupGlintEl: HTMLElement;
   private readonly attackSlashEl: HTMLElement;
-  private readonly cocoonSilkEl: HTMLElement;
   private readonly eyelidTopEl: HTMLElement;
   private readonly eyelidBottomEl: HTMLElement;
   private readonly blackoutVeilEl: HTMLElement;
@@ -826,6 +1403,14 @@ export class DoomInventory {
   private animRafId = 0;
   private lastPlateTick = -1;
 
+  private webSnareAmount = 0;
+  private webCocoonAmount = 0;
+  private webRipStartMs = -1;
+  private webRipSnareSnapshot = 0;
+  private webRipCocoonSnapshot = 0;
+  private lastWebDrawTick = -1;
+  private webCanvasCleared = true;
+
   private latestVitals: PlayerVitalsSnapshot = {
     health: 100,
     sanity: 100,
@@ -849,8 +1434,7 @@ export class DoomInventory {
     this.diegeticEl.id = 'doom-diegetic-fx';
     this.diegeticEl.innerHTML = `
       <div class="doom-blood-vignette"></div>
-      <div class="doom-web-snare-fx"></div>
-      <div class="doom-cocoon-silk"></div>
+      <canvas class="doom-web-overlay-canvas" width="384" height="240"></canvas>
       <div class="doom-pickup-glint"></div>
       <div class="doom-attack-slash"></div>
       <div class="doom-eyelid-top"></div>
@@ -862,12 +1446,10 @@ export class DoomInventory {
     this.bloodVignetteEl = this.diegeticEl.querySelector(
       '.doom-blood-vignette'
     ) as HTMLElement;
-    this.webSnareEl = this.diegeticEl.querySelector(
-      '.doom-web-snare-fx'
-    ) as HTMLElement;
-    this.cocoonSilkEl = this.diegeticEl.querySelector(
-      '.doom-cocoon-silk'
-    ) as HTMLElement;
+    this.webOverlayCanvas = this.diegeticEl.querySelector(
+      '.doom-web-overlay-canvas'
+    ) as HTMLCanvasElement;
+    this.webOverlayCtx = this.webOverlayCanvas.getContext('2d');
     this.pickupGlintEl = this.diegeticEl.querySelector(
       '.doom-pickup-glint'
     ) as HTMLElement;
@@ -1219,10 +1801,18 @@ export class DoomInventory {
       0,
       Math.min(1, slashOpacity)
     ).toFixed(3);
-    this.cocoonSilkEl.style.opacity = Math.max(
-      0,
-      Math.min(1, cocoonOpacity)
-    ).toFixed(3);
+
+    const nextCocoon = Math.max(0, Math.min(1, cocoonOpacity));
+    if (
+      this.webCocoonAmount > 0.18 &&
+      nextCocoon <= 0.02 &&
+      this.webSnareAmount <= 0.02 &&
+      this.webRipStartMs < 0
+    ) {
+      this.triggerWebSnapRip();
+    }
+    this.webCocoonAmount = nextCocoon;
+    this.refreshWebOverlayCanvas();
 
     const lid = Math.max(0, Math.min(1, eyelidClosed));
     const offsetPct = 105 - lid * 105;
@@ -1232,6 +1822,75 @@ export class DoomInventory {
       0,
       Math.min(1, blackoutOpacity)
     ).toFixed(3);
+  }
+
+  /**
+   * Dispara a animação em 1ª pessoa de fios de seda se partindo e retraindo para as quinas
+   * (ao cortar a teia com o canivete [1–3] ou se arrancar da armadilha!).
+   */
+  triggerWebSnapRip(): void {
+    this.webRipSnareSnapshot = Math.max(0.85, this.webSnareAmount);
+    this.webRipCocoonSnapshot = this.webCocoonAmount;
+    this.webRipStartMs = performance.now();
+    this.lastWebDrawTick = -1;
+    this.refreshWebOverlayCanvas(true);
+  }
+
+  private refreshWebOverlayCanvas(force = false): void {
+    const nowMs = performance.now();
+    let ripProgress = -1;
+    if (this.webRipStartMs >= 0) {
+      const elapsedRip = (nowMs - this.webRipStartMs) / 360;
+      if (elapsedRip >= 1) {
+        this.webRipStartMs = -1;
+      } else {
+        ripProgress = Math.max(0.01, elapsedRip);
+      }
+    }
+
+    const activeSnare =
+      ripProgress > 0
+        ? Math.max(this.webSnareAmount, this.webRipSnareSnapshot)
+        : this.webSnareAmount;
+    const activeCocoon =
+      ripProgress > 0
+        ? Math.max(this.webCocoonAmount, this.webRipCocoonSnapshot)
+        : this.webCocoonAmount;
+
+    if (activeSnare <= 0.005 && activeCocoon <= 0.005 && ripProgress < 0) {
+      if (!this.webCanvasCleared) {
+        this.webOverlayCanvas.style.opacity = '0';
+        if (this.webOverlayCtx) {
+          this.webOverlayCtx.clearRect(
+            0,
+            0,
+            this.webOverlayCanvas.width,
+            this.webOverlayCanvas.height
+          );
+        }
+        this.webCanvasCleared = true;
+      }
+      return;
+    }
+
+    this.webOverlayCanvas.style.opacity = '1';
+    this.webCanvasCleared = false;
+
+    if (!this.webOverlayCtx) return;
+
+    // ~22 qps durante ruptura e ~16 qps em tensão contínua para estética retrô nítida e leve
+    const intervalMs = ripProgress > 0 ? 34 : 62;
+    const tick = Math.floor(nowMs / intervalMs);
+    if (!force && tick === this.lastWebDrawTick) return;
+    this.lastWebDrawTick = tick;
+
+    renderFirstPersonWebOverlay(
+      this.webOverlayCtx,
+      activeSnare,
+      activeCocoon,
+      Math.max(0, ripProgress),
+      nowMs / 1000
+    );
   }
 
   hasItem(itemId: string): boolean {
@@ -1412,7 +2071,13 @@ export class DoomInventory {
         : 0;
     this.bloodVignetteEl.style.opacity = bloodOpacity.toFixed(3);
 
-    this.webSnareEl.style.opacity = snapshot.trappedInWeb ? '0.92' : '0';
+    const prevTrapped = this.webSnareAmount > 0.1;
+    this.webSnareAmount = snapshot.trappedInWeb ? 0.94 : 0;
+    if (prevTrapped && !snapshot.trappedInWeb && this.webRipStartMs < 0) {
+      this.triggerWebSnapRip();
+    } else {
+      this.refreshWebOverlayCanvas();
+    }
 
     if (this.isOpen) {
       this.renderVitals();
@@ -1759,6 +2424,9 @@ export class DoomInventory {
 
     if (def.id === 'rusty_knife') {
       const res = this.callbacks.onUseKnife();
+      if (res.cutWeb) {
+        this.triggerWebSnapRip();
+      }
       if (!fromQuickShortcut) {
         this.feedbackEl.textContent = res.cutWeb
           ? 'Fios de teia cortados!'

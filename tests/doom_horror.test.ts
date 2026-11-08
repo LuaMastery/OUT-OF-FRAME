@@ -1,7 +1,11 @@
 import * as THREE from 'three';
 import { describe, expect, it } from 'vitest';
 import { DoomFlashlight } from '../src/doom/DoomFlashlight';
-import { ITEM_CATALOG, QUICK_SLOT_COUNT } from '../src/doom/DoomInventory';
+import {
+  ITEM_CATALOG,
+  QUICK_SLOT_COUNT,
+  renderFirstPersonWebOverlay,
+} from '../src/doom/DoomInventory';
 import {
   buildDoomLabyrinth,
   gridCellToWorld,
@@ -447,5 +451,82 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
       (c) => c instanceof THREE.Group && c.visible
     );
     expect(quickGroup).toBeDefined();
+  });
+
+  it('renderiza teias orgânicas pixel-art em 1ª pessoa com centro limpo, casulo denso e retração ao cortar, além de cabos 3D catenários', () => {
+    const W = 384;
+    const H = 240;
+    const runOverlay = (snare: number, cocoon: number, rip: number) => {
+      let out: Uint8ClampedArray | null = null;
+      const mockCtx = {
+        createImageData: (w: number, h: number) => ({
+          width: w,
+          height: h,
+          data: new Uint8ClampedArray(w * h * 4),
+        }),
+        putImageData: (img: { data: Uint8ClampedArray }) => {
+          out = img.data;
+        },
+      } as unknown as CanvasRenderingContext2D;
+      renderFirstPersonWebOverlay(mockCtx, snare, cocoon, rip, 1.0);
+      return out!;
+    };
+
+    const countLitInRect = (
+      buf: Uint8ClampedArray,
+      x0: number,
+      y0: number,
+      x1: number,
+      y1: number
+    ) => {
+      let lit = 0;
+      for (let y = y0; y < y1; y++) {
+        for (let x = x0; x < x1; x++) {
+          if (buf[(y * W + x) * 4 + 3] > 35) lit++;
+        }
+      }
+      return lit;
+    };
+
+    const snareBuf = runOverlay(0.94, 0, 0);
+    // Todos os 4 cantos devem ter teias orgânicas ricas, enquanto o centro de mira permanece 100% desobstruído!
+    expect(countLitInRect(snareBuf, 0, 0, 110, 80)).toBeGreaterThan(350);
+    expect(countLitInRect(snareBuf, W - 110, 0, W, 80)).toBeGreaterThan(350);
+    expect(countLitInRect(snareBuf, 0, H - 80, 110, H)).toBeGreaterThan(350);
+    expect(countLitInRect(snareBuf, W - 110, H - 80, W, H)).toBeGreaterThan(
+      350
+    );
+    expect(countLitInRect(snareBuf, 152, 92, 232, 148)).toBe(0);
+
+    // O casulo do Ninho acrescenta arcos orgânicos adicionais nas bordas
+    const cocoonBuf = runOverlay(0.4, 0.88, 0);
+    const totalSnareLit = countLitInRect(snareBuf, 0, 0, W, H);
+    const totalCocoonLit = countLitInRect(cocoonBuf, 0, 0, W, H);
+    expect(totalCocoonLit).toBeGreaterThan(totalSnareLit + 600);
+
+    // Ao cortar com a faca (rip -> 0.85), os fios retraem e desaparecem
+    const rippedBuf = runOverlay(0.94, 0, 0.85);
+    expect(countLitInRect(rippedBuf, 0, 0, W, H)).toBeLessThan(
+      totalSnareLit * 0.45
+    );
+
+    // Verifica cabos catenários 3D e contador de ruptura no mundo 3D
+    const scene = new THREE.Scene();
+    const shared = createDoomSharedUniforms();
+    const webs = new DoomSpiderWebManager(scene, shared);
+    let totalWebMeshes = 0;
+    scene.traverse((o) => {
+      if ((o as THREE.Mesh).isMesh) totalWebMeshes++;
+    });
+    expect(totalWebMeshes).toBeGreaterThan(80);
+
+    const prevSeq = webs.snapBurstSequence;
+    webs.placePlayerInWakingLairWeb();
+    webs.slashWebWithKnife(
+      webs.lairCenter,
+      new THREE.Vector3(0, 0, -1),
+      { playWebTrapSnap: () => {} } as unknown as SoundEngine
+    );
+    expect(webs.snapBurstSequence).toBe(prevSeq + 1);
   });
 });
