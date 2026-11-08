@@ -17,11 +17,13 @@ import {
 } from '../src/doom/DoomInventory';
 import {
   buildDoomLabyrinth,
+  evaluateDoomLightFlicker,
   gridCellToWorld,
   isSolidCell,
   isStoneSectorWorld,
   LABYRINTH_MAP,
   LAIR_GRID_CELL,
+  syncLightPanelEmissionAttribute,
   syncNearestDoomLightsToUniforms,
   WALL_HEIGHT,
   worldToGridCell,
@@ -1758,5 +1760,91 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
     expect(enteredSearchMode).toBe(true);
     expect(searchTravelDist).toBeGreaterThan(2.5);
     expect(caughtHiddenPlayer).toBe(false);
+  });
+
+  it('sincroniza o brilho emissivo dos painéis de LED (arandelas e plafons) com a piscada de luz do ambiente', () => {
+    const scene = new THREE.Scene();
+    const shared = createDoomSharedUniforms();
+    const textures = createDoomTextures();
+    const built = buildDoomLabyrinth(scene, textures, shared);
+
+    expect(built.lightPanelEmissionAttr).not.toBeNull();
+    const attr = built.lightPanelEmissionAttr!;
+    const lightPanelsMesh = scene.getObjectByName(
+      'MazeLightPanels'
+    ) as THREE.Mesh;
+    expect(lightPanelsMesh).toBeDefined();
+    const shaderMat = lightPanelsMesh.material as THREE.ShaderMaterial;
+    expect(shaderMat.uniforms.uUseVertexEmission.value).toBe(1);
+    expect(lightPanelsMesh.geometry.getAttribute('aLightEmission')).toBe(attr);
+
+    // Mapeamento exato 1-para-1 entre todas as luzes e todos os vértices dos painéis de LED
+    let cursor = 0;
+    for (const src of built.lights) {
+      expect(src.panelVertexStart).toBe(cursor);
+      expect(src.panelVertexCount).toBeGreaterThanOrEqual(4);
+      cursor += src.panelVertexCount;
+    }
+    expect(cursor).toBe(attr.count);
+
+    const flickeringLight = built.lights.find((l) => l.flicker)!;
+    const steadyLight = built.lights.find((l) => !l.flicker)!;
+    expect(flickeringLight).toBeDefined();
+    expect(steadyLight).toBeDefined();
+
+    let sawBlackout = false;
+    let sawSputter = false;
+    let sawFullBright = false;
+
+    for (let tick = 0; tick < 240; tick++) {
+      const t = tick / 12 + 0.01;
+      const flickSample = evaluateDoomLightFlicker(flickeringLight, t);
+      const steadySample = evaluateDoomLightFlicker(steadyLight, t);
+
+      expect(steadySample.intensity).toBe(steadyLight.baseIntensity);
+      expect(steadySample.panelEmission).toBe(1.0);
+
+      syncLightPanelEmissionAttribute(
+        attr,
+        flickeringLight,
+        flickSample.panelEmission
+      );
+      syncLightPanelEmissionAttribute(
+        attr,
+        steadyLight,
+        steadySample.panelEmission
+      );
+
+      // Sempre que a luz do ambiente cai, o painel de LED apaga/enfraquece exatamente junto!
+      if (flickSample.intensity < flickeringLight.baseIntensity * 0.1) {
+        sawBlackout = true;
+        expect(flickSample.panelEmission).toBeLessThanOrEqual(0.05);
+      } else if (flickSample.intensity < flickeringLight.baseIntensity * 0.5) {
+        sawSputter = true;
+        expect(flickSample.panelEmission).toBeLessThan(0.4);
+      } else if (flickSample.intensity === flickeringLight.baseIntensity) {
+        sawFullBright = true;
+        expect(flickSample.panelEmission).toBe(1.0);
+      }
+
+      for (
+        let v = flickeringLight.panelVertexStart;
+        v < flickeringLight.panelVertexStart + flickeringLight.panelVertexCount;
+        v++
+      ) {
+        expect(attr.getX(v)).toBeCloseTo(flickSample.panelEmission, 4);
+      }
+      for (
+        let v = steadyLight.panelVertexStart;
+        v < steadyLight.panelVertexStart + steadyLight.panelVertexCount;
+        v++
+      ) {
+        expect(attr.getX(v)).toBeCloseTo(1.0, 4);
+      }
+    }
+
+    expect(sawBlackout).toBe(true);
+    expect(sawSputter).toBe(true);
+    expect(sawFullBright).toBe(true);
   });
 });

@@ -12,6 +12,92 @@ export interface DoomLightSource {
   baseIntensity: number;
   flicker: boolean;
   phase: number;
+  panelVertexStart: number;
+  panelVertexCount: number;
+}
+
+export interface DoomLightFlickerSample {
+  intensity: number;
+  panelEmission: number;
+  isDim: boolean;
+}
+
+/**
+ * Avalia de forma determinística o estado instantâneo de piscada de uma luminária,
+ * sincronizando exatamente a intensidade da luz projetada no ambiente E o brilho
+ * do próprio painel/tubo de LED físico na parede ou no teto!
+ */
+export function evaluateDoomLightFlicker(
+  src: Pick<DoomLightSource, 'baseIntensity' | 'flicker' | 'phase'>,
+  elapsedSec: number
+): DoomLightFlickerSample {
+  if (!src.flicker) {
+    return {
+      intensity: src.baseIntensity,
+      panelEmission: 1.0,
+      isDim: false,
+    };
+  }
+
+  const tick = Math.floor(elapsedSec * 12);
+  const hash = Math.sin(tick * 12.9898 + src.phase * 78.233) * 43758.5453;
+  const r = hash - Math.floor(hash);
+
+  if (r < 0.06) {
+    // Corte elétrico momentâneo: luz do corredor e painel de LED apagam juntos!
+    return {
+      intensity: src.baseIntensity * 0.05,
+      panelEmission: 0.02,
+      isDim: true,
+    };
+  }
+  if (r < 0.17) {
+    // Oscilação/queda forte de tensão: luz do corredor e LED enfraquecem juntos!
+    return {
+      intensity: src.baseIntensity * 0.34,
+      panelEmission: 0.32,
+      isDim: true,
+    };
+  }
+  if (r < 0.22) {
+    // Micro-tremulação sutil de reator cansado
+    return {
+      intensity: src.baseIntensity * 0.74,
+      panelEmission: 0.72,
+      isDim: false,
+    };
+  }
+
+  return {
+    intensity: src.baseIntensity,
+    panelEmission: 1.0,
+    isDim: false,
+  };
+}
+
+/**
+ * Atualiza os vértices do painel de LED correspondente a `src` em `MazeLightPanels`
+ * para que o tubo/painel de LED pisque exatamente junto com a luz projetada no cenário.
+ */
+export function syncLightPanelEmissionAttribute(
+  attr: THREE.BufferAttribute | null,
+  src: Pick<DoomLightSource, 'panelVertexStart' | 'panelVertexCount'>,
+  panelEmission: number
+): boolean {
+  if (!attr || src.panelVertexCount <= 0) return false;
+  const arr = attr.array as Float32Array;
+  const end = Math.min(arr.length, src.panelVertexStart + src.panelVertexCount);
+  let changed = false;
+  for (let v = src.panelVertexStart; v < end; v++) {
+    if (Math.abs(arr[v] - panelEmission) > 1e-4) {
+      arr[v] = panelEmission;
+      changed = true;
+    }
+  }
+  if (changed) {
+    attr.needsUpdate = true;
+  }
+  return changed;
 }
 
 export interface DoomMazeResult {
@@ -19,6 +105,7 @@ export interface DoomMazeResult {
   spawnPosition: THREE.Vector3;
   spawnYaw: number;
   lights: DoomLightSource[];
+  lightPanelEmissionAttr: THREE.BufferAttribute | null;
 }
 
 /**
@@ -352,11 +439,17 @@ export function buildDoomLabyrinth(
     sharedUniforms,
     { tileScaleXZ: 1.5, wallHeight: 1.6, baseLight: 0.2 }
   );
-  // IMPORTANTE: useLocalUv = true garante que toda luminária fique 100% centralizada na moldura!
+  // IMPORTANTE: useLocalUv = true garante que toda luminária fique 100% centralizada na moldura,
+  // e useVertexEmission = true faz o próprio painel de LED piscar junto quando a luz falha!
   const matLightPanel = createDoomSurfaceMaterial(
     textures.lightPanel,
     sharedUniforms,
-    { useLocalUv: true, fullBright: true }
+    {
+      useLocalUv: true,
+      fullBright: true,
+      useVertexEmission: true,
+      baseLight: 0.2,
+    }
   );
 
   // Setor Norte (Bunker Industrial, linhas 0..8) vs Setor Sul (Catacumbas de Pedra & Ninho, linhas 9..14)
@@ -395,6 +488,7 @@ export function buildDoomLabyrinth(
   const darkIronGeos: THREE.BufferGeometry[] = [];
   const woodGeos: THREE.BufferGeometry[] = [];
   const lightGeos: THREE.BufferGeometry[] = [];
+  let lightPanelVertexCursor = 0;
 
   // Divisão limpa de piso e teto entre o Complexo Industrial Norte (linhas 0..15) e as Catacumbas Sul (linhas 16..28)
   const totalW = cols * CELL_SIZE;
@@ -1054,6 +1148,9 @@ export function buildDoomLabyrinth(
             centerY,
             wz + d.nz * (half + 0.02)
           );
+          const panelVertCount = panel.getAttribute('position').count;
+          const panelVertStart = lightPanelVertexCursor;
+          lightPanelVertexCursor += panelVertCount;
           lightGeos.push(panel);
 
           const outX = wx + d.nx * (half + frameDepth * 0.5 + 0.002);
@@ -1109,6 +1206,8 @@ export function buildDoomLabyrinth(
             baseIntensity: 0.62,
             flicker: (gx + gz) % 3 === 0,
             phase: gx * 1.7 + gz * 2.3 + d.nx * 0.8 + d.nz * 1.1,
+            panelVertexStart: panelVertStart,
+            panelVertexCount: panelVertCount,
           });
         }
       }
@@ -1138,6 +1237,9 @@ export function buildDoomLabyrinth(
     const ceilLight = new THREE.PlaneGeometry(panelSize, panelSize);
     ceilLight.rotateX(Math.PI * 0.5);
     ceilLight.translate(lx, WALL_HEIGHT - 0.062, lz);
+    const ceilVertCount = ceilLight.getAttribute('position').count;
+    const ceilVertStart = lightPanelVertexCursor;
+    lightPanelVertexCursor += ceilVertCount;
     lightGeos.push(ceilLight);
 
     // Moldura externa sem interseção nos 4 cantos: trilhos N/S cobrem outerSpan, L/O ficam estritamente entre eles
@@ -1155,6 +1257,8 @@ export function buildDoomLabyrinth(
       baseIntensity: intensity,
       flicker,
       phase,
+      panelVertexStart: ceilVertStart,
+      panelVertexCount: ceilVertCount,
     });
   };
 
@@ -1239,6 +1343,9 @@ export function buildDoomLabyrinth(
   );
   lairCeilLight.applyMatrix4(tiltMat);
   lairCeilLight.translate(lairX, WALL_HEIGHT - 0.25, lairZ);
+  const lairVertCount = lairCeilLight.getAttribute('position').count;
+  const lairVertStart = lightPanelVertexCursor;
+  lightPanelVertexCursor += lairVertCount;
   lightGeos.push(lairCeilLight);
 
   lights.push({
@@ -1246,6 +1353,8 @@ export function buildDoomLabyrinth(
     baseIntensity: 0.48,
     flicker: true,
     phase: 5.1,
+    panelVertexStart: lairVertStart,
+    panelVertexCount: lairVertCount,
   });
 
   // Consolida as malhas estáticas na cena
@@ -1259,9 +1368,18 @@ export function buildDoomLabyrinth(
     [lightGeos, matLightPanel, 'MazeLightPanels'],
   ];
 
+  let lightPanelEmissionAttr: THREE.BufferAttribute | null = null;
   for (const [geos, mat, name] of buckets) {
     const merged = mergeStaticGeometries(geos);
     if (merged) {
+      if (name === 'MazeLightPanels') {
+        const totalLightVerts = merged.getAttribute('position').count;
+        const emissionData = new Float32Array(totalLightVerts);
+        emissionData.fill(1.0);
+        lightPanelEmissionAttr = new THREE.BufferAttribute(emissionData, 1);
+        lightPanelEmissionAttr.setUsage(THREE.DynamicDrawUsage);
+        merged.setAttribute('aLightEmission', lightPanelEmissionAttr);
+      }
       const m = new THREE.Mesh(merged, mat);
       m.name = name;
       root.add(m);
@@ -1280,5 +1398,6 @@ export function buildDoomLabyrinth(
     spawnPosition,
     spawnYaw,
     lights,
+    lightPanelEmissionAttr,
   };
 }

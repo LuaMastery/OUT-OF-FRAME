@@ -19,7 +19,9 @@ import { DoomInventory } from './DoomInventory';
 import {
   buildDoomLabyrinth,
   DoomLightSource,
+  evaluateDoomLightFlicker,
   isStoneSectorWorld,
+  syncLightPanelEmissionAttribute,
 } from './DoomMazeBuilder';
 import { DoomRadar } from './DoomRadar';
 import {
@@ -256,6 +258,7 @@ export class DoomGameApp {
 
   private colliders: StaticColliderBox[] = [];
   private lights: DoomLightSource[] = [];
+  private lightPanelEmissionAttr: THREE.BufferAttribute | null = null;
   private prevLightDimState: boolean[] = [];
 
   private readonly position = new THREE.Vector3();
@@ -349,6 +352,7 @@ export class DoomGameApp {
 
     this.colliders = maze.colliders;
     this.lights = maze.lights;
+    this.lightPanelEmissionAttr = maze.lightPanelEmissionAttr;
     this.prevLightDimState = maze.lights.map(() => false);
     this.position.copy(maze.spawnPosition);
     this.yaw = maze.spawnYaw;
@@ -1918,7 +1922,6 @@ export class DoomGameApp {
   }> = [];
 
   private updateFlickeringLightsAndAudio(): void {
-    const tick = Math.floor(this.elapsed * 10);
     let nearestLamp: THREE.Vector3 | null = null;
     let nearestDist = Infinity;
     let nearestJustFlickered = false;
@@ -1933,15 +1936,16 @@ export class DoomGameApp {
 
     for (let i = 0; i < this.lights.length; i++) {
       const src = this.lights[i];
-      let isDim = false;
-      let curIntensity = src.baseIntensity;
+      const sample = evaluateDoomLightFlicker(src, this.elapsed);
+      const isDim = sample.isDim;
+      const curIntensity = sample.intensity;
 
-      if (src.flicker) {
-        const hash = Math.sin(tick * 12.9898 + src.phase * 78.233) * 43758.5453;
-        const r = hash - Math.floor(hash);
-        isDim = r < 0.16;
-        curIntensity = isDim ? src.baseIntensity * 0.35 : src.baseIntensity;
-      }
+      // Sincroniza o brilho emissivo do próprio painel/tubo de LED físico na parede ou no teto!
+      syncLightPanelEmissionAttribute(
+        this.lightPanelEmissionAttr,
+        src,
+        sample.panelEmission
+      );
 
       const justFlickered = isDim && !this.prevLightDimState[i];
       this.prevLightDimState[i] = isDim;

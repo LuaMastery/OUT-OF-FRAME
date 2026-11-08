@@ -44,6 +44,7 @@ export function createDoomSurfaceMaterial(
     baseLight?: number;
     fullBright?: boolean;
     useLocalUv?: boolean;
+    useVertexEmission?: boolean;
   }
 ): THREE.ShaderMaterial {
   const tileXZ = options?.tileScaleXZ ?? 3.0;
@@ -51,6 +52,7 @@ export function createDoomSurfaceMaterial(
   const baseLight = options?.baseLight ?? 0.21;
   const fullBright = options?.fullBright ?? false;
   const useLocalUv = options?.useLocalUv ?? false;
+  const useVertexEmission = options?.useVertexEmission ?? false;
 
   return new THREE.ShaderMaterial({
     uniforms: {
@@ -60,6 +62,7 @@ export function createDoomSurfaceMaterial(
       uBaseLight: { value: baseLight },
       uFullBright: { value: fullBright ? 1.0 : 0.0 },
       uUseLocalUv: { value: useLocalUv ? 1.0 : 0.0 },
+      uUseVertexEmission: { value: useVertexEmission ? 1.0 : 0.0 },
       uLightPositions: shared.uLightPositions,
       uLightIntensities: shared.uLightIntensities,
       uLightCount: shared.uLightCount,
@@ -68,13 +71,18 @@ export function createDoomSurfaceMaterial(
       uFlashlightIntensity: shared.uFlashlightIntensity,
     },
     vertexShader: /* glsl */ `
+      uniform float uUseVertexEmission;
+      attribute float aLightEmission;
+
       varying vec2 vUv;
       varying vec3 vWorldPos;
       varying vec3 vWorldNormal;
       varying float vViewDist;
+      varying float vLightEmission;
 
       void main() {
         vUv = uv;
+        vLightEmission = uUseVertexEmission > 0.5 ? aLightEmission : 1.0;
         vec4 worldPos = modelMatrix * vec4(position, 1.0);
         vWorldPos = worldPos.xyz;
         vWorldNormal = normalize(mat3(modelMatrix) * normal);
@@ -105,6 +113,7 @@ export function createDoomSurfaceMaterial(
       varying vec3 vWorldPos;
       varying vec3 vWorldNormal;
       varying float vViewDist;
+      varying float vLightEmission;
 
       void main() {
         vec3 nrm = normalize(vWorldNormal);
@@ -124,9 +133,33 @@ export function createDoomSurfaceMaterial(
         vec4 texel = texture2D(uMap, uv);
 
         if (uFullBright > 0.5) {
+          float emission = clamp(vLightEmission, 0.0, 1.0);
           float farDim = clamp(1.12 - vViewDist * 0.024, 0.34, 1.0);
-          float q = floor(farDim * 20.0) / 20.0;
-          gl_FragColor = vec4(texel.rgb * q, 1.0);
+          float selfGlow = floor(farDim * emission * 20.0) / 20.0;
+
+          // Quando o LED pisca/apaga, o vidro difusor apagado e a grade ainda refletem
+          // a penumbra mínima do setor e o feixe da lanterna do jogador (realismo físico!)
+          float distAttenAmbient = clamp(1.06 - vViewDist * 0.044, 0.0, 1.0);
+          float unlitAmbient = clamp(uBaseLight * 0.42 * distAttenAmbient, 0.045, 0.14);
+          float flashOnGlass = 0.0;
+          if (uFlashlightIntensity > 0.01) {
+            vec3 toFrag = vWorldPos - uFlashlightPos;
+            float flashDist = length(toFrag);
+            vec3 fragDir = toFrag / max(0.0001, flashDist);
+            float cosCone = dot(fragDir, normalize(uFlashlightDir));
+            float spot = smoothstep(0.925, 0.985, cosCone) + smoothstep(0.74, 0.93, cosCone) * 0.46;
+            float dAtt = clamp(1.0 - flashDist / 23.0, 0.0, 1.0);
+            float face = clamp(dot(nrm, -fragDir) * 0.72 + 0.36, 0.22, 1.0);
+            flashOnGlass = spot * dAtt * face * uFlashlightIntensity * 0.78;
+          }
+          float passiveLit = floor(clamp(unlitAmbient + flashOnGlass, 0.0, 0.92) * 32.0) / 32.0;
+
+          // Leve tom âmbar/quente quando o reator oscila em baixa tensão antes de apagar ou voltar
+          vec3 sagTint = mix(vec3(0.94, 0.80, 0.66), vec3(1.0, 1.0, 1.0), smoothstep(0.08, 0.75, emission));
+          vec3 glowRgb = texel.rgb * selfGlow * sagTint;
+          vec3 passiveRgb = texel.rgb * passiveLit * vec3(0.82, 0.86, 0.92);
+
+          gl_FragColor = vec4(clamp(max(glowRgb, passiveRgb), 0.0, 1.0), 1.0);
           return;
         }
 
