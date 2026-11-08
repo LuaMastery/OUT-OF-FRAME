@@ -776,8 +776,8 @@ export class DoomGameApp {
 
       const spiderOverLair = new THREE.Vector3(
         this.position.x,
-        1.42,
-        this.position.z + 1.12
+        1.36,
+        this.position.z + 1.05
       );
 
       this.spider.updateCinematicSequence(
@@ -791,24 +791,24 @@ export class DoomGameApp {
       );
 
       this.syncCustomSequenceCamera(this.position, 0.28);
-
-      // No final do apagão, afasta a aranha para longe e deixa o jogador bem ferido na teia!
-      if (!this.seqStagedWake && u > 0.9) {
-        this.seqStagedWake = true;
-        this.spider.relocateAwayAfterAbduction();
-        this.webManager.placePlayerInWakingLairWeb();
-        this.playerHealth = 22;
-        this.playerBleeding = true;
-        this.playerSanity = 25;
-        this.yaw = 0; // Acorda olhando para o corredor norte de saída do ninho
-        this.syncInventoryVitals();
-      }
       return;
     }
 
     // ------------------------------------------------------------------------
     // ESTÁGIO 5 (5.85s -> 7.35s): ACORDANDO BEM FERIDO NO MEIO DA TEIA!
+    // (Executado APÓS WEBBING_IN_LAIR terminar 100%, nunca sobrescrevendo o estado!)
     // ------------------------------------------------------------------------
+    if (!this.seqStagedWake) {
+      this.seqStagedWake = true;
+      this.spider.relocateAwayAfterAbduction();
+      this.webManager.placePlayerInWakingLairWeb();
+      this.playerHealth = 22;
+      this.playerBleeding = true;
+      this.playerSanity = 25;
+      this.yaw = 0; // Acorda olhando para o corredor norte de saída do ninho
+      this.syncInventoryVitals();
+    }
+
     if (!this.seqGaspPlayed) {
       this.seqGaspPlayed = true;
       this.sound.playWakeUpGasp();
@@ -833,6 +833,7 @@ export class DoomGameApp {
 
     if (t >= 7.35) {
       this.activeSequence = 'NONE';
+      this.spider.ensureExitedCinematic();
       this.roll = 0;
       this.setCameraFov(74);
       // Mantém os fios do casulo visíveis até o jogador caminhar e rasgar para fora da teia!

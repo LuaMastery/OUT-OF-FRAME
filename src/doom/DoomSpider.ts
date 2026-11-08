@@ -227,6 +227,7 @@ export class DoomSpider {
   private churnYaw = 0;
 
   private cinematicMode: SpiderCinematicMode | null = null;
+  private lastCinematicMode: SpiderCinematicMode | null = null;
   private readonly cinematicVictimPos = new THREE.Vector3();
   private cinematicProgress = 0;
 
@@ -274,7 +275,7 @@ export class DoomSpider {
   }
 
   respawnFarFromPlayer(): void {
-    const startCell = gridCellToWorld(7, 11);
+    const startCell = gridCellToWorld(11, 11);
     this.placeAtCell(startCell.x, startCell.z, 'CEILING');
   }
 
@@ -284,7 +285,16 @@ export class DoomSpider {
   relocateAwayAfterAbduction(): void {
     const farNorth = gridCellToWorld(7, 3);
     this.placeAtCell(farNorth.x, farNorth.z, 'CEILING');
-    this.postAbductionGraceTimer = 7.0;
+    this.postAbductionGraceTimer = 7.5;
+  }
+
+  /**
+   * Garante que a aranha saia de qualquer estado cinemático caso ainda esteja nele.
+   */
+  ensureExitedCinematic(): void {
+    if (this.state === 'CINEMATIC_SEQUENCE') {
+      this.relocateAwayAfterAbduction();
+    }
   }
 
   private placeAtCell(
@@ -293,6 +303,7 @@ export class DoomSpider {
     mode: SpiderSurfaceMode
   ): void {
     this.cinematicMode = null;
+    this.lastCinematicMode = null;
     this.surfaceMode = mode;
     const initY = mode === 'CEILING' ? WALL_HEIGHT - 1.08 : 1.42;
     this.bodyPos.set(wx, initY, wz);
@@ -306,19 +317,73 @@ export class DoomSpider {
     this.stateTimer = 0;
     this.pathWaypoints = [];
 
+    this.snapAllFeetAroundBody();
+    this.updateBodyAndLimbsIK(0.016, 0, this.bodyPos, 0, 20);
+  }
+
+  /**
+   * Reposiciona imediatamente as 8 patas ao redor da posição e orientação atuais do corpo
+   * (evita que patas fiquem esticadas a dezenas de metros após cortes de câmera/teleporte!).
+   */
+  private snapAllFeetAroundBody(): void {
+    const up = this.currentUp;
+    const fwd = new THREE.Vector3().copy(this.currentForward);
+    fwd.addScaledVector(up, -fwd.dot(up));
+    if (fwd.lengthSq() < 1e-5) {
+      fwd.set(0, 0, -1);
+      fwd.addScaledVector(up, -fwd.dot(up));
+    }
+    fwd.normalize();
+    const right = new THREE.Vector3().crossVectors(fwd, up).normalize();
+
     for (let i = 0; i < this.limbs.length; i++) {
       const spec = this.limbSpecs[i];
       const rt = this.limbs[i];
-      const ang = spec.angleRad;
-      rt.footWorld.set(
-        this.bodyPos.x + Math.cos(ang) * 1.45,
-        mode === 'CEILING' ? WALL_HEIGHT - 0.03 : 0.03,
-        this.bodyPos.z + Math.sin(ang) * 1.45
+
+      const rootWorld = new THREE.Vector3(
+        this.bodyPos.x +
+          right.x * spec.rootLocal.x +
+          up.x * spec.rootLocal.y -
+          fwd.x * spec.rootLocal.z,
+        this.bodyPos.y +
+          right.y * spec.rootLocal.x +
+          up.y * spec.rootLocal.y -
+          fwd.y * spec.rootLocal.z,
+        this.bodyPos.z +
+          right.z * spec.rootLocal.x +
+          up.z * spec.rootLocal.y -
+          fwd.z * spec.rootLocal.z
       );
-      rt.stepFrom.copy(rt.footWorld);
-      rt.targetWorld.copy(rt.footWorld);
+
+      const cosA = Math.cos(spec.angleRad);
+      const sinA = Math.sin(spec.angleRad);
+      const ringDir = new THREE.Vector3(
+        fwd.x * cosA + right.x * sinA,
+        fwd.y * cosA + right.y * sinA,
+        fwd.z * cosA + right.z * sinA
+      ).normalize();
+
+      const reachHoriz = spec.totalLength * spec.spread;
+      const restCandidate = new THREE.Vector3(
+        this.bodyPos.x + ringDir.x * reachHoriz,
+        this.bodyPos.y + ringDir.y * reachHoriz,
+        this.bodyPos.z + ringDir.z * reachHoriz
+      );
+
+      const { hitPos, isMetalOrCeiling } = this.findSurfaceFootTarget(
+        rootWorld,
+        restCandidate,
+        up,
+        spec.totalLength * 0.88
+      );
+
+      rt.footWorld.copy(hitPos);
+      rt.stepFrom.copy(hitPos);
+      rt.targetWorld.copy(hitPos);
+      rt.onMetalOrCeiling = isMetalOrCeiling;
       rt.stepping = false;
       rt.stepT = 0;
+      rt.raiseThreat = 0;
     }
   }
 
@@ -353,22 +418,37 @@ export class DoomSpider {
     faceTargetPos: THREE.Vector3,
     victimHookPos: THREE.Vector3
   ): void {
+    const modeChanged = this.lastCinematicMode !== mode;
+    const jumpedFar =
+      this.state !== 'CINEMATIC_SEQUENCE' ||
+      spiderWorldPos.distanceTo(this.prevBodyPos) > 1.6;
+
     this.state = 'CINEMATIC_SEQUENCE';
     this.surfaceMode = 'FLOOR';
     this.cinematicMode = mode;
+    this.lastCinematicMode = mode;
     this.cinematicProgress = progress;
     this.cinematicVictimPos.copy(victimHookPos);
+    this.churnYaw = 0;
 
     this.bodyPos.copy(spiderWorldPos);
-    this.currentUp.lerp(new THREE.Vector3(0, 1, 0), Math.min(1, dt * 12)).normalize();
+    // Garante postura 100% ereta no piso (sem singularidade ao vir do teto!)
+    this.currentUp.set(0, 1, 0);
+    this.targetUp.set(0, 1, 0);
 
     this.faceHorizontalToward(faceTargetPos.x, faceTargetPos.z, 1.0);
 
-    this.tmpA
-      .subVectors(this.bodyPos, this.prevBodyPos)
-      .multiplyScalar(1 / Math.max(0.0005, dt));
-    this.smoothVel.lerp(this.tmpA, Math.min(1, dt * 16));
-    this.prevBodyPos.copy(this.bodyPos);
+    if (modeChanged || jumpedFar) {
+      this.prevBodyPos.copy(this.bodyPos);
+      this.smoothVel.set(0, 0, 0);
+      this.snapAllFeetAroundBody();
+    } else {
+      this.tmpA
+        .subVectors(this.bodyPos, this.prevBodyPos)
+        .multiplyScalar(1 / Math.max(0.0005, dt));
+      this.smoothVel.lerp(this.tmpA, Math.min(1, dt * 16));
+      this.prevBodyPos.copy(this.bodyPos);
+    }
 
     this.chitinMat.uniforms.uRageGlow.value = 1.0;
 
@@ -1090,6 +1170,11 @@ export class DoomSpider {
 
     const vertLerp = 1 - Math.exp(-7.5 * dt);
     this.bodyPos.y += (desiredY - this.bodyPos.y) * vertLerp;
+    // Evita singularidade antipodal ao descer direto do teto (0,-1,0) para o piso (0,1,0)
+    if (this.currentUp.dot(this.targetUp) < -0.75) {
+      this.currentUp.x += 0.45;
+      this.currentUp.normalize();
+    }
     this.currentUp.lerp(this.targetUp, vertLerp).normalize();
   }
 
@@ -1220,6 +1305,17 @@ export class DoomSpider {
         rt.footWorld.copy(overriddenFoot);
         activeFoot.copy(overriddenFoot);
       } else {
+        // Guarda física absoluta: impede qualquer pata de ficar esticada longe do corpo
+        if (rt.footWorld.distanceTo(rootWorld) > spec.totalLength * 1.04) {
+          rt.footWorld.copy(rt.targetWorld);
+          rt.stepFrom.copy(rt.targetWorld);
+          rt.stepping = false;
+          rt.stepT = 0;
+        }
+        if (rt.stepping && rt.stepFrom.distanceTo(rootWorld) > spec.totalLength * 1.08) {
+          rt.stepFrom.copy(rt.targetWorld);
+        }
+
         if (rt.stepping) {
           const hurry = frantic ? 0.38 : 1.0;
           rt.stepT += dt / (spec.stepTime * hurry);
@@ -1366,13 +1462,17 @@ export class DoomSpider {
     }
 
     if (this.cinematicMode === 'WEBBING_IN_LAIR' && limbIndex < 4) {
-      // No ninho, tece rapidamente fios sobre o jogador desacordado!
-      const weaveAngle = elapsed * 8.5 + limbIndex * 1.57;
+      // No ninho, cada pata frontal permanece do seu lado anatômico tecendo fios sobre o jogador!
+      const phase = elapsed * 8.0 + limbIndex * 1.35;
+      const lat =
+        side *
+        (0.38 + (limbIndex >= 2 ? 0.24 : 0) + Math.sin(phase) * 0.14);
+      const fore = (limbIndex < 2 ? -0.15 : 0.28) + Math.cos(phase) * 0.22;
       return new THREE.Vector3()
         .copy(this.cinematicVictimPos)
-        .addScaledVector(right, Math.cos(weaveAngle) * 0.48)
-        .addScaledVector(fwd, Math.sin(weaveAngle) * 0.35)
-        .setY(0.36 + Math.abs(Math.sin(weaveAngle * 1.5)) * 0.26);
+        .addScaledVector(right, lat)
+        .addScaledVector(fwd, fore)
+        .setY(0.32 + Math.abs(Math.sin(phase * 1.2)) * 0.26);
     }
 
     if (this.cinematicMode === 'FATAL_EXECUTION' && limbIndex < 4) {
@@ -1409,38 +1509,42 @@ export class DoomSpider {
       );
     }
 
-    // Apoia as garras gigantes diretamente nas paredes laterais dos corredores!
-    for (let c = 0; c < this.colliders.length; c++) {
-      const b = this.colliders[c].box;
-      if (
-        hit.x > b.min.x - 0.08 &&
-        hit.x < b.max.x + 0.08 &&
-        hit.z > b.min.z - 0.08 &&
-        hit.z < b.max.z + 0.08
-      ) {
-        const dMinX = Math.abs(root.x - b.min.x);
-        const dMaxX = Math.abs(root.x - b.max.x);
-        const dMinZ = Math.abs(root.z - b.min.z);
-        const dMaxZ = Math.abs(root.z - b.max.z);
-        const minD = Math.min(dMinX, dMaxX, dMinZ, dMaxZ);
+    // Apoia as garras gigantes diretamente nas paredes laterais (respeitando altura Y de arcos!)
+    for (let pass = 0; pass < 2; pass++) {
+      for (let c = 0; c < this.colliders.length; c++) {
+        const b = this.colliders[c].box;
+        if (hit.y < b.min.y - 0.06 || hit.y > b.max.y + 0.06) continue;
+        if (
+          hit.x > b.min.x - 0.08 &&
+          hit.x < b.max.x + 0.08 &&
+          hit.z > b.min.z - 0.08 &&
+          hit.z < b.max.z + 0.08
+        ) {
+          const dMinX = Math.abs(root.x - b.min.x);
+          const dMaxX = Math.abs(root.x - b.max.x);
+          const dMinZ = Math.abs(root.z - b.min.z);
+          const dMaxZ = Math.abs(root.z - b.max.z);
+          const minD = Math.min(dMinX, dMaxX, dMinZ, dMaxZ);
 
-        if (minD === dMinX) hit.x = b.min.x - 0.04;
-        else if (minD === dMaxX) hit.x = b.max.x + 0.04;
-        else if (minD === dMinZ) hit.z = b.min.z - 0.04;
-        else hit.z = b.max.z + 0.04;
+          if (minD === dMinX) hit.x = b.min.x - 0.05;
+          else if (minD === dMaxX) hit.x = b.max.x + 0.05;
+          else if (minD === dMinZ) hit.z = b.min.z - 0.05;
+          else hit.z = b.max.z + 0.05;
 
-        if (this.surfaceMode === 'FLOOR') {
-          hit.y = Math.min(
-            1.85,
-            0.42 + (1.0 - Math.min(1, minD / 1.65)) * 1.25
-          );
-        } else if (this.surfaceMode === 'CEILING') {
-          hit.y = Math.max(
-            1.45,
-            WALL_HEIGHT - 0.35 - (1.0 - Math.min(1, minD / 1.65)) * 1.15
-          );
+          if (pass === 0 && b.min.y <= 0.1) {
+            if (this.surfaceMode === 'FLOOR') {
+              hit.y = Math.min(
+                1.75,
+                0.36 + (1.0 - Math.min(1, minD / 1.65)) * 1.15
+              );
+            } else if (this.surfaceMode === 'CEILING') {
+              hit.y = Math.max(
+                1.5,
+                WALL_HEIGHT - 0.35 - (1.0 - Math.min(1, minD / 1.65)) * 1.1
+              );
+            }
+          }
         }
-        break;
       }
     }
 
@@ -1461,6 +1565,7 @@ export class DoomSpider {
       for (let c = 0; c < this.colliders.length; c++) {
         const b = this.colliders[c].box;
         const pad = 0.08;
+        if (p.y < b.min.y - pad || p.y > b.max.y + pad) continue;
         if (
           p.x > b.min.x - pad &&
           p.x < b.max.x + pad &&

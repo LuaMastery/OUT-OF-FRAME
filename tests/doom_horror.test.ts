@@ -219,4 +219,146 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
     // Confirma que a envergadura horizontal das patas gigantes supera ~3.2m
     expect(maxX - minX).toBeGreaterThan(3.2);
   });
+
+  it('mantém postura ereta, patas sem esticar entre salas e sai limpo do estado cinemático após deixar o jogador na teia', () => {
+    const scene = new THREE.Scene();
+    const uniforms = createDoomSharedUniforms();
+    const textures = createDoomTextures();
+    const maze = buildDoomLabyrinth(scene, textures, uniforms);
+    const webs = new DoomSpiderWebManager(scene, uniforms);
+
+    const mockSound = {
+      playSpiderFootstep: () => {},
+      playSpiderScream: () => {},
+      playSpiderWebSpin: () => {},
+    } as unknown as SoundEngine;
+
+    const spider = new DoomSpider(
+      scene,
+      uniforms,
+      maze.colliders,
+      webs,
+      mockSound
+    );
+    const spiderRoot = scene.getObjectByName('EvilCrawlingSpider')!;
+    const bodyGroup = spiderRoot.children[0] as THREE.Group;
+
+    const assertSpiderMeshHealthy = (expectFloorUpright: boolean) => {
+      if (expectFloorUpright) {
+        const worldUp = new THREE.Vector3(0, 1, 0).applyQuaternion(
+          bodyGroup.quaternion
+        );
+        expect(worldUp.y).toBeGreaterThan(0.98);
+      }
+      // Nenhum vértice de pata pode ficar preso em outra sala (> 4.6m do corpo!)
+      for (let i = 1; i < spiderRoot.children.length; i++) {
+        const limbMesh = spiderRoot.children[i] as THREE.Mesh;
+        const pos = limbMesh.geometry.getAttribute('position');
+        for (let k = 0; k < pos.count; k++) {
+          const d = Math.hypot(
+            pos.getX(k) - spider.position.x,
+            pos.getY(k) - spider.position.y,
+            pos.getZ(k) - spider.position.z
+          );
+          expect(d).toBeLessThan(4.65);
+        }
+      }
+    };
+
+    // 1) Bote em corredor distante no norte (vindo direto do teto!)
+    const northStrikeOrigin = gridCellToWorld(2, 1);
+    const victimStrike = new THREE.Vector3(
+      northStrikeOrigin.x,
+      0,
+      northStrikeOrigin.z
+    );
+    const spiderStrike = new THREE.Vector3(
+      northStrikeOrigin.x,
+      1.38,
+      northStrikeOrigin.z - 1.45
+    );
+    for (let f = 0; f < 10; f++) {
+      spider.updateCinematicSequence(
+        0.016,
+        f * 0.05,
+        'STRIKE_ATTACK',
+        f / 10,
+        spiderStrike,
+        victimStrike,
+        victimStrike
+      );
+      assertSpiderMeshHealthy(true);
+    }
+
+    // 2) Corte de 30 metros para o corredor do Ninho Sul (DRAGGING_TO_WEB)
+    for (let f = 0; f <= 20; f++) {
+      const u = f / 20;
+      const victimDrag = new THREE.Vector3().lerpVectors(
+        webs.dragCorridorStart,
+        webs.lairCenter,
+        u
+      );
+      const spiderDrag = new THREE.Vector3(
+        victimDrag.x,
+        1.38,
+        victimDrag.z + 2.15
+      );
+      spider.updateCinematicSequence(
+        0.016,
+        1.5 + f * 0.1,
+        'DRAGGING_TO_WEB',
+        u,
+        spiderDrag,
+        victimDrag,
+        victimDrag
+      );
+      assertSpiderMeshHealthy(true);
+    }
+
+    // 3) Tecendo fios sobre o jogador no Ninho (WEBBING_IN_LAIR até u = 1.0)
+    for (let f = 0; f <= 15; f++) {
+      const u = f / 15;
+      const spiderLair = new THREE.Vector3(
+        webs.lairCenter.x,
+        1.36,
+        webs.lairCenter.z + 1.05
+      );
+      spider.updateCinematicSequence(
+        0.016,
+        4.6 + f * 0.08,
+        'WEBBING_IN_LAIR',
+        u,
+        spiderLair,
+        webs.lairCenter,
+        webs.lairCenter
+      );
+      assertSpiderMeshHealthy(true);
+    }
+
+    // 4) Fim do apagão -> aranha reloca para longe e volta a patrulhar normalmente!
+    spider.relocateAwayAfterAbduction();
+    spider.ensureExitedCinematic();
+    expect(spider.currentState).toBe('STALK_PATROL');
+    expect(spider.position.distanceTo(webs.lairCenter)).toBeGreaterThan(18);
+    assertSpiderMeshHealthy(false);
+
+    const postPos = spider.position.clone();
+    for (let i = 0; i < 30; i++) {
+      spider.update(
+        1 / 30,
+        8 + i / 30,
+        webs.lairCenter,
+        0,
+        false,
+        false,
+        false,
+        new THREE.Vector3(0, 0, -1),
+        [],
+        () => {}
+      );
+      assertSpiderMeshHealthy(false);
+    }
+    // Confirma que a aranha voltou a se mover ativamente pelo mapa (não ficou congelada!)
+    expect(spider.position.distanceTo(postPos)).toBeGreaterThan(0.35);
+  });
 });
