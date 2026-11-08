@@ -949,7 +949,11 @@ export class DoomSpiderWebManager {
         this.lairCocoonRing.visible = false;
       }
       this.webSnapBurstSeq++;
-      sound.playWebTrapSnap();
+      if (sound.playWebCut) {
+        sound.playWebCut();
+      } else {
+        sound.playWebTrapSnap();
+      }
       return { cutActiveSnare: true, cutNearbyTrap: false };
     }
 
@@ -962,7 +966,11 @@ export class DoomSpiderWebManager {
         this.activeSnareTrapGroup = null;
       }
       this.webSnapBurstSeq++;
-      sound.playWebTrapSnap();
+      if (sound.playWebCut) {
+        sound.playWebCut();
+      } else {
+        sound.playWebTrapSnap();
+      }
       return { cutActiveSnare: true, cutNearbyTrap: false };
     }
 
@@ -990,7 +998,11 @@ export class DoomSpiderWebManager {
         setTimeout(() => {
           this.root.remove(grp);
         }, 700);
-        sound.playWebTrapSnap();
+        if (sound.playWebCut) {
+          sound.playWebCut();
+        } else {
+          sound.playWebTrapSnap();
+        }
         return {
           cutActiveSnare: false,
           cutNearbyTrap: true,
@@ -1535,7 +1547,11 @@ export class DoomSpiderWebManager {
           this.lairCocoonRing.visible = false;
         }
         this.webSnapBurstSeq++;
-        sound.playWebTrapSnap();
+        if (sound.playWebCut) {
+          sound.playWebCut();
+        } else {
+          sound.playWebTrapSnap();
+        }
         return { speedMultiplier: 1.0 };
       }
 
@@ -1599,7 +1615,11 @@ export class DoomSpiderWebManager {
       } else {
         this.playerSnareTetherGroup.visible = false;
         this.webSnapBurstSeq++;
-        sound.playWebTrapSnap();
+        if (sound.playWebCut) {
+          sound.playWebCut();
+        } else {
+          sound.playWebTrapSnap();
+        }
       }
 
       return { speedMultiplier: 0.18 };

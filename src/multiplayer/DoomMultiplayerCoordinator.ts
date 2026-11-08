@@ -3,6 +3,7 @@ import { DoomAstronaut } from '../doom/DoomAstronaut';
 import {
   CELL_SIZE,
   isSolidCell,
+  isStoneSectorWorld,
   LABYRINTH_MAP,
   worldToGridCell,
 } from '../doom/DoomMazeBuilder';
@@ -25,6 +26,7 @@ import {
   STALE_HEARTBEAT_TTL_MS,
 } from './MultiplayerService';
 import {
+  countLabyrinthWallsBetween,
   MAX_PROXIMITY_VOICE_DISTANCE,
   ProximityVoiceChatManager,
 } from './ProximityVoiceChat';
@@ -44,6 +46,7 @@ interface RemoteAllyEntity {
   pitch: number;
   speed: number;
   bobPhase: number;
+  lastFootstepHalfCycle: number;
   crouch: number;
   flashlightOn: boolean;
   flashDir: THREE.Vector3;
@@ -323,7 +326,11 @@ export class DoomMultiplayerCoordinator {
   }
 
   setPushToTalkHeld(held: boolean): void {
+    const prev = this.voiceChat.isPushToTalkHeld;
     this.voiceChat.setPushToTalkHeld(held);
+    if (prev !== this.voiceChat.isPushToTalkHeld) {
+      this.sound.playRadioSquelch?.(held);
+    }
   }
 
   cycleVoiceMode(): void {
@@ -418,7 +425,11 @@ export class DoomMultiplayerCoordinator {
       nearSpider,
       elapsedSec
     );
-    this.sound.playRadarPing(true);
+    if (this.sound.playTacticalPingSound) {
+      this.sound.playTacticalPingSound(nearSpider, 0);
+    } else {
+      this.sound.playRadarPing(true);
+    }
 
     this.client.broadcastWorldEvent({
       kind: 'ping',
@@ -897,8 +908,51 @@ export class DoomMultiplayerCoordinator {
         smooth
       );
       const effectiveSpeed = ally.afk ? 0 : ally.speed;
-      if (effectiveSpeed > 0.25 || ally.beingDragged || ally.inSequence) {
+      const isBeingDragged = Boolean(ally.beingDragged || (ally.inSequence && ally.abductionMode === 'DRAGGING_TO_WEB'));
+      if (effectiveSpeed > 0.25 || isBeingDragged || ally.inSequence) {
+        const prevBob = ally.bobPhase;
         ally.bobPhase += dt * (6.8 + effectiveSpeed * 0.75);
+        const halfCycle = Math.floor(ally.bobPhase / Math.PI);
+        if (
+          !ally.dead &&
+          !isBeingDragged &&
+          !ally.inSequence &&
+          !ally.ensnared &&
+          effectiveSpeed > 0.35 &&
+          halfCycle !== ally.lastFootstepHalfCycle &&
+          Math.floor(prevBob / Math.PI) !== halfCycle
+        ) {
+          ally.lastFootstepHalfCycle = halfCycle;
+          const dx = ally.currentPos.x - localState.pos.x;
+          const dz = ally.currentPos.z - localState.pos.z;
+          const dist = Math.hypot(dx, dz);
+          if (dist < 21.0) {
+            const rightX = Math.cos(localState.yaw);
+            const rightZ = -Math.sin(localState.yaw);
+            const pan =
+              dist > 0.05
+                ? Math.max(-0.92, Math.min(0.92, (dx * rightX + dz * rightZ) / dist))
+                : 0;
+            const walls = countLabyrinthWallsBetween(
+              ally.currentPos.x,
+              ally.currentPos.z,
+              localState.pos.x,
+              localState.pos.z
+            );
+            const surface = isStoneSectorWorld(ally.currentPos.x, ally.currentPos.z)
+              ? 'stone'
+              : 'tech';
+            this.sound.playRemoteAllyFootstep?.(
+              pan,
+              dist,
+              walls,
+              halfCycle % 2 === 0,
+              surface,
+              effectiveSpeed > 7.2,
+              ally.crouch > 0.5
+            );
+          }
+        }
       }
 
       if (ally.dead) {
@@ -907,8 +961,6 @@ export class DoomMultiplayerCoordinator {
         ally.labelEl.style.display = 'none';
         continue;
       }
-
-      const isBeingDragged = Boolean(ally.beingDragged || (ally.inSequence && ally.abductionMode === 'DRAGGING_TO_WEB'));
       ally.astronaut.updateThirdPersonAlly(
         ally.currentPos,
         ally.currentYaw,
@@ -1167,6 +1219,7 @@ export class DoomMultiplayerCoordinator {
         pitch: pkt.pitch,
         speed: pkt.speed,
         bobPhase: pkt.bobPhase,
+        lastFootstepHalfCycle: Math.floor(pkt.bobPhase / Math.PI),
         crouch: pkt.crouch,
         flashlightOn: pkt.flashlightOn,
         flashDir: new THREE.Vector3(
@@ -1372,12 +1425,20 @@ export class DoomMultiplayerCoordinator {
   private handleWorldEvent(ev: NetworkWorldEvent): void {
     if (ev.kind === 'chat') {
       if (ev.senderId !== this.session.localPlayerId) {
-        this.sound.menuMove();
+        if (this.sound.playRadioSquelch) {
+          this.sound.playRadioSquelch(true);
+        } else {
+          this.sound.menuMove();
+        }
         this.pushRadioFeed(`${ev.senderName}: ${ev.text}`, false);
       }
     } else if (ev.kind === 'ping') {
       if (ev.senderId !== this.session.localPlayerId) {
-        this.sound.playRadarPing(true);
+        if (this.sound.playTacticalPingSound) {
+          this.sound.playTacticalPingSound(ev.danger, 0);
+        } else {
+          this.sound.playRadarPing(true);
+        }
         this.spawnLocalPingVisual(
           `${ev.senderId}-${ev.ts}`,
           new THREE.Vector3(ev.x, ev.y, ev.z),

@@ -245,6 +245,7 @@ export class DoomSpider {
   private webCooldownTimer = 6.0;
   private lostSightTimer = 0;
   private postAbductionGraceTimer = 0;
+  private chitterTimer = 2.6;
   private churnYaw = 0;
 
   private cinematicMode: SpiderCinematicMode | null = null;
@@ -443,12 +444,31 @@ export class DoomSpider {
    * Interrompe imediatamente um ataque/arrasto cinemático quando um aliado salva a vítima
    * com Sinalizador de Magnésio ou golpe de Faca, fazendo a Aranha gritar e fugir pelo teto!
    */
-  interruptAbductionAndFlee(threatPos: THREE.Vector3): void {
+  interruptAbductionAndFlee(
+    threatPos: THREE.Vector3,
+    listenerPos?: THREE.Vector3,
+    listenerYaw = 0
+  ): void {
+    const audioPos = listenerPos ?? threatPos;
     const dist = Math.hypot(
-      threatPos.x - this.bodyPos.x,
-      threatPos.z - this.bodyPos.z
+      audioPos.x - this.bodyPos.x,
+      audioPos.z - this.bodyPos.z
     );
-    this.sound.playSpiderScream?.(0, dist);
+    const pan = listenerPos ? this.computeStereoPan(listenerPos, listenerYaw) : 0;
+    const wallCount =
+      dist < 28
+        ? countLabyrinthWallsBetween(
+            this.bodyPos.x,
+            this.bodyPos.z,
+            audioPos.x,
+            audioPos.z
+          )
+        : 3;
+    if (this.sound.playSpiderPainRecoil) {
+      this.sound.playSpiderPainRecoil(pan, dist, wallCount);
+    } else {
+      this.sound.playSpiderScream?.(pan, dist, wallCount);
+    }
     this.cinematicMode = null;
     this.lastCinematicMode = null;
     this.remoteDrivenCinematic = false;
@@ -548,6 +568,7 @@ export class DoomSpider {
       this.currentForward.lerp(this.tmpC.normalize(), blend).normalize();
     }
 
+    const prevRemoteState = this.state;
     if (pkt.state !== 'CINEMATIC_SEQUENCE') {
       this.state = pkt.state as SpiderBehaviorState;
     }
@@ -564,6 +585,48 @@ export class DoomSpider {
       localPlayerPos.z - this.bodyPos.z
     );
     const stereoPan = this.computeStereoPan(localPlayerPos, localPlayerYaw);
+    const wallCount =
+      distToPlayer < 28
+        ? countLabyrinthWallsBetween(
+            this.bodyPos.x,
+            this.bodyPos.z,
+            localPlayerPos.x,
+            localPlayerPos.z
+          )
+        : 3;
+
+    // Dispara grito/recuo nos clientes conectados quando o estado autoritativo da Aranha muda!
+    if (
+      (this.state === 'ALERT_WINDUP' || this.state === 'FRENZY_CHASE') &&
+      prevRemoteState !== 'ALERT_WINDUP' &&
+      prevRemoteState !== 'FRENZY_CHASE'
+    ) {
+      this.sound.playSpiderScream(stereoPan, distToPlayer, wallCount);
+    } else if (
+      this.state === 'FLEE_RETREAT' &&
+      prevRemoteState !== 'FLEE_RETREAT'
+    ) {
+      if (this.sound.playSpiderPainRecoil) {
+        this.sound.playSpiderPainRecoil(stereoPan, distToPlayer, wallCount);
+      } else {
+        this.sound.playSpiderScream(stereoPan, distToPlayer, wallCount);
+      }
+    }
+
+    this.chitterTimer -= dt;
+    if (this.chitterTimer <= 0) {
+      this.chitterTimer = this.isChasingOrAlert
+        ? 1.8 + Math.random() * 1.4
+        : 2.8 + Math.random() * 2.4;
+      if (distToPlayer < 18.0) {
+        this.sound.playSpiderChitter?.(
+          stereoPan,
+          distToPlayer,
+          wallCount,
+          this.isChasingOrAlert
+        );
+      }
+    }
 
     const targetRage = this.isChasingOrAlert ? 1.0 : 0.0;
     this.chitinMat.uniforms.uRageGlow.value +=
@@ -575,7 +638,8 @@ export class DoomSpider {
       elapsed,
       localPlayerPos,
       stereoPan,
-      distToPlayer
+      distToPlayer,
+      wallCount
     );
 
     let cameraShakeAmount = 0;
@@ -725,16 +789,31 @@ export class DoomSpider {
     }
   }
 
-  alertToWebTrap(trapWorldPos: THREE.Vector3, playerPos: THREE.Vector3): void {
+  alertToWebTrap(
+    trapWorldPos: THREE.Vector3,
+    playerPos: THREE.Vector3,
+    listenerPos?: THREE.Vector3,
+    listenerYaw = 0
+  ): void {
     if (this.state === 'CINEMATIC_SEQUENCE') return;
 
     this.lastKnownPlayerPos.copy(trapWorldPos);
     this.searchingAroundLastKnown = false;
     this.pathRepathTimer = 0;
 
-    const pan = this.computeStereoPan(playerPos, 0);
-    const dist = this.bodyPos.distanceTo(playerPos);
-    this.sound.playSpiderScream(pan, dist);
+    const audioPos = listenerPos ?? playerPos;
+    const pan = this.computeStereoPan(audioPos, listenerYaw);
+    const dist = this.bodyPos.distanceTo(audioPos);
+    const wallCount =
+      dist < 30
+        ? countLabyrinthWallsBetween(
+            this.bodyPos.x,
+            this.bodyPos.z,
+            audioPos.x,
+            audioPos.z
+          )
+        : 3;
+    this.sound.playSpiderScream(pan, dist, wallCount);
 
     this.state = 'FRENZY_CHASE';
     this.stateTimer = 0;
@@ -1205,7 +1284,9 @@ export class DoomSpider {
     flashlightDir: THREE.Vector3,
     activeFlares: readonly ActiveMagnesiumFlare[],
     onCatchPlayer: () => void,
-    playerVoiceLevel = 0
+    playerVoiceLevel = 0,
+    listenerPos?: THREE.Vector3,
+    listenerYaw?: number
   ): {
     cameraShakeAmount: number;
     playerDistance: number;
@@ -1226,7 +1307,22 @@ export class DoomSpider {
       playerPos.x - this.bodyPos.x,
       playerPos.z - this.bodyPos.z
     );
-    const stereoPan = this.computeStereoPan(playerPos, playerYaw);
+    const audioListenerPos = listenerPos ?? playerPos;
+    const audioListenerYaw = listenerYaw ?? playerYaw;
+    const distToListener = Math.hypot(
+      audioListenerPos.x - this.bodyPos.x,
+      audioListenerPos.z - this.bodyPos.z
+    );
+    const stereoPan = this.computeStereoPan(audioListenerPos, audioListenerYaw);
+    const listenerWallCount =
+      distToListener < 28
+        ? countLabyrinthWallsBetween(
+            this.bodyPos.x,
+            this.bodyPos.z,
+            audioListenerPos.x,
+            audioListenerPos.z
+          )
+        : 3;
 
     // 1. Repulsão por Sinalizador de Magnésio aceso no chão!
     if (this.state !== 'FLEE_RETREAT') {
@@ -1236,7 +1332,19 @@ export class DoomSpider {
           fl.position.z - this.bodyPos.z
         );
         if (dFlare < 4.5) {
-          this.sound.playSpiderScream(stereoPan, distToPlayer);
+          if (this.sound.playSpiderPainRecoil) {
+            this.sound.playSpiderPainRecoil(
+              stereoPan,
+              distToListener,
+              listenerWallCount
+            );
+          } else {
+            this.sound.playSpiderScream(
+              stereoPan,
+              distToListener,
+              listenerWallCount
+            );
+          }
           this.state = 'FLEE_RETREAT';
           this.stateTimer = 0;
           this.surfaceMode = 'CEILING';
@@ -1343,8 +1451,8 @@ export class DoomSpider {
         this.moveAlongPath(dt, chaseSpeed);
       }
 
-      if (distToPlayer < 10.0) {
-        cameraShakeAmount = (1 - distToPlayer / 10.0) * 0.026;
+      if (distToListener < 10.0) {
+        cameraShakeAmount = (1 - distToListener / 10.0) * 0.026;
       }
 
       // Alcançou o jogador COM linha de visão direta -> Inicia Ataque Brutal (nunca atravessa paredes!)
@@ -1354,8 +1462,8 @@ export class DoomSpider {
       ) {
         onCatchPlayer();
         return {
-          cameraShakeAmount: 0.12,
-          playerDistance: distToPlayer,
+          cameraShakeAmount: distToListener < 2.2 ? 0.12 : cameraShakeAmount,
+          playerDistance: distToListener,
         };
       }
 
@@ -1374,11 +1482,15 @@ export class DoomSpider {
         Math.floor((this.stateTimer - dt) * 3) !==
         Math.floor(this.stateTimer * 3)
       ) {
-        this.sound.playSpiderWebSpin(stereoPan, distToPlayer);
+        this.sound.playSpiderWebSpin(
+          stereoPan,
+          distToListener,
+          listenerWallCount
+        );
       }
 
       if (canSeePlayer) {
-        this.triggerAlertScream(stereoPan, distToPlayer);
+        this.triggerAlertScream(stereoPan, distToListener, listenerWallCount);
       } else if (this.stateTimer >= 2.3) {
         const { gx, gz } = worldToGridCell(this.bodyPos.x, this.bodyPos.z);
         const cellCenter = gridCellToWorld(gx, gz);
@@ -1400,14 +1512,14 @@ export class DoomSpider {
       this.churnYaw += dt * 0.25 * Math.sin(elapsed * 0.6);
 
       if (canSeePlayer) {
-        this.triggerAlertScream(stereoPan, distToPlayer);
+        this.triggerAlertScream(stereoPan, distToListener, listenerWallCount);
       } else if (this.stateTimer >= 5.5) {
         this.state = 'STALK_PATROL';
         this.stateTimer = 0;
       }
     } else {
       if (canSeePlayer) {
-        this.triggerAlertScream(stereoPan, distToPlayer);
+        this.triggerAlertScream(stereoPan, distToListener, listenerWallCount);
       } else {
         if (this.pathWaypoints.length === 0) {
           this.pickRandomPatrolPath();
@@ -1488,16 +1600,39 @@ export class DoomSpider {
     this.smoothVel.lerp(this.tmpA, Math.min(1, dt * 16));
     this.prevBodyPos.copy(this.bodyPos);
 
+    // Estalidos orgânicos de quelíceras/mandíbulas quando a Aranha espreita perto do ouvinte!
+    this.chitterTimer -= dt;
+    if (this.chitterTimer <= 0) {
+      this.chitterTimer = this.isChasingOrAlert
+        ? 1.8 + Math.random() * 1.4
+        : 2.8 + Math.random() * 2.4;
+      if (distToListener < 18.0) {
+        this.sound.playSpiderChitter?.(
+          stereoPan,
+          distToListener,
+          listenerWallCount,
+          this.isChasingOrAlert
+        );
+      }
+    }
+
     const targetRage = this.isChasingOrAlert ? 1.0 : 0.0;
     this.chitinMat.uniforms.uRageGlow.value +=
       (targetRage - this.chitinMat.uniforms.uRageGlow.value) *
       Math.min(1, dt * 6);
 
-    this.updateBodyAndLimbsIK(dt, elapsed, playerPos, stereoPan, distToPlayer);
+    this.updateBodyAndLimbsIK(
+      dt,
+      elapsed,
+      playerPos,
+      stereoPan,
+      distToListener,
+      listenerWallCount
+    );
 
     return {
       cameraShakeAmount,
-      playerDistance: distToPlayer,
+      playerDistance: distToListener,
     };
   }
 
@@ -1512,8 +1647,12 @@ export class DoomSpider {
     );
   }
 
-  private triggerAlertScream(stereoPan: number, distToPlayer: number): void {
-    this.sound.playSpiderScream(stereoPan, distToPlayer);
+  private triggerAlertScream(
+    stereoPan: number,
+    distToListener: number,
+    wallCount = 0
+  ): void {
+    this.sound.playSpiderScream(stereoPan, distToListener, wallCount);
     this.state = 'ALERT_WINDUP';
     this.stateTimer = 0;
   }
@@ -2135,7 +2274,8 @@ export class DoomSpider {
     elapsed: number,
     playerPos: THREE.Vector3,
     stereoPan: number,
-    distToPlayer: number
+    distToPlayer: number,
+    wallCount = 0
   ): void {
     const up = this.currentUp;
     const fwd = this.tmpA.copy(this.currentForward);
@@ -2288,7 +2428,8 @@ export class DoomSpider {
               stereoPan,
               distToPlayer,
               frantic,
-              rt.onMetalOrCeiling
+              rt.onMetalOrCeiling,
+              wallCount
             );
           }
         } else if (rt.raiseThreat < 0.1) {

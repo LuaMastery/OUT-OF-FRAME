@@ -283,6 +283,7 @@ export class DoomGameApp {
   private readonly crouchPlayerHeight = 1.05;
   private crouchAmount = 0;
   private wasCrouching = false;
+  private sprintExertionSec = 0;
   private readonly slideState = createInitialSlideState();
 
   // Sinais vitais
@@ -567,6 +568,11 @@ export class DoomGameApp {
       {
         onReceiveFlare: (pos, yaw) => {
           this.worldItems.spawnLitFlare(pos, yaw);
+          if (
+            Math.hypot(pos.x - this.position.x, pos.z - this.position.z) < 15.0
+          ) {
+            this.sound.playItemUse('flare');
+          }
         },
         onRescuedByAlly: () => {
           this.webManager.clearEnsnarement();
@@ -580,6 +586,7 @@ export class DoomGameApp {
             lookForward,
             this.sound
           );
+          this.sound.playWebCut();
           this.inventory.setAbductionScreenFX(0, 0, 0, 0);
           this.syncInventoryVitals();
         },
@@ -587,7 +594,11 @@ export class DoomGameApp {
           this.abortAbductionByAllyRescue();
         },
         onSpiderInterruptedAndFlees: (threatPos) => {
-          this.spider.interruptAbductionAndFlee(threatPos);
+          this.spider.interruptAbductionAndFlee(
+            threatPos,
+            this.position,
+            this.yaw
+          );
         },
         onCaughtByAuthoritativeSpider: (spiderPos) => {
           if (this.activeSequence === 'NONE') {
@@ -602,12 +613,31 @@ export class DoomGameApp {
         },
         onRemoteWebTrapTriggered: (trapPos, playerPos) => {
           this.webManager.collapseTrapNearWorld(trapPos.x, trapPos.z);
+          if (
+            Math.hypot(
+              trapPos.x - this.position.x,
+              trapPos.z - this.position.z
+            ) < 14.0
+          ) {
+            this.sound.playWebTrapSnap();
+          }
           if (!this.multiplayer || this.multiplayer.isHost) {
-            this.spider.alertToWebTrap(trapPos, playerPos);
+            this.spider.alertToWebTrap(
+              trapPos,
+              playerPos,
+              this.position,
+              this.yaw
+            );
           }
         },
         onRemoteWebTrapCut: (x, z) => {
-          this.webManager.collapseTrapNearWorld(x, z);
+          const collapsed = this.webManager.collapseTrapNearWorld(x, z);
+          if (
+            collapsed &&
+            Math.hypot(x - this.position.x, z - this.position.z) < 12.0
+          ) {
+            this.sound.playWebCut();
+          }
         },
         onNotifyHud: (text) => {
           this.multiplayer?.pushHudNotice(text);
@@ -1744,7 +1774,12 @@ export class DoomGameApp {
       hasKnife,
       this.sound,
       (trapPos) => {
-        this.spider.alertToWebTrap(trapPos, this.position);
+        this.spider.alertToWebTrap(
+          trapPos,
+          this.position,
+          this.position,
+          this.yaw
+        );
         this.multiplayer?.notifyWebTrapTriggered(
           trapPos.x,
           trapPos.z,
@@ -1752,6 +1787,9 @@ export class DoomGameApp {
         );
       }
     );
+    if (strugglePressed && this.webManager.isPlayerEnsnared) {
+      this.sound.playStruggleEffort();
+    }
 
     // Atualiza transparência dos fios do casulo enquanto o jogador sai caminhando do Ninho!
     this.inventory.setAbductionScreenFX(
@@ -1871,12 +1909,24 @@ export class DoomGameApp {
           halfCycle % 2 === 0,
           surface,
           sprinting,
-          isCrouching
+          isCrouching,
+          this.playerHealth < 35
         );
       }
     } else {
       this.bobPhase = 0;
       this.lastBobHalfCycle = 0;
+    }
+
+    // Fôlego imersivo dentro do capacete EVA durante corrida prolongada (sem limitar stamina)
+    if (sprinting && planarSpeed > 6.8) {
+      this.sprintExertionSec = Math.min(7.5, this.sprintExertionSec + dt);
+    } else {
+      this.sprintExertionSec = Math.max(0, this.sprintExertionSec - dt * 1.6);
+    }
+    if (this.sprintExertionSec > 2.2) {
+      const exertion01 = Math.min(1, (this.sprintExertionSec - 2.2) / 4.5);
+      this.sound.playSprintBreath(exertion01);
     }
 
     if (this.flashlight.isEquipped && this.lanternBattery > 0) {
@@ -2014,7 +2064,9 @@ export class DoomGameApp {
             );
           }
         },
-        chosen.voiceLevel ?? 0
+        chosen.voiceLevel ?? 0,
+        this.position,
+        this.yaw
       );
     } else {
       spiderOut = this.spider.update(
@@ -2352,6 +2404,22 @@ export class DoomGameApp {
       totalLights++;
     }
 
+    let nearestFlarePos: THREE.Vector3 | null = null;
+    let nearestFlareDist = Infinity;
+    let nearestFlareLife = 0;
+    for (let f = 0; f < flares.length; f++) {
+      const fl = flares[f];
+      const d = Math.hypot(
+        fl.position.x - this.position.x,
+        fl.position.z - this.position.z
+      );
+      if (d < nearestFlareDist) {
+        nearestFlareDist = d;
+        nearestFlarePos = fl.position;
+        nearestFlareLife = fl.remainingSec;
+      }
+    }
+
     for (let f = 0; f < flares.length && totalLights < MAX_DOOM_LIGHTS; f++) {
       const fl = flares[f];
       const fade = Math.min(1, fl.remainingSec / 2.5);
@@ -2380,6 +2448,13 @@ export class DoomGameApp {
       nearestLamp,
       nearestDist,
       nearestJustFlickered
+    );
+    this.sound.updateSpatialFlareAudio(
+      this.position,
+      this.yaw,
+      nearestFlarePos,
+      nearestFlareDist,
+      nearestFlareLife
     );
   }
 

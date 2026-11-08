@@ -42,7 +42,12 @@ import { DoomSpider } from '../src/doom/DoomSpider';
 import { DoomSpiderWebManager } from '../src/doom/DoomSpiderWebs';
 import { createDoomTextures } from '../src/doom/DoomTextures';
 import { DoomWorldItems } from '../src/doom/DoomWorldItems';
-import { SoundEngine } from '../src/engine/audio/SoundEngine';
+import {
+  computeFootstepLayerProfile,
+  computeLabyrinthSoundAcoustics,
+  computeSpiderStepLayerProfile,
+  SoundEngine,
+} from '../src/engine/audio/SoundEngine';
 import {
   AFK_HIDDEN_GRACE_MS,
   AFK_IDLE_TIMEOUT_MS,
@@ -2534,5 +2539,95 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
       },
     ]);
     expect(target.id).toBe('screaming-friend');
+  });
+
+  it('modela acústica 3D do labirinto, passos multicamada do jogador/aranha, oclusão por paredes e corte dedicado de teia', () => {
+    // 1. Oclusão progressiva por paredes de pedra/metal do labirinto + balanço Dry/Reverb
+    const clearNear = computeLabyrinthSoundAcoustics(2.0, 22.0, 0);
+    const oneWall = computeLabyrinthSoundAcoustics(6.0, 22.0, 1);
+    const twoWalls = computeLabyrinthSoundAcoustics(6.0, 22.0, 2);
+    const beyondRange = computeLabyrinthSoundAcoustics(24.0, 22.0, 0);
+
+    expect(clearNear.audible).toBe(true);
+    expect(clearNear.lowpassHz).toBeGreaterThan(14_000);
+    expect(oneWall.lowpassHz).toBeLessThan(2_000);
+    expect(twoWalls.lowpassHz).toBeLessThan(oneWall.lowpassHz);
+    expect(twoWalls.dryGain).toBeLessThan(oneWall.dryGain);
+    expect(beyondRange.audible).toBe(false);
+
+    // 2. Perfil multicamada dos passos do jogador: tech vs stone, furtivo vs corrida e mancando quando ferido
+    const stepTechWalk = computeFootstepLayerProfile('tech', false, false, false, 0, false);
+    const stepStoneWalk = computeFootstepLayerProfile('stone', false, false, false, 0, false);
+    const stepCrouch = computeFootstepLayerProfile('tech', false, true, false, 0, false);
+    const stepSprintInjured = computeFootstepLayerProfile('stone', true, false, true, 2, true);
+
+    expect(stepTechWalk.heelBaseHz).toBeGreaterThan(stepStoneWalk.heelBaseHz);
+    expect(stepTechWalk.surfaceModesHz[2]).toBeGreaterThan(stepStoneWalk.surfaceModesHz[2]);
+    expect(stepCrouch.heelGain).toBeLessThan(stepTechWalk.heelGain * 0.5);
+    expect(stepCrouch.lowpassCutoffHz).toBeLessThan(2_000);
+    expect(stepSprintInjured.heelGain).toBeGreaterThan(stepStoneWalk.heelGain);
+    expect(stepSprintInjured.limpScuffGain).toBeGreaterThan(0);
+
+    // 3. Passos da Aranha Gigante: clangor metálico no teto vs garra na pedra + frenesi + oclusão de parede
+    const spiderFloorStalk = computeSpiderStepLayerProfile(5.0, false, false, 0);
+    const spiderCeilingChase = computeSpiderStepLayerProfile(5.0, true, true, 0);
+    const spiderBehindWalls = computeSpiderStepLayerProfile(5.0, true, true, 2);
+
+    expect(spiderFloorStalk.audible).toBe(true);
+    expect(spiderFloorStalk.metallicModesHz).toBeNull();
+    expect(spiderCeilingChase.metallicModesHz).toHaveLength(3);
+    expect(spiderCeilingChase.clawStrikeGain).toBeGreaterThan(spiderFloorStalk.clawStrikeGain);
+    expect(spiderCeilingChase.subWeightGain).toBeGreaterThan(spiderFloorStalk.subWeightGain);
+    expect(spiderBehindWalls.lowpassHz).toBeLessThan(spiderCeilingChase.lowpassHz);
+
+    // 4. No Co-op Host, a espacialização da Aranha usa os ouvidos do ouvinte local (`listenerPos`), não da vítima remota!
+    const scene = new THREE.Scene();
+    const shared = createDoomSharedUniforms();
+    const textures = createDoomTextures();
+    const built = buildDoomLabyrinth(scene, textures, shared);
+    const webs = new DoomSpiderWebManager(scene, shared);
+
+    let capturedScreamDist = -1;
+    let capturedScreamWalls = -1;
+    let snapCount = 0;
+    let cutCount = 0;
+
+    const soundMock = {
+      playSpiderFootstep: () => {},
+      playSpiderChitter: () => {},
+      playSpiderScream: (_pan: number, dist: number, walls = 0) => {
+        capturedScreamDist = dist;
+        capturedScreamWalls = walls;
+      },
+      playSpiderPainRecoil: () => {},
+      playSpiderWebSpin: () => {},
+      playWebTrapSnap: () => {
+        snapCount++;
+      },
+      playWebCut: () => {
+        cutCount++;
+      },
+    } as unknown as SoundEngine;
+
+    const spider = new DoomSpider(scene, shared, built.colliders, webs, soundMock);
+    const trapPos = new THREE.Vector3(spider.position.x + 0.5, 0, spider.position.z);
+    const victimNearSpider = new THREE.Vector3(spider.position.x + 0.5, 0, spider.position.z);
+    const farHostCell = gridCellToWorld(1, 1);
+    const farHostListener = new THREE.Vector3(farHostCell.x, 0, farHostCell.z);
+
+    spider.alertToWebTrap(trapPos, victimNearSpider, farHostListener, 0);
+    expect(capturedScreamDist).toBeCloseTo(spider.position.distanceTo(farHostListener), 2);
+    expect(capturedScreamWalls).toBeGreaterThanOrEqual(1);
+
+    // 5. Pisar na teia toca `playWebTrapSnap`, enquanto cortar com a faca toca `playWebCut` dedicado!
+    const cell55 = gridCellToWorld(5, 5);
+    webs.spawnWebTrap(cell55.x, cell55.z, true);
+    const walker = new THREE.Vector3(cell55.x, 0, cell55.z);
+    webs.update(0.016, walker, false, false, soundMock, () => {});
+    expect(snapCount).toBe(1);
+    expect(cutCount).toBe(0);
+
+    webs.slashWebWithKnife(walker, new THREE.Vector3(0, 0, -1), soundMock);
+    expect(cutCount).toBe(1);
   });
 });

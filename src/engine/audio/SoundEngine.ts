@@ -2,14 +2,219 @@ import * as THREE from 'three';
 
 export type FloorMaterialKind = 'tech' | 'stone';
 
+export interface LabyrinthSoundAcoustics {
+  dryGain: number;
+  wetSendGain: number;
+  lowpassHz: number;
+  audible: boolean;
+}
+
+export interface FootstepLayerProfile {
+  heelBaseHz: number;
+  heelEndHz: number;
+  heelGain: number;
+  surfaceModesHz: readonly [number, number, number];
+  gritBandHz: number;
+  gritGain: number;
+  suitRustleGain: number;
+  reverbSendRatio: number;
+  lowpassCutoffHz: number;
+  limpScuffGain: number;
+}
+
+export interface SpiderStepLayerProfile {
+  subWeightHz: number;
+  subWeightGain: number;
+  clawStrikeHz: number;
+  clawStrikeQ: number;
+  clawStrikeGain: number;
+  jointClickHz: number;
+  jointDelaySec: number;
+  metallicModesHz: readonly [number, number, number] | null;
+  lowpassHz: number;
+  dryGain: number;
+  wetSendGain: number;
+  audible: boolean;
+}
+
 /**
- * Motor de Áudio Unificado (SoundEngine) — combina e processa em um único barramento
- * todos os sons do Terminal, da Convergência Binária e do Labirinto estilo DOOM Clássico.
+ * Calcula de forma pura a atenuação por distância, o corte de agudos por oclusão de paredes
+ * (`wallCount`) e o balanço Dry / Reverb (Wet) de qualquer som 3D propagando pelos corredores!
+ */
+export function computeLabyrinthSoundAcoustics(
+  distanceMeters: number,
+  maxDistanceMeters: number,
+  wallCount = 0
+): LabyrinthSoundAcoustics {
+  if (
+    !Number.isFinite(distanceMeters) ||
+    !Number.isFinite(maxDistanceMeters) ||
+    maxDistanceMeters <= 0 ||
+    distanceMeters >= maxDistanceMeters
+  ) {
+    return {
+      dryGain: 0,
+      wetSendGain: 0,
+      lowpassHz: 320,
+      audible: false,
+    };
+  }
+
+  const d = Math.max(0, distanceMeters);
+  const norm = Math.min(1, d / maxDistanceMeters);
+  // Queda acústica natural com presença nítida a curta distância e cauda suave no corredor
+  const inv = 1 - norm;
+  const distCurve = Math.pow(inv, 1.58) * (0.84 + 0.16 * inv);
+
+  const walls = Math.max(0, Math.floor(wallCount));
+  let wallDryMul = 1.0;
+  let wallWetMul = 1.0;
+  let lowpassHz = 15_800;
+
+  if (walls === 0) {
+    // Absorção natural do ar ao longo do corredor aberto
+    const airT = Math.min(1, Math.max(0, (d - 4.0) / Math.max(4.0, maxDistanceMeters - 4.0)));
+    lowpassHz = Math.round(15_800 - airT * 8_600);
+  } else if (walls === 1) {
+    wallDryMul = 0.44;
+    wallWetMul = 0.76;
+    lowpassHz = 1_650;
+  } else if (walls === 2) {
+    wallDryMul = 0.2;
+    wallWetMul = 0.52;
+    lowpassHz = 820;
+  } else {
+    wallDryMul = 0.085;
+    wallWetMul = 0.3;
+    lowpassHz = 430;
+  }
+
+  // Quanto mais distante no corredor, maior a proporção relativa de reverberação das paredes
+  const distanceWetBoost = 0.42 + 0.58 * Math.min(1, norm * 1.35);
+  const dryGain = distCurve * wallDryMul;
+  const wetSendGain = distCurve * distanceWetBoost * wallWetMul;
+
+  return {
+    dryGain,
+    wetSendGain,
+    lowpassHz,
+    audible: dryGain > 0.0025 || wetSendGain > 0.0035,
+  };
+}
+
+/**
+ * Calcula o perfil físico multicamada de um passo humano em traje EVA sobre piso metálico (`tech`) ou pedra (`stone`).
+ */
+export function computeFootstepLayerProfile(
+  surface: FloorMaterialKind,
+  sprinting: boolean,
+  crouching: boolean,
+  altFoot: boolean,
+  stepVariantIndex = 0,
+  injured = false
+): FootstepLayerProfile {
+  const footRatio = altFoot ? 1.035 : 0.968;
+  const variantMod = 0.97 + ((Math.abs(stepVariantIndex) % 5) * 0.015);
+  const pitchScale = footRatio * variantMod;
+
+  const stanceGain = crouching ? 0.36 : sprinting ? 1.3 : 1.0;
+  const heelBaseHz =
+    (surface === 'tech' ? 118 : 92) *
+    (crouching ? 0.82 : sprinting ? 1.08 : 1.0) *
+    pitchScale;
+  const heelEndHz = surface === 'tech' ? 35 : 27;
+
+  const surfaceModesHz: readonly [number, number, number] =
+    surface === 'tech'
+      ? [
+          Math.round(216 * pitchScale),
+          Math.round(372 * pitchScale),
+          Math.round(598 * pitchScale),
+        ]
+      : [
+          Math.round(142 * pitchScale),
+          Math.round(238 * pitchScale),
+          Math.round(364 * pitchScale),
+        ];
+
+  const gritBandHz =
+    (surface === 'tech' ? 2_380 : 1_720) *
+    (crouching ? 0.64 : sprinting ? 1.14 : 1.0) *
+    pitchScale;
+
+  return {
+    heelBaseHz,
+    heelEndHz,
+    heelGain: 0.21 * stanceGain,
+    surfaceModesHz,
+    gritBandHz,
+    gritGain: (surface === 'tech' ? 0.135 : 0.155) * stanceGain,
+    suitRustleGain: crouching ? 0.022 : sprinting ? 0.072 : 0.044,
+    reverbSendRatio: crouching ? 0.22 : sprinting ? 0.85 : 0.56,
+    lowpassCutoffHz: crouching ? 1_350 : sprinting ? 11_500 : 7_800,
+    limpScuffGain: injured && altFoot && !crouching ? 0.085 * stanceGain : 0,
+  };
+}
+
+/**
+ * Calcula o perfil acústico de uma pata quitinosa da Aranha Gigante tocando pedra ou grade metálica/teto,
+ * incluindo peso sub-grave, impacto de garra, estalo articular e oclusão pelas paredes!
+ */
+export function computeSpiderStepLayerProfile(
+  distanceMeters: number,
+  frantic: boolean,
+  onMetalOrCeiling: boolean,
+  wallCount = 0
+): SpiderStepLayerProfile {
+  const maxDist = frantic ? 26.0 : 22.0;
+  const acoustics = computeLabyrinthSoundAcoustics(
+    distanceMeters,
+    maxDist,
+    wallCount
+  );
+
+  if (!acoustics.audible) {
+    return {
+      subWeightHz: 68,
+      subWeightGain: 0,
+      clawStrikeHz: 2_000,
+      clawStrikeQ: 2.5,
+      clawStrikeGain: 0,
+      jointClickHz: 260,
+      jointDelaySec: 0.014,
+      metallicModesHz: null,
+      lowpassHz: acoustics.lowpassHz,
+      dryGain: 0,
+      wetSendGain: 0,
+      audible: false,
+    };
+  }
+
+  const energy = frantic ? 1.65 : 1.0;
+  return {
+    subWeightHz: frantic ? 82 : 66,
+    subWeightGain: (frantic ? 0.19 : 0.095),
+    clawStrikeHz: (onMetalOrCeiling ? 3_150 : 2_180) * (frantic ? 1.14 : 1.0),
+    clawStrikeQ: onMetalOrCeiling ? 3.6 : 2.3,
+    clawStrikeGain: 0.145 * energy,
+    jointClickHz: onMetalOrCeiling ? 410 : 255,
+    jointDelaySec: frantic ? 0.011 : 0.016,
+    metallicModesHz: onMetalOrCeiling ? [442, 836, 1_490] : null,
+    lowpassHz: acoustics.lowpassHz,
+    dryGain: acoustics.dryGain,
+    wetSendGain: acoustics.wetSendGain,
+    audible: true,
+  };
+}
+
+/**
+ * Motor de Áudio Unificado (SoundEngine) — síntese física e Foley procedural multicamada
+ * em tempo real para o Terminal TUI, Convergência Binária, Labirinto DOOM, Sobrevivência e Co-op.
  *
  * Cadeia de processamento (DSP):
- *   [Vozes / Foley / Espacialização Estéreo]
- *      ├── Dry Bus ──────────────────────┐
- *      └── Convolver Reverb (Corredor) ──┼──► Soft Saturation ─► Compressor ─► Master
+ *   [Vozes / Foley / Oclusão de Paredes + Pan Estéreo]
+ *      ├── Dry Bus ───────────────────────────────────────┐
+ *      └── Convolver Reverb (Corredor 1.65s + HPF 68Hz) ──┼──► Analog Saturation ─► Compressor ─► Master
  */
 export class SoundEngine {
   private ctx: AudioContext | null = null;
@@ -19,7 +224,9 @@ export class SoundEngine {
   private reverbSend: GainNode | null = null;
 
   private noiseBuffer: AudioBuffer | null = null;
+  private pinkNoiseBuffer: AudioBuffer | null = null;
   private grittyNoiseBuffer: AudioBuffer | null = null;
+  private crackleNoiseBuffer: AudioBuffer | null = null;
 
   // Tensão contínua da Convergência Binária
   private coalesceDroneGain: GainNode | null = null;
@@ -33,13 +240,25 @@ export class SoundEngine {
   private dungeonBus: GainNode | null = null;
   private lampBuzzGain: GainNode | null = null;
   private lampBuzzPanner: StereoPannerNode | null = null;
+  private flareBurnGain: GainNode | null = null;
+  private flareBurnPanner: StereoPannerNode | null = null;
+  private flareBurnFilter: BiquadFilterNode | null = null;
   private pulseTimerId = 0;
+
+  // Controle de cadência e variação orgânica (evita repetição mecânica)
+  private footstepVariantCounter = 0;
+  private spiderStepVariantCounter = 0;
   private lastWallThudMs = 0;
   private lastCrouchMs = 0;
   private lastSlideMs = 0;
   private lastSparkMs = 0;
+  private lastFlarePopMs = 0;
   private lastSpiderStepMs = 0;
+  private lastSpiderChitterMs = 0;
+  private lastSpiderScreamMs = 0;
   private lastHeartbeatMs = 0;
+  private lastSprintBreathMs = 0;
+  private lastRadioSquelchMs = 0;
 
   unlock(): void {
     if (!this.ctx) {
@@ -66,22 +285,22 @@ export class SoundEngine {
 
   private setupMasterGraph(ctx: AudioContext): void {
     const master = ctx.createGain();
-    master.gain.value = 0.78;
+    master.gain.value = 0.82;
     master.connect(ctx.destination);
     this.masterGain = master;
 
-    // Compressor mestre para colar transientes e evitar qualquer saturação digital ríspida
+    // Compressor mestre transparente para colar transientes pesados sem distorção digital
     const comp = ctx.createDynamicsCompressor();
-    comp.threshold.value = -16;
+    comp.threshold.value = -15;
     comp.knee.value = 14;
-    comp.ratio.value = 3.5;
-    comp.attack.value = 0.004;
-    comp.release.value = 0.18;
+    comp.ratio.value = 3.6;
+    comp.attack.value = 0.003;
+    comp.release.value = 0.16;
     comp.connect(master);
 
-    // Leve saturação analógica quente (estilo placa de som anos 90)
+    // Saturação analógica quente (harmônicos pares/ímpares suaves)
     const shaper = ctx.createWaveShaper();
-    shaper.curve = this.createWarmCurve(512);
+    shaper.curve = this.createWarmCurve(1024);
     shaper.oversample = '2x';
     shaper.connect(comp);
 
@@ -91,33 +310,42 @@ export class SoundEngine {
     this.terminalBus = terminalBus;
 
     const worldDry = ctx.createGain();
-    worldDry.gain.value = 0.92;
+    worldDry.gain.value = 0.94;
     worldDry.connect(shaper);
     this.worldDryBus = worldDry;
 
-    // Reverb convolucional sintético de corredor de pedra/metal (1.35s)
+    // Reverb convolucional estéreo realista de corredor subterrâneo de pedra e aço (1.65s)
     const convolver = ctx.createConvolver();
-    convolver.buffer = this.buildStoneCorridorImpulse(ctx, 1.35);
+    convolver.buffer = this.buildStoneCorridorImpulse(ctx, 1.65);
 
     const reverbSend = ctx.createGain();
-    reverbSend.gain.value = 0.42;
+    reverbSend.gain.value = 0.46;
     reverbSend.connect(convolver);
 
+    // Filtro passa-altas no retorno do reverb para manter os sub-graves dos passos secos e firmes!
+    const reverbHpf = ctx.createBiquadFilter();
+    reverbHpf.type = 'highpass';
+    reverbHpf.frequency.value = 68;
+    reverbHpf.Q.value = 0.7;
+
     const reverbReturn = ctx.createGain();
-    reverbReturn.gain.value = 0.65;
-    convolver.connect(reverbReturn);
+    reverbReturn.gain.value = 0.68;
+    convolver.connect(reverbHpf);
+    reverbHpf.connect(reverbReturn);
     reverbReturn.connect(shaper);
     this.reverbSend = reverbSend;
 
-    // Buffers reutilizáveis de ruído (fino e "gritty" 11kHz estilo SoundBlaster DOOM)
-    this.noiseBuffer = this.buildNoiseBuffer(ctx, 1.0, 1);
-    this.grittyNoiseBuffer = this.buildNoiseBuffer(ctx, 1.0, 4);
+    // Quatro buffers procedurais com texturas físicas distintas (1.4s cada, zero alocação em runtime)
+    this.noiseBuffer = this.buildWhiteNoiseBuffer(ctx, 1.4);
+    this.pinkNoiseBuffer = this.buildPinkNoiseBuffer(ctx, 1.4);
+    this.grittyNoiseBuffer = this.buildGrittyNoiseBuffer(ctx, 1.4, 3);
+    this.crackleNoiseBuffer = this.buildCrackleNoiseBuffer(ctx, 1.4);
   }
 
   private createWarmCurve(samples: number): Float32Array<ArrayBuffer> {
     const buf = new ArrayBuffer(samples * 4);
     const curve = new Float32Array(buf);
-    const k = 1.6;
+    const k = 1.65;
     const norm = Math.tanh(k);
     for (let i = 0; i < samples; i++) {
       const x = (i * 2) / (samples - 1) - 1;
@@ -127,8 +355,8 @@ export class SoundEngine {
   }
 
   /**
-   * Gera resposta ao impulso estéreo simulando reflexões curtas de paredes de pedra
-   * seguidas de cauda difusa escura.
+   * Resposta ao impulso binaural/estéreo com reflexões iniciais descorrelacionadas L/R
+   * (simulando paredes laterais de um corredor de 3.4m) + cauda escura com absorção progressiva.
    */
   private buildStoneCorridorImpulse(
     ctx: AudioContext,
@@ -138,34 +366,85 @@ export class SoundEngine {
     const length = Math.floor(rate * seconds);
     const impulse = ctx.createBuffer(2, length, rate);
 
-    const earlyDelays = [0.013, 0.024, 0.039, 0.058, 0.083];
+    const earlyTaps: ReadonlyArray<readonly [number, number, number]> = [
+      [0.009, 0.42, -0.35],
+      [0.017, -0.36, 0.39],
+      [0.028, 0.31, 0.27],
+      [0.043, -0.25, -0.29],
+      [0.064, 0.2, -0.22],
+      [0.091, -0.15, 0.17],
+    ];
 
     for (let ch = 0; ch < 2; ch++) {
       const data = impulse.getChannelData(ch);
-      let lp = 0;
+      let lpFast = 0;
+      let lpWarm = 0;
       for (let i = 0; i < length; i++) {
         const t = i / rate;
-        const env = Math.pow(1 - t / seconds, 2.6);
+        const u = t / seconds;
+        const envHigh = Math.pow(Math.max(0, 1 - u * 1.65), 3.1);
+        const envLowMid = Math.pow(Math.max(0, 1 - u), 2.35);
         const white = Math.random() * 2 - 1;
-        // Filtro passa-baixas progressivo: paredes de pedra absorvem agudos rápido
-        const damp = Math.max(0.08, 0.48 - t * 0.28);
-        lp += (white - lp) * damp;
-        data[i] = lp * env * 0.48;
+
+        const dampFast = Math.max(0.06, 0.54 - u * 0.38);
+        lpFast += (white - lpFast) * dampFast;
+        lpWarm += (lpFast - lpWarm) * 0.12;
+
+        data[i] = (lpFast * envHigh * 0.26 + lpWarm * envLowMid * 0.34);
       }
 
-      // Reflexões iniciais discretas dos corredores estreitos
-      earlyDelays.forEach((delaySec, idx) => {
-        const offset = Math.floor((delaySec + ch * 0.0035) * rate);
+      for (const [delaySec, gainL, gainR] of earlyTaps) {
+        const jitterSec = ch === 0 ? 0 : 0.0029;
+        const offset = Math.floor((delaySec + jitterSec) * rate);
+        const tapGain = ch === 0 ? gainL : gainR;
         if (offset < length) {
-          data[offset] += (idx % 2 === 0 ? 1 : -1) * (0.38 / (idx + 1));
+          data[offset] += tapGain;
+          if (offset + 1 < length) data[offset + 1] += tapGain * 0.45;
         }
-      });
+      }
     }
 
     return impulse;
   }
 
-  private buildNoiseBuffer(
+  private buildWhiteNoiseBuffer(ctx: AudioContext, seconds: number): AudioBuffer {
+    const len = Math.floor(ctx.sampleRate * seconds);
+    const buffer = ctx.createBuffer(1, len, ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < len; i++) {
+      data[i] = Math.random() * 2 - 1;
+    }
+    return buffer;
+  }
+
+  /** Ruído rosa (-3dB/oitava, algoritmo Paul Kellet) natural para tecido, fôlego, vento e ambiência */
+  private buildPinkNoiseBuffer(ctx: AudioContext, seconds: number): AudioBuffer {
+    const len = Math.floor(ctx.sampleRate * seconds);
+    const buffer = ctx.createBuffer(1, len, ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    let b0 = 0;
+    let b1 = 0;
+    let b2 = 0;
+    let b3 = 0;
+    let b4 = 0;
+    let b5 = 0;
+    let b6 = 0;
+    for (let i = 0; i < len; i++) {
+      const white = Math.random() * 2 - 1;
+      b0 = 0.99886 * b0 + white * 0.0555179;
+      b1 = 0.99332 * b1 + white * 0.0750759;
+      b2 = 0.96900 * b2 + white * 0.1538520;
+      b3 = 0.86650 * b3 + white * 0.3104856;
+      b4 = 0.55000 * b4 + white * 0.5329522;
+      b5 = -0.7616 * b5 - white * 0.0168980;
+      const pink = b0 + b1 + b2 + b3 + b4 + b5 + b6 + white * 0.5362;
+      b6 = white * 0.115926;
+      data[i] = Math.max(-1, Math.min(1, pink * 0.18));
+    }
+    return buffer;
+  }
+
+  private buildGrittyNoiseBuffer(
     ctx: AudioContext,
     seconds: number,
     holdSamples: number
@@ -176,12 +455,65 @@ export class SoundEngine {
     let current = 0;
     for (let i = 0; i < len; i++) {
       if (i % holdSamples === 0) {
-        // Quantização de amplitude sutil estilo PCM 8-bit dos anos 90
-        current = Math.round((Math.random() * 2 - 1) * 16) / 16;
+        current = Math.round((Math.random() * 2 - 1) * 20) / 20;
       }
       data[i] = current;
     }
     return buffer;
+  }
+
+  /** Buffer granular esparso para pedregulhos sob a bota, faíscas, estalos de quitina e seda rasgando */
+  private buildCrackleNoiseBuffer(ctx: AudioContext, seconds: number): AudioBuffer {
+    const len = Math.floor(ctx.sampleRate * seconds);
+    const buffer = ctx.createBuffer(1, len, ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    let env = 0;
+    let sign = 1;
+    for (let i = 0; i < len; i++) {
+      if (Math.random() < 0.018) {
+        env = 0.45 + Math.random() * 0.55;
+        sign = Math.random() < 0.5 ? -1 : 1;
+      }
+      env *= 0.86;
+      const fine = (Math.random() * 2 - 1) * 0.22;
+      data[i] = Math.max(-1, Math.min(1, sign * env + fine));
+    }
+    return buffer;
+  }
+
+  /**
+   * Cria um nó espacializado descartável com Pan Estéreo + Filtro Passa-Baixas de Oclusão de Parede
+   * + envios separados Dry / Reverb Wet!
+   */
+  private createSpatialWorldSink(
+    pan: number,
+    acoustics: LabyrinthSoundAcoustics
+  ): AudioNode | null {
+    if (!this.ctx || !this.worldDryBus || !this.reverbSend || !acoustics.audible) {
+      return null;
+    }
+
+    const occlusionFilter = this.ctx.createBiquadFilter();
+    occlusionFilter.type = 'lowpass';
+    occlusionFilter.frequency.value = acoustics.lowpassHz;
+    occlusionFilter.Q.value = 0.65;
+
+    const panner = this.ctx.createStereoPanner();
+    panner.pan.value = Math.max(-0.95, Math.min(0.95, pan));
+
+    const dryGain = this.ctx.createGain();
+    dryGain.gain.value = acoustics.dryGain;
+
+    const wetGain = this.ctx.createGain();
+    wetGain.gain.value = acoustics.wetSendGain;
+
+    occlusionFilter.connect(panner);
+    panner.connect(dryGain);
+    panner.connect(wetGain);
+    dryGain.connect(this.worldDryBus);
+    wetGain.connect(this.reverbSend);
+
+    return occlusionFilter;
   }
 
   // ==========================================================================
@@ -197,19 +529,19 @@ export class SoundEngine {
       this.terminalBus,
       now,
       0.018,
-      1800,
-      2.2,
-      0.09,
-      false
+      1950,
+      2.4,
+      0.095,
+      'white'
     );
 
     const osc = this.ctx.createOscillator();
     const gain = this.ctx.createGain();
     osc.type = 'triangle';
-    osc.frequency.setValueAtTime(460, now);
-    osc.frequency.exponentialRampToValueAtTime(210, now + 0.026);
+    osc.frequency.setValueAtTime(480, now);
+    osc.frequency.exponentialRampToValueAtTime(195, now + 0.026);
 
-    gain.gain.setValueAtTime(0.065, now);
+    gain.gain.setValueAtTime(0.068, now);
     gain.gain.exponentialRampToValueAtTime(0.0008, now + 0.03);
 
     osc.connect(gain);
@@ -218,43 +550,42 @@ export class SoundEngine {
     osc.stop(now + 0.032);
   }
 
-  /** Avanço da barra de progresso combinando pulso harmônico + micro-seek de disco */
+  /** Avanço da barra de progresso combinando pulso harmônico + micro-seek de disco rígido */
   loadingStep(pct: number): void {
     if (!this.isRunning() || !this.ctx || !this.terminalBus) return;
     const now = this.ctx.currentTime;
 
-    // Duplo estalido sutil de atuador de disco rígido clássico
     this.triggerFilteredNoise(
       this.terminalBus,
       now,
       0.012,
-      1350 + pct * 6,
-      3.0,
-      0.08,
-      false
+      1380 + pct * 6,
+      3.1,
+      0.085,
+      'crackle'
     );
     this.triggerFilteredNoise(
       this.terminalBus,
-      now + 0.028,
+      now + 0.026,
       0.01,
-      1650 + pct * 5,
-      3.2,
-      0.055,
-      false
+      1720 + pct * 5,
+      3.3,
+      0.06,
+      'white'
     );
 
     const osc = this.ctx.createOscillator();
     const gain = this.ctx.createGain();
     osc.type = 'sine';
-    osc.frequency.setValueAtTime(260 + pct * 2.4, now);
+    osc.frequency.setValueAtTime(255 + pct * 2.5, now);
 
-    gain.gain.setValueAtTime(0.06, now);
-    gain.gain.exponentialRampToValueAtTime(0.0008, now + 0.042);
+    gain.gain.setValueAtTime(0.062, now);
+    gain.gain.exponentialRampToValueAtTime(0.0008, now + 0.044);
 
     osc.connect(gain);
     gain.connect(this.terminalBus);
     osc.start(now);
-    osc.stop(now + 0.045);
+    osc.stop(now + 0.048);
   }
 
   /** Acorde curto e limpo de inicialização concluída ao abrir a Área de Trabalho */
@@ -262,64 +593,64 @@ export class SoundEngine {
     if (!this.isRunning() || !this.ctx || !this.terminalBus) return;
     const now = this.ctx.currentTime;
 
-    const notes = [330, 495, 660];
+    const notes = [330, 495, 660, 990];
     notes.forEach((freq, idx) => {
       if (!this.ctx || !this.terminalBus) return;
-      const t = now + idx * 0.065;
+      const t = now + idx * 0.058;
 
       const osc = this.ctx.createOscillator();
       const filter = this.ctx.createBiquadFilter();
       const gain = this.ctx.createGain();
 
-      osc.type = 'triangle';
+      osc.type = idx === 3 ? 'sine' : 'triangle';
       osc.frequency.setValueAtTime(freq, t);
 
       filter.type = 'lowpass';
-      filter.frequency.value = 2100;
+      filter.frequency.value = 2400;
 
-      gain.gain.setValueAtTime(0.075, t);
-      gain.gain.exponentialRampToValueAtTime(0.0008, t + 0.18);
+      gain.gain.setValueAtTime(idx === 3 ? 0.045 : 0.075, t);
+      gain.gain.exponentialRampToValueAtTime(0.0008, t + 0.21);
 
       osc.connect(filter);
       filter.connect(gain);
       gain.connect(this.terminalBus);
       osc.start(t);
-      osc.stop(t + 0.19);
+      osc.stop(t + 0.22);
     });
   }
 
-  /** Tecla mecânica multicamada (click do switch + corpo plástico + micro-variação) */
+  /** Tecla mecânica IBM Model-M / switch tátil multicamada (click + mola + "thock" no chassi) */
   keyType(isSpace = false): void {
     if (!this.isRunning() || !this.ctx || !this.terminalBus) return;
     const now = this.ctx.currentTime;
-    const jitter = 0.95 + Math.random() * 0.1;
+    const jitter = 0.94 + Math.random() * 0.12;
 
-    // Camada 1: Click agudo do switch mecânico
+    // Camada 1: Atuação nítida da folha metálica do switch
     this.triggerFilteredNoise(
       this.terminalBus,
       now,
-      0.009,
-      (isSpace ? 2200 : 3300) * jitter,
-      2.4,
-      0.13,
-      false
+      0.008,
+      (isSpace ? 2350 : 3550) * jitter,
+      2.7,
+      0.135,
+      'white'
     );
 
-    // Camada 2: Ressonância grave da tecla batendo na base ("thock")
+    // Camada 2: Impacto grave ("thock") da keycap em PBT batendo na chapa
     const body = this.ctx.createOscillator();
     const bodyGain = this.ctx.createGain();
     body.type = 'triangle';
-    const f0 = (isSpace ? 155 : 225) * jitter;
+    const f0 = (isSpace ? 148 : 228) * jitter;
     body.frequency.setValueAtTime(f0, now);
-    body.frequency.exponentialRampToValueAtTime(68, now + 0.024);
+    body.frequency.exponentialRampToValueAtTime(62, now + 0.026);
 
-    bodyGain.gain.setValueAtTime(isSpace ? 0.095 : 0.075, now);
-    bodyGain.gain.exponentialRampToValueAtTime(0.0008, now + 0.026);
+    bodyGain.gain.setValueAtTime(isSpace ? 0.105 : 0.08, now);
+    bodyGain.gain.exponentialRampToValueAtTime(0.0008, now + 0.028);
 
     body.connect(bodyGain);
     bodyGain.connect(this.terminalBus);
     body.start(now);
-    body.stop(now + 0.028);
+    body.stop(now + 0.03);
   }
 
   keyBackspace(): void {
@@ -329,26 +660,26 @@ export class SoundEngine {
     this.triggerFilteredNoise(
       this.terminalBus,
       now,
-      0.014,
-      1850,
-      2.0,
-      0.12,
-      false
+      0.015,
+      1900,
+      2.1,
+      0.125,
+      'white'
     );
 
     const osc = this.ctx.createOscillator();
     const gain = this.ctx.createGain();
     osc.type = 'triangle';
-    osc.frequency.setValueAtTime(165, now);
-    osc.frequency.exponentialRampToValueAtTime(62, now + 0.032);
+    osc.frequency.setValueAtTime(172, now);
+    osc.frequency.exponentialRampToValueAtTime(58, now + 0.034);
 
-    gain.gain.setValueAtTime(0.085, now);
-    gain.gain.exponentialRampToValueAtTime(0.0008, now + 0.035);
+    gain.gain.setValueAtTime(0.09, now);
+    gain.gain.exponentialRampToValueAtTime(0.0008, now + 0.036);
 
     osc.connect(gain);
     gain.connect(this.terminalBus);
     osc.start(now);
-    osc.stop(now + 0.038);
+    osc.stop(now + 0.039);
   }
 
   keyEnter(): void {
@@ -358,31 +689,30 @@ export class SoundEngine {
     this.triggerFilteredNoise(
       this.terminalBus,
       now,
-      0.018,
-      2450,
-      1.8,
+      0.019,
+      2550,
+      1.9,
       0.15,
-      false
+      'white'
     );
 
-    // Duplo harmônico tátil de confirmação
-    const freqs = [290, 435];
+    const freqs = [295, 442];
     freqs.forEach((f, idx) => {
       if (!this.ctx || !this.terminalBus) return;
-      const t = now + idx * 0.022;
+      const t = now + idx * 0.021;
       const osc = this.ctx.createOscillator();
       const gain = this.ctx.createGain();
       osc.type = 'triangle';
       osc.frequency.setValueAtTime(f, t);
-      osc.frequency.exponentialRampToValueAtTime(f * 0.72, t + 0.045);
+      osc.frequency.exponentialRampToValueAtTime(f * 0.72, t + 0.046);
 
-      gain.gain.setValueAtTime(0.075, t);
-      gain.gain.exponentialRampToValueAtTime(0.0008, t + 0.05);
+      gain.gain.setValueAtTime(0.078, t);
+      gain.gain.exponentialRampToValueAtTime(0.0008, t + 0.052);
 
       osc.connect(gain);
       gain.connect(this.terminalBus);
       osc.start(t);
-      osc.stop(t + 0.055);
+      osc.stop(t + 0.056);
     });
   }
 
@@ -394,25 +724,25 @@ export class SoundEngine {
       this.terminalBus,
       now,
       0.007,
-      3600,
-      3.5,
+      3650,
+      3.4,
       0.075,
-      false
+      'white'
     );
 
     const osc = this.ctx.createOscillator();
     const gain = this.ctx.createGain();
     osc.type = 'sine';
-    osc.frequency.setValueAtTime(780, now);
-    osc.frequency.exponentialRampToValueAtTime(520, now + 0.018);
+    osc.frequency.setValueAtTime(810, now);
+    osc.frequency.exponentialRampToValueAtTime(510, now + 0.019);
 
-    gain.gain.setValueAtTime(0.05, now);
-    gain.gain.exponentialRampToValueAtTime(0.0008, now + 0.02);
+    gain.gain.setValueAtTime(0.052, now);
+    gain.gain.exponentialRampToValueAtTime(0.0008, now + 0.021);
 
     osc.connect(gain);
     gain.connect(this.terminalBus);
     osc.start(now);
-    osc.stop(now + 0.022);
+    osc.stop(now + 0.023);
   }
 
   windowOpen(): void {
@@ -422,18 +752,17 @@ export class SoundEngine {
     const gain = this.ctx.createGain();
     osc.type = 'triangle';
     osc.frequency.setValueAtTime(320, now);
-    osc.frequency.exponentialRampToValueAtTime(540, now + 0.055);
+    osc.frequency.exponentialRampToValueAtTime(560, now + 0.058);
 
-    gain.gain.setValueAtTime(0.075, now);
-    gain.gain.exponentialRampToValueAtTime(0.0008, now + 0.06);
+    gain.gain.setValueAtTime(0.078, now);
+    gain.gain.exponentialRampToValueAtTime(0.0008, now + 0.062);
 
     osc.connect(gain);
     gain.connect(this.terminalBus);
     osc.start(now);
-    osc.stop(now + 0.065);
+    osc.stop(now + 0.066);
   }
 
-  /** Estalido discreto em degraus para cada quadro da moldura DOS expandindo/recolhendo */
   windowFrameStep(
     stepIndex: number,
     totalSteps: number,
@@ -474,19 +803,19 @@ export class SoundEngine {
       const gain = this.ctx.createGain();
 
       osc.type = 'sawtooth';
-      osc.frequency.setValueAtTime(140, t);
+      osc.frequency.setValueAtTime(145 - i * 18, t);
 
       filter.type = 'lowpass';
       filter.frequency.value = 680;
 
-      gain.gain.setValueAtTime(0.085, t);
-      gain.gain.exponentialRampToValueAtTime(0.0008, t + 0.06);
+      gain.gain.setValueAtTime(0.088, t);
+      gain.gain.exponentialRampToValueAtTime(0.0008, t + 0.062);
 
       osc.connect(filter);
       filter.connect(gain);
       gain.connect(this.terminalBus);
       osc.start(t);
-      osc.stop(t + 0.065);
+      osc.stop(t + 0.066);
     }
   }
 
@@ -498,12 +827,11 @@ export class SoundEngine {
     if (!this.isRunning() || !this.ctx || !this.terminalBus) return;
     const now = this.ctx.currentTime;
 
-    // Pulso grave inicial quando surge "Este programa ainda está em desenvolvimento."
     const sub = this.ctx.createOscillator();
     const subGain = this.ctx.createGain();
     sub.type = 'sine';
-    sub.frequency.setValueAtTime(146.8, now); // D3
-    sub.frequency.exponentialRampToValueAtTime(73.4, now + 0.45); // D2
+    sub.frequency.setValueAtTime(146.8, now);
+    sub.frequency.exponentialRampToValueAtTime(73.4, now + 0.45);
     subGain.gain.setValueAtTime(0.14, now);
     subGain.gain.exponentialRampToValueAtTime(0.0008, now + 0.5);
     sub.connect(subGain);
@@ -511,7 +839,6 @@ export class SoundEngine {
     sub.start(now);
     sub.stop(now + 0.52);
 
-    // Prepara drone magnético crescente que acompanha a junção dos bits 0 e 1
     this.stopCoalesceDrone();
     const droneGain = this.ctx.createGain();
     droneGain.gain.value = 0.0001;
@@ -527,23 +854,19 @@ export class SoundEngine {
 
     const oscA = this.ctx.createOscillator();
     oscA.type = 'sawtooth';
-    oscA.frequency.value = 73.42; // D2
+    oscA.frequency.value = 73.42;
     oscA.connect(filter);
     oscA.start(now);
     this.coalesceOscA = oscA;
 
     const oscB = this.ctx.createOscillator();
     oscB.type = 'triangle';
-    oscB.frequency.value = 110.0; // A2 (quinta justa)
+    oscB.frequency.value = 110.0;
     oscB.connect(filter);
     oscB.start(now);
     this.coalesceOscB = oscB;
   }
 
-  /**
-   * Atualiza o drone magnético e dispara grãos cristalinos estéreo conforme os '0' e '1'
-   * despertam aos poucos e se encaixam na grade.
-   */
   binaryCoalesceGrain(progress: number, lockedFraction: number): void {
     if (!this.isRunning() || !this.ctx || !this.terminalBus) return;
     const now = this.ctx.currentTime;
@@ -566,7 +889,6 @@ export class SoundEngine {
     if (nowMs - this.lastGrainMs < minGapMs) return;
     this.lastGrainMs = nowMs;
 
-    // Escala harmônica pentatônica/menor cristalina para os bits 0/1 se agrupando
     const scale = [293.66, 329.63, 440.0, 587.33, 659.25, 880.0, 1174.66];
     const maxIdx = Math.min(
       scale.length - 1,
@@ -575,7 +897,6 @@ export class SoundEngine {
     const freq = scale[Math.floor(Math.random() * (maxIdx + 1))];
 
     const panner = this.ctx.createStereoPanner();
-    // Começa espalhado nas bordas do estéreo e converge para o centro quando trava!
     const spread = (1 - lockedFraction) * 0.85;
     panner.pan.value = (Math.random() * 2 - 1) * spread;
 
@@ -598,7 +919,6 @@ export class SoundEngine {
     osc.stop(now + 0.05);
   }
 
-  /** Travamento magnético final quando a interface estilo Superhot termina de montar */
   interfaceLocked(): void {
     this.stopCoalesceDrone();
     if (!this.isRunning() || !this.ctx || !this.terminalBus) return;
@@ -611,10 +931,9 @@ export class SoundEngine {
       2900,
       1.6,
       0.16,
-      false
+      'white'
     );
 
-    // Impacto grave + quinta cristalina
     const chord = [73.42, 146.83, 220.0, 440.0];
     chord.forEach((f, idx) => {
       if (!this.ctx || !this.terminalBus) return;
@@ -670,7 +989,7 @@ export class SoundEngine {
       1400,
       1.8,
       0.15,
-      false
+      'white'
     );
 
     const osc = this.ctx.createOscillator();
@@ -693,12 +1012,9 @@ export class SoundEngine {
   }
 
   // ==========================================================================
-  // 3. TRANSIÇÃO E PAISAGEM SONORA DO LABIRINTO ESTILO DOOM CLÁSSICO
+  // 3. TRANSIÇÃO E PAISAGEM SONORA DO LABIRINTO ESTILO DOOM / TERROR ESPACIAL
   // ==========================================================================
 
-  /**
-   * Crossfade contínuo do Terminal para a atmosfera reverberante do Labirinto DOOM.
-   */
   enterDoomLabyrinth(): void {
     this.stopCoalesceDrone();
     if (!this.isRunning() || !this.ctx || !this.worldDryBus || !this.reverbSend) {
@@ -707,38 +1023,52 @@ export class SoundEngine {
     const ctx = this.ctx;
     const now = ctx.currentTime;
 
-    // Impacto dramático estilo abertura de porta/elevador pesado do DOOM clássico
+    if (this.masterGain) {
+      this.masterGain.gain.setTargetAtTime(0.82, now, 0.04);
+    }
+
+    // Comporta hidráulica pesada de airlock/elevador fechando atrás do jogador
     this.triggerFilteredNoise(
       this.worldDryBus,
       now,
-      0.38,
-      260,
-      1.2,
+      0.44,
+      280,
+      1.15,
       0.28,
-      true,
+      'gritty',
+      this.reverbSend
+    );
+    this.triggerFilteredNoise(
+      this.worldDryBus,
+      now + 0.08,
+      0.18,
+      1650,
+      2.4,
+      0.11,
+      'pink',
       this.reverbSend
     );
 
     const boom = ctx.createOscillator();
     const boomGain = ctx.createGain();
     boom.type = 'sawtooth';
-    boom.frequency.setValueAtTime(82.41, now); // E2
-    boom.frequency.exponentialRampToValueAtTime(41.2, now + 0.55); // E1
+    boom.frequency.setValueAtTime(86.0, now);
+    boom.frequency.exponentialRampToValueAtTime(38.0, now + 0.62);
 
     const boomFilter = ctx.createBiquadFilter();
     boomFilter.type = 'lowpass';
-    boomFilter.frequency.setValueAtTime(620, now);
-    boomFilter.frequency.exponentialRampToValueAtTime(140, now + 0.55);
+    boomFilter.frequency.setValueAtTime(640, now);
+    boomFilter.frequency.exponentialRampToValueAtTime(125, now + 0.62);
 
-    boomGain.gain.setValueAtTime(0.22, now);
-    boomGain.gain.exponentialRampToValueAtTime(0.0008, now + 0.6);
+    boomGain.gain.setValueAtTime(0.24, now);
+    boomGain.gain.exponentialRampToValueAtTime(0.0008, now + 0.66);
 
     boom.connect(boomFilter);
     boomFilter.connect(boomGain);
     boomGain.connect(this.worldDryBus);
     boomGain.connect(this.reverbSend);
     boom.start(now);
-    boom.stop(now + 0.62);
+    boom.stop(now + 0.68);
 
     if (!this.dungeonStarted) {
       this.dungeonStarted = true;
@@ -753,13 +1083,17 @@ export class SoundEngine {
       const now = this.ctx.currentTime;
       this.dungeonBus.gain.setTargetAtTime(0.0001, now, 0.12);
       this.lampBuzzGain?.gain.setTargetAtTime(0, now, 0.08);
+      this.flareBurnGain?.gain.setTargetAtTime(0, now, 0.08);
     }
   }
 
   /**
-   * Atmosfera sombria estilo DOOM (E1M2 / E1M8):
-   * Sub-drone industrial em Mi Frígio (E1 + B1), ar subterrâneo nos corredores
-   * e zumbido elétrico espacializado para as luminárias LITE5 próximas.
+   * Atmosfera subterrânea densa:
+   * - Sub-drone industrial escuro (E1 + B1);
+   * - Corrente de ar de ventilação nos túneis (ruído rosa filtrado);
+   * - Zumbido espacializado de reator fluorescente 120Hz/240Hz nas luminárias LITE5;
+   * - Combustão contínua espacializada quando há sinalizador de magnésio aceso no chão;
+   * - Eventos distantes ocasionais (rangido estrutural metálico ou gota d'água na pedra).
    */
   private startDungeonAtmosphere(ctx: AudioContext): void {
     if (!this.worldDryBus || !this.reverbSend) return;
@@ -770,23 +1104,22 @@ export class SoundEngine {
     bus.connect(this.worldDryBus);
     this.dungeonBus = bus;
 
-    // 1. Drone escuro subterrâneo filtrado bem sutil (E1 = 41.2Hz + B1 = 61.74Hz)
+    // 1. Sub-drone escuro subterrâneo
     const droneFilter = ctx.createBiquadFilter();
     droneFilter.type = 'lowpass';
-    droneFilter.frequency.value = 125;
-    droneFilter.Q.value = 1.6;
+    droneFilter.frequency.value = 118;
+    droneFilter.Q.value = 1.65;
 
     const droneGain = ctx.createGain();
     droneGain.gain.value = 0.012;
     droneFilter.connect(droneGain);
     droneGain.connect(bus);
 
-    // LFO lento modulando o filtro do drone para sensação orgânica de masmorra/base
     const lfo = ctx.createOscillator();
     const lfoGain = ctx.createGain();
     lfo.type = 'sine';
-    lfo.frequency.value = 0.1;
-    lfoGain.gain.value = 32;
+    lfo.frequency.value = 0.09;
+    lfoGain.gain.value = 30;
     lfo.connect(lfoGain);
     lfoGain.connect(droneFilter.frequency);
     lfo.start();
@@ -803,18 +1136,19 @@ export class SoundEngine {
     d2.connect(droneFilter);
     d2.start();
 
-    // 2. Corrente de ar subterrânea bem baixa nos túneis
-    if (this.noiseBuffer) {
+    // 2. Corrente de ar subterrânea suave em ruído rosa
+    if (this.pinkNoiseBuffer) {
       const air = ctx.createBufferSource();
-      air.buffer = this.noiseBuffer;
+      air.buffer = this.pinkNoiseBuffer;
       air.loop = true;
 
       const airFilter = ctx.createBiquadFilter();
-      airFilter.type = 'lowpass';
-      airFilter.frequency.value = 210;
+      airFilter.type = 'bandpass';
+      airFilter.frequency.value = 195;
+      airFilter.Q.value = 0.75;
 
       const airGain = ctx.createGain();
-      airGain.gain.value = 0.0055;
+      airGain.gain.value = 0.0085;
 
       air.connect(airFilter);
       airFilter.connect(airGain);
@@ -822,7 +1156,7 @@ export class SoundEngine {
       air.start();
     }
 
-    // 3. Zumbido de reator elétrico 120Hz das luminárias LITE5 próximas (espacializado!)
+    // 3. Zumbido de reator elétrico (120Hz + harmônico 240Hz) das luminárias LITE5
     const lampGain = ctx.createGain();
     lampGain.gain.value = 0;
     const lampPan = ctx.createStereoPanner();
@@ -831,54 +1165,126 @@ export class SoundEngine {
     this.lampBuzzGain = lampGain;
     this.lampBuzzPanner = lampPan;
 
-    const buzzOsc = ctx.createOscillator();
-    buzzOsc.type = 'triangle';
-    buzzOsc.frequency.value = 120;
     const buzzFilter = ctx.createBiquadFilter();
     buzzFilter.type = 'bandpass';
-    buzzFilter.frequency.value = 360;
-    buzzFilter.Q.value = 2.5;
-    buzzOsc.connect(buzzFilter);
+    buzzFilter.frequency.value = 320;
+    buzzFilter.Q.value = 2.2;
     buzzFilter.connect(lampGain);
-    buzzOsc.start();
 
-    // 4. Pulsos industriais distantes ocasionais e discretos ecoando no labirinto
+    const buzzOscA = ctx.createOscillator();
+    buzzOscA.type = 'sawtooth';
+    buzzOscA.frequency.value = 120;
+    const buzzAWeight = ctx.createGain();
+    buzzAWeight.gain.value = 0.65;
+    buzzOscA.connect(buzzAWeight);
+    buzzAWeight.connect(buzzFilter);
+    buzzOscA.start();
+
+    const buzzOscB = ctx.createOscillator();
+    buzzOscB.type = 'triangle';
+    buzzOscB.frequency.value = 240.3;
+    const buzzBWeight = ctx.createGain();
+    buzzBWeight.gain.value = 0.35;
+    buzzOscB.connect(buzzBWeight);
+    buzzBWeight.connect(buzzFilter);
+    buzzOscB.start();
+
+    // 4. Canal espacializado para combustão contínua de Sinalizador de Magnésio no chão!
+    if (this.pinkNoiseBuffer) {
+      const flareSrc = ctx.createBufferSource();
+      flareSrc.buffer = this.pinkNoiseBuffer;
+      flareSrc.loop = true;
+
+      const flareFilter = ctx.createBiquadFilter();
+      flareFilter.type = 'bandpass';
+      flareFilter.frequency.value = 2_150;
+      flareFilter.Q.value = 0.95;
+
+      const flareGain = ctx.createGain();
+      flareGain.gain.value = 0;
+
+      const flarePan = ctx.createStereoPanner();
+      flareSrc.connect(flareFilter);
+      flareFilter.connect(flareGain);
+      flareGain.connect(flarePan);
+      flarePan.connect(bus);
+      flarePan.connect(this.reverbSend);
+      flareSrc.start();
+
+      this.flareBurnFilter = flareFilter;
+      this.flareBurnGain = flareGain;
+      this.flareBurnPanner = flarePan;
+    }
+
+    // 5. Micro-eventos ambientais distantes nos corredores (gotas na pedra / dilatação metálica)
     this.pulseTimerId = window.setInterval(() => {
-      if (!this.ctx || this.ctx.state !== 'running' || !this.reverbSend) return;
-      if (Math.random() > 0.5) return;
+      if (!this.ctx || this.ctx.state !== 'running' || !this.reverbSend || !this.dungeonBus) {
+        return;
+      }
+      if (this.dungeonBus.gain.value < 0.2) return;
+      const roll = Math.random();
+      if (roll > 0.62) return;
+
       const t = this.ctx.currentTime;
       const pan = this.ctx.createStereoPanner();
-      pan.pan.value = (Math.random() * 2 - 1) * 0.75;
+      pan.pan.value = (Math.random() * 2 - 1) * 0.82;
       pan.connect(this.reverbSend);
 
-      // Batida metálica distante na estrutura da base
-      const osc = this.ctx.createOscillator();
-      const g = this.ctx.createGain();
-      const notes = [41.2, 43.65, 55.0, 61.74]; // Mi Frígio (E, F, A, B)
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(
-        notes[Math.floor(Math.random() * notes.length)],
-        t
-      );
-      g.gain.setValueAtTime(0.0001, t);
-      g.gain.linearRampToValueAtTime(0.018, t + 0.16);
-      g.gain.exponentialRampToValueAtTime(0.0008, t + 1.8);
-
-      osc.connect(g);
-      g.connect(pan);
-      osc.start(t);
-      osc.stop(t + 1.85);
-    }, 6500);
+      if (roll < 0.28) {
+        // Gota d'água distante pingando em poça de pedra fria
+        const drop = this.ctx.createOscillator();
+        const dg = this.ctx.createGain();
+        const f0 = 920 + Math.random() * 680;
+        drop.type = 'sine';
+        drop.frequency.setValueAtTime(f0 * 0.72, t);
+        drop.frequency.exponentialRampToValueAtTime(f0 * 1.48, t + 0.042);
+        dg.gain.setValueAtTime(0.0001, t);
+        dg.gain.linearRampToValueAtTime(0.016, t + 0.006);
+        dg.gain.exponentialRampToValueAtTime(0.0006, t + 0.065);
+        drop.connect(dg);
+        dg.connect(pan);
+        drop.start(t);
+        drop.stop(t + 0.07);
+      } else {
+        // Rangido/pulso estrutural metálico distante na tubulação da base
+        const notes = [41.2, 43.65, 55.0, 61.74];
+        const baseF = notes[Math.floor(Math.random() * notes.length)];
+        const osc = this.ctx.createOscillator();
+        const g = this.ctx.createGain();
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(baseF * 1.02, t);
+        osc.frequency.exponentialRampToValueAtTime(baseF * 0.96, t + 1.75);
+        g.gain.setValueAtTime(0.0001, t);
+        g.gain.linearRampToValueAtTime(0.017, t + 0.18);
+        g.gain.exponentialRampToValueAtTime(0.0006, t + 1.85);
+        osc.connect(g);
+        g.connect(pan);
+        osc.start(t);
+        osc.stop(t + 1.9);
+      }
+    }, 5800);
   }
 
+  // ==========================================================================
+  // 4. PASSOS MULTICAMADA DO JOGADOR, TRAJE EVA & ALIADOS 3D
+  // ==========================================================================
+
   /**
-   * Passo pesado com reverberação de corredor e textura diferente para piso metálico vs pedra.
+   * Passo em 1ª pessoa multicamada com física de superfície real (`tech` vs `stone`),
+   * postura (`crouching`, caminhada, `sprinting`), micro-variação orgânica e arrasto sutil se ferido!
+   *
+   * As 4 micro-camadas físicas:
+   *  1. Impacto grave do calcanhar da bota pesada EVA (0ms);
+   *  2. Ressonância modal da chapa metálica (`tech`) ou corpo da alvenaria (`stone`) (+4ms);
+   *  3. Textura de sola/pedregulhos sob pressão (+14ms) + arrasto de pé ferido opcional (+28ms);
+   *  4. Roçar orgânico do tecido pressurizado e fivelas do traje de astronauta (+20ms).
    */
   playLabyrinthFootstep(
     altFoot: boolean,
     surface: FloorMaterialKind,
     sprinting: boolean,
-    crouching = false
+    crouching = false,
+    injured = false
   ): void {
     if (
       !this.isRunning() ||
@@ -888,52 +1294,251 @@ export class SoundEngine {
     ) {
       return;
     }
-    const now = this.ctx.currentTime;
-    const pitchJitter = (altFoot ? 1.04 : 0.96) * (0.97 + Math.random() * 0.06);
-    const volScale = crouching ? 0.42 : sprinting ? 1.22 : 1.0;
 
-    // 1. Impacto grave da bota no piso (mais abafado ao andar agachado)
+    const variant = this.footstepVariantCounter++;
+    const profile = computeFootstepLayerProfile(
+      surface,
+      sprinting,
+      crouching,
+      altFoot,
+      variant,
+      injured
+    );
+
+    const now = this.ctx.currentTime;
+    const microPan = altFoot ? 0.08 : -0.08;
+
+    const stepLowpass = this.ctx.createBiquadFilter();
+    stepLowpass.type = 'lowpass';
+    stepLowpass.frequency.value = profile.lowpassCutoffHz;
+    stepLowpass.Q.value = 0.7;
+
+    const panner = this.ctx.createStereoPanner();
+    panner.pan.value = microPan;
+
+    const dryOut = this.ctx.createGain();
+    dryOut.gain.value = 1.0;
+
+    const wetOut = this.ctx.createGain();
+    wetOut.gain.value = profile.reverbSendRatio;
+
+    stepLowpass.connect(panner);
+    panner.connect(dryOut);
+    panner.connect(wetOut);
+    dryOut.connect(this.worldDryBus);
+    wetOut.connect(this.reverbSend);
+
+    // Camada 1: Impacto grave da bota (ataque suave se agachado, pancada firme ao correr)
     const heel = this.ctx.createOscillator();
     const heelGain = this.ctx.createGain();
-    heel.type = 'sine';
-    const baseHz =
-      (surface === 'tech' ? 96 : 78) *
-      (crouching ? 0.84 : 1.0) *
-      pitchJitter;
-    heel.frequency.setValueAtTime(baseHz, now);
-    heel.frequency.exponentialRampToValueAtTime(28, now + 0.085);
+    heel.type = surface === 'tech' ? 'triangle' : 'sine';
+    heel.frequency.setValueAtTime(profile.heelBaseHz, now);
+    heel.frequency.exponentialRampToValueAtTime(
+      profile.heelEndHz,
+      now + (crouching ? 0.095 : 0.082)
+    );
 
-    heelGain.gain.setValueAtTime(0.16 * volScale, now);
-    heelGain.gain.exponentialRampToValueAtTime(0.0008, now + 0.09);
+    if (crouching) {
+      heelGain.gain.setValueAtTime(0.001, now);
+      heelGain.gain.linearRampToValueAtTime(profile.heelGain, now + 0.009);
+    } else {
+      heelGain.gain.setValueAtTime(profile.heelGain, now);
+    }
+    heelGain.gain.exponentialRampToValueAtTime(0.0008, now + 0.098);
 
     heel.connect(heelGain);
-    heelGain.connect(this.worldDryBus);
-    heelGain.connect(this.reverbSend);
+    heelGain.connect(stepLowpass);
+    heel.start(now);
+    heel.stop(now + 0.104);
+
+    // Camada 2: Ressonância modal do piso (chapa oca de aço em `tech` vs impacto abafado de pedra em `stone`)
+    const modeDur = surface === 'tech' ? 0.068 : 0.044;
+    const modeBaseGain =
+      (surface === 'tech' ? 0.036 : 0.022) *
+      (crouching ? 0.28 : sprinting ? 1.25 : 0.85);
+    profile.surfaceModesHz.forEach((hz, idx) => {
+      if (!this.ctx) return;
+      const tMode = now + 0.003 + idx * 0.002;
+      const modeOsc = this.ctx.createOscillator();
+      const modeGain = this.ctx.createGain();
+      modeOsc.type = surface === 'tech' && idx === 1 ? 'triangle' : 'sine';
+      modeOsc.frequency.setValueAtTime(hz, tMode);
+      modeOsc.frequency.exponentialRampToValueAtTime(
+        hz * (surface === 'tech' ? 0.92 : 0.74),
+        tMode + modeDur
+      );
+
+      modeGain.gain.setValueAtTime(modeBaseGain / (idx + 1), tMode);
+      modeGain.gain.exponentialRampToValueAtTime(0.0006, tMode + modeDur);
+
+      modeOsc.connect(modeGain);
+      modeGain.connect(stepLowpass);
+      modeOsc.start(tMode);
+      modeOsc.stop(tMode + modeDur + 0.006);
+    });
+
+    // Camada 3: Aderência da sola + micro-grãos de areia/pedra (`crackle`) ou grade metálica (`gritty`)
+    const soleDelay = crouching ? 0.016 : 0.011;
+    this.triggerFilteredNoise(
+      stepLowpass,
+      now + soleDelay,
+      surface === 'tech' ? 0.046 : 0.058,
+      profile.gritBandHz,
+      surface === 'tech' ? 2.4 : 1.45,
+      profile.gritGain,
+      surface === 'stone' ? 'crackle' : 'gritty'
+    );
+
+    if (surface === 'tech' && !crouching) {
+      // Tinido agudo discreto de grelha industrial sob o peso da bota
+      this.triggerFilteredNoise(
+        stepLowpass,
+        now + 0.004,
+        0.024,
+        3_450 + (variant % 3) * 240,
+        4.2,
+        sprinting ? 0.055 : 0.032,
+        'white'
+      );
+    }
+
+    // Arrasto sutil da ponta da bota quando gravemente ferido (mancando)
+    if (profile.limpScuffGain > 0.001) {
+      this.triggerFilteredNoise(
+        stepLowpass,
+        now + 0.032,
+        0.095,
+        surface === 'stone' ? 980 : 1_320,
+        1.2,
+        profile.limpScuffGain,
+        'gritty'
+      );
+    }
+
+    // Camada 4: Roçar orgânico do tecido pesado do traje EVA + micro-tilintar de equipamento na corrida
+    this.triggerFilteredNoise(
+      stepLowpass,
+      now + 0.018,
+      crouching ? 0.075 : 0.062,
+      540 + (variant % 4) * 45,
+      0.95,
+      profile.suitRustleGain,
+      'pink'
+    );
+
+    if (sprinting) {
+      this.triggerFilteredNoise(
+        stepLowpass,
+        now + 0.028,
+        0.018,
+        4_200,
+        4.8,
+        0.022,
+        'white'
+      );
+    }
+  }
+
+  /**
+   * Passo espacializado 3D de um aliado no Multiplayer Co-op:
+   * inclui pan estéreo, queda por distância até 20m e abafamento real pelas paredes do labirinto!
+   */
+  playRemoteAllyFootstep(
+    pan: number,
+    distance: number,
+    wallCount: number,
+    altFoot: boolean,
+    surface: FloorMaterialKind,
+    sprinting: boolean,
+    crouching: boolean
+  ): void {
+    const maxDist = crouching ? 9.5 : sprinting ? 21.0 : 16.0;
+    const acoustics = computeLabyrinthSoundAcoustics(distance, maxDist, wallCount);
+    const sink = this.createSpatialWorldSink(pan, acoustics);
+    if (!sink || !this.ctx) return;
+
+    const now = this.ctx.currentTime;
+    const profile = computeFootstepLayerProfile(
+      surface,
+      sprinting,
+      crouching,
+      altFoot,
+      this.footstepVariantCounter++
+    );
+
+    const heel = this.ctx.createOscillator();
+    const heelGain = this.ctx.createGain();
+    heel.type = surface === 'tech' ? 'triangle' : 'sine';
+    heel.frequency.setValueAtTime(profile.heelBaseHz * 0.96, now);
+    heel.frequency.exponentialRampToValueAtTime(profile.heelEndHz, now + 0.085);
+    heelGain.gain.setValueAtTime(profile.heelGain * 0.85, now);
+    heelGain.gain.exponentialRampToValueAtTime(0.0006, now + 0.09);
+
+    heel.connect(heelGain);
+    heelGain.connect(sink);
     heel.start(now);
     heel.stop(now + 0.095);
 
-    // 2. Textura granular 11kHz (suave e controlada quando agachado)
-    const scrapeFreq =
-      (surface === 'tech' ? 1450 : 880) *
-      (crouching ? 0.68 : 1.0) *
-      pitchJitter;
-    const scrapeQ = surface === 'tech' ? 2.6 : 1.3;
     this.triggerFilteredNoise(
-      this.worldDryBus,
-      now + 0.006,
-      surface === 'tech' ? 0.048 : 0.062,
-      scrapeFreq,
-      scrapeQ,
-      0.13 * volScale,
-      true,
-      this.reverbSend
+      sink,
+      now + 0.01,
+      0.05,
+      profile.gritBandHz,
+      surface === 'tech' ? 2.3 : 1.4,
+      profile.gritGain * 0.85,
+      surface === 'stone' ? 'crackle' : 'gritty'
     );
   }
 
-  /** Som sutil de roupa/joelho ao agachar ou levantar (Tecla Ctrl) */
+  /**
+   * Respiração abafada dentro do visor do capacete EVA após corrida intensa contínua,
+   * trazendo imersão física sem limitar o fôlego da corrida!
+   */
+  playSprintBreath(exertion01: number): void {
+    const level = Math.max(0, Math.min(1, exertion01));
+    if (level < 0.15) return;
+
+    const nowMs = performance.now();
+    const intervalMs = 1_380 - level * 460;
+    if (nowMs - this.lastSprintBreathMs < intervalMs) return;
+    this.lastSprintBreathMs = nowMs;
+
+    if (!this.isRunning() || !this.ctx || !this.worldDryBus) return;
+    const now = this.ctx.currentTime;
+
+    // Expiração + inspiração suave com ressonância interna de capacete fechado
+    const phases: ReadonlyArray<readonly [number, number, number, number]> = [
+      [0, 0.28, 720, 0.032 * level],
+      [0.36, 0.24, 960, 0.024 * level],
+    ];
+    for (const [delay, dur, freq, peakGain] of phases) {
+      if (!this.pinkNoiseBuffer) continue;
+      const t = now + delay;
+      const src = this.ctx.createBufferSource();
+      src.buffer = this.pinkNoiseBuffer;
+      const offset = Math.random() * 0.6;
+
+      const bp = this.ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.value = freq;
+      bp.Q.value = 1.65;
+
+      const g = this.ctx.createGain();
+      g.gain.setValueAtTime(0.0005, t);
+      g.gain.linearRampToValueAtTime(peakGain, t + dur * 0.38);
+      g.gain.exponentialRampToValueAtTime(0.0005, t + dur);
+
+      src.connect(bp);
+      bp.connect(g);
+      g.connect(this.worldDryBus);
+      src.start(t, offset, dur + 0.02);
+    }
+  }
+
+  /** Movimento tátil do traje e equipamento ao agachar ou levantar (Ctrl / C) */
   playCrouchMovement(crouchingDown: boolean): void {
     const nowMs = performance.now();
-    if (nowMs - this.lastCrouchMs < 160) return;
+    if (nowMs - this.lastCrouchMs < 150) return;
     this.lastCrouchMs = nowMs;
 
     if (
@@ -946,21 +1551,38 @@ export class SoundEngine {
     }
     const now = this.ctx.currentTime;
 
+    // Dobra de tecido pesado pressurizado
     this.triggerFilteredNoise(
       this.worldDryBus,
       now,
-      0.095,
-      crouchingDown ? 420 : 540,
-      1.15,
-      0.055,
-      false,
+      0.115,
+      crouchingDown ? 410 : 560,
+      1.05,
+      0.068,
+      'pink',
       this.reverbSend
     );
+
+    // Acomodação suave de joelheira / junta do traje
+    const joint = this.ctx.createOscillator();
+    const jg = this.ctx.createGain();
+    joint.type = 'sine';
+    joint.frequency.setValueAtTime(crouchingDown ? 132 : 84, now + 0.015);
+    joint.frequency.exponentialRampToValueAtTime(
+      crouchingDown ? 56 : 126,
+      now + 0.095
+    );
+    jg.gain.setValueAtTime(0.048, now + 0.015);
+    jg.gain.exponentialRampToValueAtTime(0.0006, now + 0.1);
+    joint.connect(jg);
+    jg.connect(this.worldDryBus);
+    joint.start(now + 0.015);
+    joint.stop(now + 0.105);
   }
 
   /**
-   * Som tático de deslizar pelo chão (Corrida + segurar Ctrl):
-   * impacto abafado de joelheira/traje seguido de atrito contínuo sobre metal ou pedra.
+   * Deslize tático pelo chão (Corrida + Ctrl):
+   * impacto firme de joelheira + atrito contínuo sobre chapa metálica/pedra + pedregulhos/faíscas!
    */
   playFloorSlide(surface: FloorMaterialKind = 'tech'): void {
     const nowMs = performance.now();
@@ -978,40 +1600,40 @@ export class SoundEngine {
     }
     const now = this.ctx.currentTime;
 
-    // 1. Toque grave inicial da bota/joelheira entrando no deslize
+    // 1. Impacto inicial pesado da joelheira/bota entrando no slide
     const thud = this.ctx.createOscillator();
     const thudGain = this.ctx.createGain();
     thud.type = 'triangle';
-    thud.frequency.setValueAtTime(surface === 'tech' ? 108 : 88, now);
-    thud.frequency.exponentialRampToValueAtTime(32, now + 0.14);
+    thud.frequency.setValueAtTime(surface === 'tech' ? 122 : 96, now);
+    thud.frequency.exponentialRampToValueAtTime(30, now + 0.15);
 
-    thudGain.gain.setValueAtTime(0.16, now);
-    thudGain.gain.exponentialRampToValueAtTime(0.0008, now + 0.15);
+    thudGain.gain.setValueAtTime(0.2, now);
+    thudGain.gain.exponentialRampToValueAtTime(0.0008, now + 0.16);
 
     thud.connect(thudGain);
     thudGain.connect(this.worldDryBus);
     thudGain.connect(this.reverbSend);
     thud.start(now);
-    thud.stop(now + 0.16);
+    thud.stop(now + 0.17);
 
-    // 2. Arrasto prolongado de atrito no piso desacelerando suavemente
+    // 2. Varredura longa de atrito desacelerando no chão
     const src = this.ctx.createBufferSource();
     src.buffer = this.grittyNoiseBuffer;
-    const dur = 0.52;
-    const offset = Math.random() * 0.35;
+    const dur = 0.56;
+    const offset = Math.random() * 0.5;
 
     const filter = this.ctx.createBiquadFilter();
     filter.type = 'bandpass';
-    filter.Q.value = surface === 'tech' ? 1.55 : 1.15;
-    filter.frequency.setValueAtTime(surface === 'tech' ? 1520 : 1040, now);
+    filter.Q.value = surface === 'tech' ? 1.65 : 1.15;
+    filter.frequency.setValueAtTime(surface === 'tech' ? 1_950 : 1_240, now);
     filter.frequency.exponentialRampToValueAtTime(
-      surface === 'tech' ? 390 : 280,
+      surface === 'tech' ? 380 : 260,
       now + dur
     );
 
     const gain = this.ctx.createGain();
     gain.gain.setValueAtTime(0.001, now);
-    gain.gain.linearRampToValueAtTime(0.16, now + 0.035);
+    gain.gain.linearRampToValueAtTime(0.175, now + 0.03);
     gain.gain.exponentialRampToValueAtTime(0.0008, now + dur);
 
     src.connect(filter);
@@ -1019,14 +1641,26 @@ export class SoundEngine {
     gain.connect(this.worldDryBus);
     gain.connect(this.reverbSend);
     src.start(now, offset, dur + 0.02);
+
+    // 3. Faíscas de atrito na grade metálica ou cascalho espirrando na pedra
+    this.triggerFilteredNoise(
+      this.worldDryBus,
+      now + 0.025,
+      0.34,
+      surface === 'tech' ? 3_800 : 2_300,
+      2.2,
+      0.085,
+      'crackle',
+      this.reverbSend
+    );
   }
 
   /**
-   * Batida/raspão pesado de ombro/armadura ao esbarrar em velocidade numa parede sólida.
+   * Batida/raspão pesado de ombro do traje EVA contra parede sólida em velocidade.
    */
   playWallBump(): void {
     const nowMs = performance.now();
-    if (nowMs - this.lastWallThudMs < 380) return;
+    if (nowMs - this.lastWallThudMs < 360) return;
     this.lastWallThudMs = nowMs;
 
     if (
@@ -1042,32 +1676,354 @@ export class SoundEngine {
     const osc = this.ctx.createOscillator();
     const gain = this.ctx.createGain();
     osc.type = 'triangle';
-    osc.frequency.setValueAtTime(68, now);
-    osc.frequency.exponentialRampToValueAtTime(28, now + 0.12);
+    osc.frequency.setValueAtTime(84, now);
+    osc.frequency.exponentialRampToValueAtTime(27, now + 0.135);
 
-    gain.gain.setValueAtTime(0.18, now);
-    gain.gain.exponentialRampToValueAtTime(0.0008, now + 0.13);
+    gain.gain.setValueAtTime(0.2, now);
+    gain.gain.exponentialRampToValueAtTime(0.0008, now + 0.145);
 
     osc.connect(gain);
     gain.connect(this.worldDryBus);
     gain.connect(this.reverbSend);
     osc.start(now);
-    osc.stop(now + 0.14);
+    osc.stop(now + 0.15);
 
+    // Raspão áspero da ombreira contra a parede + leve vibração metálica
     this.triggerFilteredNoise(
       this.worldDryBus,
       now,
-      0.065,
-      520,
-      1.4,
-      0.12,
-      true,
+      0.085,
+      680,
+      1.35,
+      0.13,
+      'gritty',
       this.reverbSend
+    );
+    this.triggerFilteredNoise(
+      this.worldDryBus,
+      now + 0.01,
+      0.04,
+      2_100,
+      2.6,
+      0.055,
+      'crackle'
     );
   }
 
-  /** Roçar rápido de empunhadura ao sacar ou guardar a lanterna (Tecla F) */
+  /** Sacar ou guardar a lanterna tática de alumínio (Tecla F) */
   playFlashlightMotion(equipping: boolean): void {
+    if (
+      !this.isRunning() ||
+      !this.ctx ||
+      !this.worldDryBus ||
+      !this.reverbSend
+    ) {
+      return;
+    }
+    const now = this.ctx.currentTime;
+
+    // Roçar rápido no coldre do traje
+    this.triggerFilteredNoise(
+      this.worldDryBus,
+      now,
+      0.095,
+      equipping ? 760 : 490,
+      1.15,
+      0.08,
+      'pink',
+      this.reverbSend
+    );
+
+    // Toque metálico discreto do corpo de alumínio anodizado
+    const clink = this.ctx.createOscillator();
+    const cg = this.ctx.createGain();
+    clink.type = 'sine';
+    clink.frequency.setValueAtTime(equipping ? 1_420 : 1_080, now + 0.024);
+    clink.frequency.exponentialRampToValueAtTime(
+      equipping ? 1_860 : 790,
+      now + 0.056
+    );
+    cg.gain.setValueAtTime(0.026, now + 0.024);
+    cg.gain.exponentialRampToValueAtTime(0.0006, now + 0.06);
+    clink.connect(cg);
+    cg.connect(this.worldDryBus);
+    clink.start(now + 0.024);
+    clink.stop(now + 0.065);
+  }
+
+  /** Clique mecânico duplo realista do interruptor da lanterna + carga sutil do refletor */
+  playFlashlightClick(turningOn: boolean): void {
+    if (
+      !this.isRunning() ||
+      !this.ctx ||
+      !this.worldDryBus ||
+      !this.reverbSend
+    ) {
+      return;
+    }
+    const now = this.ctx.currentTime;
+
+    // 1. Estalo nítido da trava mecânica do botão
+    this.triggerFilteredNoise(
+      this.worldDryBus,
+      now,
+      0.012,
+      turningOn ? 3_850 : 2_750,
+      3.2,
+      0.145,
+      'white',
+      this.reverbSend
+    );
+
+    // 2. Duplo degrau da mola interna ("click-clack")
+    const freqs = turningOn ? [560, 1_040] : [940, 460];
+    freqs.forEach((f, i) => {
+      if (!this.ctx || !this.worldDryBus || !this.reverbSend) return;
+      const t = now + i * 0.019;
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(f, t);
+      osc.frequency.exponentialRampToValueAtTime(f * 0.66, t + 0.022);
+
+      gain.gain.setValueAtTime(0.088, t);
+      gain.gain.exponentialRampToValueAtTime(0.0008, t + 0.026);
+
+      osc.connect(gain);
+      gain.connect(this.worldDryBus);
+      gain.connect(this.reverbSend);
+      osc.start(t);
+      osc.stop(t + 0.029);
+    });
+
+    // 3. Carga finíssima do circuito da lâmpada ao acender
+    if (turningOn) {
+      const whine = this.ctx.createOscillator();
+      const wg = this.ctx.createGain();
+      whine.type = 'sine';
+      whine.frequency.setValueAtTime(2_600, now + 0.025);
+      whine.frequency.exponentialRampToValueAtTime(5_400, now + 0.16);
+      wg.gain.setValueAtTime(0.014, now + 0.025);
+      wg.gain.exponentialRampToValueAtTime(0.0004, now + 0.17);
+      whine.connect(wg);
+      wg.connect(this.worldDryBus);
+      whine.start(now + 0.025);
+      whine.stop(now + 0.18);
+    }
+  }
+
+  /**
+   * Atualiza espacialização do zumbido das luminárias LITE5 e dispara centelha elétrica realista ao piscar!
+   */
+  updateSpatialLampAudio(
+    playerPos: THREE.Vector3,
+    playerYaw: number,
+    nearestLampPos: THREE.Vector3 | null,
+    nearestDist: number,
+    justFlickeredDim: boolean
+  ): void {
+    if (!this.ctx || this.ctx.state !== 'running') return;
+    const now = this.ctx.currentTime;
+
+    if (!nearestLampPos || nearestDist > 7.8) {
+      this.lampBuzzGain?.gain.setTargetAtTime(0, now, 0.08);
+      return;
+    }
+
+    const rightX = Math.cos(playerYaw);
+    const rightZ = -Math.sin(playerYaw);
+    const dx = nearestLampPos.x - playerPos.x;
+    const dz = nearestLampPos.z - playerPos.z;
+    const len = Math.max(0.001, Math.hypot(dx, dz));
+    const pan = Math.max(-0.9, Math.min(0.9, (dx * rightX + dz * rightZ) / len));
+
+    const proximity = Math.pow(Math.max(0, 1 - nearestDist / 7.8), 2);
+    this.lampBuzzPanner?.pan.setTargetAtTime(pan, now, 0.05);
+    this.lampBuzzGain?.gain.setTargetAtTime(proximity * 0.0075, now, 0.06);
+
+    if (
+      justFlickeredDim &&
+      nearestDist < 6.4 &&
+      performance.now() - this.lastSparkMs > 240 &&
+      this.worldDryBus &&
+      this.reverbSend
+    ) {
+      this.lastSparkMs = performance.now();
+      const sparkPan = this.ctx.createStereoPanner();
+      sparkPan.pan.value = pan;
+      sparkPan.connect(this.worldDryBus);
+      sparkPan.connect(this.reverbSend);
+
+      this.triggerFilteredNoise(
+        sparkPan,
+        now,
+        0.032,
+        3_100,
+        2.9,
+        0.038 * proximity,
+        'crackle'
+      );
+
+      const zap = this.ctx.createOscillator();
+      const zg = this.ctx.createGain();
+      zap.type = 'sawtooth';
+      zap.frequency.setValueAtTime(180, now);
+      zap.frequency.exponentialRampToValueAtTime(95, now + 0.028);
+      zg.gain.setValueAtTime(0.022 * proximity, now);
+      zg.gain.exponentialRampToValueAtTime(0.0005, now + 0.03);
+      zap.connect(zg);
+      zg.connect(sparkPan);
+      zap.start(now);
+      zap.stop(now + 0.034);
+    }
+  }
+
+  /**
+   * Atualiza o chiado contínuo + estalos químicos de magnésio dos sinalizadores acesos no chão!
+   */
+  updateSpatialFlareAudio(
+    playerPos: THREE.Vector3,
+    playerYaw: number,
+    nearestFlarePos: THREE.Vector3 | null,
+    nearestFlareDist: number,
+    remainingLifeSec = 10
+  ): void {
+    if (!this.ctx || this.ctx.state !== 'running') return;
+    const now = this.ctx.currentTime;
+
+    if (!nearestFlarePos || nearestFlareDist > 14.5 || remainingLifeSec <= 0.05) {
+      this.flareBurnGain?.gain.setTargetAtTime(0, now, 0.08);
+      return;
+    }
+
+    const rightX = Math.cos(playerYaw);
+    const rightZ = -Math.sin(playerYaw);
+    const dx = nearestFlarePos.x - playerPos.x;
+    const dz = nearestFlarePos.z - playerPos.z;
+    const len = Math.max(0.001, Math.hypot(dx, dz));
+    const pan = Math.max(-0.92, Math.min(0.92, (dx * rightX + dz * rightZ) / len));
+
+    const lifeFade = Math.min(1, remainingLifeSec / 2.2);
+    const proximity = Math.pow(Math.max(0, 1 - nearestFlareDist / 14.5), 1.65) * lifeFade;
+
+    this.flareBurnPanner?.pan.setTargetAtTime(pan, now, 0.05);
+    this.flareBurnGain?.gain.setTargetAtTime(proximity * 0.055, now, 0.06);
+    if (this.flareBurnFilter) {
+      const sputterHz = 1_950 + Math.sin(now * 23) * 320;
+      this.flareBurnFilter.frequency.setTargetAtTime(sputterHz, now, 0.04);
+    }
+
+    // Estalos esporádicos de faísca de magnésio quando perto do sinalizador
+    const nowMs = performance.now();
+    if (
+      proximity > 0.15 &&
+      nowMs - this.lastFlarePopMs > 190 &&
+      Math.random() < 0.28 &&
+      this.worldDryBus &&
+      this.reverbSend
+    ) {
+      this.lastFlarePopMs = nowMs;
+      const popPan = this.ctx.createStereoPanner();
+      popPan.pan.value = pan;
+      popPan.connect(this.worldDryBus);
+      popPan.connect(this.reverbSend);
+
+      this.triggerFilteredNoise(
+        popPan,
+        now,
+        0.022,
+        3_600 + Math.random() * 1_400,
+        2.8,
+        0.045 * proximity,
+        'crackle'
+      );
+    }
+  }
+
+  // ==========================================================================
+  // 5. INVENTÁRIO TÁTICO DE SOBREVIVÊNCIA & USO DE ITENS
+  // ==========================================================================
+
+  /** Abrir / fechar a bolsa tática (Tab): deslizar de zíper + lona pesada + fivela metálica */
+  playInventoryToggle(opening: boolean): void {
+    if (!this.isRunning() || !this.ctx || !this.terminalBus) return;
+    const now = this.ctx.currentTime;
+
+    // Lona pesada da mochila tática
+    this.triggerFilteredNoise(
+      this.terminalBus,
+      now,
+      0.16,
+      opening ? 520 : 370,
+      0.95,
+      0.115,
+      'pink',
+      this.reverbSend ?? undefined
+    );
+
+    // Dentes do zíper correndo rápido
+    for (let z = 0; z < 4; z++) {
+      const tz = now + 0.014 + z * 0.018;
+      const fz = opening ? 2_100 + z * 280 : 3_000 - z * 260;
+      this.triggerFilteredNoise(
+        this.terminalBus,
+        tz,
+        0.011,
+        fz,
+        3.6,
+        0.048,
+        'crackle'
+      );
+    }
+
+    // Fivela metálica da bolsa
+    const clasp = this.ctx.createOscillator();
+    const claspGain = this.ctx.createGain();
+    clasp.type = 'triangle';
+    clasp.frequency.setValueAtTime(opening ? 250 : 360, now + 0.035);
+    clasp.frequency.exponentialRampToValueAtTime(
+      opening ? 420 : 175,
+      now + 0.095
+    );
+    claspGain.gain.setValueAtTime(0.058, now + 0.035);
+    claspGain.gain.exponentialRampToValueAtTime(0.0008, now + 0.105);
+
+    clasp.connect(claspGain);
+    claspGain.connect(this.terminalBus);
+    clasp.start(now + 0.035);
+    clasp.stop(now + 0.11);
+  }
+
+  playInventorySelect(heavy = false): void {
+    if (!this.isRunning() || !this.ctx || !this.terminalBus) return;
+    const now = this.ctx.currentTime;
+
+    this.triggerFilteredNoise(
+      this.terminalBus,
+      now,
+      heavy ? 0.022 : 0.011,
+      heavy ? 1_550 : 2_350,
+      2.4,
+      heavy ? 0.09 : 0.048,
+      'white'
+    );
+
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(heavy ? 320 : 540, now);
+    osc.frequency.exponentialRampToValueAtTime(heavy ? 160 : 330, now + 0.036);
+    gain.gain.setValueAtTime(heavy ? 0.068 : 0.035, now);
+    gain.gain.exponentialRampToValueAtTime(0.0008, now + 0.04);
+
+    osc.connect(gain);
+    gain.connect(this.terminalBus);
+    osc.start(now);
+    osc.stop(now + 0.042);
+  }
+
+  /** Pegar equipamento no chão do labirinto: pegada tátil + tilintar metálico + acomodação no cinto */
+  playItemPickup(): void {
     if (
       !this.isRunning() ||
       !this.ctx ||
@@ -1082,520 +2038,553 @@ export class SoundEngine {
       this.worldDryBus,
       now,
       0.085,
-      equipping ? 680 : 480,
-      1.2,
-      0.075,
-      false,
-      this.reverbSend
-    );
-  }
-
-  /** Clique mecânico duplo do botão superior da lanterna (ligar / desligar) */
-  playFlashlightClick(turningOn: boolean): void {
-    if (
-      !this.isRunning() ||
-      !this.ctx ||
-      !this.worldDryBus ||
-      !this.reverbSend
-    ) {
-      return;
-    }
-    const now = this.ctx.currentTime;
-
-    // 1. Transiente metálico seco do interruptor
-    this.triggerFilteredNoise(
-      this.worldDryBus,
-      now,
-      0.014,
-      turningOn ? 3400 : 2500,
-      3.0,
+      1_050,
+      1.35,
       0.13,
-      false,
-      this.reverbSend
-    );
-
-    // 2. Mola interna (dois pulsos curtos característicos de botão de lanterna)
-    const freqs = turningOn ? [520, 920] : [860, 440];
-    freqs.forEach((f, i) => {
-      if (!this.ctx || !this.worldDryBus || !this.reverbSend) return;
-      const t = now + i * 0.022;
-      const osc = this.ctx.createOscillator();
-      const gain = this.ctx.createGain();
-      osc.type = 'triangle';
-      osc.frequency.setValueAtTime(f, t);
-      osc.frequency.exponentialRampToValueAtTime(f * 0.65, t + 0.024);
-
-      gain.gain.setValueAtTime(0.08, t);
-      gain.gain.exponentialRampToValueAtTime(0.0008, t + 0.028);
-
-      osc.connect(gain);
-      gain.connect(this.worldDryBus);
-      gain.connect(this.reverbSend);
-      osc.start(t);
-      osc.stop(t + 0.03);
-    });
-  }
-
-  /**
-   * Atualiza a espacialização estéreo do zumbido das luminárias LITE5 próximas
-   * e dispara estalos elétricos suaves quando uma luminária pisca perto do jogador!
-   */
-  updateSpatialLampAudio(
-    playerPos: THREE.Vector3,
-    playerYaw: number,
-    nearestLampPos: THREE.Vector3 | null,
-    nearestDist: number,
-    justFlickeredDim: boolean
-  ): void {
-    if (!this.ctx || this.ctx.state !== 'running') return;
-    const now = this.ctx.currentTime;
-
-    if (!nearestLampPos || nearestDist > 7.5) {
-      this.lampBuzzGain?.gain.setTargetAtTime(0, now, 0.08);
-      return;
-    }
-
-    // Vetor direita da câmera para calcular panorama estéreo [-1..+1]
-    const rightX = Math.cos(playerYaw);
-    const rightZ = -Math.sin(playerYaw);
-    const dx = nearestLampPos.x - playerPos.x;
-    const dz = nearestLampPos.z - playerPos.z;
-    const len = Math.max(0.001, Math.hypot(dx, dz));
-    const pan = Math.max(-0.9, Math.min(0.9, (dx * rightX + dz * rightZ) / len));
-
-    const proximity = Math.pow(Math.max(0, 1 - nearestDist / 7.5), 2);
-    this.lampBuzzPanner?.pan.setTargetAtTime(pan, now, 0.05);
-    this.lampBuzzGain?.gain.setTargetAtTime(proximity * 0.006, now, 0.06);
-
-    // Estalo fluorescente discreto quando uma luminária LITE5 próxima falha/pisca
-    if (
-      justFlickeredDim &&
-      nearestDist < 6.0 &&
-      performance.now() - this.lastSparkMs > 260 &&
-      this.worldDryBus &&
-      this.reverbSend
-    ) {
-      this.lastSparkMs = performance.now();
-      const sparkPan = this.ctx.createStereoPanner();
-      sparkPan.pan.value = pan;
-      sparkPan.connect(this.worldDryBus);
-      sparkPan.connect(this.reverbSend);
-
-      this.triggerFilteredNoise(
-        sparkPan,
-        now,
-        0.024,
-        2600,
-        2.8,
-        0.028 * proximity,
-        true
-      );
-    }
-  }
-
-  // ==========================================================================
-  // 4. INVENTÁRIO DE TERROR (ESTILO AMNESIA) & ITENS COLETÁVEIS
-  // ==========================================================================
-
-  /** Abrir / fechar a bolsa do inventário (Tecla Tab): couro pesado + fecho escuro */
-  playInventoryToggle(opening: boolean): void {
-    if (!this.isRunning() || !this.ctx || !this.terminalBus) return;
-    const now = this.ctx.currentTime;
-
-    // Roçar grave de tecido/couro desgastado
-    this.triggerFilteredNoise(
-      this.terminalBus,
-      now,
-      0.16,
-      opening ? 480 : 360,
-      0.95,
-      0.11,
-      false,
-      this.reverbSend ?? undefined
-    );
-
-    // Estalo metálico abafado da fivela
-    const clasp = this.ctx.createOscillator();
-    const claspGain = this.ctx.createGain();
-    clasp.type = 'triangle';
-    clasp.frequency.setValueAtTime(opening ? 240 : 340, now + 0.03);
-    clasp.frequency.exponentialRampToValueAtTime(
-      opening ? 390 : 175,
-      now + 0.085
-    );
-    claspGain.gain.setValueAtTime(0.055, now + 0.03);
-    claspGain.gain.exponentialRampToValueAtTime(0.0008, now + 0.095);
-
-    clasp.connect(claspGain);
-    claspGain.connect(this.terminalBus);
-    clasp.start(now + 0.03);
-    clasp.stop(now + 0.1);
-  }
-
-  /** Toque seco e sutil ao selecionar/passar por um slot do inventário */
-  playInventorySelect(heavy = false): void {
-    if (!this.isRunning() || !this.ctx || !this.terminalBus) return;
-    const now = this.ctx.currentTime;
-
-    this.triggerFilteredNoise(
-      this.terminalBus,
-      now,
-      heavy ? 0.024 : 0.012,
-      heavy ? 1450 : 2100,
-      2.2,
-      heavy ? 0.085 : 0.045,
-      false
-    );
-
-    const osc = this.ctx.createOscillator();
-    const gain = this.ctx.createGain();
-    osc.type = 'sine';
-    osc.frequency.setValueAtTime(heavy ? 310 : 520, now);
-    osc.frequency.exponentialRampToValueAtTime(heavy ? 165 : 330, now + 0.035);
-    gain.gain.setValueAtTime(heavy ? 0.065 : 0.032, now);
-    gain.gain.exponentialRampToValueAtTime(0.0008, now + 0.038);
-
-    osc.connect(gain);
-    gain.connect(this.terminalBus);
-    osc.start(now);
-    osc.stop(now + 0.04);
-  }
-
-  /** Guardar objeto coletado no labirinto dentro da bolsa */
-  playItemPickup(): void {
-    if (
-      !this.isRunning() ||
-      !this.ctx ||
-      !this.worldDryBus ||
-      !this.reverbSend
-    ) {
-      return;
-    }
-    const now = this.ctx.currentTime;
-
-    // Pegada rápida no objeto + acomodação na bolsa
-    this.triggerFilteredNoise(
-      this.worldDryBus,
-      now,
-      0.09,
-      920,
-      1.3,
-      0.13,
-      false,
+      'pink',
       this.reverbSend
     );
     this.triggerFilteredNoise(
       this.worldDryBus,
-      now + 0.055,
+      now + 0.048,
       0.11,
-      460,
-      1.0,
-      0.1,
-      false
+      480,
+      1.05,
+      0.105,
+      'pink'
     );
 
-    const notes = [295, 440];
+    // Tilintar tátil de equipamento + confirmação harmônica limpa
+    const notes = [310, 465, 698];
     notes.forEach((f, idx) => {
       if (!this.ctx || !this.worldDryBus) return;
-      const t = now + idx * 0.045;
+      const t = now + idx * 0.038;
       const osc = this.ctx.createOscillator();
       const gain = this.ctx.createGain();
-      osc.type = 'triangle';
+      osc.type = idx === 2 ? 'sine' : 'triangle';
       osc.frequency.setValueAtTime(f, t);
-      osc.frequency.exponentialRampToValueAtTime(f * 0.85, t + 0.075);
-      gain.gain.setValueAtTime(0.055, t);
-      gain.gain.exponentialRampToValueAtTime(0.0008, t + 0.08);
+      osc.frequency.exponentialRampToValueAtTime(f * 0.9, t + 0.075);
+      gain.gain.setValueAtTime(idx === 2 ? 0.038 : 0.058, t);
+      gain.gain.exponentialRampToValueAtTime(0.0008, t + 0.085);
       osc.connect(gain);
       gain.connect(this.worldDryBus);
       osc.start(t);
-      osc.stop(t + 0.085);
+      osc.stop(t + 0.09);
     });
   }
 
-  /** Efeito sonoro de uso de item dentro do inventário */
+  /** Efeitos Foley detalhados de uso de item dentro do jogo */
   playItemUse(kind: 'heal' | 'battery' | 'flare' | 'note' | 'blade'): void {
     if (!this.isRunning() || !this.ctx || !this.worldDryBus) return;
     const now = this.ctx.currentTime;
 
     if (kind === 'heal') {
-      // Rasgo de gaze / rolha de frasco + suspiro grave de alívio
-      this.triggerFilteredNoise(
-        this.worldDryBus,
-        now,
-        0.18,
-        1250,
-        1.4,
-        0.12,
-        false
-      );
-      const warm = this.ctx.createOscillator();
-      const g = this.ctx.createGain();
-      warm.type = 'sine';
-      warm.frequency.setValueAtTime(196, now + 0.05);
-      warm.frequency.exponentialRampToValueAtTime(293.66, now + 0.34);
-      g.gain.setValueAtTime(0.07, now + 0.05);
-      g.gain.exponentialRampToValueAtTime(0.0008, now + 0.42);
-      warm.connect(g);
-      g.connect(this.worldDryBus);
-      warm.start(now + 0.05);
-      warm.stop(now + 0.44);
-    } else if (kind === 'battery') {
-      // Encaixe metálico de pilha + carga sutil de capacitor
-      this.triggerFilteredNoise(
-        this.worldDryBus,
-        now,
-        0.025,
-        2900,
-        2.5,
-        0.13,
-        false
-      );
-      const cap = this.ctx.createOscillator();
-      const g = this.ctx.createGain();
-      cap.type = 'sine';
-      cap.frequency.setValueAtTime(420, now + 0.02);
-      cap.frequency.exponentialRampToValueAtTime(1280, now + 0.24);
-      g.gain.setValueAtTime(0.05, now + 0.02);
-      g.gain.exponentialRampToValueAtTime(0.0008, now + 0.26);
-      cap.connect(g);
-      g.connect(this.worldDryBus);
-      cap.start(now + 0.02);
-      cap.stop(now + 0.28);
-    } else if (kind === 'flare') {
-      // Riscar ignitor + chiado intenso de magnésio
-      this.triggerFilteredNoise(
-        this.worldDryBus,
-        now,
-        0.04,
-        3400,
-        2.0,
-        0.18,
-        true,
-        this.reverbSend ?? undefined
-      );
-      this.triggerFilteredNoise(
-        this.worldDryBus,
-        now + 0.035,
-        0.48,
-        1950,
-        0.85,
-        0.16,
-        true,
-        this.reverbSend ?? undefined
-      );
-    } else if (kind === 'blade') {
-      // Saque metálico da lâmina + golpe rápido rasgando o ar/teia
+      // Pressurização de autoinjetor / rasgo de atadura estéril + alívio vital quente
       this.triggerFilteredNoise(
         this.worldDryBus,
         now,
         0.045,
-        4400,
-        3.8,
-        0.15,
-        false,
-        this.reverbSend ?? undefined
+        2_850,
+        2.4,
+        0.11,
+        'white'
       );
       this.triggerFilteredNoise(
         this.worldDryBus,
         now + 0.04,
-        0.11,
-        1850,
-        1.4,
-        0.14,
-        false,
-        this.reverbSend ?? undefined
+        0.22,
+        1_180,
+        1.25,
+        0.125,
+        'pink'
       );
-      const ring = this.ctx.createOscillator();
-      const rg = this.ctx.createGain();
-      ring.type = 'triangle';
-      ring.frequency.setValueAtTime(2480, now);
-      ring.frequency.exponentialRampToValueAtTime(1120, now + 0.09);
-      rg.gain.setValueAtTime(0.05, now);
-      rg.gain.exponentialRampToValueAtTime(0.0008, now + 0.095);
-      ring.connect(rg);
-      rg.connect(this.worldDryBus);
-      ring.start(now);
-      ring.stop(now + 0.1);
-    } else {
-      // Papel antigo desdobrando
+      const chord = [196, 293.66, 392];
+      chord.forEach((f, idx) => {
+        if (!this.ctx || !this.worldDryBus) return;
+        const t = now + 0.06 + idx * 0.045;
+        const warm = this.ctx.createOscillator();
+        const g = this.ctx.createGain();
+        warm.type = 'sine';
+        warm.frequency.setValueAtTime(f, t);
+        warm.frequency.exponentialRampToValueAtTime(f * 1.03, t + 0.34);
+        g.gain.setValueAtTime(0.052, t);
+        g.gain.exponentialRampToValueAtTime(0.0006, t + 0.38);
+        warm.connect(g);
+        g.connect(this.worldDryBus);
+        warm.start(t);
+        warm.stop(t + 0.4);
+      });
+    } else if (kind === 'battery') {
+      // Destrava compartimento + deslize da célula de lítio + trava metálica + carga do capacitor
       this.triggerFilteredNoise(
         this.worldDryBus,
         now,
-        0.14,
-        1750,
-        1.2,
+        0.02,
+        2_600,
+        2.8,
+        0.12,
+        'white'
+      );
+      this.triggerFilteredNoise(
+        this.worldDryBus,
+        now + 0.055,
+        0.022,
+        3_400,
+        3.2,
+        0.135,
+        'white'
+      );
+      const cap = this.ctx.createOscillator();
+      const g = this.ctx.createGain();
+      cap.type = 'sine';
+      cap.frequency.setValueAtTime(380, now + 0.065);
+      cap.frequency.exponentialRampToValueAtTime(1_480, now + 0.29);
+      g.gain.setValueAtTime(0.058, now + 0.065);
+      g.gain.exponentialRampToValueAtTime(0.0006, now + 0.32);
+      cap.connect(g);
+      g.connect(this.worldDryBus);
+      cap.start(now + 0.065);
+      cap.stop(now + 0.34);
+    } else if (kind === 'flare') {
+      // Destampar cápsula + riscar ignitor de fósforo + explosão sibilante de magnésio!
+      this.triggerFilteredNoise(
+        this.worldDryBus,
+        now,
+        0.032,
+        3_900,
+        2.6,
+        0.19,
+        'crackle',
+        this.reverbSend ?? undefined
+      );
+      this.triggerFilteredNoise(
+        this.worldDryBus,
+        now + 0.028,
+        0.55,
+        2_050,
+        0.85,
+        0.19,
+        'pink',
+        this.reverbSend ?? undefined
+      );
+      const whoosh = this.ctx.createOscillator();
+      const wg = this.ctx.createGain();
+      whoosh.type = 'triangle';
+      whoosh.frequency.setValueAtTime(195, now + 0.025);
+      whoosh.frequency.exponentialRampToValueAtTime(58, now + 0.24);
+      wg.gain.setValueAtTime(0.14, now + 0.025);
+      wg.gain.exponentialRampToValueAtTime(0.0008, now + 0.26);
+      whoosh.connect(wg);
+      wg.connect(this.worldDryBus);
+      if (this.reverbSend) wg.connect(this.reverbSend);
+      whoosh.start(now + 0.025);
+      whoosh.stop(now + 0.28);
+    } else if (kind === 'blade') {
+      // Tinido harmônico de aço da lâmina + corte veloz rasgando o ar ("whoosh-zing!")
+      this.triggerFilteredNoise(
+        this.worldDryBus,
+        now,
+        0.038,
+        4_600,
+        4.2,
+        0.145,
+        'white',
+        this.reverbSend ?? undefined
+      );
+      this.triggerFilteredNoise(
+        this.worldDryBus,
+        now + 0.028,
+        0.125,
+        1_650,
+        1.25,
+        0.155,
+        'pink',
+        this.reverbSend ?? undefined
+      );
+      const steelModes = [2_620, 3_940];
+      steelModes.forEach((hz, idx) => {
+        if (!this.ctx || !this.worldDryBus) return;
+        const ring = this.ctx.createOscillator();
+        const rg = this.ctx.createGain();
+        ring.type = idx === 0 ? 'triangle' : 'sine';
+        ring.frequency.setValueAtTime(hz, now);
+        ring.frequency.exponentialRampToValueAtTime(hz * 0.56, now + 0.11);
+        rg.gain.setValueAtTime(idx === 0 ? 0.055 : 0.028, now);
+        rg.gain.exponentialRampToValueAtTime(0.0006, now + 0.12);
+        ring.connect(rg);
+        rg.connect(this.worldDryBus);
+        ring.start(now);
+        ring.stop(now + 0.125);
+      });
+    } else {
+      // Folha de registro/papel antigo sendo desdobrada
+      this.triggerFilteredNoise(
+        this.worldDryBus,
+        now,
         0.09,
-        false
+        2_100,
+        1.4,
+        0.095,
+        'crackle'
+      );
+      this.triggerFilteredNoise(
+        this.worldDryBus,
+        now + 0.06,
+        0.13,
+        1_350,
+        1.1,
+        0.08,
+        'pink'
       );
     }
   }
 
   // ==========================================================================
-  // 5. ARANHA PROCEDURAL (EVIL CRAWLER) & ARMADILHAS DE TEIA
+  // 6. ARANHA GIGANTE (PASSOS PESADOS + GARRAS + OCLUSÃO + MANDÍBULAS + GRITO)
   // ==========================================================================
 
   /**
-   * Passo quitinoso pontiagudo da aranha (no chão, parede ou grade metálica do teto),
-   * espacializado em estéreo conforme a direção e distância ao jogador.
+   * Passo visceral da Aranha Gigante de 8 patas:
+   *  1. Impacto sub-grave do peso monstruoso fazendo vibrar o corredor;
+   *  2. Batida perfurante de garra quitinosa (pedra áspera no chão vs clangor metálico oco na grade do teto!);
+   *  3. Estalo articular secundário do exoesqueleto (+11ms–16ms);
+   *  4. Oclusão acústica real pelas paredes do labirinto (`wallCount`)!
    */
   playSpiderFootstep(
     pan: number,
     distance: number,
     frantic: boolean,
-    onMetalOrCeiling: boolean
+    onMetalOrCeiling: boolean,
+    wallCount = 0
   ): void {
     const nowMs = performance.now();
-    const minGap = frantic ? 28 : 55;
+    const minGap = frantic ? 26 : 52;
     if (nowMs - this.lastSpiderStepMs < minGap) return;
     this.lastSpiderStepMs = nowMs;
 
-    if (
-      !this.isRunning() ||
-      !this.ctx ||
-      !this.worldDryBus ||
-      !this.reverbSend ||
-      distance > 22
-    ) {
-      return;
-    }
+    if (!this.isRunning() || !this.ctx) return;
+
+    const profile = computeSpiderStepLayerProfile(
+      distance,
+      frantic,
+      onMetalOrCeiling,
+      wallCount
+    );
+    if (!profile.audible) return;
+
+    const sink = this.createSpatialWorldSink(pan, {
+      dryGain: profile.dryGain,
+      wetSendGain: profile.wetSendGain,
+      lowpassHz: profile.lowpassHz,
+      audible: true,
+    });
+    if (!sink) return;
 
     const now = this.ctx.currentTime;
-    const atten = Math.pow(Math.max(0, 1 - distance / 22), 1.65);
-    const vol = atten * (frantic ? 0.22 : 0.11);
-    if (vol < 0.004) return;
+    const variant = this.spiderStepVariantCounter++;
+    const jitter = (0.9 + ((variant * 37) % 19) * 0.011) * (0.96 + Math.random() * 0.08);
 
-    const panner = this.ctx.createStereoPanner();
-    panner.pan.value = Math.max(-0.95, Math.min(0.95, pan));
-    panner.connect(this.worldDryBus);
-    panner.connect(this.reverbSend);
+    // Camada 1: Peso físico sub-grave do predador gigante pisando no corredor
+    const sub = this.ctx.createOscillator();
+    const subGain = this.ctx.createGain();
+    sub.type = 'triangle';
+    sub.frequency.setValueAtTime(profile.subWeightHz * jitter, now);
+    sub.frequency.exponentialRampToValueAtTime(26, now + (frantic ? 0.075 : 0.065));
+    subGain.gain.setValueAtTime(profile.subWeightGain, now);
+    subGain.gain.exponentialRampToValueAtTime(0.0006, now + 0.082);
+    sub.connect(subGain);
+    subGain.connect(sink);
+    sub.start(now);
+    sub.stop(now + 0.088);
 
-    const jitter = 0.88 + Math.random() * 0.26;
-
-    // Estalo agudo de ponta óssea/quitina tocando pedra ou grade do teto
+    // Camada 2: Impacto pontiagudo da ponta da garra quitinosa
     this.triggerFilteredNoise(
-      panner,
+      sink,
       now,
-      frantic ? 0.026 : 0.034,
-      (onMetalOrCeiling ? 2750 : 1850) * jitter * (frantic ? 1.15 : 1.0),
-      onMetalOrCeiling ? 3.8 : 2.6,
-      vol,
-      true
+      frantic ? 0.03 : 0.038,
+      profile.clawStrikeHz * jitter,
+      profile.clawStrikeQ,
+      profile.clawStrikeGain,
+      onMetalOrCeiling ? 'gritty' : 'crackle'
     );
 
-    // Ressonância seca de articulação aracnídea
+    // Ressonância metálica oca arrepiante quando a aranha caminha na grade do teto/parede metálica!
+    if (profile.metallicModesHz) {
+      profile.metallicModesHz.forEach((hz, idx) => {
+        if (!this.ctx) return;
+        const mOsc = this.ctx.createOscillator();
+        const mGain = this.ctx.createGain();
+        mOsc.type = idx === 0 ? 'triangle' : 'sine';
+        mOsc.frequency.setValueAtTime(hz * jitter, now);
+        mOsc.frequency.exponentialRampToValueAtTime(
+          hz * 0.86,
+          now + 0.075
+        );
+        mGain.gain.setValueAtTime(
+          (frantic ? 0.052 : 0.034) / (idx + 1),
+          now
+        );
+        mGain.gain.exponentialRampToValueAtTime(0.0005, now + 0.08);
+        mOsc.connect(mGain);
+        mGain.connect(sink);
+        mOsc.start(now);
+        mOsc.stop(now + 0.085);
+      });
+    }
+
+    // Camada 3: Duplo estalo articular seco de quitina / tarso se travando (+11ms–16ms)
+    const tJoint = now + profile.jointDelaySec;
     const click = this.ctx.createOscillator();
     const clickGain = this.ctx.createGain();
     click.type = onMetalOrCeiling ? 'triangle' : 'sine';
-    const f0 = (onMetalOrCeiling ? 360 : 210) * jitter;
-    click.frequency.setValueAtTime(f0, now);
-    click.frequency.exponentialRampToValueAtTime(58, now + 0.038);
+    click.frequency.setValueAtTime(profile.jointClickHz * jitter, tJoint);
+    click.frequency.exponentialRampToValueAtTime(64, tJoint + 0.034);
 
-    clickGain.gain.setValueAtTime(vol * 0.85, now);
-    clickGain.gain.exponentialRampToValueAtTime(0.0008, now + 0.042);
+    clickGain.gain.setValueAtTime(profile.clawStrikeGain * 0.72, tJoint);
+    clickGain.gain.exponentialRampToValueAtTime(0.0006, tJoint + 0.038);
 
     click.connect(clickGain);
-    clickGain.connect(panner);
-    click.start(now);
-    click.stop(now + 0.045);
+    clickGain.connect(sink);
+    click.start(tJoint);
+    click.stop(tJoint + 0.042);
   }
 
   /**
-   * Guincho/sibilo aterrorizante da aranha ao avistar o jogador ou sentir vibração na teia,
-   * anunciando a disparada em velocidade absurda!
+   * Estalidos úmidos de quelíceras / mandíbulas e respiração traqueal da Aranha
+   * quando ela espreita pelos corredores ou pelo teto perto do jogador!
    */
-  playSpiderScream(pan: number, distance: number): void {
-    if (
-      !this.isRunning() ||
-      !this.ctx ||
-      !this.worldDryBus ||
-      !this.reverbSend
-    ) {
-      return;
-    }
+  playSpiderChitter(
+    pan: number,
+    distance: number,
+    wallCount = 0,
+    agitated = false
+  ): void {
+    const nowMs = performance.now();
+    if (nowMs - this.lastSpiderChitterMs < (agitated ? 900 : 1_800)) return;
+    this.lastSpiderChitterMs = nowMs;
+
+    if (!this.isRunning() || !this.ctx) return;
+
+    const acoustics = computeLabyrinthSoundAcoustics(distance, 18.5, wallCount);
+    const sink = this.createSpatialWorldSink(pan, acoustics);
+    if (!sink) return;
+
     const now = this.ctx.currentTime;
-    const atten = Math.max(0.22, Math.pow(Math.max(0, 1 - distance / 30), 1.2));
+    const clicks = agitated ? 6 : 4;
 
-    const panner = this.ctx.createStereoPanner();
-    panner.pan.value = Math.max(-0.92, Math.min(0.92, pan));
-    panner.connect(this.worldDryBus);
-    panner.connect(this.reverbSend);
-
-    // Sibilo gutural rasgado
+    // Sopro traqueal áspero de fundo
     this.triggerFilteredNoise(
-      panner,
+      sink,
       now,
-      0.62,
-      1650,
-      1.6,
-      0.24 * atten,
-      true
+      0.24,
+      agitated ? 1_150 : 820,
+      1.7,
+      agitated ? 0.075 : 0.045,
+      'pink'
     );
 
-    // Duas vozes dissonantes moduladas (grito orgânico aracnídeo)
-    const freqs: Array<[number, number, number]> = [
-      [640, 1180, 290],
-      [685, 1310, 245],
+    // Sequência rápida e orgânica de estalidos úmidos de mandíbulas
+    let cursor = 0.01;
+    for (let i = 0; i < clicks; i++) {
+      const t = now + cursor;
+      cursor += 0.026 + Math.random() * 0.032;
+      const f0 = (1_280 + Math.random() * 980) * (agitated ? 1.15 : 1.0);
+
+      this.triggerFilteredNoise(
+        sink,
+        t,
+        0.018,
+        f0,
+        4.2,
+        agitated ? 0.095 : 0.062,
+        'crackle'
+      );
+
+      const mand = this.ctx.createOscillator();
+      const mg = this.ctx.createGain();
+      mand.type = 'triangle';
+      mand.frequency.setValueAtTime(f0 * 0.32, t);
+      mand.frequency.exponentialRampToValueAtTime(95, t + 0.024);
+      mg.gain.setValueAtTime(agitated ? 0.055 : 0.036, t);
+      mg.gain.exponentialRampToValueAtTime(0.0005, t + 0.026);
+      mand.connect(mg);
+      mg.connect(sink);
+      mand.start(t);
+      mand.stop(t + 0.03);
+    }
+  }
+
+  /**
+   * Grito / guincho orgânico aterrorizante da Aranha Gigante:
+   * combina rugido sub-grave + trato vocal com formantes móveis modulados por trinado de mandíbula (FM 31Hz)
+   * + jato sibilante pressurizado + oclusão realista pelas paredes!
+   */
+  playSpiderScream(pan: number, distance: number, wallCount = 0): void {
+    const nowMs = performance.now();
+    if (nowMs - this.lastSpiderScreamMs < 220) return;
+    this.lastSpiderScreamMs = nowMs;
+
+    if (!this.isRunning() || !this.ctx) return;
+
+    const rawAcoustics = computeLabyrinthSoundAcoustics(distance, 34.0, wallCount);
+    // Mesmo distante no labirinto, o grito da aranha ecoa pelos corredores como alerta mortal!
+    const screamAcoustics: LabyrinthSoundAcoustics = {
+      dryGain: Math.max(wallCount === 0 ? 0.16 : 0.07, rawAcoustics.dryGain),
+      wetSendGain: Math.max(0.2, rawAcoustics.wetSendGain * 1.25),
+      lowpassHz: Math.max(580, rawAcoustics.lowpassHz),
+      audible: true,
+    };
+
+    const sink = this.createSpatialWorldSink(pan, screamAcoustics);
+    if (!sink) return;
+
+    const now = this.ctx.currentTime;
+
+    // 1. Rugido torácico sub-grave
+    const chest = this.ctx.createOscillator();
+    const chestGain = this.ctx.createGain();
+    chest.type = 'sawtooth';
+    chest.frequency.setValueAtTime(118, now);
+    chest.frequency.exponentialRampToValueAtTime(152, now + 0.09);
+    chest.frequency.exponentialRampToValueAtTime(38, now + 0.68);
+
+    const chestLp = this.ctx.createBiquadFilter();
+    chestLp.type = 'lowpass';
+    chestLp.frequency.value = 340;
+
+    chestGain.gain.setValueAtTime(0.001, now);
+    chestGain.gain.linearRampToValueAtTime(0.22, now + 0.035);
+    chestGain.gain.exponentialRampToValueAtTime(0.0008, now + 0.72);
+
+    chest.connect(chestLp);
+    chestLp.connect(chestGain);
+    chestGain.connect(sink);
+    chest.start(now);
+    chest.stop(now + 0.75);
+
+    // 2. Sibilo pressurizado rasgado
+    this.triggerFilteredNoise(
+      sink,
+      now,
+      0.68,
+      1_850,
+      1.35,
+      0.24,
+      'gritty'
+    );
+
+    // 3. LFO de vibração/trinado aracnídeo (31 Hz) modulando duas cordas vocais dissonantes em formantes móveis
+    const trillLfo = this.ctx.createOscillator();
+    const trillGain = this.ctx.createGain();
+    trillLfo.type = 'sine';
+    trillLfo.frequency.value = 31;
+    trillGain.gain.value = 46;
+    trillLfo.connect(trillGain);
+    trillLfo.start(now);
+    trillLfo.stop(now + 0.74);
+
+    const voices: ReadonlyArray<
+      readonly [OscillatorType, number, number, number, number, number]
+    > = [
+      ['sawtooth', 580, 1_240, 275, 1_180, 520],
+      ['square', 635, 1_390, 232, 2_250, 890],
     ];
-    freqs.forEach(([fStart, fPeak, fEnd], idx) => {
-      if (!this.ctx) return;
+    for (const [wave, fStart, fPeak, fEnd, formStart, formEnd] of voices) {
       const osc = this.ctx.createOscillator();
-      const filter = this.ctx.createBiquadFilter();
+      const formant = this.ctx.createBiquadFilter();
       const g = this.ctx.createGain();
 
-      osc.type = idx === 0 ? 'sawtooth' : 'square';
+      osc.type = wave;
       osc.frequency.setValueAtTime(fStart, now);
       osc.frequency.exponentialRampToValueAtTime(fPeak, now + 0.11);
-      osc.frequency.exponentialRampToValueAtTime(fEnd, now + 0.58);
+      osc.frequency.exponentialRampToValueAtTime(fEnd, now + 0.68);
+      trillGain.connect(osc.frequency);
 
-      filter.type = 'bandpass';
-      filter.frequency.setValueAtTime(1350, now);
-      filter.frequency.exponentialRampToValueAtTime(620, now + 0.58);
-      filter.Q.value = 2.4;
+      formant.type = 'bandpass';
+      formant.frequency.setValueAtTime(formStart, now);
+      formant.frequency.exponentialRampToValueAtTime(formEnd, now + 0.68);
+      formant.Q.value = 2.6;
 
       g.gain.setValueAtTime(0.001, now);
-      g.gain.linearRampToValueAtTime(0.14 * atten, now + 0.04);
-      g.gain.exponentialRampToValueAtTime(0.0008, now + 0.62);
+      g.gain.linearRampToValueAtTime(0.15, now + 0.038);
+      g.gain.exponentialRampToValueAtTime(0.0008, now + 0.7);
 
-      osc.connect(filter);
-      filter.connect(g);
-      g.connect(panner);
+      osc.connect(formant);
+      formant.connect(g);
+      g.connect(sink);
       osc.start(now);
-      osc.stop(now + 0.64);
-    });
-  }
-
-  /** Som úmido/tenso de fiandeiras tecendo armadilha de teia no corredor */
-  playSpiderWebSpin(pan: number, distance: number): void {
-    if (
-      !this.isRunning() ||
-      !this.ctx ||
-      !this.worldDryBus ||
-      !this.reverbSend ||
-      distance > 18
-    ) {
-      return;
+      osc.stop(now + 0.73);
     }
-    const now = this.ctx.currentTime;
-    const atten = Math.pow(Math.max(0, 1 - distance / 18), 1.5);
-    if (atten < 0.04) return;
-
-    const panner = this.ctx.createStereoPanner();
-    panner.pan.value = Math.max(-0.9, Math.min(0.9, pan));
-    panner.connect(this.worldDryBus);
-    panner.connect(this.reverbSend);
-
-    this.triggerFilteredNoise(
-      panner,
-      now,
-      0.14,
-      2400,
-      3.4,
-      0.085 * atten,
-      false
-    );
   }
 
-  /** Estalo viscoso quando o jogador pisa e fica preso numa armadilha de teia! */
+  /**
+   * Guincho agudo de dor e recuo quando a Aranha é cegada por um Sinalizador de Magnésio ou golpeada pela Faca!
+   */
+  playSpiderPainRecoil(pan: number, distance: number, wallCount = 0): void {
+    if (!this.isRunning() || !this.ctx) return;
+
+    const raw = computeLabyrinthSoundAcoustics(distance, 32.0, wallCount);
+    const sink = this.createSpatialWorldSink(pan, {
+      dryGain: Math.max(0.14, raw.dryGain),
+      wetSendGain: Math.max(0.22, raw.wetSendGain),
+      lowpassHz: Math.max(700, raw.lowpassHz),
+      audible: true,
+    });
+    if (!sink) return;
+
+    const now = this.ctx.currentTime;
+
+    this.triggerFilteredNoise(sink, now, 0.48, 2_650, 1.8, 0.24, 'crackle');
+
+    const shriek = this.ctx.createOscillator();
+    const sg = this.ctx.createGain();
+    shriek.type = 'sawtooth';
+    shriek.frequency.setValueAtTime(1_420, now);
+    shriek.frequency.exponentialRampToValueAtTime(880, now + 0.14);
+    shriek.frequency.exponentialRampToValueAtTime(1_680, now + 0.24);
+    shriek.frequency.exponentialRampToValueAtTime(340, now + 0.54);
+
+    const bp = this.ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.value = 1_550;
+    bp.Q.value = 2.2;
+
+    sg.gain.setValueAtTime(0.18, now);
+    sg.gain.exponentialRampToValueAtTime(0.0008, now + 0.56);
+
+    shriek.connect(bp);
+    bp.connect(sg);
+    sg.connect(sink);
+    shriek.start(now);
+    shriek.stop(now + 0.58);
+  }
+
+  /** Fiandeiras secretando e esticando seda viscosa no corredor */
+  playSpiderWebSpin(pan: number, distance: number, wallCount = 0): void {
+    if (!this.isRunning() || !this.ctx) return;
+
+    const acoustics = computeLabyrinthSoundAcoustics(distance, 19.0, wallCount);
+    const sink = this.createSpatialWorldSink(pan, acoustics);
+    if (!sink) return;
+
+    const now = this.ctx.currentTime;
+
+    this.triggerFilteredNoise(sink, now, 0.18, 2_550, 3.2, 0.11, 'crackle');
+
+    const silk = this.ctx.createOscillator();
+    const sg = this.ctx.createGain();
+    silk.type = 'sine';
+    silk.frequency.setValueAtTime(420, now);
+    silk.frequency.exponentialRampToValueAtTime(790, now + 0.16);
+    sg.gain.setValueAtTime(0.045, now);
+    sg.gain.exponentialRampToValueAtTime(0.0006, now + 0.17);
+    silk.connect(sg);
+    sg.connect(sink);
+    silk.start(now);
+    silk.stop(now + 0.18);
+  }
+
+  /** Estalo viscoso e chicote de tensão quando o jogador pisa e fica preso numa armadilha de teia! */
   playWebTrapSnap(): void {
     if (
       !this.isRunning() ||
@@ -1607,28 +2596,81 @@ export class SoundEngine {
     }
     const now = this.ctx.currentTime;
 
-    // Fio tenso vibrando como corda + aderência pegajosa
+    // 1. Corda elástica de seda disparando sob tensão
     const twang = this.ctx.createOscillator();
     const twangGain = this.ctx.createGain();
     twang.type = 'triangle';
-    twang.frequency.setValueAtTime(280, now);
-    twang.frequency.exponentialRampToValueAtTime(92, now + 0.24);
-    twangGain.gain.setValueAtTime(0.2, now);
-    twangGain.gain.exponentialRampToValueAtTime(0.0008, now + 0.26);
+    twang.frequency.setValueAtTime(325, now);
+    twang.frequency.exponentialRampToValueAtTime(78, now + 0.27);
+    twangGain.gain.setValueAtTime(0.24, now);
+    twangGain.gain.exponentialRampToValueAtTime(0.0008, now + 0.29);
     twang.connect(twangGain);
     twangGain.connect(this.worldDryBus);
     twangGain.connect(this.reverbSend);
     twang.start(now);
-    twang.stop(now + 0.28);
+    twang.stop(now + 0.31);
+
+    // 2. Aderência pegajosa envolvendo as botas/traje
+    this.triggerFilteredNoise(
+      this.worldDryBus,
+      now,
+      0.24,
+      1_520,
+      1.6,
+      0.2,
+      'crackle',
+      this.reverbSend
+    );
+    this.triggerFilteredNoise(
+      this.worldDryBus,
+      now + 0.04,
+      0.18,
+      580,
+      1.2,
+      0.14,
+      'pink'
+    );
+  }
+
+  /**
+   * Som nítido e satisfatório de fios tensos de teia se rompendo/sendo cortados pela lâmina!
+   */
+  playWebCut(): void {
+    if (
+      !this.isRunning() ||
+      !this.ctx ||
+      !this.worldDryBus ||
+      !this.reverbSend
+    ) {
+      return;
+    }
+    const now = this.ctx.currentTime;
+
+    // Chicote agudo de fio esticado arrebentando e aliviando tensão
+    const snap = this.ctx.createOscillator();
+    const snapGain = this.ctx.createGain();
+    snap.type = 'triangle';
+    snap.frequency.setValueAtTime(480, now);
+    snap.frequency.exponentialRampToValueAtTime(1_120, now + 0.055);
+    snap.frequency.exponentialRampToValueAtTime(240, now + 0.16);
+
+    snapGain.gain.setValueAtTime(0.16, now);
+    snapGain.gain.exponentialRampToValueAtTime(0.0008, now + 0.17);
+
+    snap.connect(snapGain);
+    snapGain.connect(this.worldDryBus);
+    snapGain.connect(this.reverbSend);
+    snap.start(now);
+    snap.stop(now + 0.18);
 
     this.triggerFilteredNoise(
       this.worldDryBus,
       now,
-      0.22,
-      1450,
-      1.5,
-      0.18,
-      true,
+      0.12,
+      2_850,
+      2.3,
+      0.15,
+      'crackle',
       this.reverbSend
     );
   }
@@ -1648,38 +2690,38 @@ export class SoundEngine {
     const sub = this.ctx.createOscillator();
     const subGain = this.ctx.createGain();
     sub.type = 'sawtooth';
-    sub.frequency.setValueAtTime(115, now);
-    sub.frequency.exponentialRampToValueAtTime(32, now + 0.36);
+    sub.frequency.setValueAtTime(124, now);
+    sub.frequency.exponentialRampToValueAtTime(30, now + 0.38);
 
     const lp = this.ctx.createBiquadFilter();
     lp.type = 'lowpass';
-    lp.frequency.value = 380;
+    lp.frequency.value = 390;
 
-    subGain.gain.setValueAtTime(0.28, now);
-    subGain.gain.exponentialRampToValueAtTime(0.0008, now + 0.38);
+    subGain.gain.setValueAtTime(0.3, now);
+    subGain.gain.exponentialRampToValueAtTime(0.0008, now + 0.4);
 
     sub.connect(lp);
     lp.connect(subGain);
     subGain.connect(this.worldDryBus);
     subGain.connect(this.reverbSend);
     sub.start(now);
-    sub.stop(now + 0.4);
+    sub.stop(now + 0.42);
 
     this.triggerFilteredNoise(
       this.worldDryBus,
       now,
       0.26,
-      980,
-      1.3,
-      0.22,
-      true,
+      1_120,
+      1.35,
+      0.23,
+      'crackle',
       this.reverbSend
     );
   }
 
   /**
    * Ataque brutal em 1ª pessoa quando a Aranha Gigante alcança o jogador:
-   * Rasgo quitinoso + impacto corporal grave + guincho próximo + zumbido de desmaio (tinnitus).
+   * pancada corporal sub-grave + rasgo duplo de quelíceras L/R + grito no rosto + tinnitus de choque!
    */
   playSpiderBrutalAttack(): void {
     if (
@@ -1692,32 +2734,30 @@ export class SoundEngine {
     }
     const now = this.ctx.currentTime;
 
-    // 1. Impacto físico pesado derrubando o jogador no chão
     const slam = this.ctx.createOscillator();
     const slamGain = this.ctx.createGain();
     slam.type = 'sawtooth';
-    slam.frequency.setValueAtTime(145, now);
-    slam.frequency.exponentialRampToValueAtTime(26, now + 0.55);
+    slam.frequency.setValueAtTime(155, now);
+    slam.frequency.exponentialRampToValueAtTime(24, now + 0.58);
 
     const lp = this.ctx.createBiquadFilter();
     lp.type = 'lowpass';
-    lp.frequency.setValueAtTime(560, now);
-    lp.frequency.exponentialRampToValueAtTime(120, now + 0.55);
+    lp.frequency.setValueAtTime(620, now);
+    lp.frequency.exponentialRampToValueAtTime(110, now + 0.58);
 
-    slamGain.gain.setValueAtTime(0.36, now);
-    slamGain.gain.exponentialRampToValueAtTime(0.0008, now + 0.58);
+    slamGain.gain.setValueAtTime(0.38, now);
+    slamGain.gain.exponentialRampToValueAtTime(0.0008, now + 0.62);
 
     slam.connect(lp);
     lp.connect(slamGain);
     slamGain.connect(this.worldDryBus);
     slamGain.connect(this.reverbSend);
     slam.start(now);
-    slam.stop(now + 0.6);
+    slam.stop(now + 0.64);
 
-    // 2. Rasgo duplo das garras/quelíceras (esquerda -> direita)
-    const slashes: Array<[number, number, number]> = [
-      [0.02, -0.65, 2150],
-      [0.16, 0.65, 1680],
+    const slashes: ReadonlyArray<readonly [number, number, number]> = [
+      [0.02, -0.72, 2_350],
+      [0.15, 0.72, 1_780],
     ];
     for (const [delay, panVal, freq] of slashes) {
       const panner = this.ctx.createStereoPanner();
@@ -1730,34 +2770,33 @@ export class SoundEngine {
         now + delay,
         0.24,
         freq,
-        1.7,
-        0.28,
-        true
+        1.75,
+        0.3,
+        'crackle'
       );
     }
 
-    // 3. Guincho gutural da aranha bem no rosto do jogador
-    this.playSpiderScream(0, 0.8);
+    this.lastSpiderScreamMs = 0;
+    this.playSpiderScream(0, 0.6, 0);
 
-    // 4. Zumbido agudo abafado de choque/desmaio (estilo Amnesia)
     const ring = this.ctx.createOscillator();
     const ringGain = this.ctx.createGain();
     ring.type = 'sine';
-    ring.frequency.setValueAtTime(2860, now + 0.18);
-    ring.frequency.exponentialRampToValueAtTime(2540, now + 1.85);
+    ring.frequency.setValueAtTime(2_920, now + 0.18);
+    ring.frequency.exponentialRampToValueAtTime(2_580, now + 1.9);
 
     ringGain.gain.setValueAtTime(0.0001, now + 0.18);
-    ringGain.gain.linearRampToValueAtTime(0.045, now + 0.36);
-    ringGain.gain.exponentialRampToValueAtTime(0.0008, now + 1.9);
+    ringGain.gain.linearRampToValueAtTime(0.046, now + 0.36);
+    ringGain.gain.exponentialRampToValueAtTime(0.0008, now + 1.95);
 
     ring.connect(ringGain);
     ringGain.connect(this.worldDryBus);
     ring.start(now + 0.18);
-    ring.stop(now + 1.95);
+    ring.stop(now + 2.0);
   }
 
   /**
-   * Som rítmico do corpo desacordado sendo arrastado pela pedra fria enquanto a aranha puxa até a teia!
+   * Puxão rítmico do corpo sendo arrastado pela pedra fria pelas garras dianteiras da Aranha!
    */
   playBodyDragPull(): void {
     if (
@@ -1770,35 +2809,44 @@ export class SoundEngine {
     }
     const now = this.ctx.currentTime;
 
-    // Raspão grave de roupa/corpo contra o chão de pedra
+    // Atrito pesado do traje contra a pedra + pedregulhos espalhando
     this.triggerFilteredNoise(
       this.worldDryBus,
       now,
-      0.34,
-      340,
+      0.36,
+      360,
       0.9,
-      0.19,
-      true,
+      0.2,
+      'gritty',
+      this.reverbSend
+    );
+    this.triggerFilteredNoise(
+      this.worldDryBus,
+      now + 0.04,
+      0.24,
+      1_650,
+      1.8,
+      0.095,
+      'crackle',
       this.reverbSend
     );
 
-    // Puxão seco das garras dianteiras
     const thud = this.ctx.createOscillator();
     const thudGain = this.ctx.createGain();
     thud.type = 'triangle';
-    thud.frequency.setValueAtTime(76, now);
-    thud.frequency.exponentialRampToValueAtTime(30, now + 0.22);
-    thudGain.gain.setValueAtTime(0.16, now);
-    thudGain.gain.exponentialRampToValueAtTime(0.0008, now + 0.24);
+    thud.frequency.setValueAtTime(82, now);
+    thud.frequency.exponentialRampToValueAtTime(28, now + 0.24);
+    thudGain.gain.setValueAtTime(0.18, now);
+    thudGain.gain.exponentialRampToValueAtTime(0.0008, now + 0.26);
 
     thud.connect(thudGain);
     thudGain.connect(this.worldDryBus);
     thudGain.connect(this.reverbSend);
     thud.start(now);
-    thud.stop(now + 0.25);
+    thud.stop(now + 0.27);
   }
 
-  /** Fôlego pesado e rasgo de fios viscosos ao acordar ferido dentro da teia da aranha */
+  /** Fôlego ofegante no capacete + rasgo de fios viscosos ao despertar no ninho ou ser resgatado */
   playWakeUpGasp(): void {
     if (
       !this.isRunning() ||
@@ -1810,31 +2858,28 @@ export class SoundEngine {
     }
     const now = this.ctx.currentTime;
 
-    // Inspiração ofegante filtrada
     this.triggerFilteredNoise(
       this.worldDryBus,
       now,
-      0.38,
-      680,
+      0.4,
+      740,
       1.35,
-      0.15,
-      false,
+      0.16,
+      'pink',
       this.reverbSend
     );
-
-    // Estalo sutil de seda colada soltando
     this.triggerFilteredNoise(
       this.worldDryBus,
       now + 0.14,
-      0.18,
-      1900,
-      2.4,
-      0.085,
-      true
+      0.2,
+      2_050,
+      2.3,
+      0.095,
+      'crackle'
     );
   }
 
-  /** Morte permanente real: golpe letal + queda abissal + sinal vital encerrando */
+  /** Morte permanente: golpe letal + queda abissal + sinal vital do traje encerrando */
   playPermanentDeath(): void {
     if (
       !this.isRunning() ||
@@ -1848,21 +2893,19 @@ export class SoundEngine {
 
     this.playSpiderBrutalAttack();
 
-    // Queda sub-grave final
     const abyss = this.ctx.createOscillator();
     const abyssGain = this.ctx.createGain();
     abyss.type = 'sine';
-    abyss.frequency.setValueAtTime(92, now + 0.12);
-    abyss.frequency.exponentialRampToValueAtTime(22, now + 1.8);
-    abyssGain.gain.setValueAtTime(0.32, now + 0.12);
-    abyssGain.gain.exponentialRampToValueAtTime(0.0008, now + 1.9);
+    abyss.frequency.setValueAtTime(96, now + 0.12);
+    abyss.frequency.exponentialRampToValueAtTime(21, now + 1.85);
+    abyssGain.gain.setValueAtTime(0.34, now + 0.12);
+    abyssGain.gain.exponentialRampToValueAtTime(0.0008, now + 1.95);
 
     abyss.connect(abyssGain);
     abyssGain.connect(this.worldDryBus);
     abyss.start(now + 0.12);
-    abyss.stop(now + 1.95);
+    abyss.stop(now + 2.0);
 
-    // Linha reta fria de sinal vital perdido
     const flat = this.ctx.createOscillator();
     const flatGain = this.ctx.createGain();
     flat.type = 'sine';
@@ -1877,32 +2920,47 @@ export class SoundEngine {
     flat.stop(now + 3.25);
   }
 
-  /** Esforço físico ao se debater contra a teia ou contra o abraço da aranha */
+  /** Esforço físico e tensão nos fios ao tentar se soltar da teia */
   playStruggleEffort(): void {
     if (!this.isRunning() || !this.ctx || !this.worldDryBus) return;
     const now = this.ctx.currentTime;
     this.triggerFilteredNoise(
       this.worldDryBus,
       now,
-      0.075,
-      780 + Math.random() * 420,
-      1.4,
-      0.11,
-      true,
+      0.085,
+      820 + Math.random() * 440,
+      1.45,
+      0.115,
+      'crackle',
       this.reverbSend ?? undefined
     );
   }
 
-  /** Bip tático de sonar CRT ao ligar, recolher ou calibrar o Radar Topográfico */
+  // ==========================================================================
+  // 7. RADAR TOPOGRÁFICO, RÁDIO CO-OP, PING 3D & BATIMENTO CARDÍACO ANATÔMICO
+  // ==========================================================================
+
+  /** Bip de sonar CRT com clique de relé e harmônico cristalino */
   playRadarPing(activating: boolean): void {
     if (!this.isRunning() || !this.ctx || !this.worldDryBus) return;
     const now = this.ctx.currentTime;
-    const notes: Array<[number, number, number]> = activating
+
+    this.triggerFilteredNoise(
+      this.worldDryBus,
+      now,
+      0.008,
+      2_900,
+      3.0,
+      0.045,
+      'white'
+    );
+
+    const notes: ReadonlyArray<readonly [number, number, number]> = activating
       ? [
-          [0, 660, 0.055],
-          [0.065, 990, 0.07],
+          [0, 660, 0.058],
+          [0.068, 990, 0.072],
         ]
-      : [[0, 520, 0.05]];
+      : [[0, 510, 0.052]];
 
     for (const [delay, freq, vol] of notes) {
       const t = now + delay;
@@ -1910,35 +2968,109 @@ export class SoundEngine {
       const gain = this.ctx.createGain();
       osc.type = 'sine';
       osc.frequency.setValueAtTime(freq, t);
-      osc.frequency.exponentialRampToValueAtTime(freq * 1.04, t + 0.09);
+      osc.frequency.exponentialRampToValueAtTime(freq * 1.035, t + 0.1);
 
       gain.gain.setValueAtTime(vol, t);
-      gain.gain.exponentialRampToValueAtTime(0.0008, t + 0.14);
+      gain.gain.exponentialRampToValueAtTime(0.0008, t + 0.16);
 
       osc.connect(gain);
       gain.connect(this.worldDryBus);
+      if (this.reverbSend) gain.connect(this.reverbSend);
       osc.start(t);
-      osc.stop(t + 0.15);
+      osc.stop(t + 0.17);
     }
   }
 
-  /** Batimento cardíaco abafado e discreto durante perseguição intensa ou saúde crítica */
+  /**
+   * Clique autêntico de câmbio / squelch de rádio do capacete EVA ao apertar/soltar Push-to-Talk `[B]`
+   * ou ao receber transmissão de texto no esquadrão!
+   */
+  playRadioSquelch(opening: boolean): void {
+    const nowMs = performance.now();
+    if (nowMs - this.lastRadioSquelchMs < 55) return;
+    this.lastRadioSquelchMs = nowMs;
+
+    if (!this.isRunning() || !this.ctx || !this.terminalBus) return;
+    const now = this.ctx.currentTime;
+
+    // Curto chiado VHF filtrado + bip NASA discreto (Quindar-style micro-tone)
+    this.triggerFilteredNoise(
+      this.terminalBus,
+      now,
+      opening ? 0.018 : 0.026,
+      2_250,
+      2.6,
+      0.052,
+      'white'
+    );
+
+    const tone = this.ctx.createOscillator();
+    const tg = this.ctx.createGain();
+    tone.type = 'sine';
+    tone.frequency.setValueAtTime(opening ? 2_525 : 2_475, now);
+    tg.gain.setValueAtTime(0.024, now);
+    tg.gain.exponentialRampToValueAtTime(0.0005, now + 0.032);
+    tone.connect(tg);
+    tg.connect(this.terminalBus);
+    tone.start(now);
+    tone.stop(now + 0.036);
+  }
+
+  /** Sinalizador acústico tático 3D (`[V]`): tom duplo limpo para posição ou alerta urgente para PERIGO! */
+  playTacticalPingSound(danger: boolean, pan = 0): void {
+    if (!this.isRunning() || !this.ctx || !this.worldDryBus) return;
+    const now = this.ctx.currentTime;
+
+    const panner = this.ctx.createStereoPanner();
+    panner.pan.value = Math.max(-0.9, Math.min(0.9, pan));
+    panner.connect(this.worldDryBus);
+    if (this.reverbSend) panner.connect(this.reverbSend);
+
+    const seq: ReadonlyArray<readonly [number, number]> = danger
+      ? [
+          [0, 880],
+          [0.075, 1_320],
+          [0.15, 880],
+        ]
+      : [
+          [0, 740],
+          [0.08, 1_110],
+        ];
+
+    for (const [delay, hz] of seq) {
+      const t = now + delay;
+      const osc = this.ctx.createOscillator();
+      const g = this.ctx.createGain();
+      osc.type = danger ? 'triangle' : 'sine';
+      osc.frequency.setValueAtTime(hz, t);
+      g.gain.setValueAtTime(danger ? 0.072 : 0.055, t);
+      g.gain.exponentialRampToValueAtTime(0.0006, t + 0.11);
+      osc.connect(g);
+      g.connect(panner);
+      osc.start(t);
+      osc.stop(t + 0.12);
+    }
+  }
+
+  /**
+   * Batimento cardíaco anatômico ("lub-dub") com fluxo arterial grave e respiração trêmula no visor
+   * durante perseguição próxima da Aranha ou saúde crítica!
+   */
   playTensionHeartbeat(intensity: number): void {
     const clamped = Math.max(0, Math.min(1, intensity));
     if (clamped < 0.12) return;
 
     const nowMs = performance.now();
-    const beatIntervalMs = 920 - clamped * 470; // ~65 BPM -> ~133 BPM em pânico extremo
+    const beatIntervalMs = 920 - clamped * 470;
     if (nowMs - this.lastHeartbeatMs < beatIntervalMs) return;
     this.lastHeartbeatMs = nowMs;
 
     if (!this.isRunning() || !this.ctx || !this.worldDryBus) return;
     const now = this.ctx.currentTime;
 
-    // Duplo pulso cardíaco ("lub-dub") bem abafado para não poluir o áudio
-    const pulses: Array<[number, number, number]> = [
-      [0, 62, 0.11 * clamped],
-      [0.16, 52, 0.075 * clamped],
+    const pulses: ReadonlyArray<readonly [number, number, number]> = [
+      [0, 64, 0.135 * clamped],
+      [0.165, 51, 0.095 * clamped],
     ];
     for (const [delay, freq, vol] of pulses) {
       const t = now + delay;
@@ -1946,15 +3078,39 @@ export class SoundEngine {
       const gain = this.ctx.createGain();
       osc.type = 'sine';
       osc.frequency.setValueAtTime(freq, t);
-      osc.frequency.exponentialRampToValueAtTime(28, t + 0.11);
+      osc.frequency.exponentialRampToValueAtTime(26, t + 0.12);
 
       gain.gain.setValueAtTime(vol, t);
-      gain.gain.exponentialRampToValueAtTime(0.0008, t + 0.12);
+      gain.gain.exponentialRampToValueAtTime(0.0008, t + 0.13);
 
       osc.connect(gain);
       gain.connect(this.worldDryBus);
       osc.start(t);
-      osc.stop(t + 0.13);
+      osc.stop(t + 0.14);
+
+      // Ressonância sanguínea abafada interna no ouvido
+      this.triggerFilteredNoise(
+        this.worldDryBus,
+        t,
+        0.09,
+        145,
+        1.1,
+        vol * 0.42,
+        'pink'
+      );
+    }
+
+    // Fôlego curto de adrenalina no capacete em pânico alto
+    if (clamped > 0.58) {
+      this.triggerFilteredNoise(
+        this.worldDryBus,
+        now + 0.28,
+        0.19,
+        840,
+        1.5,
+        0.028 * clamped,
+        'pink'
+      );
     }
   }
 
@@ -1965,26 +3121,32 @@ export class SoundEngine {
     freq: number,
     q: number,
     volume: number,
-    useGrittyBuffer: boolean,
+    texture: 'white' | 'pink' | 'gritty' | 'crackle',
     extraSend?: AudioNode
   ): void {
-    const buf = useGrittyBuffer ? this.grittyNoiseBuffer : this.noiseBuffer;
-    if (!this.ctx || !buf) return;
+    const buf =
+      texture === 'pink'
+        ? this.pinkNoiseBuffer
+        : texture === 'gritty'
+          ? this.grittyNoiseBuffer
+          : texture === 'crackle'
+            ? this.crackleNoiseBuffer
+            : this.noiseBuffer;
+    if (!this.ctx || !buf || volume <= 0.0004) return;
 
     const src = this.ctx.createBufferSource();
     src.buffer = buf;
-    // Escolhe um trecho aleatório do buffer de 1s para variar cada passo/tecla naturalmente
-    const maxOffset = Math.max(0, 0.9 - duration);
+    const maxOffset = Math.max(0, buf.duration - duration - 0.05);
     const offset = Math.random() * maxOffset;
 
     const filter = this.ctx.createBiquadFilter();
     filter.type = 'bandpass';
-    filter.frequency.value = freq;
+    filter.frequency.value = Math.max(40, Math.min(18_000, freq));
     filter.Q.value = q;
 
     const gain = this.ctx.createGain();
     gain.gain.setValueAtTime(volume, startTime);
-    gain.gain.exponentialRampToValueAtTime(0.0008, startTime + duration);
+    gain.gain.exponentialRampToValueAtTime(0.0006, startTime + duration);
 
     src.connect(filter);
     filter.connect(gain);
@@ -1993,7 +3155,7 @@ export class SoundEngine {
       gain.connect(extraSend);
     }
 
-    src.start(startTime, offset, duration + 0.01);
+    src.start(startTime, offset, duration + 0.015);
   }
 
   dispose(): void {
