@@ -56,6 +56,7 @@ export interface DoomInventoryCallbacks {
   onUseBattery: (chargeAmount: number) => boolean;
   onUseFlare: () => boolean;
   onUseKnife: () => { cutWeb: boolean };
+  onUseKey?: () => void;
   onCloseRequest: () => void;
   onPermanentDeathTerminate: () => void;
 }
@@ -144,7 +145,8 @@ export const ITEM_CATALOG: Record<string, InventoryItemDef> = {
     description:
       'Chave maciça recolhida entre os blocos úmidos de pedra, com plaqueta gravada da antiga galeria sul.',
     stackable: false,
-    usable: false,
+    usable: true,
+    actionLabel: 'Empunhar chave',
     droppable: false,
   },
   torn_log_04: {
@@ -1997,7 +1999,7 @@ export class DoomInventory {
 
   private autoBindQuickSlotIfAvailable(def: InventoryItemDef): void {
     // Auto-preenche atalhos livres com suprimentos/ferramentas de emergência (faca, gaze, etc.)
-    if (!def.usable || def.kind === 'lantern') return;
+    if (!def.usable || def.kind === 'lantern' || def.kind === 'key') return;
     if (this.quickSlots.includes(def.id)) return;
     const freeQuick = this.quickSlots.findIndex((q) => q === null);
     if (freeQuick >= 0) {
@@ -2499,6 +2501,17 @@ export class DoomInventory {
         }
         return true;
       }
+    }
+
+    if (def.id === 'sector_b_key') {
+      this.callbacks.onUseKey?.();
+      this.sound.playInventorySelect(true);
+      if (!fromQuickShortcut) {
+        this.feedbackEl.textContent =
+          'Chave empunhada pelo astronauta. Nenhuma fechadura compatível por perto.';
+        this.callbacks.onCloseRequest();
+      }
+      return true;
     }
 
     return false;

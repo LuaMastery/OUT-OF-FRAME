@@ -11,6 +11,7 @@ import {
   resolveCylinderWorldCollisions,
   StaticColliderBox,
 } from '../engine/physics/SpatialSweep';
+import { DoomAstronaut } from './DoomAstronaut';
 import { DoomFlashlight } from './DoomFlashlight';
 import { DoomInventory } from './DoomInventory';
 import {
@@ -50,6 +51,7 @@ export class DoomGameApp {
   private readonly camera: THREE.PerspectiveCamera;
   private readonly compositor: DoomRetroCompositor;
   private readonly sharedUniforms: DoomSharedUniforms;
+  private readonly astronaut: DoomAstronaut;
   private readonly flashlight: DoomFlashlight;
   private readonly inventory: DoomInventory;
   private readonly worldItems: DoomWorldItems;
@@ -152,6 +154,16 @@ export class DoomGameApp {
     this.position.copy(maze.spawnPosition);
     this.yaw = maze.spawnYaw;
 
+    this.astronaut = new DoomAstronaut(this.scene, this.sharedUniforms);
+    this.astronaut.updateFirstPersonBody(
+      this.position,
+      this.yaw,
+      0,
+      0,
+      0,
+      false,
+      false
+    );
     this.worldItems = new DoomWorldItems(this.scene, this.sharedUniforms);
     this.webManager = new DoomSpiderWebManager(this.scene, this.sharedUniforms);
     this.spider = new DoomSpider(
@@ -218,6 +230,10 @@ export class DoomGameApp {
           this.syncInventoryVitals();
         }
         return { cutWeb: res.cutActiveSnare || res.cutNearbyTrap };
+      },
+      onUseKey: () => {
+        this.flashlight.triggerQuickItemAction('key');
+        this.astronaut.setArmInUse('left', true);
       },
       onCloseRequest: () => {
         this.closeInventoryAndLock();
@@ -667,6 +683,7 @@ export class DoomGameApp {
     }
 
     if (this.activeSequence === 'PERMADEATH_EXECUTION') {
+      this.astronaut.updateSupineAbductionPose(this.position, this.yaw, 0, false);
       const u = Math.min(1, t / 1.45);
       const slash =
         t < 0.35
@@ -726,6 +743,7 @@ export class DoomGameApp {
     // ESTÁGIO 1 (0.00s -> 1.25s): O BOTE BRUTAL & QUEDA NO CHÃO
     // ------------------------------------------------------------------------
     if (t < 1.25) {
+      this.astronaut.updateSupineAbductionPose(this.position, this.yaw, 0, false);
       const u = t / 1.25;
       // Duplo clarão rubro de garras rasgando a tela
       const slashA = t < 0.28 ? 1 - t / 0.28 : 0;
@@ -793,6 +811,7 @@ export class DoomGameApp {
       }
 
       this.setCameraFov(68);
+      this.astronaut.updateSupineAbductionPose(this.position, this.yaw, 0, false);
       this.syncCustomSequenceCamera(this.position, 0.28);
       return;
     }
@@ -858,6 +877,12 @@ export class DoomGameApp {
         this.position
       );
 
+      this.astronaut.updateSupineAbductionPose(
+        this.position,
+        this.yaw,
+        pullCycles,
+        true
+      );
       this.syncCustomSequenceCamera(this.position, 0.28 + Math.abs(jolt) * 0.5);
       this.sound.playTensionHeartbeat(0.75);
       return;
@@ -905,6 +930,12 @@ export class DoomGameApp {
         this.position
       );
 
+      this.astronaut.updateSupineAbductionPose(
+        this.position,
+        this.yaw,
+        u * 2,
+        true
+      );
       this.syncCustomSequenceCamera(this.position, 0.28);
       return;
     }
@@ -913,6 +944,7 @@ export class DoomGameApp {
     // ESTÁGIO 5 (5.85s -> 7.35s): ACORDANDO BEM FERIDO NO MEIO DA TEIA!
     // (Executado APÓS WEBBING_IN_LAIR terminar 100%, nunca sobrescrevendo o estado!)
     // ------------------------------------------------------------------------
+    this.astronaut.updateSupineAbductionPose(this.position, this.yaw, 0, false);
     if (!this.seqStagedWake) {
       this.seqStagedWake = true;
       this.spider.relocateAwayAfterAbduction();
@@ -951,6 +983,15 @@ export class DoomGameApp {
       this.spider.ensureExitedCinematic();
       this.roll = 0;
       this.setCameraFov(74);
+      this.astronaut.updateFirstPersonBody(
+        this.position,
+        this.yaw,
+        this.bobPhase,
+        0,
+        this.crouchAmount,
+        this.flashlight.isEquipped,
+        this.flashlight.isLeftArmAnimating
+      );
       // Mantém os fios do casulo visíveis até o jogador caminhar e rasgar para fora da teia!
       this.inventory.setAbductionScreenFX(
         0,
@@ -1189,6 +1230,16 @@ export class DoomGameApp {
     this.cameraShake = Math.max(
       this.cameraShake * Math.exp(-8 * dt),
       spiderOut.cameraShakeAmount
+    );
+
+    this.astronaut.updateFirstPersonBody(
+      this.position,
+      this.yaw,
+      this.bobPhase,
+      planarSpeed,
+      this.crouchAmount,
+      this.flashlight.isEquipped,
+      this.flashlight.isLeftArmAnimating
     );
 
     this.syncCamera(bobOffset);

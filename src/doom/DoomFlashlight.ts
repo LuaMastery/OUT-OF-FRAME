@@ -1,11 +1,17 @@
 import * as THREE from 'three';
+import {
+  AstronautArmRig,
+  createAstronautArmRig,
+  createAstronautMaterials,
+} from './DoomAstronaut';
 
 export type QuickHandheldKind =
   | 'knife'
   | 'bandage'
   | 'morphine'
   | 'battery'
-  | 'flare';
+  | 'flare'
+  | 'key';
 
 /**
  * Textura pixel-art 32x32 (NearestFilter) de alumínio anodizado usinado com recartilhado tático.
@@ -19,7 +25,9 @@ function createFlashlightBodyTexture(): THREE.DataTexture {
       const idx = (y * size + x) * 4;
       const angleShade = Math.sin((x / size) * Math.PI * 2) * 11;
       const diamondKnurl =
-        y >= 7 && y <= 25 ? (((x + y) % 2 === 0 ? -11 : 5) + (y % 4 === 0 ? -6 : 0)) : 0;
+        y >= 7 && y <= 25
+          ? ((x + y) % 2 === 0 ? -11 : 5) + (y % 4 === 0 ? -6 : 0)
+          : 0;
       const seam = y === 5 || y === 26 ? -18 : y === 6 || y === 27 ? 10 : 0;
       const wear = (x * 13 + y * 7) % 23 === 0 ? 18 : 0;
       const base = Math.max(
@@ -34,34 +42,6 @@ function createFlashlightBodyTexture(): THREE.DataTexture {
     }
   }
 
-  const tex = new THREE.DataTexture(data, size, size, THREE.RGBAFormat);
-  tex.magFilter = THREE.NearestFilter;
-  tex.minFilter = THREE.NearestFilter;
-  tex.wrapS = THREE.RepeatWrapping;
-  tex.wrapT = THREE.RepeatWrapping;
-  tex.needsUpdate = true;
-  return tex;
-}
-
-/**
- * Textura pixel-art 32x32 de couro escuro desgastado e costura para a luva tática em 1ª pessoa.
- */
-function createGloveLeatherTexture(): THREE.DataTexture {
-  const size = 32;
-  const data = new Uint8Array(size * size * 4);
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const idx = (y * size + x) * 4;
-      const grain = ((x * 7 + y * 11) % 9) - 4;
-      const stitch = x === 15 && y % 3 === 0 ? 18 : 0;
-      const crease = y === 10 || y === 21 ? -10 : 0;
-      const v = Math.max(18, Math.min(96, 42 + grain * 2 + stitch + crease));
-      data[idx] = Math.round(v * 1.06);
-      data[idx + 1] = Math.round(v * 0.96);
-      data[idx + 2] = Math.round(v * 0.86);
-      data[idx + 3] = 255;
-    }
-  }
   const tex = new THREE.DataTexture(data, size, size, THREE.RGBAFormat);
   tex.magFilter = THREE.NearestFilter;
   tex.minFilter = THREE.NearestFilter;
@@ -104,26 +84,29 @@ function createKnifeBladeViewTexture(): THREE.DataTexture {
 }
 
 /**
- * Sistema de Viewmodel 3D em Primeira Pessoa (renderizado na mesma resolução retrô 250p + PLAYPAL):
- * 1. Mão direita com luva/manopla tática segurando a Lanterna Industrial esculpida (Tecla F)
- *    — sem nenhum cone translúcido flutuante externo!
- * 2. Mão esquerda de saque rápido (`triggerQuickItemAction`) que empunha e anima em 3D
- *    o Canivete Oxidado (golpe diagonal para cortar teia), Gaze, Láudano, Bateria ou Magnésio
- *    quando o jogador aciona os atalhos rápidos [1], [2] ou [3]!
+ * Sistema de Viewmodel 3D em Primeira Pessoa usando os BRAÇOS ORIGINAIS MARCADOS DO ASTRONAUTA:
+ * 1. `rightAstronautArm` (`AstronautRightArm`): braço espacial EVA direito com manga Beta-Cloth acolchoada,
+ *    faixa laranja de missão, anel rotativo anodizado carmim e luva pressurizada de 5 dedos segurando a Lanterna (Tecla F).
+ * 2. `leftAstronautArm` (`AstronautLeftArm`): braço espacial EVA esquerdo com manômetro analógico O2/Pressão no pulso,
+ *    anel rotativo azul-cobalto e luva EVA de 5 dedos empunhando Canivete, Gaze, Láudano, Bateria, Magnésio e Chave!
  */
 export class DoomFlashlight {
   readonly viewScene = new THREE.Scene();
   readonly viewCamera: THREE.PerspectiveCamera;
 
+  /** Braço direito original do Astronauta marcado como braço ativo da lanterna */
+  readonly rightAstronautArm: AstronautArmRig;
+  /** Braço esquerdo original do Astronauta marcado como braço ativo de faca e objetos */
+  readonly leftAstronautArm: AstronautArmRig;
+
   private readonly rootGroup = new THREE.Group();
   private readonly animGroup = new THREE.Group();
   private readonly switchMesh: THREE.Mesh;
-  private readonly thumbTipMesh: THREE.Mesh;
   private readonly lensMaterial: THREE.MeshBasicMaterial;
   private readonly reflectorMaterial: THREE.MeshLambertMaterial;
   private readonly bulbMaterial: THREE.MeshBasicMaterial;
 
-  // Grupo de ação rápida em 1ª pessoa (atalhos [1], [2], [3])
+  // Grupo de ação rápida em 1ª pessoa (atalhos [1], [2], [3] e uso de objetos)
   private readonly quickRootGroup = new THREE.Group();
   private readonly quickAnimGroup = new THREE.Group();
   private readonly quickPropMeshes: Record<QuickHandheldKind, THREE.Object3D>;
@@ -152,16 +135,16 @@ export class DoomFlashlight {
   constructor(aspect: number) {
     this.viewCamera = new THREE.PerspectiveCamera(62, aspect, 0.04, 5.0);
 
-    // Iluminação direcional contrastada para destacar chanfros, rebites e facetas low-poly
-    const ambient = new THREE.AmbientLight(0x888b94, 0.88);
+    // Iluminação direcional contrastada para destacar chanfros, anéis EVA e facetas low-poly
+    const ambient = new THREE.AmbientLight(0x8a8e98, 0.9);
     const keyLight = new THREE.DirectionalLight(0xfff3de, 1.42);
     keyLight.position.set(-0.65, 1.25, 0.95);
     const rimLight = new THREE.DirectionalLight(0x768296, 0.62);
     rimLight.position.set(0.85, -0.35, 0.35);
     this.viewScene.add(ambient, keyLight, rimLight);
 
+    const astroMats = createAstronautMaterials();
     const bodyTex = createFlashlightBodyTexture();
-    const leatherTex = createGloveLeatherTexture();
     const bladeTex = createKnifeBladeViewTexture();
 
     const bodyMat = new THREE.MeshLambertMaterial({
@@ -185,161 +168,146 @@ export class DoomFlashlight {
       color: 0x9e2a2b,
       flatShading: true,
     });
-    const gloveLeatherMat = new THREE.MeshLambertMaterial({
-      map: leatherTex,
-      color: 0x8f887d,
-      flatShading: true,
-    });
-    const gauntletPlateMat = new THREE.MeshLambertMaterial({
-      color: 0x454952,
-      flatShading: true,
-    });
 
+    this.lensMaterial = new THREE.MeshBasicMaterial({ color: 0x1e2126 });
     this.reflectorMaterial = new THREE.MeshLambertMaterial({
-      color: 0x4b5059,
+      color: 0x626873,
       side: THREE.BackSide,
       flatShading: true,
     });
-    this.bulbMaterial = new THREE.MeshBasicMaterial({
-      color: 0x3a362e,
-    });
-    this.lensMaterial = new THREE.MeshBasicMaterial({
-      color: 0x191d23,
-      transparent: true,
-      opacity: 0.72,
-    });
+    this.bulbMaterial = new THREE.MeshBasicMaterial({ color: 0x3a362e });
 
     // ========================================================================
-    // 1. LANTERNA INDUSTRIAL ESCULPIDA + MÃO ENLUVADA EM 1ª PESSOA (EIXO -Z)
+    // 1. LANTERNA INDUSTRIAL + BRAÇO DIREITO ORIGINAL DO ASTRONAUTA (`AstronautRightArm`)
     // ========================================================================
     const model = new THREE.Group();
 
-    // A) Tampa traseira usinada + coroa traseira + olhal metálico de fiel
+    // A) Tampa traseira sextavada com argola metálica de fiel (lanyard)
     const tailCap = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.037, 0.034, 0.042, 10),
-      darkRingMat
-    );
-    tailCap.rotation.x = Math.PI * 0.5;
-    tailCap.position.z = 0.145;
-    model.add(tailCap);
-
-    const tailEndBoss = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.022, 0.022, 0.012, 8),
+      new THREE.CylinderGeometry(0.036, 0.033, 0.044, 8),
       bezelMat
     );
-    tailEndBoss.rotation.x = Math.PI * 0.5;
-    tailEndBoss.position.z = 0.168;
-    model.add(tailEndBoss);
+    tailCap.rotation.x = Math.PI * 0.5;
+    tailCap.position.z = 0.114;
+    model.add(tailCap);
 
-    const lanyardLoop = new THREE.Mesh(
-      new THREE.TorusGeometry(0.013, 0.0032, 6, 8),
-      brassMat
-    );
-    lanyardLoop.position.set(0, -0.024, 0.172);
-    model.add(lanyardLoop);
-
-    // B) Corpo cilíndrico recartilhado (12 facetas) + trilhos laterais anti-rolagem + 4 anéis
-    const handle = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.035, 0.035, 0.245, 12),
-      bodyMat
-    );
-    handle.rotation.x = Math.PI * 0.5;
-    model.add(handle);
-
-    for (const side of [-1, 1]) {
-      const rail = new THREE.Mesh(
-        new THREE.BoxGeometry(0.007, 0.014, 0.19),
-        bezelMat
-      );
-      rail.position.set(side * 0.035, 0.004, 0.01);
-      model.add(rail);
-    }
-
-    for (const zOff of [0.088, 0.042, -0.004, -0.048]) {
-      const ring = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.038, 0.038, 0.011, 12),
-        darkRingMat
-      );
-      ring.rotation.x = Math.PI * 0.5;
-      ring.position.z = zOff;
-      model.add(ring);
-    }
-
-    // C) Berço blindado do interruptor + parafusos de latão + chave deslizante texturizada
-    const switchSaddle = new THREE.Mesh(
-      new THREE.BoxGeometry(0.028, 0.014, 0.064),
+    const tailGroove = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.037, 0.037, 0.008, 8),
       darkRingMat
     );
-    switchSaddle.position.set(0, 0.036, -0.076);
-    model.add(switchSaddle);
+    tailGroove.rotation.x = Math.PI * 0.5;
+    tailGroove.position.z = 0.098;
+    model.add(tailGroove);
 
-    for (const sz of [-0.101, -0.051]) {
-      const screw = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.0035, 0.0035, 0.006, 6),
-        brassMat
+    const lanyardLug = new THREE.Mesh(
+      new THREE.BoxGeometry(0.016, 0.018, 0.016),
+      brassMat
+    );
+    lanyardLug.position.set(0, -0.022, 0.138);
+    const lanyardRing = new THREE.Mesh(
+      new THREE.TorusGeometry(0.012, 0.003, 6, 10),
+      brassMat
+    );
+    lanyardRing.position.set(0, -0.028, 0.148);
+    lanyardRing.rotation.x = 0.45;
+    model.add(lanyardLug, lanyardRing);
+
+    // B) Tubo central recartilhado
+    const barrelRear = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.0345, 0.0345, 0.06, 10),
+      bodyMat
+    );
+    barrelRear.rotation.x = Math.PI * 0.5;
+    barrelRear.position.z = 0.062;
+    model.add(barrelRear);
+
+    const gripKnurl = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.0365, 0.0365, 0.125, 10),
+      bodyMat
+    );
+    gripKnurl.rotation.x = Math.PI * 0.5;
+    gripKnurl.position.z = -0.028;
+    model.add(gripKnurl);
+
+    for (const gz of [0.032, -0.005, -0.042, -0.082]) {
+      const oRing = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.038, 0.038, 0.007, 10),
+        darkRingMat
       );
-      screw.position.set(0, 0.043, sz);
-      model.add(screw);
+      oRing.rotation.x = Math.PI * 0.5;
+      oRing.position.z = gz;
+      model.add(oRing);
     }
 
+    // C) Aletas de dissipação térmica + colar de latão
+    const brassCollar = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.0395, 0.038, 0.018, 10),
+      brassMat
+    );
+    brassCollar.rotation.x = Math.PI * 0.5;
+    brassCollar.position.z = -0.102;
+    model.add(brassCollar);
+
+    for (let i = 0; i < 3; i++) {
+      const fin = new THREE.Mesh(
+        new THREE.CylinderGeometry(
+          0.043 + i * 0.0025,
+          0.042 + i * 0.0025,
+          0.01,
+          10
+        ),
+        darkRingMat
+      );
+      fin.rotation.x = Math.PI * 0.5;
+      fin.position.z = -0.118 - i * 0.015;
+      model.add(fin);
+    }
+
+    // D) Trilho superior blindado + botão deslizante mecânico
+    const switchRail = new THREE.Mesh(
+      new THREE.BoxGeometry(0.026, 0.014, 0.064),
+      darkRingMat
+    );
+    switchRail.position.set(0, 0.037, -0.068);
+    model.add(switchRail);
+
     this.switchMesh = new THREE.Mesh(
-      new THREE.BoxGeometry(0.017, 0.013, 0.025),
+      new THREE.BoxGeometry(0.019, 0.013, 0.026),
       switchMat
     );
     this.switchMesh.position.set(0, 0.044, -0.068);
     model.add(this.switchMesh);
 
-    // D) Pescoço cônico + 3 aletas octogonais de dissipação térmica
-    const neck = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.052, 0.037, 0.058, 10),
+    // E) Cabeçal octogonal alargado + coroa crenelada + refletor parabólico interno
+    const headTransition = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.056, 0.044, 0.042, 10),
       bezelMat
     );
-    neck.rotation.x = Math.PI * 0.5;
-    neck.position.z = -0.146;
-    model.add(neck);
+    headTransition.rotation.x = Math.PI * 0.5;
+    headTransition.position.z = -0.172;
+    model.add(headTransition);
 
-    for (let f = 0; f < 3; f++) {
-      const rFin = 0.043 + f * 0.0045;
-      const fin = new THREE.Mesh(
-        new THREE.CylinderGeometry(rFin, rFin, 0.008, 8),
-        darkRingMat
-      );
-      fin.rotation.x = Math.PI * 0.5;
-      fin.position.z = -0.128 - f * 0.016;
-      model.add(fin);
-    }
-
-    // E) Cabeça octogonal refletora + aro frontal dentado (strike bezel) + refletor côncavo interno + bulbo halógeno
-    const head = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.058, 0.053, 0.068, 8),
-      bezelMat
+    const headBell = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.058, 0.056, 0.054, 10),
+      bodyMat
     );
-    head.rotation.x = Math.PI * 0.5;
-    head.position.z = -0.206;
-    model.add(head);
+    headBell.rotation.x = Math.PI * 0.5;
+    headBell.position.z = -0.218;
+    model.add(headBell);
 
-    const collarBrass = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.0565, 0.0565, 0.009, 8),
-      brassMat
-    );
-    collarBrass.rotation.x = Math.PI * 0.5;
-    collarBrass.position.z = -0.182;
-    model.add(collarBrass);
-
-    const frontRim = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.06, 0.059, 0.016, 8),
+    const bezelLip = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.06, 0.06, 0.014, 10),
       darkRingMat
     );
-    frontRim.rotation.x = Math.PI * 0.5;
-    frontRim.position.z = -0.238;
-    model.add(frontRim);
+    bezelLip.rotation.x = Math.PI * 0.5;
+    bezelLip.position.z = -0.246;
+    model.add(bezelLip);
 
-    // 8 dentes frontais discretos na coroa de impacto do bocal
-    for (let t = 0; t < 8; t++) {
-      const ang = (t / 8) * Math.PI * 2 + Math.PI / 8;
+    for (let c = 0; c < 6; c++) {
+      const ang = (c / 6) * Math.PI * 2;
       const tooth = new THREE.Mesh(
-        new THREE.BoxGeometry(0.012, 0.008, 0.012),
-        darkRingMat
+        new THREE.BoxGeometry(0.014, 0.01, 0.014),
+        bezelMat
       );
       tooth.position.set(
         Math.cos(ang) * 0.054,
@@ -350,7 +318,6 @@ export class DoomFlashlight {
       model.add(tooth);
     }
 
-    // Cone parabólico refletor INTERNO (sem qualquer geometria externa flutuante!)
     const reflectorCone = new THREE.Mesh(
       new THREE.CylinderGeometry(0.05, 0.014, 0.044, 10, 1, true),
       this.reflectorMaterial
@@ -375,81 +342,27 @@ export class DoomFlashlight {
     lens.rotation.y = Math.PI;
     model.add(lens);
 
-    // F) MÃO DIREITA TÁTICA / MANOPLA RETRÔ SEGURANDO A LANTERNA
-    const handGroup = new THREE.Group();
-
-    // Punho/antebraço com braçadeira blindada e rebites
-    const forearm = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.052, 0.064, 0.24, 8),
-      gloveLeatherMat
+    // F) BRAÇO DIREITO ORIGINAL DO ASTRONAUTA (`AstronautRightArm`) SEGURANDO A LANTERNA!
+    this.rightAstronautArm = createAstronautArmRig('right', astroMats, {
+      includeUpperArm: false,
+    });
+    this.rightAstronautArm.setGripPose('flashlight');
+    // Cotovelo à direita/abaixo/atrás -> antebraço EVA sobe na diagonal até envolver o tubo recartilhado da lanterna!
+    this.rightAstronautArm.elbowPivot.rotation.order = 'YXZ';
+    this.rightAstronautArm.elbowPivot.rotation.set(1.96, 0.34, -0.16);
+    this.rightAstronautArm.wristPivot.rotation.order = 'YXZ';
+    this.rightAstronautArm.wristPivot.rotation.set(-1.92, -0.28, 0.26);
+    this.rightAstronautArm.root.position.set(0, 0, 0);
+    this.rightAstronautArm.root.updateMatrixWorld(true);
+    const rightSocketOffset = new THREE.Vector3();
+    this.rightAstronautArm.gripSocket.getWorldPosition(rightSocketOffset);
+    // Alinha o centro exato da palma/dedos (`gripSocket`) ao tubo da lanterna (0.004, -0.004, -0.016)
+    this.rightAstronautArm.root.position.set(
+      0.004 - rightSocketOffset.x,
+      -0.004 - rightSocketOffset.y,
+      -0.016 - rightSocketOffset.z
     );
-    forearm.rotation.set(0.62, -0.24, -0.22);
-    forearm.position.set(0.048, -0.105, 0.185);
-    handGroup.add(forearm);
-
-    const dorsalPlate = new THREE.Mesh(
-      new THREE.BoxGeometry(0.072, 0.022, 0.13),
-      gauntletPlateMat
-    );
-    dorsalPlate.rotation.set(0.56, -0.22, -0.18);
-    dorsalPlate.position.set(0.056, -0.055, 0.125);
-    handGroup.add(dorsalPlate);
-
-    // Palma envolvendo a lateral direita do corpo da lanterna
-    const palm = new THREE.Mesh(
-      new THREE.BoxGeometry(0.048, 0.066, 0.108),
-      gloveLeatherMat
-    );
-    palm.position.set(0.036, -0.018, 0.022);
-    palm.rotation.z = 0.22;
-    handGroup.add(palm);
-
-    // Placa protetora dos nós dos dedos
-    const knuckleGuard = new THREE.Mesh(
-      new THREE.BoxGeometry(0.02, 0.026, 0.096),
-      gauntletPlateMat
-    );
-    knuckleGuard.position.set(0.054, 0.008, 0.018);
-    handGroup.add(knuckleGuard);
-
-    // 4 dedos curvados abraçando a parte inferior do tubo
-    for (let f = 0; f < 4; f++) {
-      const fz = -0.022 + f * 0.027;
-      const prox = new THREE.Mesh(
-        new THREE.BoxGeometry(0.052, 0.021, 0.022),
-        gloveLeatherMat
-      );
-      prox.position.set(0.008, -0.045, fz);
-      prox.rotation.z = -0.18;
-
-      const dist = new THREE.Mesh(
-        new THREE.BoxGeometry(0.038, 0.02, 0.02),
-        gloveLeatherMat
-      );
-      dist.position.set(-0.026, -0.028, fz);
-      dist.rotation.z = 0.72;
-
-      handGroup.add(prox, dist);
-    }
-
-    // Polegar articulado posicionado junto à chave superior da lanterna
-    const thumbBase = new THREE.Mesh(
-      new THREE.BoxGeometry(0.032, 0.024, 0.046),
-      gloveLeatherMat
-    );
-    thumbBase.position.set(0.024, 0.036, -0.024);
-    thumbBase.rotation.set(-0.22, 0.34, 0.28);
-    handGroup.add(thumbBase);
-
-    this.thumbTipMesh = new THREE.Mesh(
-      new THREE.BoxGeometry(0.024, 0.02, 0.036),
-      gloveLeatherMat
-    );
-    this.thumbTipMesh.position.set(0.006, 0.048, -0.054);
-    this.thumbTipMesh.rotation.set(-0.12, 0.18, 0.1);
-    handGroup.add(this.thumbTipMesh);
-
-    model.add(handGroup);
+    model.add(this.rightAstronautArm.root);
 
     this.animGroup.add(model);
     this.rootGroup.add(this.animGroup);
@@ -457,7 +370,7 @@ export class DoomFlashlight {
     this.viewScene.add(this.rootGroup);
 
     // ========================================================================
-    // 2. MÃO ESQUERDA DE SAQUE RÁPIDO EM 1ª PESSOA (ATALHOS [1], [2], [3])
+    // 2. BRAÇO ESQUERDO ORIGINAL DO ASTRONAUTA (`AstronautLeftArm`) + FACA E ITENS!
     // ========================================================================
     const woodMat = new THREE.MeshLambertMaterial({
       color: 0x6b472f,
@@ -490,27 +403,29 @@ export class DoomFlashlight {
     });
     const sparkMat = new THREE.MeshBasicMaterial({ color: 0xffe89c });
 
-    // Mão/punho esquerdo tático compacto comum a todos os itens rápidos (alinhado ao punho sem invadir a câmera)
-    const leftArm = new THREE.Group();
-    const lSleeve = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.034, 0.042, 0.17, 8),
-      gloveLeatherMat
+    // Braço Esquerdo Original Completo do Astronauta (ombro + antebraço com manômetro O2 + anel azul-cobalto + luva EVA!)
+    this.leftAstronautArm = createAstronautArmRig('left', astroMats, {
+      includeUpperArm: true,
+    });
+    this.leftAstronautArm.setGripPose('knife');
+    // Mantém antebraço e braço superior num alinhamento anatômico contínuo vindo do ombro inferior-esquerdo (-X, -Y, +Z)
+    this.leftAstronautArm.shoulderPivot.rotation.order = 'YXZ';
+    this.leftAstronautArm.shoulderPivot.rotation.set(2.18, -0.32, 0.16);
+    this.leftAstronautArm.elbowPivot.rotation.order = 'YXZ';
+    this.leftAstronautArm.elbowPivot.rotation.set(0.22, -0.04, 0.04);
+    // Orienta a palma da luva EVA esquerda em torno dos cabos verticais (+Y) centrados em (0, 0, 0)
+    this.leftAstronautArm.wristPivot.rotation.order = 'YXZ';
+    this.leftAstronautArm.wristPivot.rotation.set(-0.82, 0.28, -0.22);
+    this.leftAstronautArm.root.position.set(0, 0, 0);
+    this.leftAstronautArm.root.updateMatrixWorld(true);
+    const leftSocketOffset = new THREE.Vector3();
+    this.leftAstronautArm.gripSocket.getWorldPosition(leftSocketOffset);
+    this.leftAstronautArm.root.position.set(
+      0.004 - leftSocketOffset.x,
+      0.008 - leftSocketOffset.y,
+      -0.006 - leftSocketOffset.z
     );
-    lSleeve.rotation.set(0.26, 0.1, 0.12);
-    lSleeve.position.set(-0.014, -0.115, 0.038);
-    const lPlate = new THREE.Mesh(
-      new THREE.BoxGeometry(0.052, 0.016, 0.088),
-      gauntletPlateMat
-    );
-    lPlate.rotation.set(0.26, 0.1, 0.12);
-    lPlate.position.set(-0.016, -0.075, 0.022);
-    const lFist = new THREE.Mesh(
-      new THREE.BoxGeometry(0.062, 0.058, 0.074),
-      gloveLeatherMat
-    );
-    lFist.position.set(0, -0.012, 0);
-    leftArm.add(lSleeve, lPlate, lFist);
-    this.quickAnimGroup.add(leftArm);
+    this.quickAnimGroup.add(this.leftAstronautArm.root);
 
     // 2A) Canivete Oxidado em 1ª pessoa (lâmina chanfrada apontada para cortar teias!)
     const knifeProp = new THREE.Group();
@@ -598,7 +513,7 @@ export class DoomFlashlight {
     bStrip.rotation.set(0.28, 0.1, -0.62);
     bandageProp.add(bRollOuter, bRollInner, bWrapper, bStrip);
 
-    // 2C) Frasco Apotecário de Láudano (rótulo cilíndrico curvo CONFORME sem aba solta!)
+    // 2C) Frasco Apotecário de Láudano
     const morphineProp = new THREE.Group();
     const mBody = new THREE.Mesh(
       new THREE.CylinderGeometry(0.044, 0.046, 0.102, 12),
@@ -622,7 +537,7 @@ export class DoomFlashlight {
     mLip.position.set(0.01, 0.155, -0.015);
     const mCork = new THREE.Mesh(
       new THREE.CylinderGeometry(0.016, 0.013, 0.024, 8),
-       woodMat
+      woodMat
     );
     mCork.position.set(0.01, 0.169, -0.015);
     const mLabel = new THREE.Mesh(
@@ -655,7 +570,7 @@ export class DoomFlashlight {
     mBanner.position.set(0.01, 0.066, -0.015);
     morphineProp.add(mBody, mShoulder, mNeck, mLip, mCork, mLabel, mBanner);
 
-    // 2D) Bateria Industrial 9V (faixa superior de cobre rente + placa isolante + polos + / - distintos)
+    // 2D) Bateria Industrial 9V
     const batteryProp = new THREE.Group();
     const batLower = new THREE.Mesh(
       new THREE.BoxGeometry(0.084, 0.082, 0.056),
@@ -690,7 +605,7 @@ export class DoomFlashlight {
       batNegCrown
     );
 
-    // 2E) Bastão de Magnésio com base sextavada, punho escuro, virola e faísca viva
+    // 2E) Bastão de Magnésio
     const flareProp = new THREE.Group();
     const flHexBase = new THREE.Mesh(
       new THREE.CylinderGeometry(0.029, 0.028, 0.02, 8),
@@ -719,12 +634,48 @@ export class DoomFlashlight {
     this.flareSparkMesh.position.set(0, 0.212, -0.01);
     flareProp.add(flHexBase, flGrip, flTube, flCollar, this.flareSparkMesh);
 
+    // 2F) Chave Maciça de Latão — Ala B segurada pela luva EVA do Astronauta
+    const keyProp = new THREE.Group();
+    const keyBow = new THREE.Mesh(
+      new THREE.TorusGeometry(0.03, 0.0075, 8, 14),
+      brassMat
+    );
+    keyBow.position.set(0.01, 0.018, -0.008);
+    const keyCollar = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.011, 0.011, 0.016, 8),
+      brassMat
+    );
+    keyCollar.position.set(0.01, 0.052, -0.008);
+    const keyStem = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.007, 0.0065, 0.128, 8),
+      brassMat
+    );
+    keyStem.position.set(0.01, 0.118, -0.008);
+    const keyBitA = new THREE.Mesh(
+      new THREE.BoxGeometry(0.026, 0.018, 0.007),
+      brassMat
+    );
+    keyBitA.position.set(0.024, 0.15, -0.008);
+    const keyBitB = new THREE.Mesh(
+      new THREE.BoxGeometry(0.02, 0.012, 0.007),
+      brassMat
+    );
+    keyBitB.position.set(0.021, 0.172, -0.008);
+    const keyTag = new THREE.Mesh(
+      new THREE.BoxGeometry(0.028, 0.044, 0.006),
+      bezelMat
+    );
+    keyTag.position.set(-0.016, -0.018, 0.008);
+    keyTag.rotation.z = -0.35;
+    keyProp.add(keyBow, keyCollar, keyStem, keyBitA, keyBitB, keyTag);
+
     this.quickPropMeshes = {
       knife: knifeProp,
       bandage: bandageProp,
       morphine: morphineProp,
       battery: batteryProp,
       flare: flareProp,
+      key: keyProp,
     };
 
     for (const k of Object.keys(this.quickPropMeshes) as QuickHandheldKind[]) {
@@ -748,10 +699,17 @@ export class DoomFlashlight {
   }
 
   /**
-   * Verdadeiro se qualquer modelo 3D em 1ª pessoa (lanterna ou mão esquerda de item rápido) estiver visível.
+   * Verdadeiro se qualquer modelo 3D em 1ª pessoa (lanterna ou braço esquerdo de item rápido) estiver visível.
    */
   get isVisibleInView(): boolean {
     return this.rootGroup.visible || this.quickRootGroup.visible;
+  }
+
+  /**
+   * Verdadeiro enquanto o braço esquerdo do astronauta estiver animando o uso de faca ou objeto.
+   */
+  get isLeftArmAnimating(): boolean {
+    return this.quickRootGroup.visible && this.activeQuickKind !== null;
   }
 
   /**
@@ -774,6 +732,9 @@ export class DoomFlashlight {
 
     this.rootGroup.visible = false;
     this.quickRootGroup.visible = false;
+    this.rightAstronautArm.setInUse(false);
+    this.leftAstronautArm.setInUse(false);
+
     for (const k of Object.keys(this.quickPropMeshes) as QuickHandheldKind[]) {
       this.quickPropMeshes[k].visible = false;
     }
@@ -785,15 +746,15 @@ export class DoomFlashlight {
 
   /**
    * Acionado no exato instante em que a Aranha Gigante ataca/sequestra o jogador:
-   * - Cancela imediatamente qualquer animação da mão esquerda;
-   * - Se a lanterna estava empunhada, inicia uma queda violenta da mão para fora da tela (~0.40s)
-   *   enquanto a lâmpada falha e apaga no impacto, garantindo que o jogador NUNCA fique segurando
-   *   a lanterna desmaiado ou sendo arrastado!
+   * - Cancela imediatamente qualquer animação do braço esquerdo;
+   * - Se a lanterna estava empunhada, inicia uma queda violenta do braço do astronauta (~0.40s)
+   *   enquanto a lâmpada falha e apaga no impacto, nunca ficando na mão durante o desmaio/arrasto!
    */
   beginKnockoutDrop(): void {
     this.activeQuickKind = null;
     this.quickTimer = 0;
     this.quickRootGroup.visible = false;
+    this.leftAstronautArm.setInUse(false);
     for (const k of Object.keys(this.quickPropMeshes) as QuickHandheldKind[]) {
       this.quickPropMeshes[k].visible = false;
     }
@@ -828,9 +789,11 @@ export class DoomFlashlight {
   } {
     this.quickRootGroup.visible = false;
     this.activeQuickKind = null;
+    this.leftAstronautArm.setInUse(false);
 
     if (!this.knockoutDropActive) {
       this.rootGroup.visible = false;
+      this.rightAstronautArm.setInUse(false);
       this.equipProgress = 0;
       return { beamIntensity: 0, aimYawOffset: 0, aimPitchOffset: 0 };
     }
@@ -844,10 +807,10 @@ export class DoomFlashlight {
       return { beamIntensity: 0, aimYawOffset: 0, aimPitchOffset: 0 };
     }
 
-    // Curva acelerada por gravidade + impacto das garras derrubando o braço para baixo/fora da tela
     const fall = u * u * (1.35 - 0.35 * u);
     this.equipProgress = this.knockoutDropStartProgress * (1 - u);
     this.rootGroup.visible = true;
+    this.rightAstronautArm.setInUse(true);
 
     const startX = 0.235;
     const startY = -0.195;
@@ -865,11 +828,10 @@ export class DoomFlashlight {
       -0.06 + fall * 1.05
     );
 
-    // Falha elétrica rápida da lâmpada no choque do bote antes de apagar por completo em ~0.24s
     let beamIntensity = 0;
     if (this.knockoutWasLit && batteryPercent > 0.2 && u < 0.6) {
       const pulse =
-        (u < 0.14) || (u >= 0.24 && u < 0.38)
+        u < 0.14 || (u >= 0.24 && u < 0.38)
           ? 0.85 * (1 - u / 0.6)
           : 0.08 * (1 - u / 0.6);
       beamIntensity = Math.max(0, pulse);
@@ -893,7 +855,7 @@ export class DoomFlashlight {
   }
 
   /**
-   * Dispara animação 3D imediata em primeira pessoa ao usar um atalho rápido [1], [2] ou [3]!
+   * Dispara animação 3D imediata com o Braço Esquerdo Original do Astronauta (`AstronautLeftArm`)!
    */
   triggerQuickItemAction(kind: QuickHandheldKind): void {
     this.activeQuickKind = kind;
@@ -905,18 +867,29 @@ export class DoomFlashlight {
           ? 0.52
           : kind === 'battery'
             ? 0.54
-            : 0.62;
+            : kind === 'key'
+              ? 0.58
+              : 0.62;
+
+    if (kind === 'knife' || kind === 'flare') {
+      this.leftAstronautArm.setGripPose('knife');
+    } else if (kind === 'battery') {
+      this.leftAstronautArm.setGripPose('box');
+    } else if (kind === 'key') {
+      this.leftAstronautArm.setGripPose('key');
+    } else {
+      this.leftAstronautArm.setGripPose('cylindrical');
+    }
 
     for (const k of Object.keys(this.quickPropMeshes) as QuickHandheldKind[]) {
       this.quickPropMeshes[k].visible = k === kind;
     }
+    this.leftAstronautArm.setInUse(true);
     this.quickRootGroup.visible = true;
   }
 
   /**
-   * Alterna a lanterna ao pressionar F:
-   * - Se guardada: inicia animação de saque + liga o foco.
-   * - Se empunhada: desliga o foco + inicia animação de guardar.
+   * Alterna a lanterna ao pressionar F.
    */
   toggle(): boolean {
     this.knockoutDropActive = false;
@@ -943,6 +916,7 @@ export class DoomFlashlight {
   private updateQuickActionAnimation(dt: number): void {
     if (!this.activeQuickKind) {
       this.quickRootGroup.visible = false;
+      this.leftAstronautArm.setInUse(false);
       return;
     }
 
@@ -951,9 +925,11 @@ export class DoomFlashlight {
     if (u >= 1) {
       this.activeQuickKind = null;
       this.quickRootGroup.visible = false;
+      this.leftAstronautArm.setInUse(false);
       return;
     }
 
+    this.leftAstronautArm.setInUse(true);
     const kind = this.activeQuickKind;
 
     if (kind === 'knife') {
@@ -964,7 +940,7 @@ export class DoomFlashlight {
         this.quickRootGroup.position.set(
           -0.28 + 0.06 * e,
           -0.46 + 0.36 * e,
-          -0.36 - 0.06 * e
+          -0.38 - 0.06 * e
         );
         this.quickAnimGroup.rotation.set(
           -0.35 + 0.25 * e,
@@ -977,7 +953,7 @@ export class DoomFlashlight {
         this.quickRootGroup.position.set(
           -0.22 + slash * 0.44,
           -0.1 - slash * 0.15,
-          -0.42 - Math.sin(slash * Math.PI) * 0.09
+          -0.44 - Math.sin(slash * Math.PI) * 0.09
         );
         this.quickAnimGroup.rotation.set(
           -0.1 - slash * 0.65,
@@ -989,7 +965,7 @@ export class DoomFlashlight {
         this.quickRootGroup.position.set(
           0.22 - p * 0.36,
           -0.25 - p * 0.32,
-          -0.42 + p * 0.1
+          -0.44 + p * 0.1
         );
         this.quickAnimGroup.rotation.set(
           -0.75 - p * 0.3,
@@ -1000,14 +976,13 @@ export class DoomFlashlight {
       return;
     }
 
-    // Curva geral de subida -> uso -> descida para consumíveis rápidos
     const arc = Math.sin(u * Math.PI);
     if (kind === 'flare') {
       const toss = u > 0.55 ? (u - 0.55) / 0.45 : 0;
       this.quickRootGroup.position.set(
-        -0.2 + u * 0.12,
-        -0.42 + arc * 0.28 - toss * 0.12,
-        -0.38 - toss * 0.18
+        -0.19 + u * 0.12,
+        -0.38 + arc * 0.31 - toss * 0.12,
+        -0.41 - toss * 0.18
       );
       this.quickAnimGroup.rotation.set(
         -0.25 - toss * 0.95,
@@ -1020,41 +995,55 @@ export class DoomFlashlight {
     } else if (kind === 'bandage') {
       const wrapOsc = Math.sin(u * Math.PI * 3) * 0.055;
       this.quickRootGroup.position.set(
-        -0.16 + wrapOsc,
-        -0.44 + arc * 0.26,
-        -0.38
+        -0.15 + wrapOsc,
+        -0.38 + arc * 0.3,
+        -0.41
       );
       this.quickAnimGroup.rotation.set(
-        0.25,
+        0.22,
         0.35 + wrapOsc * 2.5,
         -0.35 + wrapOsc * 1.8
       );
     } else if (kind === 'morphine') {
-      const tilt = u > 0.3 && u < 0.78 ? Math.sin(((u - 0.3) / 0.48) * Math.PI) : 0;
+      const tilt =
+        u > 0.3 && u < 0.78 ? Math.sin(((u - 0.3) / 0.48) * Math.PI) : 0;
       this.quickRootGroup.position.set(
         -0.13 + tilt * 0.06,
-        -0.44 + arc * 0.3,
-        -0.36 + tilt * 0.05
+        -0.38 + arc * 0.32,
+        -0.4 + tilt * 0.04
       );
       this.quickAnimGroup.rotation.set(
-        0.22 + tilt * 0.85,
+        0.18 + tilt * 0.78,
         0.25,
         -0.22 - tilt * 0.25
+      );
+    } else if (kind === 'key') {
+      const turn =
+        u > 0.32 && u < 0.76 ? Math.sin(((u - 0.32) / 0.44) * Math.PI) : 0;
+      this.quickRootGroup.position.set(
+        -0.16 + arc * 0.08,
+        -0.38 + arc * 0.31,
+        -0.41
+      );
+      this.quickAnimGroup.rotation.set(
+        0.16 - turn * 0.35,
+        0.28 + turn * 0.55,
+        -0.24 + turn * 0.65
       );
     } else {
       // Bateria 9V aproximando-se da lanterna para recarga
       this.quickRootGroup.position.set(
-        -0.22 + arc * 0.26,
-        -0.45 + arc * 0.25,
-        -0.38
+        -0.21 + arc * 0.26,
+        -0.39 + arc * 0.3,
+        -0.41
       );
       this.quickAnimGroup.rotation.set(0.18, -0.25, -0.35 + arc * 0.32);
     }
   }
 
   /**
-   * Atualiza a animação de saque/guarda da lanterna, o clique físico do botão + polegar,
-   * qualquer ação rápida 3D de atalho [1–3] e retorna a intensidade atual do feixe [0..1].
+   * Atualiza a animação de saque/guarda da lanterna no Braço Direito do Astronauta,
+   * o clique físico do botão + polegar EVA e qualquer animação do Braço Esquerdo do Astronauta.
    */
   update(
     dt: number,
@@ -1070,7 +1059,6 @@ export class DoomFlashlight {
   } {
     this.updateQuickActionAnimation(dt);
 
-    // 1. Progresso de equipar / guardar lanterna
     const speed = this.equipped ? 3.2 : 3.7;
     if (this.equipped && this.equipProgress < 1) {
       const prev = this.equipProgress;
@@ -1084,18 +1072,19 @@ export class DoomFlashlight {
       this.equipProgress = Math.max(0, this.equipProgress - dt * speed);
     }
 
-    this.rootGroup.visible = this.equipProgress > 0.005;
+    const rightVisible = this.equipProgress > 0.005;
+    this.rootGroup.visible = rightVisible;
+    this.rightAstronautArm.setInUse(rightVisible);
 
-    // 2. Animação do botão físico + polegar na parte superior da lanterna
+    // Animação do botão físico + polegar articulado da luva EVA direita na parte superior da lanterna
     const targetSwitch = this.lightActive ? 1 : 0;
     this.switchProgress +=
       (targetSwitch - this.switchProgress) * (1 - Math.exp(-22 * dt));
     this.switchMesh.position.z = -0.068 - this.switchProgress * 0.014;
     this.switchMesh.position.y = 0.044 - this.switchProgress * 0.0025;
-    this.thumbTipMesh.position.z = -0.054 - this.switchProgress * 0.012;
-    this.thumbTipMesh.position.y = 0.048 - this.switchProgress * 0.003;
+    this.rightAstronautArm.thumbTipPivot.rotation.x =
+      0.28 + this.switchProgress * 0.34;
 
-    // 3. Aquecimento rápido de filamento halógeno ao ligar (~65ms) + carga da bateria
     let beamIntensity = 0;
     if (this.lightActive && batteryPercent > 0.2) {
       this.flickerWarmup = Math.min(1, this.flickerWarmup + dt * 15);
@@ -1110,7 +1099,6 @@ export class DoomFlashlight {
       }
     }
 
-    // Atualiza brilho interno da cápsula halógena, refletor e lente (sem cone externo!)
     if (beamIntensity > 0.05) {
       this.bulbMaterial.color.setHex(0xfff9de);
       this.reflectorMaterial.color.setHex(0xd8c394);
@@ -1121,7 +1109,6 @@ export class DoomFlashlight {
       this.lensMaterial.color.setHex(0x191d23);
     }
 
-    // 4. Curva de pose da animação de saque (easeOutBack sutil para peso mecânico)
     const t = this.equipProgress;
     const c1 = 1.45;
     const c3 = c1 + 1;
@@ -1132,12 +1119,10 @@ export class DoomFlashlight {
           ? 1
           : 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
 
-    // Relaxa inércia de olhar
     const relax = 1 - Math.exp(-10 * dt);
     this.swayX += (0 - this.swayX) * relax;
     this.swayY += (0 - this.swayY) * relax;
 
-    // Balanço de caminhada em 8 (mais contido e firme ao andar agachado)
     const moveFactor = Math.min(1, planarSpeed / 6.0);
     const bobScale = 1 - crouchAmount * 0.35;
     const walkX = Math.cos(bobPhase * 0.5) * 0.014 * moveFactor * bobScale;
@@ -1148,9 +1133,9 @@ export class DoomFlashlight {
     const stowedY = -0.52;
     const stowedZ = -0.26;
 
-    const heldX = 0.235 - crouchAmount * 0.018;
-    const heldY = -0.195 + crouchAmount * 0.014;
-    const heldZ = -0.41 + crouchAmount * 0.018;
+    const heldX = 0.212 - crouchAmount * 0.018;
+    const heldY = -0.162 + crouchAmount * 0.014;
+    const heldZ = -0.43 + crouchAmount * 0.018;
 
     this.rootGroup.position.set(
       stowedX + (heldX - stowedX) * eased + walkX + this.swayX,

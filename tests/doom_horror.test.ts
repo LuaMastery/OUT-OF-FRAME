@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { describe, expect, it } from 'vitest';
-import { DoomFlashlight } from '../src/doom/DoomFlashlight';
+import { DoomAstronaut } from '../src/doom/DoomAstronaut';
+import { DoomFlashlight, QuickHandheldKind } from '../src/doom/DoomFlashlight';
 import {
   ITEM_CATALOG,
   QUICK_SLOT_COUNT,
@@ -583,5 +584,108 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
     expect(flashlight.isEquipped).toBe(true);
     expect(flashlight.isVisibleInView).toBe(true);
     expect(reequipOut.beamIntensity).toBeGreaterThan(0.8);
+  });
+
+  it('constrói o protagonista Astronauta 3D completo, marca seus dois braços como ativos e utiliza os braços originais do astronauta na lanterna, faca e todos os objetos', () => {
+    const scene = new THREE.Scene();
+    const shared = createDoomSharedUniforms();
+    const astronaut = new DoomAstronaut(scene, shared);
+
+    expect(scene.getObjectByName('DoomProtagonistAstronaut')).toBe(
+      astronaut.root
+    );
+    expect(astronaut.root.userData.characterId).toBe('protagonist_astronaut');
+
+    // Modelo 3D completo com capacete/viseira dourada, mochila PLSS, tronco, pernas e ambos os braços EVA
+    expect(astronaut.headGroup.name).toBe('AstronautHelmet');
+    expect(astronaut.plssBackpack.name).toBe('AstronautPLSSBackpack');
+
+    let totalAstronautMeshes = 0;
+    astronaut.root.traverse((obj) => {
+      if ((obj as THREE.Mesh).isMesh) totalAstronautMeshes++;
+    });
+    expect(totalAstronautMeshes).toBeGreaterThan(75);
+
+    // Ambos os braços do Astronauta são explicitamente marcados como braços ativos de gameplay
+    for (const [arm, expectedSide, expectedName] of [
+      [astronaut.leftArm, 'left', 'AstronautLeftArm'],
+      [astronaut.rightArm, 'right', 'AstronautRightArm'],
+    ] as const) {
+      expect(arm.root.name).toBe(expectedName);
+      expect(arm.metadata.isAstronautArm).toBe(true);
+      expect(arm.metadata.isActiveGameplayArm).toBe(true);
+      expect(arm.metadata.armSide).toBe(expectedSide);
+      expect(arm.root.userData.isAstronautArm).toBe(true);
+      expect(arm.root.userData.isActiveGameplayArm).toBe(true);
+      expect(arm.fingers.length).toBe(4);
+    }
+    // Braço esquerdo possui manômetro analógico no pulso
+    expect(astronaut.leftArm.gaugeNeedleMesh).not.toBeNull();
+
+    // Sincronização em 1ª pessoa e em pose supina de arrasto pela aranha
+    const playerPos = new THREE.Vector3(2, 0, -4);
+    astronaut.updateFirstPersonBody(playerPos, 0.5, 1.2, 4.0, 0, true, true);
+    expect(astronaut.rightArm.metadata.currentlyInUse).toBe(true);
+    expect(astronaut.leftArm.metadata.currentlyInUse).toBe(true);
+    expect(astronaut.headGroup.visible).toBe(false);
+
+    astronaut.updateSupineAbductionPose(playerPos, Math.PI, 1.5, true);
+    expect(astronaut.root.visible).toBe(true);
+    expect(astronaut.rightArm.metadata.currentlyInUse).toBe(false);
+    expect(astronaut.leftArm.metadata.currentlyInUse).toBe(false);
+
+    // Modo 3ª pessoa restaura capacete, mochila PLSS e ambos os braços EVA completos
+    astronaut.setFirstPersonMode(false);
+    expect(astronaut.headGroup.visible).toBe(true);
+    expect(astronaut.plssBackpack.visible).toBe(true);
+    expect(astronaut.leftArm.root.visible).toBe(true);
+    expect(astronaut.rightArm.root.visible).toBe(true);
+
+    // Viewmodel em 1ª pessoa usa exatamente os braços originais marcados do Astronauta (AstronautRightArm + AstronautLeftArm)
+    const flashlight = new DoomFlashlight(16 / 9);
+    expect(flashlight.rightAstronautArm.root.name).toBe('AstronautRightArm');
+    expect(flashlight.rightAstronautArm.metadata.isAstronautArm).toBe(true);
+    expect(flashlight.rightAstronautArm.metadata.isActiveGameplayArm).toBe(
+      true
+    );
+    expect(flashlight.leftAstronautArm.root.name).toBe('AstronautLeftArm');
+    expect(flashlight.leftAstronautArm.metadata.isAstronautArm).toBe(true);
+    expect(flashlight.leftAstronautArm.metadata.isActiveGameplayArm).toBe(true);
+
+    // Lanterna (F) marca o braço direito do Astronauta como em uso
+    flashlight.toggle();
+    for (let i = 0; i < 10; i++) {
+      flashlight.update(0.04, 0, 0, () => {}, 0, 100);
+    }
+    expect(flashlight.rightAstronautArm.metadata.currentlyInUse).toBe(true);
+    expect(
+      flashlight.viewScene.getObjectByName('AstronautRightArm')
+    ).toBeDefined();
+
+    // Todas as animações de objetos empunhados (faca, gaze, láudano, bateria, magnésio e chave) usam o braço esquerdo original do Astronauta!
+    expect(ITEM_CATALOG.sector_b_key.usable).toBe(true);
+    const handheldKinds: QuickHandheldKind[] = [
+      'knife',
+      'bandage',
+      'morphine',
+      'battery',
+      'flare',
+      'key',
+    ];
+    for (const kind of handheldKinds) {
+      flashlight.triggerQuickItemAction(kind);
+      flashlight.update(0.08, 0, 0, () => {}, 0, 100);
+      expect(flashlight.isLeftArmAnimating).toBe(true);
+      expect(flashlight.leftAstronautArm.metadata.currentlyInUse).toBe(true);
+      expect(
+        flashlight.viewScene.getObjectByName('AstronautLeftArm')
+      ).toBeDefined();
+    }
+
+    // Desmaiar / guardar forçado limpa o estado de uso dos dois braços do Astronauta
+    flashlight.forceStowImmediate();
+    expect(flashlight.rightAstronautArm.metadata.currentlyInUse).toBe(false);
+    expect(flashlight.leftAstronautArm.metadata.currentlyInUse).toBe(false);
+    expect(flashlight.isLeftArmAnimating).toBe(false);
   });
 });
