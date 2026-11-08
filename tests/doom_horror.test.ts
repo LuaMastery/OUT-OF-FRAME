@@ -423,7 +423,20 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
 
     const built = buildDoomLabyrinth(scene, textures, shared);
     expect(built.colliders.length).toBeGreaterThan(20);
-    expect(built.lights.length).toBeGreaterThan(8);
+    expect(built.lights.length).toBeGreaterThan(12);
+    expect(textures.startanWall.image.width).toBe(128);
+    expect(textures.stoneWall.image.width).toBe(128);
+    expect(textures.stoneFloor.image.width).toBe(128);
+    expect(textures.pillarBulkhead.image.width).toBe(128);
+
+    const lightPanelsMesh = scene.getObjectByName(
+      'MazeLightPanels'
+    ) as THREE.Mesh | undefined;
+    expect(lightPanelsMesh).toBeDefined();
+    expect(
+      (lightPanelsMesh!.material as THREE.ShaderMaterial).uniforms.uUseLocalUv
+        .value
+    ).toBe(1);
 
     // Verifica objetos 3D compostos e caixotes de suprimentos no mapa
     const worldItems = new DoomWorldItems(scene, shared);

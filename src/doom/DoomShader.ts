@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 
-export const MAX_DOOM_LIGHTS = 16;
+export const MAX_DOOM_LIGHTS = 24;
 
 export interface DoomSharedUniforms {
   uLightPositions: { value: THREE.Vector3[] };
@@ -29,11 +29,11 @@ export function createDoomSharedUniforms(): DoomSharedUniforms {
 }
 
 /**
- * Material GLSL fiel ao id Tech 1 (DOOM Clássico, 1993):
- * - Coordenadas UV em espaço do mundo (ladrilhos nunca esticam, rodapés sempre alinhados)
- * - "Fake Contrast" original do DOOM (paredes Norte/Sul +claras, Leste/Oeste -escuras)
- * - Diminuição de luz por distância quantizada em bandas discretas estilo tabela COLORMAP
- * - Suporte a cone de Lanterna (F) quantizado nas mesmas bandas COLORMAP
+ * Material GLSL sombrio fiel ao id Tech 1 (DOOM Clássico) com atmosfera real de terror:
+ * - Suporta UV em espaço do mundo (paredes/pisos sem esticar) OU UV local 0..1 (`useLocalUv` para luminárias e painéis)
+ * - Iluminação direcional das arandelas com halo quente + oclusão de contato nos cantos piso/parede/teto
+ * - "Fake Contrast" clássico do DOOM + "Light Diminishing" com sombras profundas nos corredores apagados
+ * - Feixe dramático de Lanterna (Tecla F) quantizado em 32 degraus COLORMAP
  */
 export function createDoomSurfaceMaterial(
   texture: THREE.Texture,
@@ -43,12 +43,14 @@ export function createDoomSurfaceMaterial(
     wallHeight?: number;
     baseLight?: number;
     fullBright?: boolean;
+    useLocalUv?: boolean;
   }
 ): THREE.ShaderMaterial {
   const tileXZ = options?.tileScaleXZ ?? 3.0;
   const wallH = options?.wallHeight ?? 3.2;
-  const baseLight = options?.baseLight ?? 0.56;
+  const baseLight = options?.baseLight ?? 0.21;
   const fullBright = options?.fullBright ?? false;
+  const useLocalUv = options?.useLocalUv ?? false;
 
   return new THREE.ShaderMaterial({
     uniforms: {
@@ -57,6 +59,7 @@ export function createDoomSurfaceMaterial(
       uWallHeight: { value: wallH },
       uBaseLight: { value: baseLight },
       uFullBright: { value: fullBright ? 1.0 : 0.0 },
+      uUseLocalUv: { value: useLocalUv ? 1.0 : 0.0 },
       uLightPositions: shared.uLightPositions,
       uLightIntensities: shared.uLightIntensities,
       uLightCount: shared.uLightCount,
@@ -65,11 +68,13 @@ export function createDoomSurfaceMaterial(
       uFlashlightIntensity: shared.uFlashlightIntensity,
     },
     vertexShader: /* glsl */ `
+      varying vec2 vUv;
       varying vec3 vWorldPos;
       varying vec3 vWorldNormal;
       varying float vViewDist;
 
       void main() {
+        vUv = uv;
         vec4 worldPos = modelMatrix * vec4(position, 1.0);
         vWorldPos = worldPos.xyz;
         vWorldNormal = normalize(mat3(modelMatrix) * normal);
@@ -88,6 +93,7 @@ export function createDoomSurfaceMaterial(
       uniform float uWallHeight;
       uniform float uBaseLight;
       uniform float uFullBright;
+      uniform float uUseLocalUv;
       uniform vec3 uLightPositions[MAX_LIGHTS];
       uniform float uLightIntensities[MAX_LIGHTS];
       uniform int uLightCount;
@@ -95,6 +101,7 @@ export function createDoomSurfaceMaterial(
       uniform vec3 uFlashlightDir;
       uniform float uFlashlightIntensity;
 
+      varying vec2 vUv;
       varying vec3 vWorldPos;
       varying vec3 vWorldNormal;
       varying float vViewDist;
@@ -103,9 +110,10 @@ export function createDoomSurfaceMaterial(
         vec3 nrm = normalize(vWorldNormal);
         vec3 an = abs(nrm);
 
-        // Mapeamento UV em espaço do mundo sem distorção (estilo linedefs/flats de WAD)
         vec2 uv;
-        if (an.y > 0.7) {
+        if (uUseLocalUv > 0.5) {
+          uv = vUv;
+        } else if (an.y > 0.7) {
           uv = vWorldPos.xz / uTileXZ;
         } else if (an.x > 0.7) {
           uv = vec2(vWorldPos.z / uTileXZ, vWorldPos.y / uWallHeight);
@@ -116,37 +124,48 @@ export function createDoomSurfaceMaterial(
         vec4 texel = texture2D(uMap, uv);
 
         if (uFullBright > 0.5) {
-          float farDim = clamp(1.15 - vViewDist * 0.028, 0.28, 1.0);
-          float q = floor(farDim * 16.0) / 16.0;
+          float farDim = clamp(1.12 - vViewDist * 0.024, 0.34, 1.0);
+          float q = floor(farDim * 20.0) / 20.0;
           gl_FragColor = vec4(texel.rgb * q, 1.0);
           return;
         }
 
-        // 1. Luz base do setor + luminárias de parede
-        float sectorLight = uBaseLight;
+        // 1. Luz base escura do setor + contribuição escultórica 3D das arandelas
+        float lampLight = 0.0;
         for (int i = 0; i < MAX_LIGHTS; i++) {
           if (i >= uLightCount) break;
-          float d = distance(vWorldPos, uLightPositions[i]);
-          float atten = clamp(1.0 - d / 8.5, 0.0, 1.0);
-          sectorLight += atten * atten * uLightIntensities[i];
+          vec3 toLight = uLightPositions[i] - vWorldPos;
+          float d = length(toLight);
+          float atten = clamp(1.0 - d / 9.2, 0.0, 1.0);
+          float nDotL = clamp(dot(nrm, toLight / max(0.001, d)) * 0.58 + 0.48, 0.24, 1.05);
+          lampLight += atten * atten * uLightIntensities[i] * nDotL;
         }
-        sectorLight = clamp(sectorLight, 0.08, 1.0);
 
-        // 2. "Fake Contrast" autêntico do id Tech 1
+        float sectorLight = clamp(uBaseLight + lampLight, 0.06, 1.05);
+
+        // 2. Oclusão de contato nos encontros Parede-Piso e Parede-Teto para profundidade arquitetônica real
+        float seamAO = 1.0;
+        if (an.y < 0.5) {
+          float floorAO = smoothstep(0.0, 0.34, vWorldPos.y);
+          float ceilAO = smoothstep(0.0, 0.40, uWallHeight - vWorldPos.y);
+          seamAO = mix(0.70, 1.0, floorAO * ceilAO);
+        }
+
+        // 3. "Fake Contrast" sutil do DOOM para separar faces ortogonais
         float fakeContrast = 0.0;
         if (an.z > 0.7) {
-          fakeContrast = 0.075;
+          fakeContrast = 0.045;
         } else if (an.x > 0.7) {
-          fakeContrast = -0.075;
+          fakeContrast = -0.045;
         } else if (nrm.y < -0.7) {
-          fakeContrast = -0.05;
+          fakeContrast = -0.035;
         }
 
-        // 3. Curva de profundidade "Light Diminishing" do DOOM
-        float nearBoost = clamp((5.2 - vViewDist) * 0.065, 0.0, 0.28);
-        float distFalloff = clamp(1.08 - vViewDist * 0.048, 0.0, 1.0);
+        // 4. Queda de luz por distância estilo DOOM + leve leitura de silhueta bem de perto
+        float nearVis = clamp((3.2 - vViewDist) * 0.038, 0.0, 0.11);
+        float distFalloff = clamp(1.06 - vViewDist * 0.044, 0.0, 1.0);
 
-        // 4. Contribuição do feixe da Lanterna (Tecla F)
+        // 5. Feixe halógeno dramático da Lanterna (Tecla F)
         float flashContribution = 0.0;
         if (uFlashlightIntensity > 0.01) {
           vec3 toFrag = vWorldPos - uFlashlightPos;
@@ -154,41 +173,35 @@ export function createDoomSurfaceMaterial(
           vec3 fragDir = toFrag / max(0.0001, flashDist);
           float cosCone = dot(fragDir, normalize(uFlashlightDir));
 
-          // Núcleo central forte + halo externo mais amplo
-          float coreSpot = smoothstep(0.93, 0.985, cosCone);
-          float outerHalo = smoothstep(0.77, 0.935, cosCone) * 0.42;
-          float distAtten = clamp(1.0 - flashDist / 21.0, 0.0, 1.0);
-          float facing = clamp(dot(nrm, -fragDir) * 0.75 + 0.35, 0.2, 1.0);
+          float coreSpot = smoothstep(0.925, 0.985, cosCone);
+          float outerHalo = smoothstep(0.74, 0.93, cosCone) * 0.46;
+          float distAtten = clamp(1.0 - flashDist / 23.0, 0.0, 1.0);
+          float facing = clamp(dot(nrm, -fragDir) * 0.72 + 0.36, 0.22, 1.0);
 
           flashContribution =
             (coreSpot + outerHalo) *
             distAtten *
             facing *
             uFlashlightIntensity *
-            0.88;
+            1.02;
         }
 
         float rawShade =
-          (sectorLight * distFalloff) +
-          nearBoost +
-          fakeContrast +
+          ((sectorLight * distFalloff + nearVis + fakeContrast) * seamAO) +
           flashContribution;
-        rawShade = clamp(rawShade, 0.0, 1.0);
+        rawShade = clamp(rawShade, 0.0, 1.08);
 
-        // 5. Quantização em 24 degraus discretos estilo COLORMAP
-        float colormapBand = floor(rawShade * 24.0) / 24.0;
+        // 6. Quantização em 32 bandas COLORMAP autênticas
+        float colormapBand = floor(rawShade * 32.0) / 32.0;
 
-        vec3 shaded = texel.rgb * colormapBand;
-        shaded.r *= mix(1.06, 1.0, colormapBand);
-        shaded.b *= mix(0.88, 1.0, colormapBand);
+        // Sombra fria de bunker vs luz quente halógena de arandelas e lanterna
+        float warmFactor = clamp(lampLight * 0.75 + flashContribution * 0.85, 0.0, 1.0);
+        vec3 shadowTint = vec3(0.92, 0.94, 1.02);
+        vec3 warmTint = vec3(1.08, 1.01, 0.88);
+        vec3 lightColor = mix(shadowTint, warmTint, warmFactor);
 
-        // Leve tom halógeno quente onde o foco da lanterna incide
-        if (flashContribution > 0.02) {
-          float warmMix = clamp(flashContribution * 0.55, 0.0, 0.35);
-          shaded *= mix(vec3(1.0), vec3(1.08, 1.03, 0.90), warmMix);
-        }
-
-        gl_FragColor = vec4(shaded, 1.0);
+        vec3 shaded = texel.rgb * colormapBand * lightColor;
+        gl_FragColor = vec4(clamp(shaded, 0.0, 1.0), 1.0);
       }
     `,
   });
@@ -209,7 +222,7 @@ export function createDoomPropMaterial(
     tint?: THREE.Color;
   }
 ): THREE.ShaderMaterial {
-  const baseLight = options?.baseLight ?? 0.55;
+  const baseLight = options?.baseLight ?? 0.34;
   const alphaTest = options?.alphaTest ?? 0.0;
   const emissiveBoost = options?.emissiveBoost ?? 0.0;
   const tint = options?.tint ?? new THREE.Color(1, 1, 1);
@@ -272,17 +285,17 @@ export function createDoomPropMaterial(
           discard;
         }
 
-        float sectorLight = uBaseLight;
+        float lampLight = 0.0;
         for (int i = 0; i < MAX_LIGHTS; i++) {
           if (i >= uLightCount) break;
           float d = distance(vWorldPos, uLightPositions[i]);
-          float atten = clamp(1.0 - d / 8.5, 0.0, 1.0);
-          sectorLight += atten * atten * uLightIntensities[i];
+          float atten = clamp(1.0 - d / 9.2, 0.0, 1.0);
+          lampLight += atten * atten * uLightIntensities[i];
         }
-        sectorLight = clamp(sectorLight, 0.08, 1.0);
+        float sectorLight = clamp(uBaseLight + lampLight, 0.08, 1.05);
 
-        float nearBoost = clamp((5.2 - vViewDist) * 0.065, 0.0, 0.26);
-        float distFalloff = clamp(1.08 - vViewDist * 0.048, 0.0, 1.0);
+        float nearVis = clamp((3.6 - vViewDist) * 0.045, 0.0, 0.16);
+        float distFalloff = clamp(1.06 - vViewDist * 0.044, 0.0, 1.0);
 
         float flashContribution = 0.0;
         if (uFlashlightIntensity > 0.01) {
@@ -292,30 +305,30 @@ export function createDoomPropMaterial(
           float cosCone = dot(fragDir, normalize(uFlashlightDir));
 
           float coreSpot = smoothstep(0.92, 0.985, cosCone);
-          float outerHalo = smoothstep(0.76, 0.93, cosCone) * 0.45;
-          float distAtten = clamp(1.0 - flashDist / 21.0, 0.0, 1.0);
+          float outerHalo = smoothstep(0.75, 0.93, cosCone) * 0.46;
+          float distAtten = clamp(1.0 - flashDist / 23.0, 0.0, 1.0);
 
           flashContribution =
             (coreSpot + outerHalo) *
             distAtten *
             uFlashlightIntensity *
-            0.95;
+            1.02;
         }
 
         float rawShade = clamp(
-          (sectorLight * distFalloff) + nearBoost + flashContribution + uEmissiveBoost,
+          (sectorLight * distFalloff) + nearVis + flashContribution + uEmissiveBoost,
           0.0,
           1.15
         );
-        float colormapBand = floor(rawShade * 24.0) / 24.0;
+        float colormapBand = floor(rawShade * 32.0) / 32.0;
 
         vec3 shaded = texel.rgb * uTint * colormapBand;
-        if (flashContribution > 0.02) {
-          float warmMix = clamp(flashContribution * 0.5, 0.0, 0.32);
-          shaded *= mix(vec3(1.0), vec3(1.08, 1.03, 0.90), warmMix);
+        if (flashContribution > 0.02 || lampLight > 0.05) {
+          float warmMix = clamp((flashContribution + lampLight * 0.6) * 0.45, 0.0, 0.3);
+          shaded *= mix(vec3(1.0), vec3(1.07, 1.02, 0.90), warmMix);
         }
 
-        gl_FragColor = vec4(shaded, 1.0);
+        gl_FragColor = vec4(clamp(shaded, 0.0, 1.0), 1.0);
       }
     `,
   });
@@ -383,16 +396,16 @@ export function createSpiderChitinMaterial(
         vec3 nrm = normalize(vWorldNormal);
         if (!gl_FrontFacing) nrm = -nrm;
 
-        float sectorLight = 0.28;
+        float sectorLight = 0.22;
         for (int i = 0; i < MAX_LIGHTS; i++) {
           if (i >= uLightCount) break;
           float d = distance(vWorldPos, uLightPositions[i]);
-          float atten = clamp(1.0 - d / 9.0, 0.0, 1.0);
+          float atten = clamp(1.0 - d / 9.2, 0.0, 1.0);
           sectorLight += atten * atten * uLightIntensities[i] * 1.1;
         }
         sectorLight = clamp(sectorLight, 0.08, 1.0);
 
-        float distFalloff = clamp(1.10 - vViewDist * 0.044, 0.0, 1.0);
+        float distFalloff = clamp(1.08 - vViewDist * 0.044, 0.0, 1.0);
         float rim = pow(1.0 - clamp(abs(dot(nrm, normalize(vViewDir))), 0.0, 1.0), 2.4);
 
         float flashContribution = 0.0;
@@ -405,11 +418,10 @@ export function createSpiderChitinMaterial(
 
           float coreSpot = smoothstep(0.92, 0.985, cosCone);
           float outerHalo = smoothstep(0.75, 0.93, cosCone) * 0.48;
-          float distAtten = clamp(1.0 - flashDist / 22.0, 0.0, 1.0);
+          float distAtten = clamp(1.0 - flashDist / 23.0, 0.0, 1.0);
 
           flashContribution = (coreSpot + outerHalo) * distAtten * uFlashlightIntensity;
 
-          // Brilho úmido na carapaça preta quando iluminada pela lanterna
           vec3 halfVec = normalize(-fragDir + normalize(vViewDir));
           float spec = pow(max(dot(nrm, halfVec), 0.0), 14.0);
           chitinSpec = spec * flashContribution * 0.26 + rim * flashContribution * 0.16;
@@ -422,11 +434,10 @@ export function createSpiderChitinMaterial(
           0.06,
           1.15
         );
-        float band = floor(rawShade * 24.0) / 24.0;
+        float band = floor(rawShade * 32.0) / 32.0;
 
         vec3 baseCol = vColor * band + vec3(0.82, 0.85, 0.90) * floor(chitinSpec * 20.0) / 20.0;
 
-        // Sutil reflexo rubro nas pontas/olhos durante frenesi de perseguição
         if (uRageGlow > 0.01) {
           baseCol += vec3(0.14, 0.015, 0.01) * uRageGlow * rim;
         }
@@ -503,12 +514,12 @@ export class DoomRetroCompositor {
           vec2 pixelCoord = floor(vUv * uResolution);
           vec4 col = texture2D(tDiffuse, (pixelCoord + 0.5) / uResolution);
 
-          float dither = (bayer4x4(pixelCoord) - 0.5) / 28.0;
+          float dither = (bayer4x4(pixelCoord) - 0.5) / 36.0;
           vec3 c = clamp(col.rgb + dither, 0.0, 1.0);
 
-          c.r = floor(c.r * 24.0 + 0.5) / 24.0;
-          c.g = floor(c.g * 24.0 + 0.5) / 24.0;
-          c.b = floor(c.b * 20.0 + 0.5) / 20.0;
+          c.r = floor(c.r * 32.0 + 0.5) / 32.0;
+          c.g = floor(c.g * 32.0 + 0.5) / 32.0;
+          c.b = floor(c.b * 28.0 + 0.5) / 28.0;
 
           gl_FragColor = vec4(c, 1.0);
         }

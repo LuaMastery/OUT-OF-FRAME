@@ -471,10 +471,10 @@ export class DoomSpiderWebManager {
       createOrbTrapWebTexture(),
       sharedUniforms,
       {
-        baseLight: 0.5,
+        baseLight: 0.3,
         alphaTest: 0.45,
         doubleSided: true,
-        emissiveBoost: 0.06,
+        emissiveBoost: 0.03,
       }
     );
 
@@ -482,10 +482,10 @@ export class DoomSpiderWebManager {
       createCornerSheetWebTexture(),
       sharedUniforms,
       {
-        baseLight: 0.48,
+        baseLight: 0.28,
         alphaTest: 0.45,
         doubleSided: true,
-        emissiveBoost: 0.06,
+        emissiveBoost: 0.03,
       }
     );
 
@@ -493,8 +493,8 @@ export class DoomSpiderWebManager {
       createDenseSilkFiberTexture(),
       sharedUniforms,
       {
-        baseLight: 0.48,
-        emissiveBoost: 0.06,
+        baseLight: 0.28,
+        emissiveBoost: 0.03,
       }
     );
 
@@ -511,9 +511,9 @@ export class DoomSpiderWebManager {
     this.buildMainSpiderLair();
     this.buildPlayerSnareTethers();
 
-    // Duas armadilhas iniciais em corredores intermediários (fora do corredor de arrasto do ninho)
+    // Duas armadilhas iniciais em corredores retos com paredes laterais reais (fora do corredor de arrasto do ninho)
     const presetA = gridCellToWorld(8, 3);
-    const presetB = gridCellToWorld(3, 9);
+    const presetB = gridCellToWorld(4, 9);
     this.spawnWebTrap(presetA.x, presetA.z, true);
     this.spawnWebTrap(presetB.x, presetB.z, true);
   }
@@ -893,16 +893,16 @@ export class DoomSpiderWebManager {
     group.add(floorWeb);
 
     const { gx, gz } = worldToGridCell(wx, wz);
-    const northSouthWalls =
-      isSolidCell(LABYRINTH_MAP, gx, gz - 1) &&
-      isSolidCell(LABYRINTH_MAP, gx, gz + 1);
-    const eastWestWalls =
-      isSolidCell(LABYRINTH_MAP, gx - 1, gz) &&
-      isSolidCell(LABYRINTH_MAP, gx + 1, gz);
+    const solidN = isSolidCell(LABYRINTH_MAP, gx, gz - 1);
+    const solidS = isSolidCell(LABYRINTH_MAP, gx, gz + 1);
+    const solidW = isSolidCell(LABYRINTH_MAP, gx - 1, gz);
+    const solidE = isSolidCell(LABYRINTH_MAP, gx + 1, gz);
 
-    // Eixo longitudinal do corredor: se paredes a Leste/Oeste, o jogador caminha em Z (cortina de frente para Z);
-    // se paredes a Norte/Sul, o jogador caminha em X (cortina rotacionada 90° encarando X).
-    const corridorFacesX = northSouthWalls && !eastWestWalls;
+    const nsWallsCount = (solidN ? 1 : 0) + (solidS ? 1 : 0);
+    const ewWallsCount = (solidW ? 1 : 0) + (solidE ? 1 : 0);
+
+    // Eixo longitudinal do corredor: se há mais paredes a Norte/Sul, o jogador caminha em X (cortina encara X)
+    const corridorFacesX = nsWallsCount > ewWallsCount;
     const baseYaw = corridorFacesX ? Math.PI * 0.5 : 0;
 
     // 2. Cortina inclinada de captura atravessando o corredor na altura dos joelhos/quadril (sempre visível de frente!)
@@ -916,18 +916,25 @@ export class DoomSpiderWebManager {
     crossSnare.rotation.x = -0.46;
     group.add(crossSnare);
 
-    // 3. Mantos irregulares de quina + cabos catenários curvos ancorados nas duas paredes laterais
+    // 3. Mantos irregulares de quina + cabos catenários APENAS nas paredes laterais realmente sólidas (nunca flutuando em cruzamentos!)
     for (const sign of [-1, 1]) {
+      const sideHasWall = !corridorFacesX
+        ? sign < 0
+          ? solidW
+          : solidE
+        : sign < 0
+          ? solidN
+          : solidS;
+      if (!sideHasWall) continue;
+
       const cornerWeb = new THREE.Mesh(
         new THREE.PlaneGeometry(1.68, 1.64),
         this.sheetWebMat
       );
       cornerWeb.rotation.order = 'YXZ';
-      // Espelha UV (0,0) para encostar exatamente na junção parede+piso de cada lado!
       cornerWeb.scale.x = sign > 0 ? -1 : 1;
 
       if (!corridorFacesX) {
-        // Paredes a Leste/Oeste (±X), corredor ao longo de Z -> quinas presas nas paredes ±X abrindo para o centro
         cornerWeb.position.set(sign * (CELL_SIZE * 0.28), 0.82, sign * 0.14);
         cornerWeb.rotation.y = -sign * 0.32;
         cornerWeb.rotation.x = -0.18;
@@ -953,7 +960,6 @@ export class DoomSpiderWebManager {
           )
         );
       } else {
-        // Paredes a Norte/Sul (±Z), corredor ao longo de X -> quinas presas nas paredes ±Z abrindo para o centro
         cornerWeb.position.set(sign * 0.14, 0.82, sign * (CELL_SIZE * 0.28));
         cornerWeb.rotation.y = Math.PI * 0.5 - sign * 0.32;
         cornerWeb.rotation.x = -0.18;
@@ -982,8 +988,8 @@ export class DoomSpiderWebManager {
       group.add(cornerWeb);
     }
 
-    // Cabo superior pendente de parede a parede dando leitura imediata da armadilha
-    if (!corridorFacesX) {
+    // Cabo superior pendente de parede a parede apenas se AMBAS as paredes opostas existirem!
+    if (!corridorFacesX && solidW && solidE) {
       group.add(
         buildCatenarySilkGroup(
           new THREE.Vector3(-CELL_SIZE * 0.48, 1.56, -0.12),
@@ -994,7 +1000,7 @@ export class DoomSpiderWebManager {
           4
         )
       );
-    } else {
+    } else if (corridorFacesX && solidN && solidS) {
       group.add(
         buildCatenarySilkGroup(
           new THREE.Vector3(-0.12, 1.56, -CELL_SIZE * 0.48),

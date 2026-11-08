@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 
 /**
- * Gerador determinístico PRNG simples para que os tijolos, rebites e manchas
- * pixel-art das texturas fiquem 100% consistentes a cada execução.
+ * Gerador determinístico PRNG simples para que tijolos, rebites, rachaduras
+ * e manchas das texturas pixel-art fiquem 100% consistentes a cada execução.
  */
 function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
@@ -13,6 +13,12 @@ function mulberry32(seed: number): () => number {
     t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
+}
+
+function hash2i(x: number, y: number, seed: number): number {
+  let h = (x * 374761393 + y * 668265263 + seed * 1442695041) | 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
 }
 
 function clampByte(v: number): number {
@@ -30,7 +36,7 @@ function makePixelTexture(
   const setPixel = (x: number, y: number, r: number, g: number, b: number) => {
     const wx = ((x % width) + width) % width;
     const wy = ((y % height) + height) % height;
-    // DataTexture tem y=0 na base; invertemos para desenhar de cima (0) para baixo (height-1)
+    // DataTexture tem y=0 na base (v=0); invertemos para desenhar de cima (y=0 -> topo v=1) para baixo (y=height-1 -> base v=0)
     const idx = ((height - 1 - wy) * width + wx) * 4;
     data[idx] = clampByte(r);
     data[idx + 1] = clampByte(g);
@@ -54,314 +60,602 @@ export interface DoomTextureSet {
   startanWall: THREE.DataTexture;
   stoneWall: THREE.DataTexture;
   metalTrim: THREE.DataTexture;
+  pillarBulkhead: THREE.DataTexture;
   lightPanel: THREE.DataTexture;
   floorTile: THREE.DataTexture;
+  stoneFloor: THREE.DataTexture;
   ceilingGrate: THREE.DataTexture;
+  stoneVaultCeiling: THREE.DataTexture;
   darkIron: THREE.DataTexture;
   weatheredWood: THREE.DataTexture;
 }
 
 /**
- * Constrói o conjunto de texturas Pixel-Art 64x64 inspiradas no DOOM clássico (1993):
- * - STARTAN: painéis industriais bege/ferrugem com frisos verticais, rodapé metálico e rebites
- * - STONE: blocos de pedra cinza-musgo com rejunte escuro e desgaste pixelado
- * - METAL: vigas de ferro escuro rebitadas com detalhes em bronze
- * - LITE: grade luminosa embutida de corredor
- * - FLOOR: ladrilhos chanfrados de ferro/ardósia
- * - CEIL: placas metálicas industriais de teto
+ * Conjunto de texturas Pixel-Art 128x128 de alta densidade estilo DOOM Sombrio / Bunker Subterrâneo:
+ * - Paleta coesa e escura (sem tons pastel/pêssego artificiais e sem faixas amarelas vazando em molduras)
+ * - Escala realista de alvenaria, chapas rebitadas, escorridos de óleo/ferrugem e luminárias centralizadas
  */
 export function createDoomTextures(): DoomTextureSet {
-  // 1. STARTAN — Painel industrial clássico bege/ferrugem (64x64)
-  const startanWall = makePixelTexture(64, 64, (px) => {
+  const S = 128;
+
+  // 1. STARTAN SOMBRIO (128x128) — Painéis industriais militares desgastados (oliva-ferrugem/chumbo)
+  const startanWall = makePixelTexture(S, S, (px) => {
     const rand = mulberry32(199301);
-    for (let y = 0; y < 64; y++) {
-      for (let x = 0; x < 64; x++) {
-        const grit = (rand() - 0.5) * 14;
-        // Manchas verticais sutis de ferrugem/sujeira
-        const grime = Math.sin(x * 0.35) * 5 + (y > 46 ? (y - 46) * 0.9 : 0);
+    // Pré-calcula escorridos verticais sutis de ferrugem/umidade por coluna
+    const streakLen: number[] = [];
+    for (let x = 0; x < S; x++) {
+      const nearSeam = x % 32 <= 3 || x % 32 >= 29;
+      streakLen.push(
+        nearSeam ? 18 + rand() * 34 : rand() < 0.22 ? 12 + rand() * 26 : 0
+      );
+    }
 
-        // Rodapé e sanca metálica escura no topo e na base
-        if (y < 6 || y >= 56) {
-          let base = y === 5 || y === 56 ? 38 : 66;
-          if (y === 1 || y === 57) base += 24;
-          const rivet = (x % 16 === 3 || x % 16 === 13) && (y === 3 || y === 60);
-          const v = (rivet ? base + 34 : base) + grit * 0.6;
-          px(x, y, v * 1.05, v * 0.98, v * 0.9);
+    for (let y = 0; y < S; y++) {
+      for (let x = 0; x < S; x++) {
+        const grit = (rand() - 0.5) * 11;
+        const fineGrain = (hash2i(x, y >> 1, 11) - 0.5) * 7;
+        const modX = x % 32;
+
+        // Umidade escura na base e fuligem no topo
+        const dampBottom = y > 102 ? ((y - 102) / 26) * 26 : 0;
+        const sootTop = y < 14 ? ((14 - y) / 14) * 18 : 0;
+
+        // Friso técnico rebaixado na altura de lambris (~1.0m do chão: y = 84..89)
+        if (y >= 84 && y <= 89) {
+          let rail = 52 + grit * 0.5;
+          if (y === 84) rail = 28;
+          else if (y === 85) rail = 74;
+          else if (y === 89) rail = 30;
+          if (y === 87 && (modX === 6 || modX === 25)) rail += 26; // rebites
+          px(x, y, rail * 1.04, rail * 0.98, rail * 0.9);
           continue;
         }
 
-        // Faixa horizontal divisória no meio da parede
-        if (y >= 29 && y <= 33) {
-          let m = y === 29 ? 118 : y === 33 ? 42 : 76;
-          if (x % 8 === 4 && y === 31) m += 28; // rebites
-          px(x, y, m + grit * 0.5, (m + grit * 0.5) * 0.88, (m + grit * 0.5) * 0.74);
+        // Costura horizontal secundária discreta no terço superior (y = 30..31)
+        if (y === 30 || y === 31) {
+          const seam = y === 30 ? 36 : 68;
+          px(
+            x,
+            y,
+            (seam + grit * 0.4) * 1.04,
+            (seam + grit * 0.4) * 0.96,
+            (seam + grit * 0.4) * 0.86
+          );
           continue;
         }
 
-        // Painéis canelados verticais (4 módulos de 16px)
-        const modX = x % 16;
-        let r = 148;
-        let g = 114;
-        let b = 84;
+        // Arquitetura de cada baia vertical de 32px: canal fundo -> moldura -> painel rebaixado canelado
+        let r = 98;
+        let g = 88;
+        let b = 74;
 
-        // Junta escura entre painéis
-        if (modX === 0 || modX === 15) {
-          r = 58;
-          g = 42;
-          b = 31;
+        if (modX === 0 || modX === 31) {
+          // Junta estrutural profunda entre placas
+          r = 34;
+          g = 31;
+          b = 28;
         } else if (modX === 1) {
-          // Chanfro iluminado esquerdo
-          r = 178;
-          g = 142;
-          b = 106;
-        } else if (modX === 14) {
-          // Sombra direita
-          r = 104;
-          g = 76;
-          b = 54;
-        } else if (modX === 7 || modX === 8) {
-          // Sulco vertical interno estilo STARTAN
-          r = modX === 7 ? 96 : 164;
-          g = modX === 7 ? 70 : 128;
-          b = modX === 7 ? 50 : 96;
-        }
-
-        px(x, y, r + grit - grime, g + grit - grime * 0.9, b + grit - grime * 0.8);
-      }
-    }
-  });
-
-  // 2. STONE — Alvenaria pesada cinza-esverdeada estilo masmorra/base DOOM (64x64)
-  const stoneWall = makePixelTexture(64, 64, (px) => {
-    const rand = mulberry32(199302);
-    const brickH = 16;
-    const brickW = 32;
-
-    // Tonalidade própria de cada bloco
-    const brickTint: number[] = [];
-    for (let i = 0; i < 32; i++) {
-      brickTint.push((rand() - 0.5) * 26);
-    }
-
-    for (let y = 0; y < 64; y++) {
-      const row = Math.floor(y / brickH);
-      const localY = y % brickH;
-      const offset = (row % 2) * 16;
-
-      for (let x = 0; x < 64; x++) {
-        const shiftedX = (x + offset) % 64;
-        const col = Math.floor(shiftedX / brickW);
-        const localX = shiftedX % brickW;
-        const brickId = (row * 4 + col) % brickTint.length;
-
-        const noise = (rand() - 0.5) * 18;
-        const moss =
-          y > 42 && rand() < (y - 40) * 0.028 ? 1 : 0;
-
-        // Argamassa / rejunte fundo
-        if (localY === 0 || localY === brickH - 1 || localX === 0) {
-          const m = 34 + noise * 0.4;
-          px(x, y, m, m + moss * 14, m * 0.95);
-          continue;
-        }
-
-        let shade = 104 + brickTint[brickId] + noise;
-        // Relevo chanfrado na borda superior/inferior do bloco
-        if (localY === 1 || localX === 1) shade += 22;
-        if (localY === brickH - 2 || localX === brickW - 1) shade -= 22;
-
-        // Pequenas rachaduras ocasionais
-        if ((localX === 11 && localY > 3 && localY < 10 && brickId % 3 === 0)) {
-          shade -= 38;
-        }
-
-        const r = moss ? shade * 0.78 : shade * 0.96;
-        const g = moss ? shade * 1.02 : shade * 0.97;
-        const b = moss ? shade * 0.72 : shade * 0.92;
-        px(x, y, r, g, b);
-      }
-    }
-  });
-
-  // 3. METAL — Pilar de ferro escuro com rebites e friso âmbar/bronze (64x64)
-  const metalTrim = makePixelTexture(64, 64, (px) => {
-    const rand = mulberry32(199303);
-    for (let y = 0; y < 64; y++) {
-      for (let x = 0; x < 64; x++) {
-        const grit = (rand() - 0.5) * 10;
-
-        // Borda vertical lateral de viga
-        if (x < 6 || x >= 58) {
-          const edge = x === 5 || x === 58 ? 30 : x === 1 || x === 62 ? 96 : 64;
-          px(x, y, edge + grit, edge + grit, (edge + grit) * 1.05);
-          continue;
-        }
-
-        // Faixa de alerta industrial bronze/âmbar sutil
-        if (y >= 28 && y <= 35) {
-          const diag = ((x + y) % 12) < 6;
-          if (diag) {
-            px(x, y, 168 + grit, 118 + grit, 38 + grit * 0.5);
+          // Chanfro iluminado esquerdo da placa
+          r = 124;
+          g = 112;
+          b = 94;
+        } else if (modX === 30) {
+          // Chanfro em sombra direita da placa
+          r = 62;
+          g = 55;
+          b = 47;
+        } else if (modX >= 5 && modX <= 26) {
+          // Painel interno rebaixado com caneluras duplas estilo DOOM E1
+          if (modX === 5 || modX === 15 || modX === 16) {
+            r = 58;
+            g = 51;
+            b = 43;
+          } else if (modX === 6 || modX === 17) {
+            r = 114;
+            g = 102;
+            b = 85;
+          } else if (modX === 26) {
+            r = 72;
+            g = 64;
+            b = 54;
           } else {
-            px(x, y, 42 + grit * 0.5, 38 + grit * 0.5, 34 + grit * 0.5);
+            r = 92;
+            g = 82;
+            b = 69;
+          }
+        }
+
+        // Rebites nos cantos das chapas
+        const isRivet =
+          (modX === 3 || modX === 28) &&
+          (y === 10 || y === 26 || y === 36 || y === 79 || y === 95 || y === 116);
+        if (isRivet) {
+          r += 26;
+          g += 24;
+          b += 20;
+        }
+
+        // Escorridos de ferrugem descendo da costura y=31 e do friso y=89
+        let rust = 0;
+        if (y > 31 && y < 31 + streakLen[x]) {
+          rust = (1 - (y - 31) / streakLen[x]) * 18;
+        } else if (y > 89 && y < 89 + streakLen[(x + 17) % S] * 0.7) {
+          rust = (1 - (y - 89) / (streakLen[(x + 17) % S] * 0.7)) * 20;
+        }
+
+        const delta = grit + fineGrain - dampBottom - sootTop;
+        px(
+          x,
+          y,
+          r + delta + rust * 0.65,
+          g + delta * 0.95 - rust * 0.25,
+          b + delta * 0.88 - rust * 0.45
+        );
+      }
+    }
+  });
+
+  // 2. STONE WALL (128x128) — Alvenaria subterrânea irregular de catacumba (8 fiadas reais, sem blocos gigantes!)
+  const stoneWall = makePixelTexture(S, S, (px) => {
+    const rand = mulberry32(199302);
+    const courseHeights = [16, 15, 17, 16, 15, 17, 16, 16]; // soma = 128
+    const courseStarts: number[] = [];
+    let accY = 0;
+    for (const h of courseHeights) {
+      courseStarts.push(accY);
+      accY += h;
+    }
+
+    // Larguras variadas por fiada (soma = 128 para repetição perfeita sem costura!)
+    const rowPatterns: number[][] = [
+      [34, 28, 38, 28],
+      [26, 36, 30, 36],
+      [38, 26, 34, 30],
+      [30, 34, 28, 36],
+      [36, 30, 32, 30],
+      [28, 38, 28, 34],
+      [32, 28, 38, 30],
+      [30, 36, 26, 36],
+    ];
+    const rowOffsets = [0, 17, 7, 23, 11, 27, 5, 19];
+
+    for (let y = 0; y < S; y++) {
+      let row = 0;
+      for (let r = 0; r < courseStarts.length; r++) {
+        if (y >= courseStarts[r]) row = r;
+      }
+      const rowH = courseHeights[row];
+      const localY = y - courseStarts[row];
+
+      const widths = rowPatterns[row];
+      const shiftedX = (x0: number) => (x0 + rowOffsets[row]) % S;
+
+      for (let x = 0; x < S; x++) {
+        const sx = shiftedX(x);
+        let col = 0;
+        let accX = 0;
+        for (let c = 0; c < widths.length; c++) {
+          if (sx >= accX && sx < accX + widths[c]) {
+            col = c;
+            break;
+          }
+          accX += widths[c];
+        }
+        const blockW = widths[col];
+        const localX = sx - accX;
+        const blockSeed = row * 13 + col * 7;
+        const blockTint = (hash2i(row, col, 901) - 0.5) * 24;
+
+        const rough =
+          (hash2i(x, y, 303) - 0.5) * 14 +
+          (hash2i(x >> 1, y >> 1, 505) - 0.5) * 12;
+
+        // Irregularidade orgânica de 1px na borda da pedra (pedra talhada à mão)
+        const chipTop = hash2i(x, row, 71) > 0.78 ? 1 : 0;
+        const chipSide = hash2i(row, y, 83) > 0.8 ? 1 : 0;
+
+        const isMortar =
+          localY === 0 ||
+          (localY === 1 && chipTop === 1) ||
+          localY === rowH - 1 ||
+          localX === 0 ||
+          (localX === 1 && chipSide === 1);
+
+        const damp = y > 92 ? (y - 92) / 36 : 0;
+        const mossPatch =
+          y > 88 && hash2i(x >> 2, y >> 2, 619) < damp * 0.65;
+
+        if (isMortar) {
+          const m = 24 + (rand() - 0.5) * 7;
+          px(
+            x,
+            y,
+            mossPatch ? m * 0.85 : m,
+            mossPatch ? m + 9 : m,
+            mossPatch ? m * 0.82 : m * 0.96
+          );
+          continue;
+        }
+
+        let shade = 84 + blockTint + rough - damp * 18;
+
+        // Relevo chanfrado natural das pedras
+        if (localY === 1 + chipTop || localX === 1 + chipSide) shade += 16;
+        if (localY === rowH - 2 || localX === blockW - 1) shade -= 16;
+
+        // Fissura fina ocasional dentro de alguns blocos
+        const crackX = Math.floor(blockW * 0.45) + ((localY >> 1) % 3);
+        if (
+          blockSeed % 3 === 0 &&
+          localX === crackX &&
+          localY > 3 &&
+          localY < rowH - 4
+        ) {
+          shade -= 28;
+        }
+
+        if (mossPatch) {
+          // Musgo subterrâneo escuro e dessaturado (sem verde neon!)
+          px(x, y, shade * 0.76, shade * 0.88 + 6, shade * 0.72);
+        } else {
+          px(x, y, shade * 0.95, shade * 0.96, shade * 0.93);
+        }
+      }
+    }
+  });
+
+  // 3. METAL TRIM (128x128) — Aço estrutural escuro rebitado (SEM listras amarelas para nunca manchar molduras!)
+  const metalTrim = makePixelTexture(S, S, (px) => {
+    const rand = mulberry32(199303);
+    for (let y = 0; y < S; y++) {
+      const ly = y % 32;
+      for (let x = 0; x < S; x++) {
+        const lx = x % 32;
+        const brush = (hash2i(x, y >> 2, 411) - 0.5) * 8;
+        const grit = (rand() - 0.5) * 7;
+
+        let v = 66 + brush + grit;
+
+        // Juntas de chapa rebitada 32x32
+        if (lx === 0 || ly === 0) v = 30 + grit * 0.4;
+        else if (lx === 1 || ly === 1) v += 15;
+        else if (lx === 31 || ly === 31) v -= 14;
+
+        // Rebites escuros/metálicos nos cantos das chapas
+        const isRivet =
+          (lx === 4 || lx === 27) && (ly === 4 || ly === 27);
+        if (isRivet) v += 22;
+
+        px(x, y, v * 0.95, v * 0.98, v * 1.04);
+      }
+    }
+  });
+
+  // 4. PILLAR BULKHEAD (128x128) — Coluna blindada pesada exclusiva para pilares estruturais 'M'
+  const pillarBulkhead = makePixelTexture(S, S, (px) => {
+    const rand = mulberry32(199309);
+    for (let y = 0; y < S; y++) {
+      for (let x = 0; x < S; x++) {
+        const grit = (rand() - 0.5) * 9;
+        // Abas verticais pesadas da coluna
+        if (x < 12 || x >= 116) {
+          let edge = 56 + grit;
+          if (x === 11 || x === 116) edge = 26;
+          if (x === 1 || x === 117) edge = 82;
+          if (y % 16 === 8 && (x === 5 || x === 122)) edge += 24;
+          px(x, y, edge * 0.96, edge * 0.98, edge * 1.04);
+          continue;
+        }
+
+        // Cinta de advertência industrial bem gasta e escura apenas no centro da coluna
+        if (y >= 58 && y <= 69) {
+          if (y === 58 || y === 69) {
+            px(x, y, 26, 26, 28);
+            continue;
+          }
+          const wear = hash2i(x, y, 777) > 0.25 ? 1 : 0.45;
+          const stripe = ((x + y) % 16) < 8;
+          if (stripe) {
+            px(
+              x,
+              y,
+              (126 + grit) * wear + 28 * (1 - wear),
+              (92 + grit) * wear + 28 * (1 - wear),
+              34 + grit * 0.4
+            );
+          } else {
+            px(x, y, 34 + grit * 0.4, 33 + grit * 0.4, 32 + grit * 0.4);
           }
           continue;
         }
 
-        let v = 74 + Math.sin(x * 0.2) * 6 + grit;
-        if (y % 16 === 0) v -= 26;
-        if (y % 16 === 1) v += 18;
-
-        // Rebites nos cantos das chapas
-        const ry = y % 16;
-        if ((ry === 4 || ry === 12) && (x === 10 || x === 53)) {
-          v += 36;
+        // Painéis blindados rebaixados superior e inferior
+        const inRecess =
+          x >= 22 &&
+          x <= 105 &&
+          ((y >= 14 && y <= 48) || (y >= 79 && y <= 113));
+        let v = inRecess ? 52 + grit : 68 + grit;
+        if (
+          inRecess &&
+          (x === 22 || y === 14 || y === 79)
+        ) {
+          v = 32;
+        } else if (
+          inRecess &&
+          (x === 105 || y === 48 || y === 113)
+        ) {
+          v = 82;
         }
-
-        px(x, y, v * 0.95, v * 0.97, v * 1.02);
+        px(x, y, v * 0.96, v * 0.98, v * 1.03);
       }
     }
   });
 
-  // 4. LITE — Luminária vertical gradeada de parede estilo LITE5 (64x64)
-  const lightPanel = makePixelTexture(64, 64, (px) => {
+  // 5. LITE5 BUNKER FIXTURE (128x128, UV LOCAL 0..1!) — Luminária gradeada sempre 100% centralizada!
+  const lightPanel = makePixelTexture(S, S, (px) => {
     const rand = mulberry32(199304);
-    for (let y = 0; y < 64; y++) {
-      for (let x = 0; x < 64; x++) {
-        const grit = (rand() - 0.5) * 8;
-        // Moldura metálica ao redor da luminária central
-        if (x < 16 || x >= 48 || y < 6 || y >= 58) {
-          let m = 62 + grit;
-          if (x === 15 || x === 48 || y === 5 || y === 58) m = 28;
-          px(x, y, m, m * 0.98, m * 0.95);
+    for (let y = 0; y < S; y++) {
+      for (let x = 0; x < S; x++) {
+        const grit = (rand() - 0.5) * 7;
+
+        // Moldura metálica escura externa da caixa de luz
+        if (x < 16 || x >= 112 || y < 10 || y >= 118) {
+          let m = 48 + grit;
+          if (x === 15 || x === 112 || y === 9 || y === 118) m = 22;
+          else if (x === 14 || y === 8) m = 72;
+          // Parafusos nos cantos
+          if ((x === 7 || x === 120) && (y === 16 || y === 111)) m += 24;
+          px(x, y, m, m * 0.98, m * 0.96);
           continue;
         }
 
-        // Grade horizontal protetora a cada 8px
-        if (y % 8 === 0 || y % 8 === 1) {
-          px(x, y, 48 + grit, 48 + grit, 52 + grit);
+        // Aletas horizontais defletoras estilo LITE5 DOOM (a cada 16px)
+        const louverMod = (y - 10) % 18;
+        if (louverMod === 0 || louverMod === 1) {
+          const bar = louverMod === 0 ? 34 : 54;
+          px(x, y, bar + grit * 0.4, bar + grit * 0.4, bar + 4);
           continue;
         }
 
-        // Tubo luminoso quente/branco no centro
-        const distCenter = Math.abs(x - 31.5) / 16.0;
-        const glow = 1.0 - distCenter * 0.38;
-        const r = 252 * glow + grit * 0.4;
-        const g = 240 * glow + grit * 0.4;
-        const b = 205 * glow + grit * 0.4;
-        px(x, y, r, g, b);
+        // Difusor fluorescente quente-pálido com queda suave nas bordas de vidro sujo
+        const nx = Math.abs(x - 63.5) / 48.0;
+        const ny = Math.abs(y - 63.5) / 54.0;
+        const edgeVignette =
+          (1.0 - nx * nx * 0.44) * (1.0 - Math.pow(ny, 3.2) * 0.32);
+        const tubeCore = Math.exp(-nx * nx * 3.2) * 0.16;
+        const louverShadow = louverMod === 2 || louverMod === 17 ? 0.84 : 1.0;
+        const lum = Math.min(1.0, (edgeVignette + tubeCore) * louverShadow);
+
+        px(
+          x,
+          y,
+          246 * lum + grit * 0.35,
+          230 * lum + grit * 0.35,
+          192 * lum + grit * 0.35
+        );
       }
     }
   });
 
-  // 5. FLOOR — Ladrilhos metálicos/pedra 64x64 estilo FLOOR4_8
-  const floorTile = makePixelTexture(64, 64, (px) => {
+  // 6. INDUSTRIAL FLOOR (128x128) — Chapas de piso de ferro antiderrapante parafusadas (Setor Norte)
+  const floorTile = makePixelTexture(S, S, (px) => {
     const rand = mulberry32(199305);
-    for (let y = 0; y < 64; y++) {
-      for (let x = 0; x < 64; x++) {
-        const lx = x % 32;
-        const ly = y % 32;
-        const grit = (rand() - 0.5) * 12;
-
-        if (lx === 0 || ly === 0) {
-          px(x, y, 28, 30, 34);
-          continue;
-        }
-
-        let v = 78 + grit;
-        if (lx === 1 || ly === 1) v += 18;
-        if (lx === 31 || ly === 31) v -= 18;
-
-        // Detalhe octogonal interno nos ladrilhos
-        if (lx + ly < 6 || (31 - lx) + ly < 6 || lx + (31 - ly) < 6 || (31 - lx) + (31 - ly) < 6) {
-          v -= 14;
-        }
-
-        px(x, y, v * 0.94, v * 0.96, v * 1.04);
-      }
-    }
-  });
-
-  // 6. CEIL — Teto nervurado escuro com grelhas industriais (64x64)
-  const ceilingGrate = makePixelTexture(64, 64, (px) => {
-    const rand = mulberry32(199306);
-    for (let y = 0; y < 64; y++) {
-      for (let x = 0; x < 64; x++) {
+    for (let y = 0; y < S; y++) {
+      const ly = y % 64;
+      for (let x = 0; x < S; x++) {
+        const lx = x % 64;
         const grit = (rand() - 0.5) * 9;
-        if (x % 32 === 0 || y % 32 === 0) {
-          px(x, y, 22, 22, 24);
+        const grime = (hash2i(x >> 2, y >> 2, 512) - 0.5) * 10;
+
+        // Fresta de drenagem entre placas 64x64
+        if (lx === 0 || ly === 0 || lx === 63 || ly === 63) {
+          const seam = lx === 0 || ly === 0 ? 22 : 34;
+          px(x, y, seam, seam + 1, seam + 3);
           continue;
         }
-        const rib = (x % 8 < 2) ? -12 : 4;
-        const v = 56 + rib + grit;
-        px(x, y, v * 0.96, v * 0.92, v * 0.88);
+
+        let v = 58 + grit + grime;
+        if (lx === 1 || ly === 1) v += 14;
+        if (lx === 62 || ly === 62) v -= 12;
+
+        // Chanfro octogonal nos cantos da placa + parafusos sextavados
+        const cornerSum = Math.min(
+          lx + ly,
+          63 - lx + ly,
+          lx + (63 - ly),
+          63 - lx + (63 - ly)
+        );
+        if (cornerSum < 9) {
+          v -= 10;
+        } else if (
+          (lx === 6 || lx === 57) &&
+          (ly === 6 || ly === 57)
+        ) {
+          v += 18;
+        } else if (lx > 8 && lx < 55 && ly > 8 && ly < 55) {
+          // Relevo antiderrapante discreto no interior da placa
+          const tread =
+            ((lx + ly) % 8 === 0 && lx % 4 < 2) ||
+            ((lx - ly + 64) % 8 === 0 && ly % 4 < 2);
+          if (tread) v += 7;
+        }
+
+        px(x, y, v * 0.95, v * 0.97, v * 1.03);
       }
     }
   });
 
-  // 7. DARK IRON — Ferro fundido rebitado com desgaste de ferrugem (vigas, grades e tubulações)
-  const darkIron = makePixelTexture(64, 64, (px) => {
+  // 7. STONE FLOOR (128x128) — Lajes irregulares de ardósia/basalto para as Galerias Sul e Ninho!
+  const stoneFloor = makePixelTexture(S, S, (px) => {
+    const rand = mulberry32(199310);
+    const slabRows = [32, 30, 34, 32];
+    const rowY: number[] = [0, 32, 62, 96];
+    const slabCols: number[][] = [
+      [42, 46, 40],
+      [34, 48, 46],
+      [46, 38, 44],
+      [38, 44, 46],
+    ];
+    const offsets = [0, 19, 9, 27];
+
+    for (let y = 0; y < S; y++) {
+      let rIdx = 0;
+      for (let r = 0; r < rowY.length; r++) {
+        if (y >= rowY[r]) rIdx = r;
+      }
+      const ly = y - rowY[rIdx];
+      const rH = slabRows[rIdx];
+
+      for (let x = 0; x < S; x++) {
+        const sx = (x + offsets[rIdx]) % S;
+        const cols = slabCols[rIdx];
+        let cIdx = 0;
+        let acc = 0;
+        for (let c = 0; c < cols.length; c++) {
+          if (sx >= acc && sx < acc + cols[c]) {
+            cIdx = c;
+            break;
+          }
+          acc += cols[c];
+        }
+        const lx = sx - acc;
+        const cW = cols[cIdx];
+
+        const wobX = Math.round(Math.sin(y * 0.22 + rIdx) * 1.1);
+        const wobY = Math.round(Math.cos(x * 0.2 + cIdx) * 1.1);
+
+        if (
+          ly + wobY <= 0 ||
+          ly + wobY >= rH - 1 ||
+          lx + wobX <= 0 ||
+          lx + wobX >= cW - 1
+        ) {
+          const joint = 20 + (rand() - 0.5) * 6;
+          px(x, y, joint, joint + 1, joint);
+          continue;
+        }
+
+        const slabTone = (hash2i(rIdx, cIdx, 881) - 0.5) * 16;
+        const grain =
+          (hash2i(x, y, 882) - 0.5) * 10 +
+          (hash2i(x >> 2, y >> 2, 883) - 0.5) * 10;
+        let v = 52 + slabTone + grain;
+        if (ly === 1 || lx === 1) v += 9;
+        if (ly === rH - 2 || lx === cW - 2) v -= 9;
+
+        px(x, y, v * 0.96, v * 0.97, v * 0.94);
+      }
+    }
+  });
+
+  // 8. CEILING GRATE (128x128) — Teto industrial em caixotões escuros com grelhas (Setor Norte)
+  const ceilingGrate = makePixelTexture(S, S, (px) => {
+    const rand = mulberry32(199306);
+    for (let y = 0; y < S; y++) {
+      const ly = y % 64;
+      for (let x = 0; x < S; x++) {
+        const lx = x % 64;
+        const grit = (rand() - 0.5) * 7;
+
+        // Moldura estrutural do caixotão 64x64
+        if (lx < 5 || lx >= 59 || ly < 5 || ly >= 59) {
+          let frame = 44 + grit * 0.6;
+          if (lx === 0 || ly === 0) frame = 20;
+          else if (lx === 4 || ly === 4) frame = 28;
+          px(x, y, frame * 0.96, frame * 0.96, frame);
+          continue;
+        }
+
+        // Venezianas escuras de ventilação no interior do caixotão
+        const slat = ly % 8 < 2 ? 24 : 38;
+        const rib = lx === 31 || lx === 32 ? 44 : slat;
+        const v = rib + grit * 0.6;
+        px(x, y, v * 0.95, v * 0.95, v * 0.98);
+      }
+    }
+  });
+
+  // 9. STONE VAULT CEILING (128x128) — Lajes escuras fuliginosas do teto das catacumbas sul
+  const stoneVaultCeiling = makePixelTexture(S, S, (px) => {
+    const rand = mulberry32(199311);
+    for (let y = 0; y < S; y++) {
+      const row = Math.floor(y / 32);
+      const ly = y % 32;
+      for (let x = 0; x < S; x++) {
+        const sx = (x + (row % 2) * 32) % S;
+        const lx = sx % 64;
+        const grit = (rand() - 0.5) * 8;
+        if (ly === 0 || lx === 0) {
+          px(x, y, 16, 16, 17);
+          continue;
+        }
+        let v = 38 + (hash2i(sx >> 6, row, 991) - 0.5) * 10 + grit;
+        if (ly === 1) v += 6;
+        if (ly === 31) v -= 6;
+        px(x, y, v * 0.96, v * 0.96, v * 0.94);
+      }
+    }
+  });
+
+  // 10. DARK IRON (128x128) — Ferro fundido escuro com pátina e rebites discretos
+  const darkIron = makePixelTexture(S, S, (px) => {
     const rand = mulberry32(199307);
-    for (let y = 0; y < 64; y++) {
-      for (let x = 0; x < 64; x++) {
-        const grit = (rand() - 0.5) * 11;
-        const lx = x % 16;
-        const ly = y % 16;
+    for (let y = 0; y < S; y++) {
+      const ly = y % 32;
+      for (let x = 0; x < S; x++) {
+        const lx = x % 32;
+        const grit = (rand() - 0.5) * 8;
+        let base = 42 + (hash2i(x >> 1, y >> 1, 707) - 0.5) * 7 + grit;
 
-        let base = 52 + Math.sin(x * 0.4) * 4 + grit;
-        if (lx === 0 || ly === 0) base = 24 + grit * 0.4;
-        else if (lx === 1 || ly === 1) base += 18;
-        else if (lx === 15 || ly === 15) base -= 14;
+        if (lx === 0 || ly === 0) base = 22;
+        else if (lx === 1 || ly === 1) base += 11;
+        else if (lx === 31 || ly === 31) base -= 9;
 
-        // Rebites nos cantos de cada placa 16x16
-        const isRivet =
-          (lx === 3 || lx === 12) && (ly === 3 || ly === 12);
-        if (isRivet) base += 28;
+        if ((lx === 4 || lx === 27) && (ly === 4 || ly === 27)) {
+          base += 18;
+        }
 
-        // Oxidação ferruginosa discreta
-        const rust = rand() < 0.14 ? 14 : 0;
+        const rust = hash2i(x, y, 709) < 0.09 ? 9 : 0;
         px(
           x,
           y,
           base * 0.96 + rust,
-          base * 0.95 + rust * 0.35,
+          base * 0.96 + rust * 0.25,
           base * 1.02 - rust * 0.2
         );
       }
     }
   });
 
-  // 8. WEATHERED WOOD — Tábuas antigas de caixote com cintas de ferro e pregos (64x64)
-  const weatheredWood = makePixelTexture(64, 64, (px) => {
+  // 11. WEATHERED WOOD (128x128) — Vigas de madeira escura envelhecida com veios e ferragens
+  const weatheredWood = makePixelTexture(S, S, (px) => {
     const rand = mulberry32(199308);
-    for (let y = 0; y < 64; y++) {
-      const plank = Math.floor(y / 16);
-      const ly = y % 16;
-      for (let x = 0; x < 64; x++) {
-        const grit = (rand() - 0.5) * 10;
+    for (let y = 0; y < S; y++) {
+      const plank = Math.floor(y / 32);
+      const ly = y % 32;
+      for (let x = 0; x < S; x++) {
+        const grit = (rand() - 0.5) * 8;
         const grain =
-          Math.sin((x + plank * 17) * 0.28 + Math.sin(y * 0.7) * 0.6) * 8;
+          Math.sin((x + plank * 23) * 0.19 + Math.sin(y * 0.45) * 0.7) * 7;
 
-        // Cinta metálica lateral vertical
-        if (x < 5 || x >= 59) {
-          let iron = 44 + grit * 0.6;
-          if (x === 4 || x === 59) iron = 24;
-          if ((ly === 4 || ly === 11) && (x === 2 || x === 61)) iron += 32;
+        if (x < 7 || x >= 121) {
+          let iron = 38 + grit * 0.5;
+          if (x === 6 || x === 121) iron = 20;
+          if ((ly === 7 || ly === 24) && (x === 3 || x === 124)) iron += 22;
           px(x, y, iron, iron * 0.98, iron * 1.02);
           continue;
         }
 
-        // Fresta escura entre tábuas
         if (ly === 0) {
-          px(x, y, 26, 20, 15);
+          px(x, y, 22, 17, 13);
           continue;
         }
 
-        let tone = 92 + (plank % 2 === 0 ? 6 : -5) + grain + grit;
-        if (ly === 1) tone += 14;
-        if (ly === 15) tone -= 14;
+        let tone = 76 + (plank % 2 === 0 ? 5 : -4) + grain + grit;
+        if (ly === 1) tone += 10;
+        if (ly === 31) tone -= 10;
 
-        px(x, y, tone * 1.05, tone * 0.78, tone * 0.54);
+        px(x, y, tone * 1.04, tone * 0.76, tone * 0.52);
       }
     }
   });
@@ -370,9 +664,12 @@ export function createDoomTextures(): DoomTextureSet {
     startanWall,
     stoneWall,
     metalTrim,
+    pillarBulkhead,
     lightPanel,
     floorTile,
+    stoneFloor,
     ceilingGrate,
+    stoneVaultCeiling,
     darkIron,
     weatheredWood,
   };

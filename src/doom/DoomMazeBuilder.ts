@@ -22,14 +22,14 @@ export interface DoomMazeResult {
 }
 
 /**
- * Mapa 15x15 do Labirinto de Teste estilo DOOM Clássico:
- * - '#' : Parede industrial STARTAN
- * - 'B' : Parede de blocos de pedra STONE
- * - 'M' : Coluna estrutural de ferro rebitado METAL
- * - 'L' : Bloco com luminárias gradeadas LITE5 nas faces voltadas ao corredor
- * - 'A' : Passagem em arco com viga superior, mãos-francesas e batentes metálicos
+ * Mapa 15x15 do Labirinto Subterrâneo estilo DOOM Clássico:
+ * - '#' : Parede industrial escura STARTAN (Setor Norte)
+ * - 'B' : Alvenaria subterrânea de pedra STONE (Catacumbas Sul & Ninho)
+ * - 'M' : Coluna blindada estrutural central
+ * - 'L' : Bloco com arandela gradeada LITE5 iluminando o corredor
+ * - 'A' : Pórtico estrutural em arco com viga I, mãos-francesas e batentes de ferro
  * - 'P' : Ponto inicial do jogador
- * - '.' : Corredor / sala aberta
+ * - '.' : Corredor / câmara aberta
  */
 export const LABYRINTH_MAP: string[] = [
   '###L#####L#####',
@@ -94,8 +94,8 @@ export function worldToGridCell(
 }
 
 /**
- * Funde um conjunto de BufferGeometries estáticas já transformadas em uma única malha
- * por material, garantindo riqueza arquitetônica 3D sem custo extra de draw calls.
+ * Funde BufferGeometries estáticas já transformadas em uma única malha por material,
+ * mantendo alta riqueza arquitetônica 3D com custo mínimo de draw calls.
  */
 function mergeStaticGeometries(
   geos: THREE.BufferGeometry[]
@@ -243,45 +243,64 @@ export function buildDoomLabyrinth(
   const cellToWorldX = (gx: number) => (gx + 0.5) * CELL_SIZE - halfW;
   const cellToWorldZ = (gz: number) => (gz + 0.5) * CELL_SIZE - halfD;
 
+  // Materiais sombrios calibrados com luz base baixa para atmosfera real de terror e lanterna dramática
   const matStartan = createDoomSurfaceMaterial(
     textures.startanWall,
     sharedUniforms,
-    { tileScaleXZ: CELL_SIZE, wallHeight: WALL_HEIGHT, baseLight: 0.52 }
+    { tileScaleXZ: CELL_SIZE, wallHeight: WALL_HEIGHT, baseLight: 0.21 }
   );
   const matStone = createDoomSurfaceMaterial(
     textures.stoneWall,
     sharedUniforms,
-    { tileScaleXZ: CELL_SIZE, wallHeight: WALL_HEIGHT, baseLight: 0.46 }
+    { tileScaleXZ: CELL_SIZE, wallHeight: WALL_HEIGHT, baseLight: 0.19 }
   );
   const matMetal = createDoomSurfaceMaterial(
     textures.metalTrim,
     sharedUniforms,
-    { tileScaleXZ: CELL_SIZE * 0.5, wallHeight: WALL_HEIGHT, baseLight: 0.5 }
+    { tileScaleXZ: CELL_SIZE * 0.5, wallHeight: WALL_HEIGHT * 0.5, baseLight: 0.21 }
+  );
+  const matPillar = createDoomSurfaceMaterial(
+    textures.pillarBulkhead,
+    sharedUniforms,
+    { tileScaleXZ: CELL_SIZE, wallHeight: WALL_HEIGHT, baseLight: 0.22 }
   );
   const matDarkIron = createDoomSurfaceMaterial(
     textures.darkIron,
     sharedUniforms,
-    { tileScaleXZ: 1.5, wallHeight: 1.6, baseLight: 0.44 }
+    { tileScaleXZ: 1.5, wallHeight: 1.6, baseLight: 0.2 }
   );
   const matWood = createDoomSurfaceMaterial(
     textures.weatheredWood,
     sharedUniforms,
-    { tileScaleXZ: 1.4, wallHeight: 1.4, baseLight: 0.48 }
+    { tileScaleXZ: 1.5, wallHeight: 1.6, baseLight: 0.2 }
   );
+  // IMPORTANTE: useLocalUv = true garante que toda luminária fique 100% centralizada na moldura!
   const matLightPanel = createDoomSurfaceMaterial(
     textures.lightPanel,
     sharedUniforms,
-    { tileScaleXZ: 1.2, wallHeight: WALL_HEIGHT, fullBright: true }
+    { useLocalUv: true, fullBright: true }
   );
-  const matFloor = createDoomSurfaceMaterial(
+
+  // Setor Norte (Bunker Industrial, linhas 0..8) vs Setor Sul (Catacumbas de Pedra & Ninho, linhas 9..14)
+  const matNorthFloor = createDoomSurfaceMaterial(
     textures.floorTile,
     sharedUniforms,
-    { tileScaleXZ: CELL_SIZE * 0.75, wallHeight: WALL_HEIGHT, baseLight: 0.48 }
+    { tileScaleXZ: CELL_SIZE, wallHeight: WALL_HEIGHT, baseLight: 0.2 }
   );
-  const matCeiling = createDoomSurfaceMaterial(
+  const matSouthFloor = createDoomSurfaceMaterial(
+    textures.stoneFloor,
+    sharedUniforms,
+    { tileScaleXZ: CELL_SIZE, wallHeight: WALL_HEIGHT, baseLight: 0.18 }
+  );
+  const matNorthCeiling = createDoomSurfaceMaterial(
     textures.ceilingGrate,
     sharedUniforms,
-    { tileScaleXZ: CELL_SIZE, wallHeight: WALL_HEIGHT, baseLight: 0.4 }
+    { tileScaleXZ: CELL_SIZE, wallHeight: WALL_HEIGHT, baseLight: 0.17 }
+  );
+  const matSouthCeiling = createDoomSurfaceMaterial(
+    textures.stoneVaultCeiling,
+    sharedUniforms,
+    { tileScaleXZ: CELL_SIZE, wallHeight: WALL_HEIGHT, baseLight: 0.15 }
   );
 
   const root = new THREE.Group();
@@ -291,29 +310,46 @@ export function buildDoomLabyrinth(
   const colliders: StaticColliderBox[] = [];
   const lights: DoomLightSource[] = [];
 
-  // Buckets de detalhes 3D fundidos por material (zero custo extra de draw calls!)
   const startanGeos: THREE.BufferGeometry[] = [];
   const stoneGeos: THREE.BufferGeometry[] = [];
   const metalGeos: THREE.BufferGeometry[] = [];
+  const pillarGeos: THREE.BufferGeometry[] = [];
   const darkIronGeos: THREE.BufferGeometry[] = [];
   const woodGeos: THREE.BufferGeometry[] = [];
   const lightGeos: THREE.BufferGeometry[] = [];
 
-  // Piso e teto contínuos do labirinto
+  // Divisão limpa de piso e teto entre o Bunker Norte (linhas 0..8) e as Catacumbas Sul (linhas 9..14)
   const totalW = cols * CELL_SIZE;
-  const totalD = rows * CELL_SIZE;
+  const northRows = 9;
+  const southRows = rows - northRows;
+  const northD = northRows * CELL_SIZE;
+  const southD = southRows * CELL_SIZE;
+  const northCenterZ = -halfD + northD * 0.5;
+  const southCenterZ = -halfD + northD + southD * 0.5;
 
-  const floorGeo = new THREE.PlaneGeometry(totalW, totalD, cols * 2, rows * 2);
-  floorGeo.rotateX(-Math.PI * 0.5);
-  const floorMesh = new THREE.Mesh(floorGeo, matFloor);
-  floorMesh.position.set(0, 0, 0);
-  root.add(floorMesh);
+  const northFloorGeo = new THREE.PlaneGeometry(totalW, northD, cols * 2, northRows * 2);
+  northFloorGeo.rotateX(-Math.PI * 0.5);
+  const northFloorMesh = new THREE.Mesh(northFloorGeo, matNorthFloor);
+  northFloorMesh.position.set(0, 0, northCenterZ);
+  root.add(northFloorMesh);
 
-  const ceilGeo = new THREE.PlaneGeometry(totalW, totalD, cols * 2, rows * 2);
-  ceilGeo.rotateX(Math.PI * 0.5);
-  const ceilMesh = new THREE.Mesh(ceilGeo, matCeiling);
-  ceilMesh.position.set(0, WALL_HEIGHT, 0);
-  root.add(ceilMesh);
+  const southFloorGeo = new THREE.PlaneGeometry(totalW, southD, cols * 2, southRows * 2);
+  southFloorGeo.rotateX(-Math.PI * 0.5);
+  const southFloorMesh = new THREE.Mesh(southFloorGeo, matSouthFloor);
+  southFloorMesh.position.set(0, 0, southCenterZ);
+  root.add(southFloorMesh);
+
+  const northCeilGeo = new THREE.PlaneGeometry(totalW, northD, cols * 2, northRows * 2);
+  northCeilGeo.rotateX(Math.PI * 0.5);
+  const northCeilMesh = new THREE.Mesh(northCeilGeo, matNorthCeiling);
+  northCeilMesh.position.set(0, WALL_HEIGHT, northCenterZ);
+  root.add(northCeilMesh);
+
+  const southCeilGeo = new THREE.PlaneGeometry(totalW, southD, cols * 2, southRows * 2);
+  southCeilGeo.rotateX(Math.PI * 0.5);
+  const southCeilMesh = new THREE.Mesh(southCeilGeo, matSouthCeiling);
+  southCeilMesh.position.set(0, WALL_HEIGHT, southCenterZ);
+  root.add(southCeilMesh);
 
   let spawnPosition = new THREE.Vector3(0, 0, 0);
   const spawnYaw = -Math.PI * 0.5; // Olhando para Leste (+X) ao longo do corredor inicial
@@ -331,7 +367,7 @@ export function buildDoomLabyrinth(
       }
 
       // ======================================================================
-      // 1. VÃOS ABERTOS ('.' / 'P'): VIGAS DE TETO, NERVURAS E TUBULAÇÕES 3D
+      // 1. VÃOS ABERTOS ('.' / 'P'): VIGAS ESPAÇADAS E ELETRODUTOS SEM COLISÃO VISUAL
       // ======================================================================
       if (ch === '.' || ch === 'P') {
         const solidN = isSolidCell(LABYRINTH_MAP, gx, gz - 1);
@@ -339,126 +375,116 @@ export function buildDoomLabyrinth(
         const solidW = isSolidCell(LABYRINTH_MAP, gx - 1, gz);
         const solidE = isSolidCell(LABYRINTH_MAP, gx + 1, gz);
         const isSouthStone = gz >= 9;
-        const ribBucket = isSouthStone ? stoneGeos : darkIronGeos;
 
-        // Viga estrutural transversal no teto cruzando corredores Leste-Oeste
         if (solidN && solidS) {
-          pushBox(
-            ribBucket,
-            0.24,
-            0.22,
-            CELL_SIZE - 0.08,
-            wx - half + 0.14,
-            WALL_HEIGHT - 0.11,
-            wz
-          );
-          pushBox(
-            darkIronGeos,
-            0.32,
-            0.06,
-            CELL_SIZE - 0.06,
-            wx - half + 0.14,
-            WALL_HEIGHT - 0.21,
-            wz
-          );
-          // Tubulação industrial longitudinal suspensa rente à sanca norte do teto
+          // Viga transversal em células alternadas para ritmo limpo sem poluição visual
+          if ((gx + gz) % 2 === 0) {
+            pushBox(
+              isSouthStone ? stoneGeos : metalGeos,
+              0.22,
+              0.18,
+              CELL_SIZE - 0.12,
+              wx,
+              WALL_HEIGHT - 0.09,
+              wz
+            );
+            pushBox(
+              darkIronGeos,
+              0.28,
+              0.045,
+              CELL_SIZE - 0.1,
+              wx,
+              WALL_HEIGHT - 0.19,
+              wz
+            );
+          }
+          // Tubulação industrial correndo abaixo do nível da viga (y = WALL_HEIGHT - 0.27 -> zero colisão!)
           if (!isSouthStone) {
             pushCylinder(
               darkIronGeos,
-              0.055,
-              0.055,
+              0.045,
+              0.045,
               CELL_SIZE,
               8,
               wx,
-              WALL_HEIGHT - 0.16,
-              wz - half + 0.24,
+              WALL_HEIGHT - 0.27,
+              wz - half + 0.22,
               0,
               0,
               Math.PI * 0.5
             );
-            // Abraçadeira de fixação do duto
             pushBox(
-              metalGeos,
-              0.09,
-              0.18,
-              0.16,
+              darkIronGeos,
+              0.07,
+              0.24,
+              0.11,
               wx,
-              WALL_HEIGHT - 0.11,
-              wz - half + 0.24
+              WALL_HEIGHT - 0.14,
+              wz - half + 0.22
             );
           }
         } else if (solidW && solidE) {
-          // Viga estrutural transversal cruzando corredores Norte-Sul
-          pushBox(
-            ribBucket,
-            CELL_SIZE - 0.08,
-            0.22,
-            0.24,
-            wx,
-            WALL_HEIGHT - 0.11,
-            wz - half + 0.14
-          );
-          pushBox(
-            darkIronGeos,
-            CELL_SIZE - 0.06,
-            0.06,
-            0.32,
-            wx,
-            WALL_HEIGHT - 0.21,
-            wz - half + 0.14
-          );
+          if ((gx + gz) % 2 === 0) {
+            pushBox(
+              isSouthStone ? stoneGeos : metalGeos,
+              CELL_SIZE - 0.12,
+              0.18,
+              0.22,
+              wx,
+              WALL_HEIGHT - 0.09,
+              wz
+            );
+            pushBox(
+              darkIronGeos,
+              CELL_SIZE - 0.1,
+              0.045,
+              0.28,
+              wx,
+              WALL_HEIGHT - 0.19,
+              wz
+            );
+          }
           if (!isSouthStone) {
             pushCylinder(
               darkIronGeos,
-              0.055,
-              0.055,
+              0.045,
+              0.045,
               CELL_SIZE,
               8,
-              wx - half + 0.24,
-              WALL_HEIGHT - 0.16,
+              wx - half + 0.22,
+              WALL_HEIGHT - 0.27,
               wz,
               Math.PI * 0.5,
               0,
               0
             );
             pushBox(
-              metalGeos,
-              0.16,
-              0.18,
-              0.09,
-              wx - half + 0.24,
-              WALL_HEIGHT - 0.11,
+              darkIronGeos,
+              0.11,
+              0.24,
+              0.07,
+              wx - half + 0.22,
+              WALL_HEIGHT - 0.14,
               wz
             );
           }
-        } else if ((gx + gz) % 2 === 0 && !(gx === 7 && gz === 11)) {
-          // Câmaras amplas / cruzamentos: nervuras discretas no teto
-          pushBox(
-            darkIronGeos,
-            CELL_SIZE,
-            0.14,
-            0.18,
-            wx,
-            WALL_HEIGHT - 0.07,
-            wz - half + 0.09
-          );
         }
 
-        // Vigas de escora de madeira envelhecida nas galerias de pedra sul (quinas não obstrutivas)
+        // Escoras antigas de madeira nas galerias de pedra sul
         if (
           isSouthStone &&
           solidN &&
           solidW &&
           !(gx === 7 && gz === 11) &&
-          (gx + gz) % 3 === 0
+          (gx + gz) % 2 === 0
         ) {
           pushBox(
             woodGeos,
             0.16,
-            WALL_HEIGHT - 0.2,
+            WALL_HEIGHT - 0.18,
             0.16,
             wx - half + 0.14,
-            (WALL_HEIGHT - 0.2) * 0.5,
+            (WALL_HEIGHT - 0.18) * 0.5,
             wz - half + 0.14
           );
         }
@@ -466,43 +492,42 @@ export function buildDoomLabyrinth(
       }
 
       // ======================================================================
-      // 2. PASSAGEM EM ARCO ESCULPIDA EM 3D ('A')
-      //    Viga I dupla, mãos-francesas chanfradas 45°, batentes escalonados e chave central
+      // 2. PÓRTICOS EM ARCO ESCULPIDOS EM AÇO ESCURO ('A')
       // ======================================================================
       if (ch === 'A') {
         const northSouthWalls =
           isSolidCell(LABYRINTH_MAP, gx, gz - 1) &&
           isSolidCell(LABYRINTH_MAP, gx, gz + 1);
 
-        const lintelH = 0.72;
+        const lintelH = 0.64;
         const jambH = WALL_HEIGHT - lintelH;
-        const jambThickness = 0.28;
+        const jambThickness = 0.26;
 
         if (northSouthWalls) {
-          // Viga superior principal + abas inferior/superior de perfil I + chave central
           pushBox(
             metalGeos,
-            0.54,
+            0.48,
             lintelH,
-            CELL_SIZE,
+            CELL_SIZE - 0.04,
             wx,
             WALL_HEIGHT - lintelH * 0.5,
             wz
           );
           pushBox(
             darkIronGeos,
-            0.66,
-            0.1,
-            CELL_SIZE,
+            0.58,
+            0.09,
+            CELL_SIZE - 0.02,
             wx,
-            WALL_HEIGHT - lintelH + 0.05,
+            WALL_HEIGHT - lintelH + 0.045,
             wz
           );
+          // Chave central rebitada no topo do arco
           pushBox(
             darkIronGeos,
-            0.68,
-            lintelH + 0.08,
-            0.38,
+            0.62,
+            lintelH + 0.06,
+            0.34,
             wx,
             WALL_HEIGHT - lintelH * 0.5,
             wz
@@ -510,36 +535,34 @@ export function buildDoomLabyrinth(
 
           for (const sign of [-1, 1]) {
             const jz = wz + sign * (half - jambThickness * 0.5);
-            // Coluna lateral do batente
-            pushBox(metalGeos, 0.48, jambH, jambThickness, wx, jambH * 0.5, jz);
-            // Sapata pesada na base do batente + cinta intermediária
+            pushBox(metalGeos, 0.44, jambH, jambThickness, wx, jambH * 0.5, jz);
             pushBox(
               darkIronGeos,
-              0.58,
-              0.28,
-              jambThickness + 0.08,
+              0.52,
+              0.24,
+              jambThickness + 0.06,
               wx,
-              0.14,
-              jz - sign * 0.03
-            );
-            pushBox(
-              darkIronGeos,
-              0.54,
               0.12,
-              jambThickness + 0.05,
-              wx,
-              1.32,
               jz - sign * 0.02
             );
-            // Mão-francesa diagonal (corbel 45°) no canto superior do vão (y ~ 2.34m, livre para colisão!)
             pushBox(
               darkIronGeos,
-              0.42,
-              0.46,
-              0.18,
+              0.48,
+              0.09,
+              jambThickness + 0.04,
               wx,
-              WALL_HEIGHT - lintelH - 0.12,
-              wz + sign * (half - jambThickness - 0.09),
+              1.35,
+              jz - sign * 0.015
+            );
+            // Mão-francesa chanfrada 45° no canto superior (livre da cápsula do jogador)
+            pushBox(
+              darkIronGeos,
+              0.38,
+              0.42,
+              0.16,
+              wx,
+              WALL_HEIGHT - lintelH - 0.1,
+              wz + sign * (half - jambThickness - 0.08),
               sign * (Math.PI * 0.25),
               0,
               0
@@ -548,27 +571,27 @@ export function buildDoomLabyrinth(
         } else {
           pushBox(
             metalGeos,
-            CELL_SIZE,
+            CELL_SIZE - 0.04,
             lintelH,
-            0.54,
+            0.48,
             wx,
             WALL_HEIGHT - lintelH * 0.5,
             wz
           );
           pushBox(
             darkIronGeos,
-            CELL_SIZE,
-            0.1,
-            0.66,
+            CELL_SIZE - 0.02,
+            0.09,
+            0.58,
             wx,
-            WALL_HEIGHT - lintelH + 0.05,
+            WALL_HEIGHT - lintelH + 0.045,
             wz
           );
           pushBox(
             darkIronGeos,
-            0.38,
-            lintelH + 0.08,
-            0.68,
+            0.34,
+            lintelH + 0.06,
+            0.62,
             wx,
             WALL_HEIGHT - lintelH * 0.5,
             wz
@@ -576,32 +599,32 @@ export function buildDoomLabyrinth(
 
           for (const sign of [-1, 1]) {
             const jx = wx + sign * (half - jambThickness * 0.5);
-            pushBox(metalGeos, jambThickness, jambH, 0.48, jx, jambH * 0.5, wz);
+            pushBox(metalGeos, jambThickness, jambH, 0.44, jx, jambH * 0.5, wz);
             pushBox(
               darkIronGeos,
-              jambThickness + 0.08,
-              0.28,
-              0.58,
-              jx - sign * 0.03,
-              0.14,
-              wz
-            );
-            pushBox(
-              darkIronGeos,
-              jambThickness + 0.05,
-              0.12,
-              0.54,
+              jambThickness + 0.06,
+              0.24,
+              0.52,
               jx - sign * 0.02,
-              1.32,
+              0.12,
               wz
             );
             pushBox(
               darkIronGeos,
-              0.18,
-              0.46,
+              jambThickness + 0.04,
+              0.09,
+              0.48,
+              jx - sign * 0.015,
+              1.35,
+              wz
+            );
+            pushBox(
+              darkIronGeos,
+              0.16,
               0.42,
-              wx + sign * (half - jambThickness - 0.09),
-              WALL_HEIGHT - lintelH - 0.12,
+              0.38,
+              wx + sign * (half - jambThickness - 0.08),
+              WALL_HEIGHT - lintelH - 0.1,
               wz,
               0,
               0,
@@ -617,12 +640,12 @@ export function buildDoomLabyrinth(
       }
 
       // ======================================================================
-      // 3. BLOCOS SÓLIDOS DE PAREDE + RODAPÉS, SANCAS, TUBOS E PILASTRAS 3D
+      // 3. BLOCOS SÓLIDOS DE PAREDE + RODAPÉS, SANCAS E PILASTRAS SEM Z-FIGHTING
       // ======================================================================
       const isStoneBlock = ch === 'B' || (ch === 'L' && gz >= 9);
       const isMetalPillar = ch === 'M';
       const wallBucket = isMetalPillar
-        ? metalGeos
+        ? pillarGeos
         : isStoneBlock
           ? stoneGeos
           : startanGeos;
@@ -662,156 +685,136 @@ export function buildDoomLabyrinth(
         { open: openE, nx: 1, nz: 0, rotY: Math.PI * 0.5 },
       ];
 
-      // Rodapé inferior escalonado + sanca superior em todas as faces expostas ao corredor!
-      const trimBucket = isStoneBlock ? darkIronGeos : metalGeos;
+      // Rodapés e sancas em ferro escuro limpo (recuados 0.01m nas pontas para ZERO Z-fighting!)
       for (const fd of faceDirs) {
         if (!fd.open) continue;
-        const fx = wx + fd.nx * (half + 0.035);
-        const fz = wz + fd.nz * (half + 0.035);
-        const sx = fd.nx === 0 ? CELL_SIZE : 0.07;
-        const sz = fd.nz === 0 ? CELL_SIZE : 0.07;
+        const fx = wx + fd.nx * (half + 0.026);
+        const fz = wz + fd.nz * (half + 0.026);
+        const span = CELL_SIZE - 0.02;
+        const sx = fd.nx === 0 ? span : 0.052;
+        const sz = fd.nz === 0 ? span : 0.052;
 
-        // Rodapé pesado na base
-        pushBox(trimBucket, sx, 0.22, sz, fx, 0.11, fz);
-        // Friso chanfrado acima do rodapé
-        pushBox(
-          darkIronGeos,
-          fd.nx === 0 ? CELL_SIZE : 0.095,
-          0.045,
-          fd.nz === 0 ? CELL_SIZE : 0.095,
-          wx + fd.nx * (half + 0.045),
-          0.23,
-          wz + fd.nz * (half + 0.045)
-        );
-        // Sanca estrutural no topo da parede
-        pushBox(trimBucket, sx, 0.2, sz, fx, WALL_HEIGHT - 0.1, fz);
+        // Rodapé inferior escuro
+        pushBox(darkIronGeos, sx, 0.16, sz, fx, 0.08, fz);
+        // Sanca superior escura
+        pushBox(darkIronGeos, sx, 0.15, sz, fx, WALL_HEIGHT - 0.075, fz);
 
-        // Tubulação vertical e caixa de inspeção em paredes industriais alternadas (sem 'L')
+        // Tubulação vertical com caixa de passagem em ferro escuro (SEM listras amarelas!)
         if (
           ch === '#' &&
-          (gx * 3 + gz * 5 + (fd.nx + 2) + (fd.nz + 2)) % 5 === 0
+          (gx * 3 + gz * 5 + (fd.nx + 2) + (fd.nz + 2)) % 6 === 0
         ) {
-          const pipeOff = 0.62;
+          const pipeOff = 0.64;
           const px =
-            wx + fd.nx * (half + 0.055) + (fd.nz !== 0 ? pipeOff : 0);
+            wx + fd.nx * (half + 0.048) + (fd.nz !== 0 ? pipeOff : 0);
           const pz =
-            wz + fd.nz * (half + 0.055) + (fd.nx !== 0 ? pipeOff : 0);
+            wz + fd.nz * (half + 0.048) + (fd.nx !== 0 ? pipeOff : 0);
           pushCylinder(
             darkIronGeos,
-            0.048,
-            0.048,
-            WALL_HEIGHT - 0.24,
+            0.042,
+            0.042,
+            WALL_HEIGHT - 0.32,
             8,
             px,
             WALL_HEIGHT * 0.5,
             pz
           );
-          // Flanges de união do tubo + caixa de passagem rebitada
-          pushCylinder(darkIronGeos, 0.072, 0.072, 0.08, 8, px, 1.05, pz);
-          pushCylinder(darkIronGeos, 0.072, 0.072, 0.08, 8, px, 2.25, pz);
-          pushBox(
-            metalGeos,
-            fd.nx === 0 ? 0.34 : 0.09,
-            0.42,
-            fd.nz === 0 ? 0.34 : 0.09,
-            wx + fd.nx * (half + 0.045) - (fd.nz !== 0 ? 0.45 : 0),
-            1.48,
-            wz + fd.nz * (half + 0.045) - (fd.nx !== 0 ? 0.45 : 0)
-          );
-        }
-
-        // Reforços estruturais extras no pilar central de ferro 'M'
-        if (isMetalPillar) {
+          pushCylinder(darkIronGeos, 0.064, 0.064, 0.07, 8, px, 1.05, pz);
+          pushCylinder(darkIronGeos, 0.064, 0.064, 0.07, 8, px, 2.22, pz);
           pushBox(
             darkIronGeos,
-            fd.nx === 0 ? 1.5 : 0.11,
-            0.22,
-            fd.nz === 0 ? 1.5 : 0.11,
-            wx + fd.nx * (half + 0.05),
-            WALL_HEIGHT * 0.5,
-            wz + fd.nz * (half + 0.05)
+            fd.nx === 0 ? 0.28 : 0.075,
+            0.34,
+            fd.nz === 0 ? 0.28 : 0.075,
+            wx + fd.nx * (half + 0.038) - (fd.nz !== 0 ? 0.44 : 0),
+            1.44,
+            wz + fd.nz * (half + 0.038) - (fd.nx !== 0 ? 0.44 : 0)
           );
         }
       }
 
-      // Pilastras 3D esculpidas (base escalonada + fuste + anel central + capitel) nos cantos expostos
+      // Pilastras estruturais nos cantos externos expostos E em toda a divisória Norte-Sul (gz === 8)
+      const isTransitionRow = gz === 8;
       const corners: Array<[boolean, number, number]> = [
-        [openN && openW, -half, -half],
-        [openN && openE, half, -half],
-        [openS && openW, -half, half],
-        [openS && openE, half, half],
+        [(openN && openW) || (isTransitionRow && (openN || openW)), -half, -half],
+        [(openN && openE) || (isTransitionRow && (openN || openE)), half, -half],
+        [(openS && openW) || (isTransitionRow && (openS || openW)), -half, half],
+        [(openS && openE) || (isTransitionRow && (openS || openE)), half, half],
       ];
       for (const [exposed, ox, oz] of corners) {
         if (!exposed) continue;
         const cx = wx + ox;
         const cz = wz + oz;
-        pushBox(metalGeos, 0.28, WALL_HEIGHT, 0.28, cx, WALL_HEIGHT * 0.5, cz);
-        pushBox(darkIronGeos, 0.38, 0.34, 0.38, cx, 0.17, cz);
-        pushBox(darkIronGeos, 0.34, 0.14, 0.34, cx, WALL_HEIGHT * 0.5, cz);
+        pushBox(metalGeos, 0.24, WALL_HEIGHT, 0.24, cx, WALL_HEIGHT * 0.5, cz);
+        pushBox(darkIronGeos, 0.31, 0.24, 0.31, cx, 0.12, cz);
         pushBox(
           darkIronGeos,
-          0.38,
-          0.28,
-          0.38,
+          0.31,
+          0.22,
+          0.31,
           cx,
-          WALL_HEIGHT - 0.14,
+          WALL_HEIGHT - 0.11,
           cz
         );
       }
 
       // ======================================================================
-      // 4. LUMINÁRIAS DE PAREDE 3D GRADEADAS ('L' — CAIXA, GRADES E ELETRODUTO)
+      // 4. ARANDELAS DE PAREDE 3D GRADEADAS ('L' — 100% CENTRALIZADAS E ILUMINADAS)
       // ======================================================================
       if (ch === 'L') {
-        let placedLight = false;
-        for (const d of faceDirs) {
-          if (!d.open) continue;
+        // Filtra apenas faces voltadas para dentro do mapa (ignora borda externa do labirinto!)
+        const interiorOpenFaces = faceDirs.filter((d) => {
+          if (!d.open) return false;
+          const nGx = gx + d.nx;
+          const nGz = gz + d.nz;
+          return nGx >= 0 && nGx < cols && nGz >= 0 && nGz < rows;
+        });
 
-          // Painel emissor LITE5
-          const panel = new THREE.PlaneGeometry(0.92, 2.12);
+        // Coloca no máximo 2 luminárias por bloco 'L', cada uma com sua própria luz real!
+        const activeFaces = interiorOpenFaces.slice(0, 2);
+        for (const d of activeFaces) {
+          // Painel emissor LITE5 usando UV local 0..1 (sempre perfeitamente enquadrado!)
+          const panel = new THREE.PlaneGeometry(0.78, 1.74);
           if (d.rotY !== 0) panel.rotateY(d.rotY);
           panel.translate(
-            wx + d.nx * (half + 0.024),
-            WALL_HEIGHT * 0.5,
-            wz + d.nz * (half + 0.024)
+            wx + d.nx * (half + 0.022),
+            1.64,
+            wz + d.nz * (half + 0.022)
           );
           lightGeos.push(panel);
 
-          // Moldura metálica 3D ao redor da luminária (coifa superior/inferior + abas laterais + 4 grades)
-          const frameDepth = 0.095;
+          // Gaiola metálica 3D escura de proteção (coifa superior/inferior, laterais e 3 barras)
+          const frameDepth = 0.085;
           const outX = wx + d.nx * (half + frameDepth * 0.5);
           const outZ = wz + d.nz * (half + frameDepth * 0.5);
 
           if (d.nx === 0) {
-            // Parede voltada para Norte ou Sul
-            pushBox(darkIronGeos, 1.08, 0.11, frameDepth + 0.03, outX, 2.69, outZ);
-            pushBox(darkIronGeos, 1.08, 0.11, frameDepth + 0.03, outX, 0.51, outZ);
-            pushBox(metalGeos, 0.08, 2.24, frameDepth, outX - 0.5, WALL_HEIGHT * 0.5, outZ);
-            pushBox(metalGeos, 0.08, 2.24, frameDepth, outX + 0.5, WALL_HEIGHT * 0.5, outZ);
-            // 4 barras horizontais 3D de proteção sobre o vidro luminoso
-            for (const gy of [0.92, 1.38, 1.84, 2.3]) {
+            pushBox(darkIronGeos, 0.92, 0.09, frameDepth + 0.025, outX, 2.55, outZ);
+            pushBox(darkIronGeos, 0.92, 0.09, frameDepth + 0.025, outX, 0.73, outZ);
+            pushBox(darkIronGeos, 0.07, 1.88, frameDepth, outX - 0.42, 1.64, outZ);
+            pushBox(darkIronGeos, 0.07, 1.88, frameDepth, outX + 0.42, 1.64, outZ);
+            for (const gy of [1.18, 1.64, 2.1]) {
               pushBox(
                 darkIronGeos,
-                1.02,
-                0.038,
-                0.038,
+                0.86,
+                0.032,
+                0.032,
                 wx + d.nx * (half + frameDepth),
                 gy,
                 wz + d.nz * (half + frameDepth)
               );
             }
           } else {
-            // Parede voltada para Leste ou Oeste
-            pushBox(darkIronGeos, frameDepth + 0.03, 0.11, 1.08, outX, 2.69, outZ);
-            pushBox(darkIronGeos, frameDepth + 0.03, 0.11, 1.08, outX, 0.51, outZ);
-            pushBox(metalGeos, frameDepth, 2.24, 0.08, outX, WALL_HEIGHT * 0.5, outZ - 0.5);
-            pushBox(metalGeos, frameDepth, 2.24, 0.08, outX, WALL_HEIGHT * 0.5, outZ + 0.5);
-            for (const gy of [0.92, 1.38, 1.84, 2.3]) {
+            pushBox(darkIronGeos, frameDepth + 0.025, 0.09, 0.92, outX, 2.55, outZ);
+            pushBox(darkIronGeos, frameDepth + 0.025, 0.09, 0.92, outX, 0.73, outZ);
+            pushBox(darkIronGeos, frameDepth, 1.88, 0.07, outX, 1.64, outZ - 0.42);
+            pushBox(darkIronGeos, frameDepth, 1.88, 0.07, outX, 1.64, outZ + 0.42);
+            for (const gy of [1.18, 1.64, 2.1]) {
               pushBox(
                 darkIronGeos,
-                0.038,
-                0.038,
-                1.02,
+                0.032,
+                0.032,
+                0.86,
                 wx + d.nx * (half + frameDepth),
                 gy,
                 wz + d.nz * (half + frameDepth)
@@ -819,29 +822,28 @@ export function buildDoomLabyrinth(
             }
           }
 
-          // Eletroduto curto ligando o topo da luminária ao teto
+          // Eletroduto vertical ligando o topo da luminária à sanca
           pushCylinder(
             darkIronGeos,
-            0.032,
-            0.032,
-            0.46,
+            0.028,
+            0.028,
+            0.52,
             6,
-            wx + d.nx * (half + 0.045),
-            2.96,
-            wz + d.nz * (half + 0.045)
+            wx + d.nx * (half + 0.038),
+            2.84,
+            wz + d.nz * (half + 0.038)
           );
 
-          if (!placedLight && lights.length < MAX_DOOM_LIGHTS) {
-            placedLight = true;
+          if (lights.length < MAX_DOOM_LIGHTS) {
             lights.push({
               position: new THREE.Vector3(
-                wx + d.nx * (half + 1.1),
-                WALL_HEIGHT * 0.55,
-                wz + d.nz * (half + 1.1)
+                wx + d.nx * (half + 1.05),
+                1.72,
+                wz + d.nz * (half + 1.05)
               ),
-              baseIntensity: 0.55,
-              flicker: (gx + gz) % 4 === 0,
-              phase: gx * 1.7 + gz * 2.3,
+              baseIntensity: 0.62,
+              flicker: (gx + gz) % 3 === 0,
+              phase: gx * 1.7 + gz * 2.3 + d.nx * 0.8 + d.nz * 1.1,
             });
           }
         }
@@ -850,7 +852,7 @@ export function buildDoomLabyrinth(
   }
 
   // ==========================================================================
-  // 5. PLAFONS 3D INDUSTRIAIS NO TETO DA CÂMARA CENTRAL & LUMINÁRIA PENDENTE DO NINHO
+  // 5. PLAFONS INDUSTRIAIS DA CÂMARA CENTRAL & PENDENTE DO NINHO DA ARANHA
   // ==========================================================================
   const centerX = cellToWorldX(7);
   const centerZ = cellToWorldZ(6);
@@ -861,35 +863,35 @@ export function buildDoomLabyrinth(
     const lx = centerX + offset[0];
     const lz = centerZ + offset[1];
 
-    const ceilLight = new THREE.PlaneGeometry(1.36, 1.36);
+    const ceilLight = new THREE.PlaneGeometry(1.24, 1.24);
     ceilLight.rotateX(Math.PI * 0.5);
-    ceilLight.translate(lx, WALL_HEIGHT - 0.075, lz);
+    ceilLight.translate(lx, WALL_HEIGHT - 0.07, lz);
     lightGeos.push(ceilLight);
 
-    // Caixa metálica rebitada 3D + grelha cruzada no teto
-    pushBox(darkIronGeos, 1.56, 0.09, 0.1, lx, WALL_HEIGHT - 0.045, lz - 0.73);
-    pushBox(darkIronGeos, 1.56, 0.09, 0.1, lx, WALL_HEIGHT - 0.045, lz + 0.73);
-    pushBox(darkIronGeos, 0.1, 0.09, 1.36, lx - 0.73, WALL_HEIGHT - 0.045, lz);
-    pushBox(darkIronGeos, 0.1, 0.09, 1.36, lx + 0.73, WALL_HEIGHT - 0.045, lz);
-    pushBox(metalGeos, 1.42, 0.04, 0.06, lx, WALL_HEIGHT - 0.09, lz);
-    pushBox(metalGeos, 0.06, 0.04, 1.42, lx, WALL_HEIGHT - 0.09, lz);
-  }
-  if (lights.length < MAX_DOOM_LIGHTS) {
-    lights.push({
-      position: new THREE.Vector3(centerX, 2.2, centerZ),
-      baseIntensity: 0.65,
-      flicker: false,
-      phase: 0,
-    });
+    pushBox(darkIronGeos, 1.44, 0.09, 0.09, lx, WALL_HEIGHT - 0.045, lz - 0.67);
+    pushBox(darkIronGeos, 1.44, 0.09, 0.09, lx, WALL_HEIGHT - 0.045, lz + 0.67);
+    pushBox(darkIronGeos, 0.09, 0.09, 1.26, lx - 0.67, WALL_HEIGHT - 0.045, lz);
+    pushBox(darkIronGeos, 0.09, 0.09, 1.26, lx + 0.67, WALL_HEIGHT - 0.045, lz);
+    pushBox(darkIronGeos, 1.3, 0.035, 0.05, lx, WALL_HEIGHT - 0.085, lz);
+    pushBox(darkIronGeos, 0.05, 0.035, 1.3, lx, WALL_HEIGHT - 0.085, lz);
+
+    if (lights.length < MAX_DOOM_LIGHTS) {
+      lights.push({
+        position: new THREE.Vector3(lx, 2.35, lz),
+        baseIntensity: 0.56,
+        flicker: false,
+        phase: 0,
+      });
+    }
   }
 
-  // Luminária industrial antiga suspensa e levemente torta no teto do Ninho da Aranha (7, 11)
+  // Luminária industrial antiga suspensa e torta no teto do Ninho da Aranha (7, 11)
   const lairX = cellToWorldX(7);
   const lairZ = cellToWorldZ(11);
   pushCylinder(
     darkIronGeos,
-    0.04,
-    0.04,
+    0.036,
+    0.036,
     0.26,
     6,
     lairX,
@@ -898,9 +900,9 @@ export function buildDoomLabyrinth(
   );
   pushBox(
     darkIronGeos,
-    1.26,
-    0.1,
-    1.26,
+    1.16,
+    0.09,
+    1.16,
     lairX,
     WALL_HEIGHT - 0.25,
     lairZ,
@@ -908,29 +910,30 @@ export function buildDoomLabyrinth(
     0.18,
     -0.05
   );
-  const lairCeilLight = new THREE.PlaneGeometry(1.06, 1.06);
+  const lairCeilLight = new THREE.PlaneGeometry(0.98, 0.98);
   lairCeilLight.rotateX(Math.PI * 0.5);
   const tiltMat = new THREE.Matrix4().makeRotationFromEuler(
     new THREE.Euler(0.06, 0.18, -0.05, 'YXZ')
   );
   lairCeilLight.applyMatrix4(tiltMat);
-  lairCeilLight.translate(lairX, WALL_HEIGHT - 0.305, lairZ);
+  lairCeilLight.translate(lairX, WALL_HEIGHT - 0.302, lairZ);
   lightGeos.push(lairCeilLight);
 
   if (lights.length < MAX_DOOM_LIGHTS) {
     lights.push({
       position: new THREE.Vector3(lairX, 2.35, lairZ),
-      baseIntensity: 0.52,
+      baseIntensity: 0.48,
       flicker: true,
       phase: 5.1,
     });
   }
 
-  // Adiciona as malhas estáticas consolidadas à cena
+  // Consolida as malhas estáticas na cena
   const buckets: Array<[THREE.BufferGeometry[], THREE.Material, string]> = [
     [startanGeos, matStartan, 'MazeWallsStartan'],
     [stoneGeos, matStone, 'MazeWallsStone'],
     [metalGeos, matMetal, 'MazeTrimMetal'],
+    [pillarGeos, matPillar, 'MazeBulkheadPillar'],
     [darkIronGeos, matDarkIron, 'MazeDetailsDarkIron'],
     [woodGeos, matWood, 'MazePropsWood'],
     [lightGeos, matLightPanel, 'MazeLightPanels'],
@@ -945,7 +948,6 @@ export function buildDoomLabyrinth(
     }
   }
 
-  // Sincroniza estado inicial dos uniforms de luz
   sharedUniforms.uLightCount.value = Math.min(lights.length, MAX_DOOM_LIGHTS);
   for (let i = 0; i < sharedUniforms.uLightCount.value; i++) {
     sharedUniforms.uLightPositions.value[i].copy(lights[i].position);
