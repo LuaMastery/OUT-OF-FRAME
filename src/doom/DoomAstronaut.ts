@@ -2198,7 +2198,8 @@ export class DoomAstronaut {
     planarSpeed: number,
     crouchAmount: number,
     flashlightOn: boolean,
-    trappedOrDowned: boolean
+    trappedOrDowned: boolean,
+    afk = false
   ): void {
     this.root.visible = true;
     this.setFirstPersonMode(false);
@@ -2239,10 +2240,13 @@ export class DoomAstronaut {
     this.bodyPivot.rotation.set(0, 0, 0);
     this.hipsGroup.position.set(0, 0.85, 0);
     this.torsoGroup.rotation.set(torsoLeanForward, 0, 0);
+    const afkHeadNod = afk ? -0.24 : 0;
     this.headGroup.rotation.set(
-      Math.max(-0.52, Math.min(0.52, pitch * 0.62)) - torsoLeanForward * 0.8,
+      Math.max(-0.52, Math.min(0.52, pitch * 0.62)) -
+        torsoLeanForward * 0.8 +
+        afkHeadNod,
       0,
-      0
+      afk ? 0.05 : 0
     );
 
     this.leftLeg.hipPivot.rotation.set(crouchHipBend + legSwing, 0, -0.03);

@@ -44,9 +44,14 @@ import { createDoomTextures } from '../src/doom/DoomTextures';
 import { DoomWorldItems } from '../src/doom/DoomWorldItems';
 import { SoundEngine } from '../src/engine/audio/SoundEngine';
 import {
+  AFK_HIDDEN_GRACE_MS,
+  AFK_IDLE_TIMEOUT_MS,
   clearLocalMirrorRoomsForTests,
   formatRoomCodeDisplay,
+  isPlayerConsideredAfk,
   MultiplayerLobbyService,
+  MultiplayerRoomClient,
+  NetworkPlayerPosePacket,
   normalizeRoomCode,
 } from '../src/multiplayer/MultiplayerService';
 import { BINARY_MENU_ITEMS } from '../src/terminal/TerminalBoot';
@@ -1944,5 +1949,115 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
     expect(
       allyAstronaut.getThirdPersonFlashlightMuzzleWorld(muzzlePos, muzzleDir)
     ).toBe(false);
+  });
+
+  it('mantém jogadores inativos dentro da partida sem desconectá-los e sincroniza o estado/ícone AFK', async () => {
+    // 1) Detecção pura de estado AFK (tempo ocioso ou aba minimizada)
+    expect(isPlayerConsideredAfk(0, false, 0)).toBe(false);
+    expect(isPlayerConsideredAfk(AFK_IDLE_TIMEOUT_MS - 1, false, 0)).toBe(false);
+    expect(isPlayerConsideredAfk(AFK_IDLE_TIMEOUT_MS, false, 0)).toBe(true);
+    expect(isPlayerConsideredAfk(500, true, AFK_HIDDEN_GRACE_MS - 100)).toBe(
+      false
+    );
+    expect(isPlayerConsideredAfk(500, true, AFK_HIDDEN_GRACE_MS)).toBe(true);
+    // Ao retomar atividade com aba visível, sai de AFK imediatamente
+    expect(isPlayerConsideredAfk(0, false, 0)).toBe(false);
+
+    // 2) Sala mantém operadores ausentes conectados e propaga status AFK em tempo real
+    clearLocalMirrorRoomsForTests();
+    const lobby = new MultiplayerLobbyService({ forceLocalOnly: true });
+    const hostSession = await lobby.createRoom(
+      { roomName: 'Setor AFK Seguro', isListed: true, maxPlayers: 4 },
+      { id: 'astro-host-afk', name: 'HOST-ALFA' }
+    );
+    const guestJoin = await lobby.joinRoom(
+      hostSession.roomCode,
+      undefined,
+      { id: 'astro-guest-afk', name: 'OPERADOR-AUSENTE' }
+    );
+    expect(guestJoin.ok).toBe(true);
+    expect(guestJoin.session).toBeDefined();
+
+    const receivedPoses: NetworkPlayerPosePacket[] = [];
+    const hostClient = new MultiplayerRoomClient(
+      hostSession,
+      {
+        onRemotePlayerPose: (pkt) => receivedPoses.push(pkt),
+        onRemotePlayerLeft: () => {},
+        onSpiderSync: () => {},
+        onWorldEvent: () => {},
+        onRosterUpdated: () => {},
+      },
+      true
+    );
+    const guestClient = new MultiplayerRoomClient(
+      guestJoin.session!,
+      {
+        onRemotePlayerPose: () => {},
+        onRemotePlayerLeft: () => {},
+        onSpiderSync: () => {},
+        onWorldEvent: () => {},
+        onRosterUpdated: () => {},
+      },
+      true
+    );
+
+    hostClient.connect();
+    guestClient.connect();
+
+    guestClient.broadcastPlayerPose({
+      x: 4,
+      y: 0,
+      z: -6,
+      yaw: 0,
+      pitch: 0,
+      speed: 3.2,
+      bobPhase: 1,
+      crouch: 0,
+      flashlightOn: true,
+      flashDirX: 0,
+      flashDirY: 0,
+      flashDirZ: -1,
+      health: 100,
+      bleeding: false,
+      ensnared: false,
+      inSequence: false,
+      dead: false,
+      afk: false,
+    });
+
+    // Entra em modo AFK -> continua na sala, velocidade zera e pacote propaga afk=true!
+    guestClient.setLocalAfk(true);
+    expect(guestClient.isLocalAfk).toBe(true);
+
+    await new Promise((r) => setTimeout(r, 35));
+
+    if (typeof BroadcastChannel !== 'undefined') {
+      expect(receivedPoses.some((p) => p.afk === true && p.speed === 0)).toBe(
+        true
+      );
+    }
+
+    const inspectedAfk = await lobby.inspectRoomByCode(hostSession.roomCode);
+    expect(inspectedAfk.found).toBe(true);
+    expect(inspectedAfk.playerCount).toBe(2);
+    const guestSummary = inspectedAfk.playersSummary?.find(
+      (p) => p.id === 'astro-guest-afk'
+    );
+    expect(guestSummary).toBeDefined();
+    expect(guestSummary?.status).toBe('AFK');
+
+    // Retorna da ausência -> sai de AFK sem jamais ter sido desconectado
+    guestClient.setLocalAfk(false);
+    expect(guestClient.isLocalAfk).toBe(false);
+    const inspectedBack = await lobby.inspectRoomByCode(hostSession.roomCode);
+    expect(inspectedBack.playerCount).toBe(2);
+    expect(
+      inspectedBack.playersSummary?.find((p) => p.id === 'astro-guest-afk')
+        ?.status
+    ).toBe('ONLINE');
+
+    guestClient.disconnect();
+    hostClient.disconnect();
   });
 });

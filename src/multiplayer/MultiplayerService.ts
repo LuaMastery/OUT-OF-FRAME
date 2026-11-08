@@ -79,6 +79,24 @@ export interface CreateRoomParams {
   maxPlayers?: number;
 }
 
+export const AFK_IDLE_TIMEOUT_MS = 25_000;
+export const AFK_HIDDEN_GRACE_MS = 2_500;
+const ROOM_RETENTION_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Determina de forma pura se o jogador deve receber o estado/ícone AFK (ausente/indisponível).
+ */
+export function isPlayerConsideredAfk(
+  idleMs: number,
+  isDocumentHidden: boolean,
+  hiddenDurationMs = 0
+): boolean {
+  if (isDocumentHidden && hiddenDurationMs >= AFK_HIDDEN_GRACE_MS) {
+    return true;
+  }
+  return idleMs >= AFK_IDLE_TIMEOUT_MS;
+}
+
 export interface NetworkPlayerPosePacket {
   id: string;
   name: string;
@@ -99,6 +117,7 @@ export interface NetworkPlayerPosePacket {
   ensnared: boolean;
   inSequence: boolean;
   dead: boolean;
+  afk?: boolean;
   ts: number;
 }
 
@@ -310,7 +329,10 @@ function loadLocalMirrorMap(): Map<string, LocalMirrorRoomRecord> {
         const arr = JSON.parse(raw) as LocalMirrorRoomRecord[];
         if (Array.isArray(arr)) {
           for (const item of arr) {
-            if (now - item.updatedAtMs < 90_000 && item.players.length > 0) {
+            if (
+              now - item.updatedAtMs < ROOM_RETENTION_MS &&
+              item.players.length > 0
+            ) {
               memoryLocalRooms.set(item.roomCode, item);
             }
           }
@@ -322,7 +344,7 @@ function loadLocalMirrorMap(): Map<string, LocalMirrorRoomRecord> {
   }
 
   for (const [code, rec] of memoryLocalRooms.entries()) {
-    if (now - rec.updatedAtMs >= 90_000 || rec.players.length === 0) {
+    if (now - rec.updatedAtMs >= ROOM_RETENTION_MS || rec.players.length === 0) {
       memoryLocalRooms.delete(code);
     }
   }
@@ -770,7 +792,7 @@ export class MultiplayerLobbyService {
 
     const now = Date.now();
     const others = local.players.filter(
-      (p) => p.id !== profile.id && now - p.ts < 45_000
+      (p) => p.id !== profile.id && now - p.ts < ROOM_RETENTION_MS
     );
     const alreadyIn = local.players.some((p) => p.id === profile.id);
     if (others.length >= local.maxPlayers && !alreadyIn) {
@@ -829,17 +851,69 @@ export interface MultiplayerRoomClientCallbacks {
   ) => void;
 }
 
+/**
+ * Cria um temporizador periódico imune ao congelamento de abas em segundo plano
+ * usando um Web Worker inline (com fallback automático para setInterval).
+ */
+function createBackgroundSafeInterval(
+  callback: () => void,
+  intervalMs: number
+): () => void {
+  if (
+    typeof Worker !== 'undefined' &&
+    typeof Blob !== 'undefined' &&
+    typeof URL !== 'undefined' &&
+    typeof URL.createObjectURL === 'function'
+  ) {
+    try {
+      const src = `const id = setInterval(() => postMessage(1), ${Math.max(500, Math.floor(intervalMs))}); onmessage = (e) => { if (e.data === 'stop') { clearInterval(id); close(); } };`;
+      const blob = new Blob([src], { type: 'application/javascript' });
+      const blobUrl = URL.createObjectURL(blob);
+      const worker = new Worker(blobUrl);
+      worker.onmessage = () => {
+        callback();
+      };
+      return () => {
+        try {
+          worker.postMessage('stop');
+          worker.terminate();
+        } catch {
+          // Ignorar
+        }
+        try {
+          URL.revokeObjectURL(blobUrl);
+        } catch {
+          // Ignorar
+        }
+      };
+    } catch {
+      // Fallback para setInterval abaixo
+    }
+  }
+
+  const timer = setInterval(callback, intervalMs);
+  return () => clearInterval(timer);
+}
+
 export class MultiplayerRoomClient {
   private channel: RealtimeChannel | null = null;
   private localBc: BroadcastChannel | null = null;
-  private heartbeatIntervalId = 0;
+  private stopKeepaliveLoop: (() => void) | null = null;
   private pingIntervalId = 0;
+  private reconnectTimerId = 0;
   private disposed = false;
+  private channelConnected = false;
   private estimatedPingMs = 18;
   private currentHostId: string;
   private currentHostName: string;
   private currentPlayers: RoomPlayerSummary[];
+  private localAfk = false;
+  private lastSentPose: Omit<NetworkPlayerPosePacket, 'id' | 'name' | 'ts'> | null =
+    null;
+  private lastPoseSentAtMs = 0;
+  private lastHeartbeatAtMs = 0;
   private readonly boundUnload: () => void;
+  private readonly boundWakeUp: () => void;
 
   constructor(
     public readonly session: ActiveRoomSession,
@@ -852,10 +926,41 @@ export class MultiplayerRoomClient {
     this.boundUnload = () => {
       this.disconnect();
     };
+    this.boundWakeUp = () => {
+      if (this.disposed) return;
+      if (!this.channelConnected && !this.forceLocalOnly) {
+        this.openRealtimeChannel();
+      }
+      void this.sendRoomHeartbeat();
+    };
   }
 
   get isHost(): boolean {
     return this.currentHostId === this.session.localPlayerId;
+  }
+
+  get isLocalAfk(): boolean {
+    return this.localAfk;
+  }
+
+  setLocalAfk(afk: boolean): void {
+    if (this.localAfk === afk) return;
+    this.localAfk = afk;
+    if (this.lastSentPose) {
+      this.broadcastPlayerPose({
+        ...this.lastSentPose,
+        speed: afk ? 0 : this.lastSentPose.speed,
+        afk,
+      });
+    }
+    void this.sendRoomHeartbeat();
+  }
+
+  private getLocalRosterStatus(): string {
+    if (this.localAfk) {
+      return this.isHost ? 'HOST_AFK' : 'AFK';
+    }
+    return this.isHost ? 'HOST' : 'ONLINE';
   }
 
   get hostName(): string {
@@ -870,10 +975,72 @@ export class MultiplayerRoomClient {
     return this.currentPlayers;
   }
 
+  private getChannelKey(): string {
+    return `oof-room-${this.session.roomCode}-${this.session.accessToken.slice(0, 8)}`;
+  }
+
+  private openRealtimeChannel(): void {
+    if (this.disposed || this.forceLocalOnly) return;
+    const sb = getSupabaseClient();
+    if (!sb) return;
+
+    if (this.channel) {
+      try {
+        sb.removeChannel(this.channel);
+      } catch {
+        // Ignorar
+      }
+      this.channel = null;
+    }
+
+    this.channelConnected = false;
+    const chanKey = this.getChannelKey();
+    const ch = sb.channel(chanKey, {
+      config: {
+        broadcast: { self: false, ack: false },
+      },
+    });
+    this.channel = ch;
+
+    ch.on('broadcast', { event: 'oof_pkt' }, ({ payload }) => {
+      this.handleIncomingEnvelope(payload);
+    }).subscribe((status) => {
+      if (this.disposed || this.channel !== ch) return;
+      if (status === 'SUBSCRIBED') {
+        this.channelConnected = true;
+        this.sendEnvelope({
+          t: 'hello',
+          id: this.session.localPlayerId,
+          name: this.session.localPlayerName,
+          afk: this.localAfk,
+          ts: Date.now(),
+        });
+        if (this.lastSentPose) {
+          this.broadcastPlayerPose({
+            ...this.lastSentPose,
+            afk: this.localAfk,
+          });
+        }
+      } else if (
+        status === 'TIMED_OUT' ||
+        status === 'CHANNEL_ERROR' ||
+        status === 'CLOSED'
+      ) {
+        this.channelConnected = false;
+        if (typeof window !== 'undefined' && !this.reconnectTimerId) {
+          this.reconnectTimerId = window.setTimeout(() => {
+            this.reconnectTimerId = 0;
+            this.openRealtimeChannel();
+          }, 2200);
+        }
+      }
+    });
+  }
+
   connect(): void {
     if (this.disposed) return;
 
-    const chanKey = `oof-room-${this.session.roomCode}-${this.session.accessToken.slice(0, 8)}`;
+    const chanKey = this.getChannelKey();
 
     // 1. Canal local instantâneo entre abas do navegador
     try {
@@ -887,45 +1054,48 @@ export class MultiplayerRoomClient {
       this.localBc = null;
     }
 
-    // 2. Canal global WebSocket Supabase Realtime
-    if (!this.forceLocalOnly) {
-      const sb = getSupabaseClient();
-      if (sb) {
-        this.channel = sb.channel(chanKey, {
-          config: {
-            broadcast: { self: false, ack: false },
-          },
-        });
-
-        this.channel
-          .on('broadcast', { event: 'oof_pkt' }, ({ payload }) => {
-            this.handleIncomingEnvelope(payload);
-          })
-          .subscribe((status) => {
-            if (status === 'SUBSCRIBED') {
-              this.sendEnvelope({
-                t: 'hello',
-                id: this.session.localPlayerId,
-                name: this.session.localPlayerName,
-                ts: Date.now(),
-              });
-            }
-          });
-      }
-    }
+    // 2. Canal global WebSocket Supabase Realtime (com reconexão automática se a rede/aba oscilar)
+    this.openRealtimeChannel();
 
     this.sendEnvelope({
       t: 'hello',
       id: this.session.localPlayerId,
       name: this.session.localPlayerName,
+      afk: this.localAfk,
       ts: Date.now(),
     });
 
     if (typeof window !== 'undefined') {
       window.addEventListener('beforeunload', this.boundUnload);
-      this.heartbeatIntervalId = window.setInterval(() => {
-        void this.sendRoomHeartbeat();
-      }, 11_000);
+      window.addEventListener('online', this.boundWakeUp);
+      window.addEventListener('focus', this.boundWakeUp);
+      if (typeof document !== 'undefined') {
+        document.addEventListener('visibilitychange', this.boundWakeUp);
+      }
+
+      this.lastHeartbeatAtMs = Date.now();
+      this.stopKeepaliveLoop = createBackgroundSafeInterval(() => {
+        if (this.disposed) return;
+        const now = Date.now();
+        const hiddenNow =
+          typeof document !== 'undefined' && Boolean(document.hidden);
+        if (hiddenNow && !this.localAfk) {
+          this.localAfk = true;
+        }
+        // Mantém pose e sinal AFK vivos mesmo quando requestAnimationFrame pausa em aba minimizada!
+        if (this.lastSentPose && now - this.lastPoseSentAtMs >= 2600) {
+          this.broadcastPlayerPose({
+            ...this.lastSentPose,
+            speed: 0,
+            afk: this.localAfk || hiddenNow,
+          });
+        }
+        if (now - this.lastHeartbeatAtMs >= 10_500) {
+          this.lastHeartbeatAtMs = now;
+          void this.sendRoomHeartbeat();
+        }
+      }, 3000);
+
       this.pingIntervalId = window.setInterval(() => {
         this.sendEnvelope({
           t: 'ping_probe',
@@ -936,13 +1106,19 @@ export class MultiplayerRoomClient {
     }
   }
 
-  broadcastPlayerPose(pose: Omit<NetworkPlayerPosePacket, 'id' | 'name' | 'ts'>): void {
+  broadcastPlayerPose(
+    pose: Omit<NetworkPlayerPosePacket, 'id' | 'name' | 'ts'>
+  ): void {
     if (this.disposed) return;
+    const effectiveAfk = pose.afk ?? this.localAfk;
+    this.lastSentPose = { ...pose, afk: effectiveAfk };
+    this.lastPoseSentAtMs = Date.now();
     const pkt: NetworkPlayerPosePacket = {
       ...pose,
+      afk: effectiveAfk,
       id: this.session.localPlayerId,
       name: this.session.localPlayerName,
-      ts: Date.now(),
+      ts: this.lastPoseSentAtMs,
     };
     this.sendEnvelope({ t: 'pose', pkt });
   }
@@ -1059,21 +1235,34 @@ export class MultiplayerRoomClient {
 
   private async sendRoomHeartbeat(): Promise<void> {
     if (this.disposed) return;
+    const localStatus = this.getLocalRosterStatus();
 
-    // Atualiza espelho local
+    // Atualiza espelho local (sem remover jogadores inativos — apenas marca AFK após >32s sem pulso)
     const map = loadLocalMirrorMap();
     const local = map.get(this.session.roomCode);
     if (local) {
       const now = Date.now();
-      const others = local.players.filter(
-        (p) => p.id !== this.session.localPlayerId && now - p.ts < 35_000
-      );
+      const others = local.players
+        .filter(
+          (p) =>
+            p.id !== this.session.localPlayerId &&
+            now - p.ts < ROOM_RETENTION_MS
+        )
+        .map((p) => {
+          if (now - p.ts > 32_000) {
+            return {
+              ...p,
+              status: p.id === local.hostId ? 'HOST_AFK' : 'AFK',
+            };
+          }
+          return p;
+        });
       local.players = [
         ...others,
         {
           id: this.session.localPlayerId,
           name: this.session.localPlayerName,
-          status: this.isHost ? 'HOST' : 'ONLINE',
+          status: localStatus,
           ts: now,
         },
       ];
@@ -1090,7 +1279,7 @@ export class MultiplayerRoomClient {
             p_access_token: this.session.accessToken,
             p_player_id: this.session.localPlayerId,
             p_player_name: this.session.localPlayerName,
-            p_player_status: this.isHost ? 'HOST' : 'ONLINE',
+            p_player_status: localStatus,
           });
           const res = data as Record<string, unknown> | null;
           if (!error && res && res.ok) {
@@ -1121,10 +1310,18 @@ export class MultiplayerRoomClient {
       id: this.session.localPlayerId,
     });
 
+    this.stopKeepaliveLoop?.();
+    this.stopKeepaliveLoop = null;
+
     if (typeof window !== 'undefined') {
       window.removeEventListener('beforeunload', this.boundUnload);
-      if (this.heartbeatIntervalId) clearInterval(this.heartbeatIntervalId);
+      window.removeEventListener('online', this.boundWakeUp);
+      window.removeEventListener('focus', this.boundWakeUp);
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', this.boundWakeUp);
+      }
       if (this.pingIntervalId) clearInterval(this.pingIntervalId);
+      if (this.reconnectTimerId) clearTimeout(this.reconnectTimerId);
     }
 
     try {

@@ -11,6 +11,7 @@ import { DoomSharedUniforms } from '../doom/DoomShader';
 import { SoundEngine } from '../engine/audio/SoundEngine';
 import {
   ActiveRoomSession,
+  AFK_IDLE_TIMEOUT_MS,
   formatRoomCodeDisplay,
   MultiplayerRoomClient,
   NetworkPlayerPosePacket,
@@ -25,6 +26,8 @@ interface RemoteAllyEntity {
   astronaut: DoomAstronaut;
   beamGroup: THREE.Group;
   labelEl: HTMLDivElement;
+  labelAfkRowEl: HTMLDivElement;
+  labelTextEl: HTMLDivElement;
   currentPos: THREE.Vector3;
   targetPos: THREE.Vector3;
   currentYaw: number;
@@ -39,6 +42,8 @@ interface RemoteAllyEntity {
   ensnared: boolean;
   inSequence: boolean;
   dead: boolean;
+  afk: boolean;
+  lastAfkNoticeMs: number;
   lastSeenMs: number;
 }
 
@@ -63,6 +68,21 @@ function lerpAngleShortest(a: number, b: number, t: number): number {
   return a + diff * t;
 }
 
+const AFK_SVG_ICON =
+  '<svg class="oof-afk-icon-svg" viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">' +
+  '<circle cx="8" cy="8" r="6.5" fill="rgba(45,30,4,0.9)" stroke="#ffca63" stroke-width="1.5"/>' +
+  '<rect x="5.2" y="4.8" width="2" height="6.4" rx="0.5" fill="#ffd980"/>' +
+  '<rect x="8.8" y="4.8" width="2" height="6.4" rx="0.5" fill="#ffd980"/>' +
+  '</svg>';
+
+function createAfkBadgeElement(label = 'AFK • AUSENTE'): HTMLSpanElement {
+  const badge = document.createElement('span');
+  badge.className = 'oof-afk-badge';
+  badge.title = 'Jogador indisponível / ausente (AFK)';
+  badge.innerHTML = `${AFK_SVG_ICON}<span>${label}</span>`;
+  return badge;
+}
+
 /**
  * Coordenador Cooperativo em Tempo Real dentro do Labirinto 3D:
  * - Renderiza os Astronautas 3D completos dos aliados com lanterna volumétrica e plaqueta de nome/vida.
@@ -81,6 +101,7 @@ export class DoomMultiplayerCoordinator {
   private maskRoomCode = false;
   private chatInputActive = false;
   private wasLocalEnsnared = false;
+  private localAfk = false;
 
   private readonly hudRootEl: HTMLDivElement;
   private readonly roomTagEl: HTMLSpanElement;
@@ -171,6 +192,14 @@ export class DoomMultiplayerCoordinator {
       onWorldEvent: (ev) => this.handleWorldEvent(ev),
       onRosterUpdated: (players) => {
         this.roster = players;
+        // Se alguém saiu explicitamente via mp_leave_room e não está mais no roster do servidor,
+        // limpamos sua entidade; caso esteja como AFK/HOST_AFK, preservamos e marcamos AFK!
+        for (const r of players) {
+          const ally = this.allies.get(r.id);
+          if (ally && (r.status === 'AFK' || r.status === 'HOST_AFK')) {
+            this.applyAllyAfkTransition(ally, true);
+          }
+        }
         this.renderSquadHud();
       },
     });
@@ -189,6 +218,29 @@ export class DoomMultiplayerCoordinator {
 
   get isChatTyping(): boolean {
     return this.chatInputActive;
+  }
+
+  seedInitialLocalPose(pos: THREE.Vector3, yaw: number): void {
+    this.client.broadcastPlayerPose({
+      x: pos.x,
+      y: pos.y,
+      z: pos.z,
+      yaw,
+      pitch: 0,
+      speed: 0,
+      bobPhase: 0,
+      crouch: 0,
+      flashlightOn: false,
+      flashDirX: -Math.sin(yaw),
+      flashDirY: 0,
+      flashDirZ: -Math.cos(yaw),
+      health: 100,
+      bleeding: false,
+      ensnared: false,
+      inSequence: false,
+      dead: false,
+      afk: false,
+    });
   }
 
   pushHudNotice(text: string): void {
@@ -311,7 +363,8 @@ export class DoomMultiplayerCoordinator {
     localSprinting: boolean,
     localCrouching: boolean,
     localFlashlightOn: boolean,
-    spiderPos: THREE.Vector3
+    spiderPos: THREE.Vector3,
+    localAfk = false
   ): {
     targetPos: THREE.Vector3;
     targetYaw: number;
@@ -326,25 +379,25 @@ export class DoomMultiplayerCoordinator {
     let bestCrouch = localCrouching;
     let bestFlash = localFlashlightOn;
     let targetingLocal = true;
-    let bestDist = Math.hypot(
-      localPos.x - spiderPos.x,
-      localPos.z - spiderPos.z
-    );
+    // Penaliza levemente alvos AFK quando há outro operador ativo jogando na partida
+    let bestScore =
+      Math.hypot(localPos.x - spiderPos.x, localPos.z - spiderPos.z) +
+      (localAfk ? 14 : 0);
 
-    const now = performance.now();
     for (const ally of this.allies.values()) {
-      if (ally.dead || ally.inSequence || now - ally.lastSeenMs > 8000) {
+      if (ally.dead || ally.inSequence) {
         continue;
       }
-      const d = Math.hypot(
-        ally.currentPos.x - spiderPos.x,
-        ally.currentPos.z - spiderPos.z
-      );
-      if (d < bestDist - 0.5) {
-        bestDist = d;
+      const d =
+        Math.hypot(
+          ally.currentPos.x - spiderPos.x,
+          ally.currentPos.z - spiderPos.z
+        ) + (ally.afk ? 14 : 0);
+      if (d < bestScore - 0.5) {
+        bestScore = d;
         bestPos = ally.currentPos;
         bestYaw = ally.currentYaw;
-        bestSprint = ally.speed > 7.0;
+        bestSprint = !ally.afk && ally.speed > 7.0;
         bestCrouch = ally.crouch > 0.5;
         bestFlash = ally.flashlightOn;
         targetingLocal = false;
@@ -399,6 +452,7 @@ export class DoomMultiplayerCoordinator {
       ensnared: boolean;
       inSequence: boolean;
       dead: boolean;
+      afk?: boolean;
     },
     spiderSnapshot: {
       x: number;
@@ -434,7 +488,14 @@ export class DoomMultiplayerCoordinator {
     }
     this.wasLocalEnsnared = localState.ensnared;
 
-    // 1. Transmite pose 3D do jogador local (~16 Hz)
+    const nextLocalAfk = Boolean(localState.afk);
+    if (this.localAfk !== nextLocalAfk) {
+      this.localAfk = nextLocalAfk;
+      this.client.setLocalAfk(nextLocalAfk);
+      this.renderSquadHud();
+    }
+
+    // 1. Transmite pose 3D do jogador local (~16 Hz quando ativo; inclui estado AFK!)
     this.poseSendAccum += dt;
     if (this.poseSendAccum >= 0.062) {
       this.poseSendAccum = 0;
@@ -444,7 +505,7 @@ export class DoomMultiplayerCoordinator {
         z: localState.pos.z,
         yaw: localState.yaw,
         pitch: localState.pitch,
-        speed: localState.speed,
+        speed: nextLocalAfk ? 0 : localState.speed,
         bobPhase: localState.bobPhase,
         crouch: localState.crouch,
         flashlightOn: localState.flashlightOn,
@@ -456,6 +517,7 @@ export class DoomMultiplayerCoordinator {
         ensnared: localState.ensnared,
         inSequence: localState.inSequence,
         dead: localState.dead,
+        afk: nextLocalAfk,
       });
     }
 
@@ -474,10 +536,11 @@ export class DoomMultiplayerCoordinator {
     const viewW = window.innerWidth;
     const viewH = window.innerHeight;
 
-    for (const [id, ally] of this.allies.entries()) {
-      if (nowMs - ally.lastSeenMs > 18_000) {
-        this.removeAlly(id);
-        continue;
+    for (const ally of this.allies.values()) {
+      // Jamais derruba o jogador por ficar parado/inativo!
+      // Caso a aba remota congele sem pacotes por >= AFK_IDLE_TIMEOUT_MS, sinaliza AFK mantendo-o na partida.
+      if (nowMs - ally.lastSeenMs >= AFK_IDLE_TIMEOUT_MS && !ally.afk) {
+        this.applyAllyAfkTransition(ally, true);
       }
 
       if (ally.currentPos.distanceToSquared(ally.targetPos) > 36) {
@@ -490,8 +553,9 @@ export class DoomMultiplayerCoordinator {
         ally.targetYaw,
         smooth
       );
-      if (ally.speed > 0.25) {
-        ally.bobPhase += dt * (6.8 + ally.speed * 0.75);
+      const effectiveSpeed = ally.afk ? 0 : ally.speed;
+      if (effectiveSpeed > 0.25) {
+        ally.bobPhase += dt * (6.8 + effectiveSpeed * 0.75);
       }
 
       if (ally.dead) {
@@ -506,10 +570,11 @@ export class DoomMultiplayerCoordinator {
         ally.currentYaw,
         ally.pitch,
         ally.bobPhase,
-        ally.speed,
+        effectiveSpeed,
         ally.crouch,
         ally.flashlightOn,
-        ally.ensnared || ally.inSequence
+        ally.ensnared || ally.inSequence,
+        ally.afk
       );
 
       // Foco sutil no bocal ancorado exatamente na frente da lente da lanterna 3D sólida do aliado
@@ -530,7 +595,7 @@ export class DoomMultiplayerCoordinator {
         );
       }
 
-      // Projeção na tela da etiqueta acima do capacete do aliado
+      // Projeção na tela da etiqueta acima do capacete do aliado (com ícone de AFK quando ausente!)
       const headHeight = 1.94 - ally.crouch * 0.42;
       this.projVec.set(
         ally.currentPos.x,
@@ -543,19 +608,27 @@ export class DoomMultiplayerCoordinator {
       if (this.projVec.z < 1.0 && dist < 34) {
         const sx = (this.projVec.x * 0.5 + 0.5) * viewW;
         const sy = (-this.projVec.y * 0.5 + 0.5) * viewH;
-        ally.labelEl.style.display = 'block';
+        ally.labelEl.style.display = 'flex';
         ally.labelEl.style.left = `${sx.toFixed(1)}px`;
         ally.labelEl.style.top = `${sy.toFixed(1)}px`;
         ally.labelEl.classList.toggle(
           'trapped',
           ally.ensnared || ally.inSequence
         );
+        ally.labelEl.classList.toggle(
+          'afk',
+          ally.afk && !ally.ensnared && !ally.inSequence
+        );
+        ally.labelAfkRowEl.style.display = ally.afk ? 'inline-flex' : 'none';
+
         if (ally.ensnared) {
-          ally.labelEl.textContent = `🕸️ ${ally.name} — PRESO NA TEIA! [E / FACA]`;
+          ally.labelTextEl.textContent = `🕸️ ${ally.name} — PRESO NA TEIA! [E / FACA]`;
         } else if (ally.inSequence) {
-          ally.labelEl.textContent = `⚠ ${ally.name} — ATACADO PELA ARANHA!`;
+          ally.labelTextEl.textContent = `⚠ ${ally.name} — ATACADO PELA ARANHA!`;
+        } else if (ally.afk) {
+          ally.labelTextEl.textContent = `${ally.name} • INDÍSP.`;
         } else {
-          ally.labelEl.textContent = `${ally.name} • ${ally.health}%`;
+          ally.labelTextEl.textContent = `${ally.name} • ${ally.health}%`;
         }
       } else {
         ally.labelEl.style.display = 'none';
@@ -669,6 +742,27 @@ export class DoomMultiplayerCoordinator {
     });
   }
 
+  private applyAllyAfkTransition(
+    ally: RemoteAllyEntity,
+    nextAfk: boolean
+  ): void {
+    if (ally.afk === nextAfk) return;
+    ally.afk = nextAfk;
+    const now = performance.now();
+    if (now - ally.lastAfkNoticeMs > 10_000) {
+      ally.lastAfkNoticeMs = now;
+      if (nextAfk) {
+        this.pushRadioFeed(
+          `⏸ ${ally.name} está AFK (ausente / indisponível).`,
+          false
+        );
+      } else {
+        this.pushRadioFeed(`▶ ${ally.name} voltou ao jogo.`, false);
+      }
+    }
+    this.renderSquadHud();
+  }
+
   private handleRemotePose(pkt: NetworkPlayerPosePacket): void {
     let ent = this.allies.get(pkt.id);
     if (!ent) {
@@ -680,7 +774,17 @@ export class DoomMultiplayerCoordinator {
 
       const labelEl = document.createElement('div');
       labelEl.className = 'oof-ally-label-3d';
-      labelEl.textContent = pkt.name;
+
+      const labelAfkRowEl = document.createElement('div');
+      labelAfkRowEl.className = 'oof-ally-label-afk-row';
+      labelAfkRowEl.appendChild(createAfkBadgeElement('AFK • AUSENTE'));
+      labelAfkRowEl.style.display = 'none';
+
+      const labelTextEl = document.createElement('div');
+      labelTextEl.className = 'oof-ally-label-main';
+      labelTextEl.textContent = pkt.name;
+
+      labelEl.append(labelAfkRowEl, labelTextEl);
       this.worldLabelsLayerEl.appendChild(labelEl);
 
       ent = {
@@ -689,6 +793,8 @@ export class DoomMultiplayerCoordinator {
         astronaut,
         beamGroup,
         labelEl,
+        labelAfkRowEl,
+        labelTextEl,
         currentPos: new THREE.Vector3(pkt.x, pkt.y, pkt.z),
         targetPos: new THREE.Vector3(pkt.x, pkt.y, pkt.z),
         currentYaw: pkt.yaw,
@@ -703,6 +809,8 @@ export class DoomMultiplayerCoordinator {
         ensnared: pkt.ensnared,
         inSequence: pkt.inSequence,
         dead: pkt.dead,
+        afk: Boolean(pkt.afk),
+        lastAfkNoticeMs: 0,
         lastSeenMs: performance.now(),
       };
       this.allies.set(pkt.id, ent);
@@ -723,6 +831,7 @@ export class DoomMultiplayerCoordinator {
     ent.inSequence = pkt.inSequence;
     ent.dead = pkt.dead;
     ent.lastSeenMs = performance.now();
+    this.applyAllyAfkTransition(ent, Boolean(pkt.afk));
   }
 
   private removeAlly(playerId: string): void {
@@ -956,16 +1065,29 @@ export class DoomMultiplayerCoordinator {
 
     this.squadListEl.innerHTML = '';
 
-    // Linha do jogador local
+    // Linha do jogador local (com ícone AFK caso esteja ausente)
     const selfRow = document.createElement('div');
-    selfRow.className = 'oof-coop-ally-row';
-    selfRow.innerHTML = `<span class="oof-coop-ally-name">● ${this.session.localPlayerName} (Você)</span><span class="oof-coop-ally-hp">${this.client.isHost ? 'HOST' : 'ATIVO'}</span>`;
+    selfRow.className = this.localAfk
+      ? 'oof-coop-ally-row afk'
+      : 'oof-coop-ally-row';
+    const selfName = document.createElement('span');
+    selfName.className = 'oof-coop-ally-name';
+    selfName.textContent = `● ${this.session.localPlayerName} (Você)`;
+    const selfStatus = document.createElement('span');
+    if (this.localAfk) {
+      selfStatus.className = 'oof-coop-ally-hp warn';
+      selfStatus.appendChild(createAfkBadgeElement('AFK'));
+    } else {
+      selfStatus.className = 'oof-coop-ally-hp';
+      selfStatus.textContent = this.client.isHost ? 'HOST' : 'ATIVO';
+    }
+    selfRow.append(selfName, selfStatus);
     this.squadListEl.appendChild(selfRow);
 
     // Linhas dos aliados conectados
     for (const ally of this.allies.values()) {
       const row = document.createElement('div');
-      row.className = 'oof-coop-ally-row';
+      row.className = ally.afk ? 'oof-coop-ally-row afk' : 'oof-coop-ally-row';
       const nameSpan = document.createElement('span');
       nameSpan.className = 'oof-coop-ally-name';
       nameSpan.textContent = `◆ ${ally.name}`;
@@ -977,6 +1099,9 @@ export class DoomMultiplayerCoordinator {
       } else if (ally.ensnared || ally.inSequence) {
         hpSpan.className = 'oof-coop-ally-hp danger';
         hpSpan.textContent = 'NA TEIA!';
+      } else if (ally.afk) {
+        hpSpan.className = 'oof-coop-ally-hp warn';
+        hpSpan.appendChild(createAfkBadgeElement('AFK'));
       } else {
         hpSpan.className =
           ally.health < 35
@@ -991,19 +1116,27 @@ export class DoomMultiplayerCoordinator {
       this.squadListEl.appendChild(row);
     }
 
-    // Mostra também quem acabou de entrar no roster antes do primeiro pacote 3D
+    // Mostra também quem está no roster da sala antes do primeiro pacote 3D
     for (const r of this.roster) {
       if (r.id === this.session.localPlayerId || this.allies.has(r.id)) {
         continue;
       }
       const row = document.createElement('div');
-      row.className = 'oof-coop-ally-row';
+      const isRosterAfk = r.status === 'AFK' || r.status === 'HOST_AFK';
+      row.className = isRosterAfk
+        ? 'oof-coop-ally-row afk'
+        : 'oof-coop-ally-row';
       const n = document.createElement('span');
       n.className = 'oof-coop-ally-name';
       n.textContent = `◌ ${r.name}`;
       const st = document.createElement('span');
-      st.className = 'oof-coop-ally-hp';
-      st.textContent = 'ENTRANDO...';
+      if (isRosterAfk) {
+        st.className = 'oof-coop-ally-hp warn';
+        st.appendChild(createAfkBadgeElement('AFK'));
+      } else {
+        st.className = 'oof-coop-ally-hp';
+        st.textContent = 'CONECTADO';
+      }
       row.append(n, st);
       this.squadListEl.appendChild(row);
     }

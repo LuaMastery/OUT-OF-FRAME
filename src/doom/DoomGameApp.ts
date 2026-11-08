@@ -12,7 +12,10 @@ import {
   StaticColliderBox,
 } from '../engine/physics/SpatialSweep';
 import { DoomMultiplayerCoordinator } from '../multiplayer/DoomMultiplayerCoordinator';
-import { ActiveRoomSession } from '../multiplayer/MultiplayerService';
+import {
+  ActiveRoomSession,
+  isPlayerConsideredAfk,
+} from '../multiplayer/MultiplayerService';
 import { DoomAstronaut } from './DoomAstronaut';
 import { DoomFlashlight } from './DoomFlashlight';
 import { DoomInventory } from './DoomInventory';
@@ -307,6 +310,10 @@ export class DoomGameApp {
   private lastMouseX = 0;
   private lastMouseY = 0;
   private lastWheelSelectMs = 0;
+  private lastUserActivityMs = performance.now();
+  private tabHiddenSinceMs: number | null = null;
+  private localAfk = false;
+  private readonly localAfkBannerEl: HTMLDivElement;
   private elapsed = 0;
   private lastRaf = performance.now();
   private rafId = 0;
@@ -320,6 +327,21 @@ export class DoomGameApp {
   ) {
     this.viewportEl = document.getElementById('game-viewport') as HTMLElement;
     this.canvas = document.getElementById('webgl-canvas') as HTMLCanvasElement;
+
+    this.localAfkBannerEl = document.createElement('div');
+    this.localAfkBannerEl.className = 'oof-local-afk-banner hidden';
+    this.localAfkBannerEl.innerHTML =
+      '<span class="oof-afk-badge">' +
+      '<svg class="oof-afk-icon-svg" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">' +
+      '<circle cx="8" cy="8" r="6.5" fill="rgba(45,30,4,0.9)" stroke="#ffca63" stroke-width="1.5"/>' +
+      '<rect x="5.2" y="4.8" width="2" height="6.4" rx="0.5" fill="#ffd980"/>' +
+      '<rect x="8.8" y="4.8" width="2" height="6.4" rx="0.5" fill="#ffd980"/>' +
+      '</svg>' +
+      '<span>AFK</span>' +
+      '</span>' +
+      '<span>AUSENTE / INDISPONÍVEL</span>' +
+      '<span class="oof-local-afk-sub">• Mova o mouse ou pressione qualquer tecla para retomar</span>';
+    this.viewportEl.appendChild(this.localAfkBannerEl);
 
     this.renderer = new THREE.WebGLRenderer({
       canvas: this.canvas,
@@ -477,6 +499,10 @@ export class DoomGameApp {
   }
 
   engageFromTerminal(multiplayerSession?: ActiveRoomSession): void {
+    this.lastUserActivityMs = performance.now();
+    this.tabHiddenSinceMs = document.hidden ? performance.now() : null;
+    this.localAfk = false;
+    this.localAfkBannerEl.classList.add('hidden');
     this.attachMultiplayerSession(multiplayerSession);
     this.engaged = true;
     this.onResize();
@@ -531,6 +557,45 @@ export class DoomGameApp {
         },
       }
     );
+    this.multiplayer.seedInitialLocalPose(this.position, this.yaw);
+  }
+
+  private registerUserActivity(): void {
+    this.lastUserActivityMs = performance.now();
+    if (!document.hidden) {
+      this.tabHiddenSinceMs = null;
+      if (this.localAfk) {
+        this.localAfk = false;
+        this.localAfkBannerEl.classList.add('hidden');
+      }
+    }
+  }
+
+  private refreshLocalAfkStatus(): boolean {
+    const now = performance.now();
+    const hidden = Boolean(document.hidden);
+    if (hidden) {
+      if (this.tabHiddenSinceMs === null) {
+        this.tabHiddenSinceMs = now;
+      }
+    } else {
+      this.tabHiddenSinceMs = null;
+    }
+    const hiddenDur =
+      hidden && this.tabHiddenSinceMs !== null
+        ? now - this.tabHiddenSinceMs
+        : 0;
+    const nextAfk = isPlayerConsideredAfk(
+      now - this.lastUserActivityMs,
+      hidden,
+      hiddenDur
+    );
+    this.localAfk = nextAfk;
+    this.localAfkBannerEl.classList.toggle(
+      'hidden',
+      !nextAfk || !this.engaged || this.inventory.gameOverVisible
+    );
+    return nextAfk;
   }
 
   reacquirePointerLockAfterFullscreen(): void {
@@ -607,6 +672,7 @@ export class DoomGameApp {
       'keydown',
       (e) => {
         if (!this.engaged || this.disposed) return;
+        this.registerUserActivity();
 
         // Se estiver digitando mensagem de rádio multiplayer, não captura teclas de movimento!
         if (this.multiplayer?.isChatTyping) {
@@ -749,6 +815,9 @@ export class DoomGameApp {
     window.addEventListener(
       'wheel',
       (e) => {
+        if (this.engaged && !this.disposed) {
+          this.registerUserActivity();
+        }
         if (
           !this.engaged ||
           this.inventory.open ||
@@ -790,9 +859,33 @@ export class DoomGameApp {
         if (document.hidden) {
           this.keys.clear();
           this.isDragging = false;
+          this.tabHiddenSinceMs = performance.now();
+        } else {
+          this.tabHiddenSinceMs = null;
+          this.refreshLocalAfkStatus();
         }
       },
       sig
+    );
+
+    window.addEventListener(
+      'pointerdown',
+      () => {
+        if (this.engaged && !this.disposed) {
+          this.registerUserActivity();
+        }
+      },
+      sig
+    );
+
+    window.addEventListener(
+      'touchstart',
+      () => {
+        if (this.engaged && !this.disposed) {
+          this.registerUserActivity();
+        }
+      },
+      { passive: true, signal: this.abortCtrl.signal }
     );
 
     document.addEventListener(
@@ -840,10 +933,21 @@ export class DoomGameApp {
       'mousemove',
       (e) => {
         if (
+          this.engaged &&
+          !this.disposed &&
+          (Math.abs(e.movementX) + Math.abs(e.movementY) > 0 ||
+            e.clientX !== this.lastMouseX ||
+            e.clientY !== this.lastMouseY)
+        ) {
+          this.registerUserActivity();
+        }
+        if (
           this.inventory.open ||
           this.inventory.gameOverVisible ||
           this.activeSequence !== 'NONE'
         ) {
+          this.lastMouseX = e.clientX;
+          this.lastMouseY = e.clientY;
           return;
         }
 
@@ -1366,6 +1470,8 @@ export class DoomGameApp {
   private update(dt: number): void {
     if (!this.engaged || this.disposed) return;
 
+    const isLocalAfk = this.refreshLocalAfkStatus();
+
     if (this.activeSequence === 'DEAD_TERMINATED') {
       return;
     }
@@ -1394,6 +1500,7 @@ export class DoomGameApp {
           ensnared: true,
           inSequence: true,
           dead: this.activeSequence === 'PERMADEATH_EXECUTION',
+          afk: isLocalAfk,
         },
         this.spider.getNetworkSnapshot(),
         true
@@ -1405,6 +1512,30 @@ export class DoomGameApp {
     if (this.inventory.open || this.inventory.gameOverVisible) {
       this.interactQueued = false;
       this.struggleQueued = false;
+      this.multiplayer?.update(
+        dt,
+        this.elapsed,
+        this.camera,
+        {
+          pos: this.position,
+          yaw: this.yaw,
+          pitch: this.pitch,
+          speed: 0,
+          bobPhase: this.bobPhase,
+          crouch: this.crouchAmount,
+          flashlightOn: this.sharedUniforms.uFlashlightIntensity.value > 0.05,
+          flashDir: this.sharedUniforms.uFlashlightDir.value,
+          health: this.playerHealth,
+          bleeding: this.playerBleeding,
+          ensnared: this.webManager.isPlayerEnsnared,
+          inSequence: false,
+          dead: false,
+          afk: isLocalAfk,
+        },
+        this.spider.getNetworkSnapshot(),
+        true
+      );
+      this.updateFlickeringLightsAndAudio();
       return;
     }
 
@@ -1612,7 +1743,7 @@ export class DoomGameApp {
     let spiderOut: { cameraShakeAmount: number; playerDistance: number };
     if (this.multiplayer && !this.multiplayer.isHost) {
       const remotePkt = this.multiplayer.consumeLatestRemoteSpiderPacket();
-      if (remotePkt) {
+      if (remotePkt && Date.now() - remotePkt.ts < 2500) {
         spiderOut = this.spider.applyRemoteNetworkState(
           dt,
           this.elapsed,
@@ -1646,7 +1777,8 @@ export class DoomGameApp {
         spiderHearsSprint,
         isCrouching,
         fl.beamIntensity > 0.05,
-        this.spider.position
+        this.spider.position,
+        isLocalAfk
       );
       spiderOut = this.spider.update(
         dt,
@@ -1766,6 +1898,7 @@ export class DoomGameApp {
         ensnared: this.webManager.isPlayerEnsnared,
         inSequence: false,
         dead: false,
+        afk: isLocalAfk,
       },
       this.spider.getNetworkSnapshot(),
       !this.engaged || this.inventory.open || this.inventory.gameOverVisible
@@ -2033,6 +2166,7 @@ export class DoomGameApp {
     cancelAnimationFrame(this.rafId);
     this.abortCtrl.abort();
     unlockSystemKeyboardKeys();
+    this.localAfkBannerEl.remove();
     this.multiplayer?.destroy();
     this.multiplayer = null;
     this.radar.destroy();

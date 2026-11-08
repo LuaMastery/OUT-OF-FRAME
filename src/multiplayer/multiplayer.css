@@ -773,11 +773,53 @@
   overflow: hidden;
 }
 
+.oof-coop-ally-row.afk .oof-coop-ally-name {
+  color: #b7a989;
+}
+
+.oof-afk-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px;
+  border-radius: 2px;
+  background: rgba(58, 38, 4, 0.92);
+  border: 1px solid #ffca63;
+  color: #ffe09a;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  line-height: 1.25;
+  box-shadow: 0 0 8px rgba(255, 202, 99, 0.25);
+  animation: oofAfkPulse 2.1s ease-in-out infinite;
+}
+
+.oof-afk-icon-svg {
+  flex-shrink: 0;
+  display: block;
+}
+
+@keyframes oofAfkPulse {
+  0%,
+  100% {
+    opacity: 1;
+    border-color: #ffca63;
+  }
+  50% {
+    opacity: 0.72;
+    border-color: #c9922b;
+  }
+}
+
 .oof-ally-label-3d {
   position: absolute;
   transform: translate(-50%, -100%);
-  padding: 2px 7px;
-  background: rgba(5, 11, 9, 0.82);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 3px 7px;
+  background: rgba(5, 11, 9, 0.84);
   border: 1px solid rgba(93, 230, 166, 0.65);
   color: #e8fff4;
   font-family: Consolas, 'Courier New', monospace;
@@ -788,10 +830,61 @@
   pointer-events: none;
 }
 
+.oof-ally-label-afk-row {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.oof-ally-label-main {
+  line-height: 1.2;
+}
+
+.oof-ally-label-3d.afk {
+  border-color: #ffca63;
+  background: rgba(28, 20, 5, 0.88);
+  color: #ffe5ad;
+}
+
 .oof-ally-label-3d.trapped {
   border-color: #ff6262;
   background: rgba(42, 8, 8, 0.9);
   color: #ffd4d4;
+}
+
+/* Indicador de AFK na tela do próprio jogador quando está ausente/parado */
+.oof-local-afk-banner {
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 32;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: rgba(22, 15, 4, 0.9);
+  border: 1px solid #ffca63;
+  box-shadow:
+    0 0 0 2px rgba(0, 0, 0, 0.85),
+    0 6px 18px rgba(0, 0, 0, 0.72);
+  color: #ffe7b3;
+  font-family: Consolas, 'Courier New', ui-monospace, monospace;
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  pointer-events: none;
+  user-select: none;
+}
+
+.oof-local-afk-banner.hidden {
+  display: none;
+}
+
+.oof-local-afk-sub {
+  font-weight: 400;
+  color: #d9bf86;
+  font-size: 10.5px;
 }
 
 .oof-ping-marker-3d {

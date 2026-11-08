@@ -741,7 +741,12 @@ export class MultiplayerMenuModal {
   private formatPlayerListNames(players: RoomPlayerSummary[]): string {
     if (!players || players.length === 0) return '1 Operador';
     return players
-      .map((p) => (p.status === 'HOST' ? `${p.name} (Host)` : p.name))
+      .map((p) => {
+        if (p.status === 'HOST_AFK') return `${p.name} (Host • ⏸ AFK)`;
+        if (p.status === 'HOST') return `${p.name} (Host)`;
+        if (p.status === 'AFK') return `${p.name} (⏸ AFK)`;
+        return p.name;
+      })
       .join(', ');
   }
 
