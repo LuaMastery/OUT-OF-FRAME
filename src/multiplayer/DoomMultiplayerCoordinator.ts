@@ -24,6 +24,10 @@ import {
   RoomPlayerSummary,
   STALE_HEARTBEAT_TTL_MS,
 } from './MultiplayerService';
+import {
+  MAX_PROXIMITY_VOICE_DISTANCE,
+  ProximityVoiceChatManager,
+} from './ProximityVoiceChat';
 
 interface RemoteAllyEntity {
   id: string;
@@ -53,6 +57,8 @@ interface RemoteAllyEntity {
   abductionSpiderPos: THREE.Vector3;
   dead: boolean;
   afk: boolean;
+  voiceSpeaking: boolean;
+  voiceLevel: number;
   lastAfkNoticeMs: number;
   joinedAtWallMs: number;
   lastSeenMs: number;
@@ -115,8 +121,14 @@ function createAfkBadgeElement(label = 'AFK • AUSENTE'): HTMLSpanElement {
  */
 export class DoomMultiplayerCoordinator {
   private readonly client: MultiplayerRoomClient;
+  private readonly voiceChat: ProximityVoiceChatManager;
   private readonly allies = new Map<string, RemoteAllyEntity>();
   private readonly pings: ActiveTacticalPing[] = [];
+  private readonly remoteVoicePeersScratch: Array<{
+    id: string;
+    pos: THREE.Vector3;
+    dead: boolean;
+  }> = [];
 
   private latestSpiderPacket: NetworkSpiderPacket | null = null;
   private poseSendAccum = 0;
@@ -133,6 +145,9 @@ export class DoomMultiplayerCoordinator {
   private readonly hudRootEl: HTMLDivElement;
   private readonly roomTagEl: HTMLSpanElement;
   private readonly pingEl: HTMLSpanElement;
+  private readonly voiceModeBtnEl: HTMLButtonElement;
+  private readonly voiceMeterFillEl: HTMLDivElement;
+  private readonly voiceHintEl: HTMLSpanElement;
   private readonly squadListEl: HTMLDivElement;
   private readonly chatFeedEl: HTMLDivElement;
   private readonly chatBoxEl: HTMLDivElement;
@@ -179,8 +194,15 @@ export class DoomMultiplayerCoordinator {
           <button type="button" class="oof-coop-mini-btn" data-coop-mask title="Mostrar/Ocultar código na tela">[OCULTAR Nº]</button>
           <button type="button" class="oof-coop-mini-btn" data-coop-leave title="Desconectar desta sala">[SAIR]</button>
         </div>
+        <div class="oof-coop-voice-bar" data-coop-voice-bar>
+          <button type="button" class="oof-coop-voice-btn" data-coop-voice-btn title="Alternar modo do Microfone [Z] ou segurar [B] para falar">[🎙 SEGURE B]</button>
+          <div class="oof-coop-voice-meter" title="Volume da sua voz (Voz alta atrai a Aranha!)">
+            <div class="oof-coop-voice-meter-fill" data-coop-voice-fill></div>
+          </div>
+          <span class="oof-coop-voice-hint" data-coop-voice-hint>[Z] MODO</span>
+        </div>
         <div class="oof-coop-squad-list" data-coop-squad></div>
-        <div class="oof-coop-keys-hint">[T] Rádio  •  [V] Sinalizar 3D  •  [E/Faca] Salvar Aliado</div>
+        <div class="oof-coop-keys-hint">[B] Falar (Voz 3D)  •  [Z] Modo Mic  •  [T] Rádio  •  [V] Ping</div>
       </div>
       <div class="oof-coop-chat-feed" data-coop-feed></div>
       <div class="oof-coop-chat-box hidden" data-coop-chat-box>
@@ -194,6 +216,15 @@ export class DoomMultiplayerCoordinator {
     ) as HTMLSpanElement;
     this.pingEl = this.hudRootEl.querySelector(
       '[data-coop-ping]'
+    ) as HTMLSpanElement;
+    this.voiceModeBtnEl = this.hudRootEl.querySelector(
+      '[data-coop-voice-btn]'
+    ) as HTMLButtonElement;
+    this.voiceMeterFillEl = this.hudRootEl.querySelector(
+      '[data-coop-voice-fill]'
+    ) as HTMLDivElement;
+    this.voiceHintEl = this.hudRootEl.querySelector(
+      '[data-coop-voice-hint]'
     ) as HTMLSpanElement;
     this.squadListEl = this.hudRootEl.querySelector(
       '[data-coop-squad]'
@@ -217,6 +248,12 @@ export class DoomMultiplayerCoordinator {
         this.latestSpiderPacket = pkt;
       },
       onWorldEvent: (ev) => this.handleWorldEvent(ev),
+      onVoiceSignal: (sig) => {
+        void this.voiceChat.handleIncomingSignal(sig);
+      },
+      onVoiceRelayChunk: (chunk) => {
+        this.voiceChat.handleIncomingRelayChunk(chunk);
+      },
       onRosterUpdated: (players) => {
         this.roster = players;
         const activeIds = new Set(players.map((p) => p.id));
@@ -228,6 +265,9 @@ export class DoomMultiplayerCoordinator {
           }
         }
         for (const r of players) {
+          if (r.id !== this.session.localPlayerId) {
+            this.voiceChat.ensurePeer(r.id);
+          }
           const ally = this.allies.get(r.id);
           if (ally && (r.status === 'AFK' || r.status === 'HOST_AFK')) {
             this.applyAllyAfkTransition(ally, true);
@@ -237,7 +277,24 @@ export class DoomMultiplayerCoordinator {
       },
     });
 
+    this.voiceChat = new ProximityVoiceChatManager({
+      localPlayerId: session.localPlayerId,
+      sendSignal: (sig) => this.client.sendVoiceSignal(sig),
+      sendRelayChunk: (chunk) => this.client.sendVoiceRelayChunk(chunk),
+      onStatusChanged: () => {
+        this.refreshVoiceHudBar();
+        this.renderSquadHud();
+      },
+    });
+
+    for (const r of this.roster) {
+      if (r.id !== session.localPlayerId) {
+        this.voiceChat.ensurePeer(r.id);
+      }
+    }
+
     this.client.connect();
+    this.refreshVoiceHudBar();
     this.renderSquadHud();
     this.pushRadioFeed(
       `Conectado à sala #${formatRoomCodeDisplay(session.roomCode)} (${session.roomName}).`,
@@ -255,6 +312,33 @@ export class DoomMultiplayerCoordinator {
 
   get isChatTyping(): boolean {
     return this.chatInputActive;
+  }
+
+  get localVoiceLevel(): number {
+    return this.voiceChat.voiceLevel;
+  }
+
+  get localVoiceSpeaking(): boolean {
+    return this.voiceChat.isSpeaking;
+  }
+
+  setPushToTalkHeld(held: boolean): void {
+    this.voiceChat.setPushToTalkHeld(held);
+  }
+
+  cycleVoiceMode(): void {
+    const next = this.voiceChat.cycleVoiceMode();
+    this.sound.menuMove();
+    if (next === 'OPEN') {
+      this.pushRadioFeed(
+        '🎙 Microfone ABERTO (por distância — cuidado: voz alta atrai a Aranha!).',
+        false
+      );
+    } else if (next === 'MUTED') {
+      this.pushRadioFeed('🔇 Microfone MUTADO (segure [B] se quiser falar).', false);
+    } else {
+      this.pushRadioFeed('🎙 Modo Push-to-Talk: segure [B] para falar.', false);
+    }
   }
 
   seedInitialLocalPose(pos: THREE.Vector3, yaw: number): void {
@@ -573,6 +657,7 @@ export class DoomMultiplayerCoordinator {
     crouching: boolean;
     flashlightOn: boolean;
     flashlightDir: THREE.Vector3;
+    voiceLevel?: number;
     ensnared: boolean;
     afk: boolean;
   }): readonly SpiderPlayerCandidate[] {
@@ -585,6 +670,7 @@ export class DoomMultiplayerCoordinator {
       crouching: local.crouching,
       flashlightOn: local.flashlightOn,
       flashlightDir: local.flashlightDir,
+      voiceLevel: local.voiceLevel ?? this.voiceChat.voiceLevel,
       ensnared: local.ensnared,
       afk: local.afk,
       isLocal: true,
@@ -600,6 +686,7 @@ export class DoomMultiplayerCoordinator {
         crouching: ally.crouch > 0.5,
         flashlightOn: ally.flashlightOn,
         flashlightDir: ally.flashDir,
+        voiceLevel: ally.voiceSpeaking ? ally.voiceLevel : 0,
         ensnared: ally.ensnared,
         afk: ally.afk,
         isLocal: false,
@@ -716,7 +803,28 @@ export class DoomMultiplayerCoordinator {
       this.renderSquadHud();
     }
 
-    // 1. Transmite pose 3D do jogador local (~16 Hz quando ativo; inclui estado AFK e arrasto pela Aranha!)
+    // Silencia o microfone caso o jogador tenha morrido permanentemente!
+    this.voiceChat.setForceSilenced(localState.dead);
+
+    // Atualiza espacialização 3D HRTF + abafamento por paredes das vozes dos amigos
+    this.remoteVoicePeersScratch.length = 0;
+    for (const ally of this.allies.values()) {
+      this.remoteVoicePeersScratch.push({
+        id: ally.id,
+        pos: ally.currentPos,
+        dead: ally.dead,
+      });
+    }
+    this.voiceChat.update(
+      dt,
+      camera.position,
+      localState.yaw,
+      localState.pitch,
+      this.remoteVoicePeersScratch
+    );
+    this.refreshVoiceHudBar();
+
+    // 1. Transmite pose 3D do jogador local (~16 Hz quando ativo; inclui estado AFK, arrasto e voz!)
     this.poseSendAccum += dt;
     if (this.poseSendAccum >= 0.062) {
       this.poseSendAccum = 0;
@@ -743,6 +851,8 @@ export class DoomMultiplayerCoordinator {
         abductionSpiderX: localState.abductionSpiderPos?.x,
         abductionSpiderY: localState.abductionSpiderPos?.y,
         abductionSpiderZ: localState.abductionSpiderPos?.z,
+        voiceSpeaking: this.voiceChat.isSpeaking,
+        voiceLevel: Number(this.voiceChat.voiceLevel.toFixed(3)),
         dead: localState.dead,
         afk: nextLocalAfk,
       });
@@ -863,16 +973,21 @@ export class DoomMultiplayerCoordinator {
             ? 'inline-flex'
             : 'none';
 
+        const allyAudibleSpeak =
+          ally.voiceSpeaking && dist <= MAX_PROXIMITY_VOICE_DISTANCE;
+        ally.labelEl.classList.toggle('speaking', allyAudibleSpeak);
+        const micTag = allyAudibleSpeak ? '🔊 ' : '';
+
         if (isBeingDragged) {
-          ally.labelTextEl.textContent = `🕷️ ${ally.name} — SENDO ARRASTADO! [SINALIZADOR / FACA]`;
+          ally.labelTextEl.textContent = `${micTag}🕷️ ${ally.name} — SENDO ARRASTADO! [SINALIZADOR / FACA]`;
         } else if (ally.inSequence) {
-          ally.labelTextEl.textContent = `🕷️ ${ally.name} — NAS GARRAS DA ARANHA! [SINALIZADOR / FACA]`;
+          ally.labelTextEl.textContent = `${micTag}🕷️ ${ally.name} — NAS GARRAS DA ARANHA! [SINALIZADOR / FACA]`;
         } else if (ally.ensnared) {
-          ally.labelTextEl.textContent = `🕸️ ${ally.name} — PRESO NA TEIA! [E / FACA]`;
+          ally.labelTextEl.textContent = `${micTag}🕸️ ${ally.name} — PRESO NA TEIA! [E / FACA]`;
         } else if (ally.afk) {
-          ally.labelTextEl.textContent = `${ally.name} • INDÍSP.`;
+          ally.labelTextEl.textContent = `${micTag}${ally.name} • INDÍSP.`;
         } else {
-          ally.labelTextEl.textContent = `${ally.name} • ${ally.health}%`;
+          ally.labelTextEl.textContent = `${micTag}${ally.name} • ${ally.health}%`;
         }
       } else {
         ally.labelEl.style.display = 'none';
@@ -913,6 +1028,7 @@ export class DoomMultiplayerCoordinator {
   }
 
   destroy(): void {
+    this.voiceChat.destroy();
     this.client.disconnect();
     for (const id of Array.from(this.allies.keys())) {
       this.removeAlly(id);
@@ -962,6 +1078,11 @@ export class DoomMultiplayerCoordinator {
         e.stopPropagation();
         this.hooks.onLeaveRoomRequested();
       });
+
+    this.voiceModeBtnEl.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.cycleVoiceMode();
+    });
 
     this.chatInputEl.addEventListener('keydown', (e) => {
       e.stopPropagation();
@@ -1067,11 +1188,14 @@ export class DoomMultiplayerCoordinator {
         ),
         dead: pkt.dead,
         afk: Boolean(pkt.afk),
+        voiceSpeaking: Boolean(pkt.voiceSpeaking),
+        voiceLevel: pkt.voiceLevel ?? 0,
         lastAfkNoticeMs: 0,
         joinedAtWallMs: Date.now(),
         lastSeenMs: performance.now(),
       };
       this.allies.set(pkt.id, ent);
+      this.voiceChat.ensurePeer(pkt.id);
       this.pushRadioFeed(`${pkt.name} entrou no setor.`, false);
       this.renderSquadHud();
     }
@@ -1109,11 +1233,14 @@ export class DoomMultiplayerCoordinator {
       );
     }
     ent.dead = pkt.dead;
+    ent.voiceSpeaking = Boolean(pkt.voiceSpeaking);
+    ent.voiceLevel = pkt.voiceLevel ?? 0;
     ent.lastSeenMs = performance.now();
     this.applyAllyAfkTransition(ent, Boolean(pkt.afk));
   }
 
   private removeAlly(playerId: string): void {
+    this.voiceChat.removePeer(playerId);
     const hadInRoster = this.roster.some((r) => r.id === playerId);
     const rosterEntry = this.roster.find((r) => r.id === playerId);
     this.roster = this.roster.filter((r) => r.id !== playerId);
@@ -1412,6 +1539,56 @@ export class DoomMultiplayerCoordinator {
     }, 9500);
   }
 
+  private refreshVoiceHudBar(): void {
+    const mode = this.voiceChat.activationMode;
+    const armed = this.voiceChat.isMicArmed;
+    const speaking = this.voiceChat.isSpeaking;
+    const lvl = this.voiceChat.voiceLevel;
+    const perm = this.voiceChat.micPermission;
+
+    this.voiceModeBtnEl.classList.toggle('armed', armed);
+    this.voiceModeBtnEl.classList.toggle('speaking', speaking);
+    this.voiceModeBtnEl.classList.toggle(
+      'muted',
+      mode === 'MUTED' && !this.voiceChat.isPushToTalkHeld
+    );
+
+    if (perm === 'denied') {
+      this.voiceModeBtnEl.textContent = '[🔇 MIC BLOQUEADO]';
+      this.voiceHintEl.textContent = 'LIBERE NO NAVEGADOR';
+      this.voiceHintEl.classList.add('warn');
+    } else if (perm === 'unavailable') {
+      this.voiceModeBtnEl.textContent = '[🔇 SEM MIC]';
+      this.voiceHintEl.textContent = 'INDISPONÍVEL';
+      this.voiceHintEl.classList.add('warn');
+    } else if (this.voiceChat.isPushToTalkHeld) {
+      this.voiceModeBtnEl.textContent = '[🎙 FALANDO (B)]';
+      this.voiceHintEl.textContent =
+        lvl >= 0.62 ? '⚠ ALTO (ARANHA OUVE!)' : 'TRANSMITINDO';
+      this.voiceHintEl.classList.toggle('warn', lvl >= 0.62);
+    } else if (mode === 'OPEN') {
+      this.voiceModeBtnEl.textContent = speaking
+        ? '[🎙 VOZ ATIVA]'
+        : '[🎙 MIC ABERTO]';
+      this.voiceHintEl.textContent =
+        lvl >= 0.62 ? '⚠ ALTO (ARANHA OUVE!)' : '[Z] P/ MUTAR';
+      this.voiceHintEl.classList.toggle('warn', lvl >= 0.62);
+    } else if (mode === 'MUTED') {
+      this.voiceModeBtnEl.textContent = '[🔇 MUTADO]';
+      this.voiceHintEl.textContent = '[B] FALAR • [Z] MODO';
+      this.voiceHintEl.classList.remove('warn');
+    } else {
+      this.voiceModeBtnEl.textContent = '[🎙 SEGURE B]';
+      this.voiceHintEl.textContent = '[Z] MIC ABERTO';
+      this.voiceHintEl.classList.remove('warn');
+    }
+
+    const pct = Math.round(Math.min(100, lvl * 100));
+    this.voiceMeterFillEl.style.width = `${pct}%`;
+    this.voiceMeterFillEl.classList.toggle('loud', lvl >= 0.62);
+    this.voiceMeterFillEl.classList.toggle('mid', lvl >= 0.3 && lvl < 0.62);
+  }
+
   private renderSquadHud(): void {
     const codeStr = this.maskRoomCode
       ? '***-***'
@@ -1429,7 +1606,8 @@ export class DoomMultiplayerCoordinator {
       : 'oof-coop-ally-row';
     const selfName = document.createElement('span');
     selfName.className = 'oof-coop-ally-name';
-    selfName.textContent = `● ${this.session.localPlayerName} (Você)`;
+    const selfSpeakPrefix = this.voiceChat.isSpeaking ? '🔊 ' : '● ';
+    selfName.textContent = `${selfSpeakPrefix}${this.session.localPlayerName} (Você)`;
     const selfStatus = document.createElement('span');
     if (this.localAfk) {
       selfStatus.className = 'oof-coop-ally-hp warn';
@@ -1447,7 +1625,8 @@ export class DoomMultiplayerCoordinator {
       row.className = ally.afk ? 'oof-coop-ally-row afk' : 'oof-coop-ally-row';
       const nameSpan = document.createElement('span');
       nameSpan.className = 'oof-coop-ally-name';
-      nameSpan.textContent = `◆ ${ally.name}`;
+      const allySpeakPrefix = ally.voiceSpeaking ? '🔊 ' : '◆ ';
+      nameSpan.textContent = `${allySpeakPrefix}${ally.name}`;
 
       const hpSpan = document.createElement('span');
       if (ally.dead) {

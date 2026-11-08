@@ -754,6 +754,28 @@ export class DoomGameApp {
           return;
         }
 
+        // Microfone por Distância (Push-to-Talk [B] e Modo [Z]):
+        // Funciona inclusive enquanto o jogador está sendo arrastado pela Aranha para gritar por socorro!
+        if (
+          this.multiplayer &&
+          this.activeSequence !== 'DEAD_TERMINATED' &&
+          e.code === 'KeyB'
+        ) {
+          if (!e.repeat) {
+            this.multiplayer.setPushToTalkHeld(true);
+          }
+          return;
+        }
+        if (
+          this.multiplayer &&
+          this.activeSequence !== 'DEAD_TERMINATED' &&
+          e.code === 'KeyZ' &&
+          !e.repeat
+        ) {
+          this.multiplayer.cycleVoiceMode();
+          return;
+        }
+
         // Durante a animação de desmaio / arrasto pela aranha, o jogador está incapacitado
         if (this.activeSequence !== 'NONE') {
           return;
@@ -814,6 +836,7 @@ export class DoomGameApp {
         if (this.multiplayer && e.code === 'KeyT' && !e.repeat) {
           e.preventDefault();
           this.keys.clear();
+          this.multiplayer.setPushToTalkHeld(false);
           this.multiplayer.openRadioChatInput();
           return;
         }
@@ -900,6 +923,9 @@ export class DoomGameApp {
       'keyup',
       (e) => {
         this.keys.delete(e.code);
+        if (e.code === 'KeyB') {
+          this.multiplayer?.setPushToTalkHeld(false);
+        }
       },
       sig
     );
@@ -909,6 +935,7 @@ export class DoomGameApp {
       () => {
         this.keys.clear();
         this.isDragging = false;
+        this.multiplayer?.setPushToTalkHeld(false);
       },
       sig
     );
@@ -1870,6 +1897,7 @@ export class DoomGameApp {
 
     const spiderHearsSprint =
       sprinting || (isSliding && this.slideState.slideTimer < 0.2);
+    const localVoiceLvl = this.multiplayer?.localVoiceLevel ?? 0;
 
     let spiderOut: { cameraShakeAmount: number; playerDistance: number };
     const remoteAbduction =
@@ -1948,7 +1976,8 @@ export class DoomGameApp {
           activeFlares,
           () => {
             this.triggerSpiderCatch();
-          }
+          },
+          localVoiceLvl
         );
       }
     } else if (this.multiplayer && this.multiplayer.isHost) {
@@ -1960,6 +1989,7 @@ export class DoomGameApp {
         crouching: isCrouching,
         flashlightOn: fl.beamIntensity > 0.05,
         flashlightDir: this.sharedUniforms.uFlashlightDir.value,
+        voiceLevel: localVoiceLvl,
         ensnared: this.webManager.isPlayerEnsnared,
         afk: isLocalAfk,
       });
@@ -1983,7 +2013,8 @@ export class DoomGameApp {
               this.spider.position
             );
           }
-        }
+        },
+        chosen.voiceLevel ?? 0
       );
     } else {
       spiderOut = this.spider.update(
@@ -1998,7 +2029,8 @@ export class DoomGameApp {
         activeFlares,
         () => {
           this.triggerSpiderCatch();
-        }
+        },
+        localVoiceLvl
       );
     }
 

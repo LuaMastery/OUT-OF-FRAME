@@ -1,4 +1,8 @@
 import { createClient, RealtimeChannel, SupabaseClient } from '@supabase/supabase-js';
+import type {
+  VoiceRelayChunkPayload,
+  VoiceSignalPayload,
+} from './ProximityVoiceChat';
 
 const DEFAULT_SUPABASE_URL = 'https://iypkhqitttifnespoimu.supabase.co';
 const DEFAULT_SUPABASE_ANON_KEY =
@@ -132,6 +136,8 @@ export interface NetworkPlayerPosePacket {
   abductionSpiderX?: number;
   abductionSpiderY?: number;
   abductionSpiderZ?: number;
+  voiceSpeaking?: boolean;
+  voiceLevel?: number;
   ts: number;
 }
 
@@ -1129,6 +1135,8 @@ export interface MultiplayerRoomClientCallbacks {
   onRemotePlayerLeft: (playerId: string) => void;
   onSpiderSync: (packet: NetworkSpiderPacket) => void;
   onWorldEvent: (event: NetworkWorldEvent) => void;
+  onVoiceSignal?: (payload: VoiceSignalPayload) => void;
+  onVoiceRelayChunk?: (payload: VoiceRelayChunkPayload) => void;
   onRosterUpdated: (
     players: RoomPlayerSummary[],
     hostId: string,
@@ -1631,6 +1639,16 @@ export class MultiplayerRoomClient {
     this.sendEnvelope({ t: 'event', event });
   }
 
+  sendVoiceSignal(signal: VoiceSignalPayload): void {
+    if (this.disposed) return;
+    this.sendEnvelope({ t: 'rtc_sig', signal });
+  }
+
+  sendVoiceRelayChunk(chunk: VoiceRelayChunkPayload): void {
+    if (this.disposed) return;
+    this.sendEnvelope({ t: 'voice_relay', chunk });
+  }
+
   private sendEnvelope(payload: Record<string, unknown>): void {
     try {
       this.localBc?.postMessage(payload);
@@ -1665,6 +1683,10 @@ export class MultiplayerRoomClient {
       }
     } else if (type === 'event' && msg.event) {
       this.callbacks.onWorldEvent(msg.event as NetworkWorldEvent);
+    } else if (type === 'rtc_sig' && msg.signal) {
+      this.callbacks.onVoiceSignal?.(msg.signal as VoiceSignalPayload);
+    } else if (type === 'voice_relay' && msg.chunk) {
+      this.callbacks.onVoiceRelayChunk?.(msg.chunk as VoiceRelayChunkPayload);
     } else if (type === 'hello') {
       const id = String(msg.id || '');
       const name = String(msg.name || 'Operador');

@@ -55,6 +55,16 @@ import {
   normalizeRoomCode,
   STALE_HEARTBEAT_TTL_MS,
 } from '../src/multiplayer/MultiplayerService';
+import {
+  computeProximityVoiceAcousticParams,
+  computeSpiderVoiceHearingAlert,
+  countLabyrinthWallsBetween,
+  decodeMuLawBase64ToPcm,
+  encodePcmToMuLawBase64,
+  FULL_VOLUME_VOICE_DISTANCE,
+  MAX_PROXIMITY_VOICE_DISTANCE,
+  ProximityVoiceChatManager,
+} from '../src/multiplayer/ProximityVoiceChat';
 import { BINARY_MENU_ITEMS } from '../src/terminal/TerminalBoot';
 
 describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', () => {
@@ -2366,5 +2376,163 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
     hostClient.disconnect();
     const afterAllLeft = await lobby.inspectRoomByCode(hostSession.roomCode);
     expect(afterAllLeft.found).toBe(false);
+  });
+
+  it('suporta Microfone por Distância (atenuação espacial, oclusão por paredes, Push-to-Talk [B] padrão, codec fallback e audição da Aranha)', () => {
+    // 1) Curva acústica por distância + abafamento de paredes no labirinto
+    const closeClear = computeProximityVoiceAcousticParams(
+      FULL_VOLUME_VOICE_DISTANCE * 0.6,
+      0
+    );
+    expect(closeClear.audible).toBe(true);
+    expect(closeClear.gain).toBeCloseTo(1.0, 4);
+    expect(closeClear.lowpassHz).toBe(16_500);
+
+    const midCorridor = computeProximityVoiceAcousticParams(11.0, 0);
+    expect(midCorridor.audible).toBe(true);
+    expect(midCorridor.gain).toBeGreaterThan(0.15);
+    expect(midCorridor.gain).toBeLessThan(0.75);
+
+    const throughOneWall = computeProximityVoiceAcousticParams(6.0, 1);
+    const throughTwoWalls = computeProximityVoiceAcousticParams(6.0, 2);
+    expect(throughOneWall.lowpassHz).toBe(1_900);
+    expect(throughTwoWalls.lowpassHz).toBe(920);
+    expect(throughTwoWalls.gain).toBeLessThan(throughOneWall.gain);
+
+    const outOfRange = computeProximityVoiceAcousticParams(
+      MAX_PROXIMITY_VOICE_DISTANCE + 1,
+      0
+    );
+    expect(outOfRange.audible).toBe(false);
+    expect(outOfRange.gain).toBe(0);
+
+    // Contagem real de barreiras de parede entre duas células do mapa
+    const cellA = gridCellToWorld(1, 1);
+    const cellB = gridCellToWorld(15, 13);
+    expect(countLabyrinthWallsBetween(cellA.x, cellA.z, cellA.x, cellA.z)).toBe(
+      0
+    );
+    expect(
+      countLabyrinthWallsBetween(cellA.x, cellA.z, cellB.x, cellB.z)
+    ).toBeGreaterThan(0);
+
+    // 2) Modo padrão Push-to-Talk [B] (`PTT`), alternância `[Z]` (`PTT` -> `OPEN` -> `MUTED`) e silêncio ao morrer
+    const voiceMgr = new ProximityVoiceChatManager({
+      localPlayerId: 'astro-local-mic',
+      sendSignal: () => {},
+      sendRelayChunk: () => {},
+    });
+    expect(voiceMgr.activationMode).toBe('PTT');
+    expect(voiceMgr.isMicArmed).toBe(false);
+
+    voiceMgr.setPushToTalkHeld(true);
+    expect(voiceMgr.isMicArmed).toBe(true);
+    voiceMgr.setPushToTalkHeld(false);
+    expect(voiceMgr.isMicArmed).toBe(false);
+
+    expect(voiceMgr.cycleVoiceMode()).toBe('OPEN');
+    expect(voiceMgr.isMicArmed).toBe(true);
+    expect(voiceMgr.cycleVoiceMode()).toBe('MUTED');
+    expect(voiceMgr.isMicArmed).toBe(false);
+    // Mesmo mutado, segurar [B] funciona como fala rápida de emergência!
+    voiceMgr.setPushToTalkHeld(true);
+    expect(voiceMgr.isMicArmed).toBe(true);
+    voiceMgr.setPushToTalkHeld(false);
+    expect(voiceMgr.cycleVoiceMode()).toBe('PTT');
+
+    voiceMgr.setForceSilenced(true);
+    voiceMgr.setPushToTalkHeld(true);
+    expect(voiceMgr.isMicArmed).toBe(false);
+    voiceMgr.destroy();
+
+    // 3) Codec compacto G.711 μ-law (fallback universal entre abas / NAT simétrico)
+    const testWave = new Float32Array(160);
+    for (let i = 0; i < testWave.length; i++) {
+      testWave[i] = Math.sin((i / testWave.length) * Math.PI * 4) * 0.65;
+    }
+    const b64 = encodePcmToMuLawBase64(testWave);
+    const decoded = decodeMuLawBase64ToPcm(b64);
+    expect(decoded.length).toBe(testWave.length);
+    let maxErr = 0;
+    for (let i = 0; i < testWave.length; i++) {
+      maxErr = Math.max(maxErr, Math.abs(decoded[i] - testWave[i]));
+    }
+    expect(maxErr).toBeLessThan(0.06);
+
+    // 4) Audição da Aranha Gigante por voz alta/grito no microfone (estilo Lethal Company)
+    expect(computeSpiderVoiceHearingAlert(0.02, 4.0, 0, false).heard).toBe(
+      false
+    );
+    // Sussurro baixo a 7m atrás de parede -> seguro!
+    expect(computeSpiderVoiceHearingAlert(0.16, 7.0, 1, true).heard).toBe(
+      false
+    );
+    // Grito / voz alta a 9m mesmo através de 1 parede -> a Aranha escuta!
+    expect(computeSpiderVoiceHearingAlert(0.85, 9.0, 1, false).heard).toBe(
+      true
+    );
+
+    const scene = new THREE.Scene();
+    const shared = createDoomSharedUniforms();
+    const textures = createDoomTextures();
+    const built = buildDoomLabyrinth(scene, textures, shared);
+    const webs = new DoomSpiderWebManager(scene, shared);
+    const sound = {
+      playSpiderStep: () => {},
+      playSpiderHiss: () => {},
+      playSpiderScream: () => {},
+      playSpiderStrike: () => {},
+      playSpiderDragPull: () => {},
+      playSpiderWebSpin: () => {},
+      playWebTrapSnap: () => {},
+      playItemUse: () => {},
+    } as unknown as SoundEngine;
+    const spider = new DoomSpider(scene, shared, built.colliders, webs, sound);
+
+    const spCell = worldToGridCell(spider.position.x, spider.position.z);
+    // Procura uma célula vizinha aberta a <= 2 células da Aranha onde um grito seja ouvido mesmo sem lanterna/corrida!
+    let shouterPos = new THREE.Vector3(spider.position.x, 0, spider.position.z);
+    for (let dz = -2; dz <= 2; dz++) {
+      for (let dx = -2; dx <= 2; dx++) {
+        if (dx === 0 && dz === 0) continue;
+        const gx = spCell.gx + dx;
+        const gz = spCell.gz + dz;
+        if (!isSolidCell(LABYRINTH_MAP, gx, gz)) {
+          const w = gridCellToWorld(gx, gz);
+          shouterPos = new THREE.Vector3(w.x, 0, w.z);
+        }
+      }
+    }
+    const farQuietPos = gridCellToWorld(1, 1);
+
+    const target = spider.selectBestMultiplayerCandidate([
+      {
+        id: 'quiet-player',
+        isLocal: true,
+        pos: new THREE.Vector3(farQuietPos.x, 0, farQuietPos.z),
+        yaw: 0,
+        sprinting: false,
+        crouching: true,
+        flashlightOn: false,
+        flashlightDir: new THREE.Vector3(0, 0, -1),
+        voiceLevel: 0,
+        ensnared: false,
+        afk: false,
+      },
+      {
+        id: 'screaming-friend',
+        isLocal: false,
+        pos: shouterPos,
+        yaw: 0,
+        sprinting: false,
+        crouching: true,
+        flashlightOn: false,
+        flashlightDir: new THREE.Vector3(0, 0, -1),
+        voiceLevel: 0.92,
+        ensnared: false,
+        afk: false,
+      },
+    ]);
+    expect(target.id).toBe('screaming-friend');
   });
 });

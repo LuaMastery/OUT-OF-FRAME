@@ -678,6 +678,88 @@
   color: #050907;
 }
 
+/* Barra compacta de Microfone por Distância (Push-to-Talk [B] / Modo [Z] + VU Meter) */
+.oof-coop-voice-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  background: rgba(8, 15, 12, 0.9);
+  border: 1px solid #263a30;
+  pointer-events: auto;
+}
+
+.oof-coop-voice-btn {
+  padding: 2px 6px;
+  background: #101c16;
+  border: 1px solid #355646;
+  color: #bcebd5;
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.oof-coop-voice-btn:hover {
+  border-color: #62e3a8;
+  color: #ffffff;
+}
+
+.oof-coop-voice-btn.armed {
+  background: #142f22;
+  border-color: #55d99c;
+  color: #e6fff3;
+}
+
+.oof-coop-voice-btn.speaking {
+  background: #1b4631;
+  border-color: #79ffbf;
+  color: #ffffff;
+  box-shadow: 0 0 8px rgba(96, 255, 180, 0.35);
+}
+
+.oof-coop-voice-btn.muted {
+  background: #1d1212;
+  border-color: #6b3c3c;
+  color: #e2a6a6;
+}
+
+.oof-coop-voice-meter {
+  flex: 1;
+  min-width: 44px;
+  height: 6px;
+  background: #060b09;
+  border: 1px solid #283a31;
+  overflow: hidden;
+}
+
+.oof-coop-voice-meter-fill {
+  height: 100%;
+  width: 0%;
+  background: #53e39f;
+  transition: width 55ms linear, background-color 90ms ease;
+}
+
+.oof-coop-voice-meter-fill.mid {
+  background: #ffca58;
+}
+
+.oof-coop-voice-meter-fill.loud {
+  background: #ff4747;
+}
+
+.oof-coop-voice-hint {
+  font-size: 9px;
+  font-weight: 700;
+  color: #8ab09d;
+  white-space: nowrap;
+}
+
+.oof-coop-voice-hint.warn {
+  color: #ff7a7a;
+}
+
 .oof-coop-squad-list {
   display: flex;
   flex-direction: column;
@@ -844,6 +926,11 @@
   border-color: #ffca63;
   background: rgba(28, 20, 5, 0.88);
   color: #ffe5ad;
+}
+
+.oof-ally-label-3d.speaking {
+  border-color: #7affc2;
+  box-shadow: 0 0 10px rgba(102, 255, 185, 0.42);
 }
 
 .oof-ally-label-3d.trapped {

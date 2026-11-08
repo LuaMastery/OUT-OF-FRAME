@@ -2,6 +2,10 @@ import * as THREE from 'three';
 import { SoundEngine } from '../engine/audio/SoundEngine';
 import { StaticColliderBox } from '../engine/physics/SpatialSweep';
 import {
+  computeSpiderVoiceHearingAlert,
+  countLabyrinthWallsBetween,
+} from '../multiplayer/ProximityVoiceChat';
+import {
   CELL_SIZE,
   gridCellToWorld,
   isArchCell,
@@ -41,6 +45,7 @@ export interface SpiderPlayerCandidate {
   crouching: boolean;
   flashlightOn: boolean;
   flashlightDir: THREE.Vector3;
+  voiceLevel?: number;
   ensnared: boolean;
   afk: boolean;
   isLocal: boolean;
@@ -396,6 +401,7 @@ export class DoomSpider {
       );
       const inCatchReach =
         dist < 1.52 && this.hasLineOfSight(this.bodyPos, c.pos, c.crouching);
+      const voiceLvl = c.voiceLevel ?? 0;
       const detected =
         inCatchReach ||
         (this.postAbductionGraceTimer <= 0 &&
@@ -405,16 +411,21 @@ export class DoomSpider {
             c.sprinting,
             c.crouching,
             c.flashlightOn,
-            c.flashlightDir
+            c.flashlightDir,
+            voiceLvl
           ));
 
       // Alvos em alcance imediato de bote (<1.52m com LOS) têm prioridade máxima (-500),
-      // seguidos por alvos ativamente vistos/ouvidos (0..100), e por fim não detectados (1000+).
+      // seguidos por alvos ativamente vistos/ouvidos (incluindo quem fala alto/grita no microfone!), e por fim não detectados (1000+).
       let score: number;
       if (inCatchReach) {
         score = -500 + dist + (c.afk ? 4 : 0);
       } else if (detected) {
-        score = dist - (c.ensnared ? 2.8 : 0) + (c.afk ? 10 : 0);
+        score =
+          dist -
+          (c.ensnared ? 2.8 : 0) -
+          voiceLvl * 2.5 +
+          (c.afk ? 10 : 0);
       } else {
         score = 1000 + dist - (c.ensnared ? 4.0 : 0) + (c.afk ? 14 : 0);
       }
@@ -1193,7 +1204,8 @@ export class DoomSpider {
     flashlightOn: boolean,
     flashlightDir: THREE.Vector3,
     activeFlares: readonly ActiveMagnesiumFlare[],
-    onCatchPlayer: () => void
+    onCatchPlayer: () => void,
+    playerVoiceLevel = 0
   ): {
     cameraShakeAmount: number;
     playerDistance: number;
@@ -1234,7 +1246,7 @@ export class DoomSpider {
       }
     }
 
-    // 2. Visão e Audição
+    // 2. Visão e Audição (incluindo corrida e gritos/fala alta no microfone!)
     const canSeePlayer =
       this.postAbductionGraceTimer <= 0 &&
       this.detectPlayer(
@@ -1243,7 +1255,8 @@ export class DoomSpider {
         playerSprinting,
         playerCrouching,
         flashlightOn,
-        flashlightDir
+        flashlightDir,
+        playerVoiceLevel
       );
 
     if (canSeePlayer) {
@@ -1511,7 +1524,8 @@ export class DoomSpider {
     playerSprinting: boolean,
     playerCrouching: boolean,
     flashlightOn: boolean,
-    flashlightDir: THREE.Vector3
+    flashlightDir: THREE.Vector3,
+    playerVoiceLevel = 0
   ): boolean {
     const directLOS = this.hasLineOfSight(
       this.bodyPos,
@@ -1519,8 +1533,30 @@ export class DoomSpider {
       playerCrouching
     );
 
+    // Audição pelo Microfone por Distância (estilo Lethal Company):
+    // Sussurros passam despercebidos de longe, mas falar alto ou gritar ecoa pelos corredores e atrai a Aranha!
+    if (playerVoiceLevel >= 0.08) {
+      const wallCount = directLOS
+        ? 0
+        : countLabyrinthWallsBetween(
+            this.bodyPos.x,
+            this.bodyPos.z,
+            playerPos.x,
+            playerPos.z
+          );
+      const voiceAlert = computeSpiderVoiceHearingAlert(
+        playerVoiceLevel,
+        dist,
+        wallCount,
+        playerCrouching
+      );
+      if (voiceAlert.heard) {
+        return true;
+      }
+    }
+
     // Sem linha de visão direta (paredes, esquinas ou colunas entre a aranha e o jogador):
-    // Se o jogador parar de correr e se esconder, a aranha NÃO consegue enxergá-lo nem saber onde está!
+    // Se o jogador parar de correr, calar a voz e se esconder, a aranha NÃO consegue enxergá-lo nem saber onde está!
     if (!directLOS) {
       return playerSprinting && dist < 8.0;
     }
