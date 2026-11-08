@@ -1694,9 +1694,9 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
     let hideC = gridCellToWorld(2, 2);
     let foundCorner = false;
 
-    for (let gz = 2; gz < LABYRINTH_MAP.length - 3 && !foundCorner; gz++) {
-      for (let gx = 2; gx < LABYRINTH_MAP[gz].length - 3 && !foundCorner; gx++) {
-        // Corredor horizontal (gx-2, gz) -> (gx, gz) que dobra para (gx, gz+2) com parede sólida em (gx-1, gz+1)
+    for (let gz = 2; gz < LABYRINTH_MAP.length - 4 && !foundCorner; gz++) {
+      for (let gx = 2; gx < LABYRINTH_MAP[gz].length - 4 && !foundCorner; gx++) {
+        // Corredor horizontal (gx-2, gz) -> (gx, gz) que dobra para (gx, gz+2) e recua num nicho lateral sem visão direta de cornerB!
         if (
           !isSolidCell(LABYRINTH_MAP, gx - 2, gz) &&
           !isSolidCell(LABYRINTH_MAP, gx - 1, gz) &&
@@ -1704,12 +1704,18 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
           !isSolidCell(LABYRINTH_MAP, gx, gz + 1) &&
           !isSolidCell(LABYRINTH_MAP, gx, gz + 2) &&
           isSolidCell(LABYRINTH_MAP, gx - 1, gz + 1) &&
-          isSolidCell(LABYRINTH_MAP, gx - 1, gz + 2)
+          (!isSolidCell(LABYRINTH_MAP, gx - 1, gz + 2) ||
+            !isSolidCell(LABYRINTH_MAP, gx + 1, gz + 2))
         ) {
           cellA = gridCellToWorld(gx - 2, gz);
           cornerB = gridCellToWorld(gx, gz);
-          hideC = gridCellToWorld(gx, gz + 2);
-          foundCorner = true;
+          const alcoveX = !isSolidCell(LABYRINTH_MAP, gx - 1, gz + 2)
+            ? gx - 1
+            : gx + 1;
+          if (isSolidCell(LABYRINTH_MAP, alcoveX, gz + 1)) {
+            hideC = gridCellToWorld(alcoveX, gz + 2);
+            foundCorner = true;
+          }
         }
       }
     }
@@ -1848,5 +1854,95 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
     expect(sawBlackout).toBe(true);
     expect(sawSputter).toBe(true);
     expect(sawFullBright).toBe(true);
+  });
+
+  it('mantém a lanterna 100% sólida e opaca tanto em 1ª pessoa quanto empunhada na mão direita em 3ª pessoa (Co-op)', () => {
+    // 1) Lanterna de 1ª pessoa totalmente opaca (zero malhas transparentes visíveis quando equipada)
+    const fpFlashlight = new DoomFlashlight(16 / 10);
+    fpFlashlight.toggle();
+    for (let i = 0; i < 45; i++) {
+      fpFlashlight.update(1 / 60, 0, 0, () => {}, 0, 100, 0);
+    }
+
+    const isVisibleChain = (obj: THREE.Object3D): boolean => {
+      let cur: THREE.Object3D | null = obj;
+      while (cur) {
+        if (!cur.visible) return false;
+        cur = cur.parent;
+      }
+      return true;
+    };
+
+    let visibleTransparentMeshes = 0;
+    fpFlashlight.viewScene.traverse((obj) => {
+      if ((obj as THREE.Mesh).isMesh && isVisibleChain(obj)) {
+        const mat = (obj as THREE.Mesh).material as THREE.Material;
+        if (mat?.transparent) {
+          visibleTransparentMeshes++;
+        }
+      }
+    });
+    expect(visibleTransparentMeshes).toBe(0);
+
+    // 2) Lanterna sólida 3D acoplada na mão direita do aliado em 3ª pessoa (Co-op)
+    const scene = new THREE.Scene();
+    const shared = createDoomSharedUniforms();
+    const allyAstronaut = new DoomAstronaut(scene, shared);
+
+    allyAstronaut.updateThirdPersonAlly(
+      new THREE.Vector3(2, 0, -4),
+      0,
+      0,
+      0,
+      0,
+      0,
+      true,
+      false
+    );
+
+    expect(allyAstronaut.thirdPersonFlashlightGroup.visible).toBe(true);
+    expect(
+      allyAstronaut.thirdPersonFlashlightGroup.children.length
+    ).toBeGreaterThanOrEqual(8);
+    expect(allyAstronaut.thirdPersonFlashlightGroup.parent).toBe(
+      allyAstronaut.rightArm.gripSocket
+    );
+
+    let tpTransparentMeshes = 0;
+    allyAstronaut.thirdPersonFlashlightGroup.traverse((obj) => {
+      if ((obj as THREE.Mesh).isMesh) {
+        const mat = (obj as THREE.Mesh).material as THREE.Material;
+        if (mat?.transparent) {
+          tpTransparentMeshes++;
+        }
+      }
+    });
+    expect(tpTransparentMeshes).toBe(0);
+
+    const muzzlePos = new THREE.Vector3();
+    const muzzleDir = new THREE.Vector3();
+    expect(
+      allyAstronaut.getThirdPersonFlashlightMuzzleWorld(muzzlePos, muzzleDir)
+    ).toBe(true);
+    // Com yaw = 0 e pitch = 0, o bocal da lanterna sólida aponta diretamente para frente (-Z)
+    expect(muzzleDir.z).toBeLessThan(-0.96);
+    expect(Math.abs(muzzleDir.x)).toBeLessThan(0.12);
+    expect(Math.abs(muzzleDir.y)).toBeLessThan(0.12);
+
+    // Ao desligar a lanterna, o modelo 3D em 3ª pessoa e o bocal ficam inativos
+    allyAstronaut.updateThirdPersonAlly(
+      new THREE.Vector3(2, 0, -4),
+      0,
+      0,
+      0,
+      0,
+      0,
+      false,
+      false
+    );
+    expect(allyAstronaut.thirdPersonFlashlightGroup.visible).toBe(false);
+    expect(
+      allyAstronaut.getThirdPersonFlashlightMuzzleWorld(muzzlePos, muzzleDir)
+    ).toBe(false);
   });
 });

@@ -1970,10 +1970,15 @@ export class DoomGameApp {
     this.rankedLightScratch.sort((a, b) => a.d2 - b.d2);
 
     const flares = this.worldItems.getActiveFlares();
-    const reservedForFlares = Math.min(flares.length, 8);
+    const allyFlashLights =
+      this.multiplayer?.getActiveAllyFlashlightLights() ?? [];
+    const reservedForDynamic = Math.min(
+      flares.length + allyFlashLights.length,
+      10
+    );
     const staticSlots = Math.min(
       this.rankedLightScratch.length,
-      MAX_DOOM_LIGHTS - reservedForFlares
+      MAX_DOOM_LIGHTS - reservedForDynamic
     );
 
     let totalLights = 0;
@@ -1994,6 +1999,17 @@ export class DoomGameApp {
       this.sharedUniforms.uLightPositions.value[totalLights].copy(fl.position);
       this.sharedUniforms.uLightIntensities.value[totalLights] =
         0.92 * fade * jitter;
+      totalLights++;
+    }
+
+    for (
+      let a = 0;
+      a < allyFlashLights.length && totalLights < MAX_DOOM_LIGHTS;
+      a++
+    ) {
+      const al = allyFlashLights[a];
+      this.sharedUniforms.uLightPositions.value[totalLights].copy(al.position);
+      this.sharedUniforms.uLightIntensities.value[totalLights] = al.intensity;
       totalLights++;
     }
     this.sharedUniforms.uLightCount.value = totalLights;

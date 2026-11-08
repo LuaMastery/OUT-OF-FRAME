@@ -1315,9 +1315,12 @@ export class DoomAstronaut {
 
   readonly leftArm: AstronautArmRig;
   readonly rightArm: AstronautArmRig;
+  readonly thirdPersonFlashlightGroup = new THREE.Group();
+  private readonly thirdPersonFlashlightMuzzle = new THREE.Object3D();
   private readonly leftLeg: AstronautLegRig;
   private readonly rightLeg: AstronautLegRig;
   private readonly materials: AstronautMaterialSet;
+  private readonly tpLensLitMaterial: THREE.Material;
 
   private firstPersonMode = true;
 
@@ -1329,6 +1332,16 @@ export class DoomAstronaut {
     };
 
     this.materials = createAstronautMaterials(sharedUniforms);
+    const texCache = getAstronautTextures();
+    this.tpLensLitMaterial = createDoomPropMaterial(
+      texCache.goldVisorTex,
+      sharedUniforms,
+      {
+        baseLight: 0.95,
+        emissiveBoost: 0.9,
+        tint: new THREE.Color(0xfff8dc),
+      }
+    );
 
     this.bodyPivot.name = 'AstronautBodyPivot';
     this.root.add(this.bodyPivot);
@@ -1996,6 +2009,83 @@ export class DoomAstronaut {
 
     this.torsoGroup.add(this.leftArm.root, this.rightArm.root);
 
+    // 5. LANTERNA TÁTICA 3D 100% SÓLIDA E OPACA EMPUNHADA PELO BRAÇO DIREITO EM 3ª PESSOA (CO-OP)
+    this.thirdPersonFlashlightGroup.name = 'AstronautThirdPersonFlashlight';
+    // Em pose de lanterna em 3ª pessoa (ombro 0.32 + cotovelo 0.96 - punho 0.22 = +1.06 rad em X),
+    // giramos -1.06 rad em X dentro do gripSocket para o facho apontar perfeitamente para a frente (-Z)!
+    this.thirdPersonFlashlightGroup.position.set(0.012, -0.008, -0.012);
+    this.thirdPersonFlashlightGroup.rotation.set(-1.06, 0.04, 0);
+
+    const tpTailCap = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.026, 0.029, 0.032, 10),
+      this.materials.darkSteel
+    );
+    tpTailCap.rotation.x = Math.PI * 0.5;
+    tpTailCap.position.z = 0.098;
+
+    const tpBarrel = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.029, 0.029, 0.172, 10),
+      this.materials.machinedAlloy
+    );
+    tpBarrel.rotation.x = Math.PI * 0.5;
+    tpBarrel.position.z = -0.004;
+
+    const tpGripBand = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.0305, 0.0305, 0.068, 10),
+      this.materials.suitDarkPatch
+    );
+    tpGripBand.rotation.x = Math.PI * 0.5;
+    tpGripBand.position.z = 0.012;
+
+    const tpCollar = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.0305, 0.033, 0.018, 10),
+      this.materials.missionOrange
+    );
+    tpCollar.rotation.x = Math.PI * 0.5;
+    tpCollar.position.z = -0.098;
+
+    const tpSwitch = new THREE.Mesh(
+      new THREE.BoxGeometry(0.016, 0.012, 0.026),
+      this.materials.anodizedCrimson
+    );
+    tpSwitch.position.set(0, 0.032, -0.048);
+
+    const tpHeadBell = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.033, 0.048, 0.064, 12, 1, false),
+      this.materials.machinedAlloy
+    );
+    tpHeadBell.rotation.x = Math.PI * 0.5;
+    tpHeadBell.position.z = -0.138;
+
+    const tpBezelRing = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.049, 0.049, 0.016, 12),
+      this.materials.darkSteel
+    );
+    tpBezelRing.rotation.x = Math.PI * 0.5;
+    tpBezelRing.position.z = -0.174;
+
+    const tpLensDisc = new THREE.Mesh(
+      new THREE.CircleGeometry(0.043, 12),
+      this.tpLensLitMaterial
+    );
+    tpLensDisc.rotation.y = Math.PI;
+    tpLensDisc.position.z = -0.183;
+
+    this.thirdPersonFlashlightMuzzle.position.set(0, 0, -0.19);
+    this.thirdPersonFlashlightGroup.add(
+      tpTailCap,
+      tpBarrel,
+      tpGripBand,
+      tpCollar,
+      tpSwitch,
+      tpHeadBell,
+      tpBezelRing,
+      tpLensDisc,
+      this.thirdPersonFlashlightMuzzle
+    );
+    this.thirdPersonFlashlightGroup.visible = false;
+    this.rightArm.gripSocket.add(this.thirdPersonFlashlightGroup);
+
     this.setFirstPersonMode(true);
     scene.add(this.root);
   }
@@ -2038,6 +2128,7 @@ export class DoomAstronaut {
     } else {
       this.leftArm.root.visible = false;
       this.rightArm.root.visible = false;
+      this.thirdPersonFlashlightGroup.visible = false;
     }
   }
 
@@ -2116,6 +2207,7 @@ export class DoomAstronaut {
     this.root.rotation.set(0, yaw, 0);
 
     if (trappedOrDowned) {
+      this.thirdPersonFlashlightGroup.visible = false;
       const struggle = Math.sin(bobPhase * 3.2) * 0.09;
       this.bodyPivot.position.set(0, -0.36, 0);
       this.bodyPivot.rotation.set(0.28, struggle * 0.5, struggle * 0.35);
@@ -2180,13 +2272,20 @@ export class DoomAstronaut {
 
     this.rightArm.shoulderPivot.rotation.order = 'YXZ';
     if (flashlightOn) {
+      const pitchClamp = Math.max(-0.52, Math.min(0.52, pitch));
       this.rightArm.shoulderPivot.rotation.set(
-        0.72 + Math.max(-0.45, Math.min(0.45, pitch * 0.65)),
+        0.32 + pitchClamp * 0.42 - torsoLeanForward * 0.5,
         -0.08,
-        0.1
+        0.08
       );
-      this.rightArm.elbowPivot.rotation.set(0.52, 0.12, -0.08);
-      this.rightArm.setGripPose('flashlight');
+      this.rightArm.elbowPivot.rotation.set(
+        0.96 + pitchClamp * 0.58 - torsoLeanForward * 0.5,
+        0.06,
+        -0.04
+      );
+      this.rightArm.wristPivot.rotation.set(-0.22, 0, 0);
+      this.rightArm.setGripPose('cylindrical');
+      this.thirdPersonFlashlightGroup.visible = true;
     } else {
       this.rightArm.shoulderPivot.rotation.set(
         0.14 + armSwing + crouchAmount * 0.18,
@@ -2194,8 +2293,33 @@ export class DoomAstronaut {
         0.12
       );
       this.rightArm.elbowPivot.rotation.set(0.32 + stride * 0.16, 0, 0);
+      this.rightArm.wristPivot.rotation.set(0, 0, 0);
       this.rightArm.setGripPose('relaxed');
+      this.thirdPersonFlashlightGroup.visible = false;
     }
+  }
+
+  /**
+   * Obtém a posição exata no mundo do bocal/lente da lanterna sólida em 3ª pessoa e sua direção frontal.
+   */
+  getThirdPersonFlashlightMuzzleWorld(
+    outPos: THREE.Vector3,
+    outDir: THREE.Vector3
+  ): boolean {
+    if (!this.root.visible || !this.thirdPersonFlashlightGroup.visible) {
+      return false;
+    }
+    this.root.updateMatrixWorld(true);
+    this.thirdPersonFlashlightMuzzle.getWorldPosition(outPos);
+    const origin = new THREE.Vector3();
+    this.thirdPersonFlashlightGroup.getWorldPosition(origin);
+    outDir.copy(outPos).sub(origin);
+    if (outDir.lengthSq() < 1e-6) {
+      outDir.set(0, 0, -1);
+    } else {
+      outDir.normalize();
+    }
+    return true;
   }
 
   disposeFromScene(scene: THREE.Scene): void {

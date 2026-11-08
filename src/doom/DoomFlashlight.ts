@@ -226,49 +226,53 @@ export class DoomFlashlight {
       flatShading: true,
     });
 
-    this.lensMaterial = new THREE.MeshBasicMaterial({ color: 0x1e2126 });
+    this.lensMaterial = new THREE.MeshBasicMaterial({
+      color: 0x232730,
+      side: THREE.DoubleSide,
+    });
     this.reflectorMaterial = new THREE.MeshLambertMaterial({
       color: 0x626873,
-      side: THREE.BackSide,
       flatShading: true,
     });
-    this.bulbMaterial = new THREE.MeshBasicMaterial({ color: 0x3a362e });
+    this.bulbMaterial = new THREE.MeshBasicMaterial({ color: 0x464035 });
 
     // ========================================================================
-    // 1. LANTERNA CLÁSSICA SIMPLES & LIMPA + BRAÇO DIREITO DO ASTRONAUTA (`AstronautRightArm`)
+    // 1. LANTERNA CLÁSSICA 100% SÓLIDA/OPACA & BRAÇO DIREITO DO ASTRONAUTA (`AstronautRightArm`)
+    //    Nota geométrica: com `rotation.x = +Math.PI * 0.5`, `+Y` (`radiusTop`) aponta para `+Z` (trás)
+    //    e `-Y` (`radiusBottom`) aponta para `-Z` (frente), garantindo encaixe hermético sem frestas!
     // ========================================================================
     const model = new THREE.Group();
 
-    // A) Tampa traseira limpa (sem argolas traseiras que atravessem a luva/punho)
+    // A) Tampa traseira sólida e selada acoplada sem folga ao tubo (0.0245 atrás -> 0.0265 no tubo)
     const tailCap = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.0265, 0.0245, 0.026, 10),
+      new THREE.CylinderGeometry(0.0245, 0.0265, 0.028, 12),
       bezelMat
     );
     tailCap.rotation.x = Math.PI * 0.5;
-    tailCap.position.z = 0.088;
+    tailCap.position.z = 0.089;
     model.add(tailCap);
 
-    // B) Corpo cilíndrico simples e bem proporcionado com textura recartilhada discreta
+    // B) Corpo cilíndrico 100% opaco com textura recartilhada tática
     const barrel = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.0265, 0.0265, 0.162, 10),
+      new THREE.CylinderGeometry(0.0265, 0.0265, 0.164, 12),
       bodyMat
     );
     barrel.rotation.x = Math.PI * 0.5;
     barrel.position.z = -0.006;
     model.add(barrel);
 
-    // C) Anel simples de latão na transição para o bocal
+    // C) Anel sólido de latão fazendo a transição exata do tubo (0.0275) para o bocal (0.0295)
     const brassCollar = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.0285, 0.0275, 0.014, 10),
+      new THREE.CylinderGeometry(0.0275, 0.0295, 0.016, 12),
       brassMat
     );
     brassCollar.rotation.x = Math.PI * 0.5;
-    brassCollar.position.z = -0.092;
+    brassCollar.position.z = -0.094;
     model.add(brassCollar);
 
-    // D) Botão deslizante superior simples e legível
+    // D) Botão deslizante superior sólido e legível
     const switchRail = new THREE.Mesh(
-      new THREE.BoxGeometry(0.018, 0.008, 0.044),
+      new THREE.BoxGeometry(0.018, 0.009, 0.044),
       darkRingMat
     );
     switchRail.position.set(0, 0.028, -0.032);
@@ -281,53 +285,45 @@ export class DoomFlashlight {
     this.switchMesh.position.set(0, 0.033, -0.028);
     model.add(this.switchMesh);
 
-    // E) Cabeçal cônico aberto à frente (sem cilindros fechados sobrepostos/z-fighting!)
-    const headBackCap = new THREE.Mesh(
-      new THREE.CircleGeometry(0.029, 10),
-      bezelMat
-    );
-    headBackCap.position.z = -0.099;
-    model.add(headBackCap);
-
+    // E) Cabeçal cônico 100% fechado e opaco (0.0295 atrás -> 0.043 na frente, zero transparência ou frestas!)
     const headBell = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.043, 0.029, 0.058, 10, 1, true),
+      new THREE.CylinderGeometry(0.0295, 0.043, 0.058, 12, 1, false),
       bodyMat
     );
     headBell.rotation.x = Math.PI * 0.5;
-    headBell.position.z = -0.128;
+    headBell.position.z = -0.13;
     model.add(headBell);
 
-    const bezelLip = new THREE.Mesh(
-      new THREE.TorusGeometry(0.0415, 0.0042, 8, 12),
+    const bezelBarrel = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.0435, 0.0435, 0.012, 12),
       darkRingMat
     );
-    bezelLip.position.z = -0.157;
-    model.add(bezelLip);
+    bezelBarrel.rotation.x = Math.PI * 0.5;
+    bezelBarrel.position.z = -0.161;
+    model.add(bezelBarrel);
 
-    const reflectorCone = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.039, 0.012, 0.048, 10, 1, true),
+    const reflectorDisc = new THREE.Mesh(
+      new THREE.CircleGeometry(0.039, 12),
       this.reflectorMaterial
     );
-    reflectorCone.rotation.x = Math.PI * 0.5;
-    reflectorCone.position.z = -0.131;
-    model.add(reflectorCone);
+    reflectorDisc.rotation.y = Math.PI;
+    reflectorDisc.position.z = -0.1675;
+    model.add(reflectorDisc);
 
-    const bulb = new THREE.Mesh(
-      new THREE.SphereGeometry(0.0095, 8, 6),
-      this.bulbMaterial
-    );
-    bulb.position.z = -0.122;
-    model.add(bulb);
-
-    this.lensMaterial.transparent = true;
-    this.lensMaterial.opacity = 0.55;
-    this.lensMaterial.side = THREE.DoubleSide;
     const lens = new THREE.Mesh(
-      new THREE.CircleGeometry(0.039, 10),
+      new THREE.CircleGeometry(0.036, 12),
       this.lensMaterial
     );
-    lens.position.z = -0.154;
+    lens.rotation.y = Math.PI;
+    lens.position.z = -0.168;
     model.add(lens);
+
+    const bulb = new THREE.Mesh(
+      new THREE.SphereGeometry(0.011, 8, 6),
+      this.bulbMaterial
+    );
+    bulb.position.z = -0.166;
+    model.add(bulb);
 
     // F) BRAÇO DIREITO DO ASTRONAUTA (`AstronautRightArm`) COM ANATOMIA CORRIGIDA:
     // - Sem braço superior dobrando em V na frente da lente (`includeUpperArm: false`);
@@ -1351,15 +1347,13 @@ export class DoomFlashlight {
     }
 
     if (beamIntensity > 0.05) {
-      this.bulbMaterial.color.setHex(0xfff9de);
+      this.bulbMaterial.color.setHex(0xfffbe6);
       this.reflectorMaterial.color.setHex(0xd8c394);
-      this.lensMaterial.color.setHex(0xfff0be);
-      this.lensMaterial.opacity = 0.68;
+      this.lensMaterial.color.setHex(0xffeeb5);
     } else {
-      this.bulbMaterial.color.setHex(0x3a362e);
+      this.bulbMaterial.color.setHex(0x464035);
       this.reflectorMaterial.color.setHex(0x4b5059);
-      this.lensMaterial.color.setHex(0x191d23);
-      this.lensMaterial.opacity = 0.42;
+      this.lensMaterial.color.setHex(0x232730);
     }
 
     const t = this.equipProgress;

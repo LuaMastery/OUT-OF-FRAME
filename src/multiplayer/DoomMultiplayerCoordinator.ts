@@ -93,6 +93,13 @@ export class DoomMultiplayerCoordinator {
 
   private roster: RoomPlayerSummary[] = [];
   private readonly projVec = new THREE.Vector3();
+  private readonly muzzlePosScratch = new THREE.Vector3();
+  private readonly muzzleDirScratch = new THREE.Vector3();
+  private readonly unitNegZ = new THREE.Vector3(0, 0, -1);
+  private readonly allyDynamicLightsScratch: Array<{
+    position: THREE.Vector3;
+    intensity: number;
+  }> = [];
 
   constructor(
     public readonly session: ActiveRoomSession,
@@ -505,19 +512,22 @@ export class DoomMultiplayerCoordinator {
         ally.ensnared || ally.inSequence
       );
 
-      // Foco cônico volumétrico da lanterna 3D do aliado
-      ally.beamGroup.visible = ally.flashlightOn && !ally.inSequence;
-      if (ally.beamGroup.visible) {
-        const handHeight = 1.24 - ally.crouch * 0.4;
-        const rightX = Math.cos(ally.currentYaw) * 0.24;
-        const rightZ = -Math.sin(ally.currentYaw) * 0.24;
-        ally.beamGroup.position.set(
-          ally.currentPos.x + rightX,
-          ally.currentPos.y + handHeight,
-          ally.currentPos.z + rightZ
+      // Foco sutil no bocal ancorado exatamente na frente da lente da lanterna 3D sólida do aliado
+      const hasMuzzle =
+        ally.flashlightOn &&
+        !ally.ensnared &&
+        !ally.inSequence &&
+        ally.astronaut.getThirdPersonFlashlightMuzzleWorld(
+          this.muzzlePosScratch,
+          this.muzzleDirScratch
         );
-        ally.beamGroup.rotation.order = 'YXZ';
-        ally.beamGroup.rotation.set(ally.pitch, ally.currentYaw, 0);
+      ally.beamGroup.visible = hasMuzzle;
+      if (hasMuzzle) {
+        ally.beamGroup.position.copy(this.muzzlePosScratch);
+        ally.beamGroup.quaternion.setFromUnitVectors(
+          this.unitNegZ,
+          this.muzzleDirScratch
+        );
       }
 
       // Projeção na tela da etiqueta acima do capacete do aliado
@@ -726,26 +736,108 @@ export class DoomMultiplayerCoordinator {
     this.renderSquadHud();
   }
 
+  /**
+   * Retorna pontos dinâmicos de luz projetados pelas lanternas 3D dos aliados ativos no corredor
+   * (iluminação real nas paredes e no piso via shader DOOM, sem cones falsos atravessando paredes!).
+   */
+  getActiveAllyFlashlightLights(): ReadonlyArray<{
+    position: THREE.Vector3;
+    intensity: number;
+  }> {
+    let used = 0;
+    const ensureSlot = (idx: number): { position: THREE.Vector3; intensity: number } => {
+      while (this.allyDynamicLightsScratch.length <= idx) {
+        this.allyDynamicLightsScratch.push({
+          position: new THREE.Vector3(),
+          intensity: 0,
+        });
+      }
+      return this.allyDynamicLightsScratch[idx];
+    };
+
+    for (const ally of this.allies.values()) {
+      if (ally.dead || !ally.flashlightOn || ally.ensnared || ally.inSequence) {
+        continue;
+      }
+      if (
+        !ally.astronaut.getThirdPersonFlashlightMuzzleWorld(
+          this.muzzlePosScratch,
+          this.muzzleDirScratch
+        )
+      ) {
+        continue;
+      }
+
+      // Raymarch ao longo do facho para parar nas paredes/piso/teto reais do labirinto
+      const maxReach = 9.6;
+      let hitDist = maxReach;
+      for (let d = 0.45; d <= maxReach; d += 0.45) {
+        const sx = this.muzzlePosScratch.x + this.muzzleDirScratch.x * d;
+        const sy = this.muzzlePosScratch.y + this.muzzleDirScratch.y * d;
+        const sz = this.muzzlePosScratch.z + this.muzzleDirScratch.z * d;
+        if (sy <= 0.12 || sy >= 3.28) {
+          hitDist = d;
+          break;
+        }
+        const cell = worldToGridCell(sx, sz);
+        if (isSolidCell(LABYRINTH_MAP, cell.gx, cell.gz)) {
+          hitDist = Math.max(0.45, d - 0.35);
+          break;
+        }
+      }
+
+      const midDist = Math.min(hitDist * 0.48, 3.1);
+      const midSlot = ensureSlot(used++);
+      midSlot.position
+        .copy(this.muzzlePosScratch)
+        .addScaledVector(this.muzzleDirScratch, midDist);
+      midSlot.intensity = 0.48;
+
+      const endDist = Math.max(0.55, hitDist - 0.22);
+      const endSlot = ensureSlot(used++);
+      endSlot.position
+        .copy(this.muzzlePosScratch)
+        .addScaledVector(this.muzzleDirScratch, endDist);
+      endSlot.intensity = 0.74;
+
+      if (used >= 6) break;
+    }
+
+    this.allyDynamicLightsScratch.length = used;
+    return this.allyDynamicLightsScratch;
+  }
+
   private createAllyFlashlightBeamMesh(): THREE.Group {
     const grp = new THREE.Group();
-    const coneGeo = new THREE.ConeGeometry(0.95, 5.2, 12, 1, true);
+    // Halo curto com decaimento suave por cor de vértice até 0.0 (preto em AdditiveBlending),
+    // partindo estritamente à frente do bocal da lanterna 3D sólida sem jamais sobrepor o corpo!
+    const beamLen = 1.25;
+    const coneGeo = new THREE.CylinderGeometry(0.044, 0.3, beamLen, 14, 1, true);
+    const posAttr = coneGeo.getAttribute('position');
+    const colors = new Float32Array(posAttr.count * 3);
+    for (let i = 0; i < posAttr.count; i++) {
+      // Antes de rotateX(+PI/2), +Y é o bocal (0.044) e -Y é a extremidade final (0.30)
+      const y = posAttr.getY(i);
+      const t = Math.max(0, Math.min(1, (y + beamLen * 0.5) / beamLen));
+      const fade = t * t;
+      colors[i * 3] = 1.0 * fade;
+      colors[i * 3 + 1] = 0.93 * fade;
+      colors[i * 3 + 2] = 0.72 * fade;
+    }
+    coneGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
     coneGeo.rotateX(Math.PI * 0.5);
-    coneGeo.translate(0, 0, -2.65);
+    coneGeo.translate(0, 0, -(beamLen * 0.5 + 0.014));
+
     const coneMat = new THREE.MeshBasicMaterial({
-      color: 0xfff0c2,
+      vertexColors: true,
       transparent: true,
-      opacity: 0.085,
+      opacity: 0.052,
       depthWrite: false,
       side: THREE.DoubleSide,
       blending: THREE.AdditiveBlending,
     });
     const cone = new THREE.Mesh(coneGeo, coneMat);
-
-    const bulb = new THREE.Mesh(
-      new THREE.SphereGeometry(0.055, 8, 8),
-      new THREE.MeshBasicMaterial({ color: 0xffffff })
-    );
-    grp.add(cone, bulb);
+    grp.add(cone);
     return grp;
   }
 
