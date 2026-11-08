@@ -53,8 +53,7 @@ function makeDetailedPixelTex(
 
 /**
  * Objetos 3D coletáveis esculpidos em múltiplas peças pelo labirinto
- * (caixotes de suprimento abertos com ferragens, rolos de gaze, frascos apotecários,
- * baterias industriais 9V, canivete oxidado chanfrado, bastões de magnésio, chave antiga e pranchetas)
+ * (apoiados fisicamente dentro dos caixotes abertos de suprimento, sem flutuar nem atravessar bordas)
  * + Sinalizadores de Magnésio acesos no chão.
  */
 export class DoomWorldItems {
@@ -64,18 +63,24 @@ export class DoomWorldItems {
 
   private readonly matCrateWood: THREE.ShaderMaterial;
   private readonly matDarkIron: THREE.ShaderMaterial;
+  private readonly matCleanSteel: THREE.ShaderMaterial;
   private readonly matGauze: THREE.ShaderMaterial;
+  private readonly matGauzeSpiral: THREE.ShaderMaterial;
+  private readonly matGauzeWrapper: THREE.ShaderMaterial;
   private readonly matRedCross: THREE.ShaderMaterial;
   private readonly matAmberGlass: THREE.ShaderMaterial;
+  private readonly matApothecaryLabel: THREE.ShaderMaterial;
   private readonly matCork: THREE.ShaderMaterial;
   private readonly matBattery: THREE.ShaderMaterial;
   private readonly matBrass: THREE.ShaderMaterial;
+  private readonly matKeyTag: THREE.ShaderMaterial;
   private readonly matWoodGrip: THREE.ShaderMaterial;
   private readonly matSteelBlade: THREE.ShaderMaterial;
   private readonly matRustFuller: THREE.ShaderMaterial;
   private readonly matFlareRed: THREE.ShaderMaterial;
   private readonly matPaper: THREE.ShaderMaterial;
   private readonly matFlameOuter: THREE.MeshBasicMaterial;
+  private readonly matFlameMid: THREE.MeshBasicMaterial;
   private readonly matFlameCore: THREE.MeshBasicMaterial;
 
   constructor(scene: THREE.Scene, sharedUniforms: DoomSharedUniforms) {
@@ -104,36 +109,94 @@ export class DoomWorldItems {
       { baseLight: 0.52 }
     );
 
-    // 2. Ferro escuro rebitado para cantoneiras, alças e bases
+    // 2. Ferro escuro rebitado para cantoneiras e bases
     this.matDarkIron = createDoomPropMaterial(
       makeDetailedPixelTex(32, 32, (px) => {
         for (let y = 0; y < 32; y++) {
           for (let x = 0; x < 32; x++) {
             const grit = ((x * 5 + y * 13) % 7) - 3;
             const edge = x === 0 || y === 0 ? -12 : x === 1 || y === 1 ? 12 : 0;
-            const v = 42 + grit * 2 + edge;
+            const v = 40 + grit * 2 + edge;
             px(x, y, v, v * 1.01, v * 1.06);
           }
         }
       }),
       sharedUniforms,
-      { baseLight: 0.5 }
+      { baseLight: 0.5, doubleSided: true }
     );
 
-    // 3. Trama de algodão da atadura
+    // Aço escovado limpo (para grampos, argolas de chaveiro, etc., sem manchas de ferrugem)
+    this.matCleanSteel = createDoomPropMaterial(
+      makeDetailedPixelTex(16, 16, (px) => {
+        for (let y = 0; y < 16; y++) {
+          for (let x = 0; x < 16; x++) {
+            const sheen = x === 4 || x === 5 ? 24 : 0;
+            const grit = ((x * 5 + y * 9) % 7) - 3;
+            const v = 148 + sheen + grit * 2;
+            px(x, y, v, v * 1.02, v * 1.06);
+          }
+        }
+      }),
+      sharedUniforms,
+      { baseLight: 0.64, emissiveBoost: 0.08 }
+    );
+
+    // 3. Gaze médica: trama lateral + espiral concêntrica do topo + cinta de papel com cruz médica
     this.matGauze = createDoomPropMaterial(
       makeDetailedPixelTex(32, 32, (px) => {
         for (let y = 0; y < 32; y++) {
           for (let x = 0; x < 32; x++) {
-            const weave = (x + y) % 2 === 0 ? 5 : -5;
-            const seam = y % 6 === 0 ? -10 : 0;
-            const v = 208 + weave + seam;
+            const weave = (x + y) % 2 === 0 ? 5 : -4;
+            const thread = y % 5 === 0 ? -8 : 0;
+            const v = 212 + weave + thread;
+            px(x, y, v, v * 0.96, v * 0.88);
+          }
+        }
+      }),
+      sharedUniforms,
+      { baseLight: 0.64, emissiveBoost: 0.08, doubleSided: true }
+    );
+
+    this.matGauzeSpiral = createDoomPropMaterial(
+      makeDetailedPixelTex(32, 32, (px) => {
+        for (let y = 0; y < 32; y++) {
+          for (let x = 0; x < 32; x++) {
+            const dx = x - 15.5;
+            const dy = y - 15.5;
+            const r = Math.hypot(dx, dy);
+            const ang = Math.atan2(dy, dx);
+            const spiral = Math.sin(r * 2.3 + ang) > 0.55 ? -20 : 4;
+            const v = 204 + spiral;
             px(x, y, v, v * 0.96, v * 0.87);
           }
         }
       }),
       sharedUniforms,
       { baseLight: 0.64, emissiveBoost: 0.08, doubleSided: true }
+    );
+
+    this.matGauzeWrapper = createDoomPropMaterial(
+      makeDetailedPixelTex(32, 32, (px) => {
+        for (let y = 0; y < 32; y++) {
+          for (let x = 0; x < 32; x++) {
+            const border = y <= 1 || y >= 30;
+            // Compensado pela circunferência 2πR vs altura 0.048m -> cruz '+' perfeitamente proporcional em 3D!
+            const inCrossV = x === 16 && y >= 4 && y <= 27;
+            const inCrossH = x >= 15 && x <= 17 && y >= 12 && y <= 19;
+            // Segunda cruz no verso (x = 0) para ser visível de ambos os lados
+            const inBackV = x === 0 && y >= 4 && y <= 27;
+            const inBackH = (x <= 1 || x === 31) && y >= 12 && y <= 19;
+            if (border || inCrossV || inCrossH || inBackV || inBackH) {
+              px(x, y, 156, 34, 32);
+            } else {
+              const grit = ((x * 7 + y * 5) % 5) - 2;
+              px(x, y, 224 + grit * 2, 214 + grit * 2, 194 + grit * 2);
+            }
+          }
+        }
+      }),
+      sharedUniforms,
+      { baseLight: 0.66, emissiveBoost: 0.08, doubleSided: true }
     );
 
     this.matRedCross = createDoomPropMaterial(
@@ -149,19 +212,64 @@ export class DoomWorldItems {
       { baseLight: 0.62, emissiveBoost: 0.08 }
     );
 
-    // 4. Vidro apotecário âmbar translúcido + rótulo
+    // 4. Vidro apotecário âmbar rico (com nível escuro de láudano e reflexo vertical) + rótulo curvo dedicado
     this.matAmberGlass = createDoomPropMaterial(
       makeDetailedPixelTex(32, 32, (px) => {
         for (let y = 0; y < 32; y++) {
+          const inLiquid = y >= 11;
           for (let x = 0; x < 32; x++) {
-            const spec = x >= 4 && x <= 7 ? 38 : 0;
-            const grit = ((x * 3 + y * 9) % 7) - 3;
-            px(x, y, 148 + spec + grit * 2, 78 + spec * 0.7 + grit, 32 + spec * 0.3);
+            const spec = x >= 5 && x <= 7 ? 52 : x === 24 ? 18 : 0;
+            const meniscus = y === 11 ? 24 : 0;
+            const grit = ((x * 3 + y * 9) % 5) - 2;
+            const baseR = inLiquid ? 104 : 152;
+            const baseG = inLiquid ? 48 : 82;
+            const baseB = inLiquid ? 18 : 30;
+            px(
+              x,
+              y,
+              baseR + spec + meniscus + grit * 2,
+              baseG + spec * 0.72 + meniscus * 0.5 + grit,
+              baseB + spec * 0.38 + grit
+            );
           }
         }
       }),
       sharedUniforms,
-      { baseLight: 0.64, emissiveBoost: 0.09 }
+      { baseLight: 0.66, emissiveBoost: 0.1 }
+    );
+
+    this.matApothecaryLabel = createDoomPropMaterial(
+      makeDetailedPixelTex(32, 32, (px) => {
+        for (let y = 0; y < 32; y++) {
+          for (let x = 0; x < 32; x++) {
+            const outerFrame = x <= 1 || x >= 30 || y <= 1 || y >= 30;
+            const innerFrame =
+              (x === 3 || x === 28) && y >= 3 && y <= 28
+                ? true
+                : (y === 3 || y === 28) && x >= 3 && x <= 28;
+            const redBanner = y >= 6 && y <= 10 && x >= 6 && x <= 25;
+            const textLine =
+              (y === 15 && x >= 7 && x <= 24) ||
+              (y === 19 && x >= 8 && x <= 23) ||
+              (y === 23 && x >= 10 && x <= 21);
+
+            if (outerFrame) {
+              px(x, y, 78, 64, 48);
+            } else if (innerFrame) {
+              px(x, y, 124, 96, 68);
+            } else if (redBanner) {
+              px(x, y, 138, 38, 34);
+            } else if (textLine) {
+              px(x, y, 64, 56, 46);
+            } else {
+              const age = ((x * 7 + y * 11) % 7) - 3;
+              px(x, y, 222 + age * 2, 210 + age * 2, 184 + age * 2);
+            }
+          }
+        }
+      }),
+      sharedUniforms,
+      { baseLight: 0.68, emissiveBoost: 0.09, doubleSided: true }
     );
 
     this.matCork = createDoomPropMaterial(
@@ -177,38 +285,89 @@ export class DoomWorldItems {
       { baseLight: 0.6, emissiveBoost: 0.06 }
     );
 
-    // 5. Célula industrial 9V (jaqueta preta/cobre com listra técnica)
+    // 5. Célula industrial 9V (faixa superior de cobre + corpo blindado escuro + polos + / - gravados)
     this.matBattery = createDoomPropMaterial(
       makeDetailedPixelTex(32, 32, (px) => {
         for (let y = 0; y < 32; y++) {
           for (let x = 0; x < 32; x++) {
             const grit = ((x * 9 + y * 5) % 7) - 3;
+            const plusMark =
+              (x === 8 && y >= 13 && y <= 17) ||
+              (y === 15 && x >= 6 && x <= 10);
+            const minusMark = y === 15 && x >= 21 && x <= 25;
+            const bottomRule = y === 26 && x >= 6 && x <= 25;
+
             if (y < 9) {
-              px(x, y, 186 + grit * 2, 126 + grit * 2, 46 + grit);
+              const shine = x >= 4 && x <= 7 ? 24 : 0;
+              px(
+                x,
+                y,
+                192 + shine + grit * 2,
+                132 + shine * 0.7 + grit * 2,
+                52 + grit
+              );
             } else if (y === 9) {
-              px(x, y, 22, 22, 24);
+              px(x, y, 18, 19, 22);
+            } else if (plusMark || minusMark) {
+              px(x, y, 214, 204, 182);
+            } else if (bottomRule) {
+              px(x, y, 96, 90, 78);
             } else {
-              px(x, y, 42 + grit * 2, 47 + grit * 2, 55 + grit * 2);
+              const seam = x === 0 || x === 31 ? -10 : x === 3 ? 10 : 0;
+              px(
+                x,
+                y,
+                40 + seam + grit * 2,
+                44 + seam + grit * 2,
+                52 + seam + grit * 2
+              );
             }
           }
         }
       }),
       sharedUniforms,
-      { baseLight: 0.62, emissiveBoost: 0.08 }
+      { baseLight: 0.64, emissiveBoost: 0.08 }
     );
 
     this.matBrass = createDoomPropMaterial(
       makeDetailedPixelTex(16, 16, (px) => {
         for (let y = 0; y < 16; y++) {
           for (let x = 0; x < 16; x++) {
-            const shine = x === 3 || x === 4 ? 26 : 0;
+            const shine = x === 3 || x === 4 ? 28 : 0;
             const grit = ((x * 5 + y * 11) % 7) - 3;
-            px(x, y, 192 + shine + grit * 2, 158 + shine * 0.8 + grit * 2, 82 + grit);
+            px(
+              x,
+              y,
+              196 + shine + grit * 2,
+              162 + shine * 0.8 + grit * 2,
+              84 + grit
+            );
           }
         }
       }),
       sharedUniforms,
-      { baseLight: 0.66, emissiveBoost: 0.09 }
+      { baseLight: 0.66, emissiveBoost: 0.09, doubleSided: true }
+    );
+
+    // Plaqueta metálica gravada da Chave da Ala B
+    this.matKeyTag = createDoomPropMaterial(
+      makeDetailedPixelTex(16, 16, (px) => {
+        for (let y = 0; y < 16; y++) {
+          for (let x = 0; x < 16; x++) {
+            const border = x === 0 || x === 15 || y === 0 || y === 15;
+            const stamp = y >= 6 && y <= 9 && x >= 4 && x <= 11 && (x + y) % 2 === 0;
+            if (border) {
+              px(x, y, 62, 56, 46);
+            } else if (stamp) {
+              px(x, y, 42, 38, 32);
+            } else {
+              px(x, y, 134, 124, 104);
+            }
+          }
+        }
+      }),
+      sharedUniforms,
+      { baseLight: 0.64, emissiveBoost: 0.08 }
     );
 
     // 6. Cabo de madeira nobre e lâmina de aço oxidado para o canivete
@@ -235,7 +394,13 @@ export class DoomWorldItems {
             } else {
               const bevel = y > 22 ? 32 : 0;
               const grit = ((x * 7 + y * 11) % 7) - 3;
-              px(x, y, 174 + bevel + grit * 2, 182 + bevel + grit * 2, 194 + bevel + grit * 2);
+              px(
+                x,
+                y,
+                174 + bevel + grit * 2,
+                182 + bevel + grit * 2,
+                194 + bevel + grit * 2
+              );
             }
           }
         }
@@ -257,17 +422,23 @@ export class DoomWorldItems {
       { baseLight: 0.56, emissiveBoost: 0.06 }
     );
 
-    // 7. Corpo estriado vermelho do bastão de magnésio
+    // 7. Corpo encerado vermelho do bastão de magnésio com rótulo técnico creme/escuro próximo à ponta
     this.matFlareRed = createDoomPropMaterial(
       makeDetailedPixelTex(32, 32, (px) => {
         for (let y = 0; y < 32; y++) {
           for (let x = 0; x < 32; x++) {
-            const stripe = y >= 10 && y <= 13;
-            const rib = x % 4 === 0 ? -12 : 4;
-            if (stripe) {
-              px(x, y, 42 + rib * 0.5, 40 + rib * 0.5, 42 + rib * 0.5);
+            const rib = x % 4 === 0 ? -10 : x % 4 === 2 ? 6 : 0;
+            if (y >= 5 && y <= 9) {
+              const hazard = (x + y) % 4 < 2;
+              if (y === 5 || y === 9) {
+                px(x, y, 36, 34, 34);
+              } else if (hazard) {
+                px(x, y, 214, 192, 132);
+              } else {
+                px(x, y, 52, 46, 44);
+              }
             } else {
-              px(x, y, 186 + rib, 44 + rib * 0.3, 38 + rib * 0.3);
+              px(x, y, 188 + rib, 44 + rib * 0.3, 38 + rib * 0.3);
             }
           }
         }
@@ -276,14 +447,17 @@ export class DoomWorldItems {
       { baseLight: 0.64, emissiveBoost: 0.09 }
     );
 
-    // 8. Página manuscrita manchada
+    // 8. Página manuscrita manchada (folha única contínua sobre a prancheta)
     this.matPaper = createDoomPropMaterial(
       makeDetailedPixelTex(32, 32, (px) => {
         for (let y = 0; y < 32; y++) {
           for (let x = 0; x < 32; x++) {
             const inkLine =
               y >= 5 && y <= 25 && y % 4 === 0 && x >= 4 && x <= 26;
-            const blood = x > 19 && y > 19 && (x - 24) * (x - 24) + (y - 24) * (y - 24) < 26;
+            const blood =
+              x > 20 &&
+              y > 20 &&
+              (x - 25) * (x - 25) + (y - 25) * (y - 25) < 18;
             if (blood) {
               px(x, y, 118, 28, 26);
             } else if (inkLine && (x * 7 + y) % 5 !== 0) {
@@ -299,8 +473,21 @@ export class DoomWorldItems {
       { baseLight: 0.68, emissiveBoost: 0.1, doubleSided: true }
     );
 
-    this.matFlameOuter = new THREE.MeshBasicMaterial({ color: 0xff5a1f });
-    this.matFlameCore = new THREE.MeshBasicMaterial({ color: 0xfff3c4 });
+    this.matFlameOuter = new THREE.MeshBasicMaterial({
+      color: 0xff541c,
+      transparent: true,
+      opacity: 0.78,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    this.matFlameMid = new THREE.MeshBasicMaterial({
+      color: 0xffb84d,
+      transparent: true,
+      opacity: 0.9,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    this.matFlameCore = new THREE.MeshBasicMaterial({ color: 0xfff8dc });
 
     this.populateLabyrinthItems();
   }
@@ -336,15 +523,16 @@ export class DoomWorldItems {
       const group = new THREE.Group();
       group.position.set(wx, 0, wz);
 
-      // Caixote baixo de suprimentos esculpido com bordas, cantoneiras de ferro e tampa aberta
+      // Caixote baixo de suprimentos esculpido voltado para o centro livre do corredor
       const crate = this.buildSupplyCrate();
-      crate.rotation.y = (idx * 0.7) % Math.PI;
+      crate.rotation.y = Math.atan2(-p.ox, -p.oz + 0.01);
       group.add(crate);
 
+      // Apoiado FISICAMENTE sobre o forro interno do caixote (y = 0.095), alinhado à bandeja sem flutuar nem atravessar paredes!
       const itemMesh = this.buildItemMesh(p.itemId);
-      itemMesh.position.y = 0.165;
-      itemMesh.rotation.y = idx * 1.15;
-      group.add(itemMesh);
+      itemMesh.position.set(0, 0.095, 0.01);
+      itemMesh.rotation.y = ((idx % 3) - 1) * 0.14;
+      crate.add(itemMesh);
 
       this.root.add(group);
       this.pickups.push({
@@ -352,7 +540,7 @@ export class DoomWorldItems {
         itemId: p.itemId,
         group,
         itemMesh,
-        position: new THREE.Vector3(wx, 0.22, wz),
+        position: new THREE.Vector3(wx, 0.18, wz),
         collected: false,
       });
     });
@@ -400,7 +588,7 @@ export class DoomWorldItems {
     rimRight.position.x = 0.238;
     crate.add(rimFront, rimBack, rimLeft, rimRight);
 
-    // Forro escuro interno do estojo
+    // Forro escuro interno do estojo (superfície superior em y = 0.094)
     const liner = new THREE.Mesh(
       new THREE.BoxGeometry(0.42, 0.018, 0.32),
       this.matDarkIron
@@ -446,205 +634,256 @@ export class DoomWorldItems {
     const holder = new THREE.Group();
 
     if (itemId === 'sterile_bandage') {
-      // Rolo espesso de gaze + miolo oco escuro + cinta médica carmim + ponta desenrolada + alfinete
-      const outerRoll = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.098, 0.098, 0.135, 12),
+      // Rolo de gaze estéril com cavidade central oca REAL, espiral visível no topo,
+      // cinta de papel médico com cruz vermelha nítida e aba curta pousada dentro do caixote
+      const outerWall = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.076, 0.076, 0.106, 16, 1, true),
         this.matGauze
       );
-      outerRoll.position.y = 0.068;
+      outerWall.position.y = 0.053;
 
-      const innerHollow = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.038, 0.038, 0.14, 10),
+      const innerTube = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.025, 0.025, 0.106, 12, 1, true),
         this.matDarkIron
       );
-      innerHollow.position.y = 0.068;
+      innerTube.position.y = 0.053;
 
-      const redBand = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.102, 0.102, 0.038, 12),
-        this.matRedCross
+      const topRing = new THREE.Mesh(
+        new THREE.RingGeometry(0.025, 0.076, 16, 2),
+        this.matGauzeSpiral
       );
-      redBand.position.y = 0.068;
+      topRing.rotation.x = -Math.PI * 0.5;
+      topRing.position.y = 0.106;
 
-      const looseTail = new THREE.Mesh(
-        new THREE.BoxGeometry(0.11, 0.012, 0.095),
+      const bottomRing = new THREE.Mesh(
+        new THREE.RingGeometry(0.025, 0.076, 16, 1),
+        this.matGauzeSpiral
+      );
+      bottomRing.rotation.x = Math.PI * 0.5;
+      bottomRing.position.y = 0.001;
+
+      // Cinta de papel médico envolvendo o centro com cruz carmim nítida na frente
+      const wrapperBand = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.0785, 0.0785, 0.048, 16, 1, true),
+        this.matGauzeWrapper
+      );
+      wrapperBand.position.y = 0.053;
+      wrapperBand.rotation.y = Math.PI;
+
+      // Aba curta da gaze pousada naturalmente sobre o fundo do caixote (sem atravessar bordas!)
+      const tailSlope = new THREE.Mesh(
+        new THREE.BoxGeometry(0.036, 0.005, 0.074),
         this.matGauze
       );
-      looseTail.position.set(0.11, 0.016, 0.02);
-      looseTail.rotation.z = -0.18;
-      looseTail.rotation.y = 0.25;
+      tailSlope.position.set(0.084, 0.014, 0.008);
+      tailSlope.rotation.z = -0.38;
 
-      const safetyPin = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.005, 0.005, 0.065, 6),
-        this.matSteelBlade
+      const tailFlat = new THREE.Mesh(
+        new THREE.BoxGeometry(0.046, 0.004, 0.072),
+        this.matGauze
       );
-      safetyPin.rotation.z = Math.PI * 0.5;
-      safetyPin.position.set(0.02, 0.138, 0.04);
+      tailFlat.position.set(0.116, 0.004, 0.01);
+      tailFlat.rotation.y = 0.12;
 
-      holder.add(outerRoll, innerHollow, redBand, looseTail, safetyPin);
+      holder.add(
+        outerWall,
+        innerTube,
+        topRing,
+        bottomRing,
+        wrapperBand,
+        tailSlope,
+        tailFlat
+      );
     } else if (itemId === 'old_morphine') {
-      // Frasco apotecário octogonal âmbar + ombro cônico + gargalo + bocal + rolha + lacre + rótulo
+      // Frasco apotecário âmbar de 12 facetas suaves + rótulo curvo CONFORME (zero bordas soltas no ar!) + rolha
       const baseRing = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.074, 0.078, 0.022, 8),
+        new THREE.CylinderGeometry(0.056, 0.059, 0.014, 12),
         this.matAmberGlass
       );
-      baseRing.position.y = 0.011;
+      baseRing.position.y = 0.007;
 
       const body = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.072, 0.072, 0.125, 8),
+        new THREE.CylinderGeometry(0.055, 0.056, 0.098, 12),
         this.matAmberGlass
       );
-      body.position.y = 0.082;
+      body.position.y = 0.063;
 
       const shoulder = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.032, 0.072, 0.042, 8),
+        new THREE.CylinderGeometry(0.023, 0.055, 0.032, 12),
         this.matAmberGlass
       );
-      shoulder.position.y = 0.165;
+      shoulder.position.y = 0.128;
 
       const neck = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.028, 0.031, 0.036, 8),
+        new THREE.CylinderGeometry(0.02, 0.022, 0.026, 12),
         this.matAmberGlass
       );
-      neck.position.y = 0.202;
+      neck.position.y = 0.157;
 
       const lip = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.036, 0.034, 0.014, 8),
+        new THREE.CylinderGeometry(0.026, 0.024, 0.009, 12),
         this.matAmberGlass
       );
-      lip.position.y = 0.224;
-
-      const waxSeal = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.038, 0.035, 0.016, 8),
-        this.matRedCross
-      );
-      waxSeal.position.y = 0.214;
+      lip.position.y = 0.174;
 
       const cork = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.027, 0.023, 0.038, 8),
+        new THREE.CylinderGeometry(0.019, 0.015, 0.026, 10),
         this.matCork
       );
-      cork.position.y = 0.244;
+      cork.position.y = 0.189;
 
-      const label = new THREE.Mesh(
-        new THREE.BoxGeometry(0.082, 0.075, 0.008),
-        this.matPaper
+      // Rótulo cilíndrico curvo abraçando perfeitamente a parede do frasco sem descolar nas laterais!
+      const curvedLabel = new THREE.Mesh(
+        new THREE.CylinderGeometry(
+          0.057,
+          0.058,
+          0.058,
+          10,
+          1,
+          true,
+          -0.66,
+          1.32
+        ),
+        this.matApothecaryLabel
       );
-      label.position.set(0, 0.084, 0.071);
+      curvedLabel.position.y = 0.062;
 
-      holder.add(baseRing, body, shoulder, neck, lip, waxSeal, cork, label);
+      holder.add(baseRing, body, shoulder, neck, lip, cork, curvedLabel);
     } else if (itemId === 'industrial_battery') {
-      // Célula industrial 9V com tampa frisada, isolador preto e polos positivo/negativo de latão
+      // Bateria industrial 9V com topo frisado rente (sem degrau exagerado) e polos + / - distintos
+      const bottomFlange = new THREE.Mesh(
+        new THREE.BoxGeometry(0.122, 0.008, 0.082),
+        this.matDarkIron
+      );
+      bottomFlange.position.y = 0.004;
+
       const body = new THREE.Mesh(
-        new THREE.BoxGeometry(0.135, 0.165, 0.09),
+        new THREE.BoxGeometry(0.118, 0.142, 0.078),
         this.matBattery
       );
-      body.position.y = 0.085;
+      body.position.y = 0.079;
 
-      const bottomFlange = new THREE.Mesh(
-        new THREE.BoxGeometry(0.145, 0.02, 0.098),
+      // Aro superior frisado rente ao corpo
+      const topBezel = new THREE.Mesh(
+        new THREE.BoxGeometry(0.118, 0.007, 0.078),
         this.matDarkIron
       );
-      bottomFlange.position.y = 0.01;
+      topBezel.position.y = 0.1535;
 
-      const topCrimp = new THREE.Mesh(
-        new THREE.BoxGeometry(0.142, 0.018, 0.095),
-        this.matBrass
-      );
-      topCrimp.position.y = 0.172;
-
+      // Placa isolante preta levemente recuada onde ficam os terminais
       const insulator = new THREE.Mesh(
-        new THREE.BoxGeometry(0.11, 0.014, 0.064),
+        new THREE.BoxGeometry(0.102, 0.007, 0.062),
         this.matDarkIron
       );
-      insulator.position.y = 0.184;
+      insulator.position.y = 0.159;
 
-      const posPost = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.016, 0.018, 0.032, 8),
+      // Polo Positivo (+): pino cilíndrico compacto de encaixe macho
+      const posWasher = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.013, 0.013, 0.004, 8),
         this.matBrass
       );
-      posPost.position.set(-0.032, 0.204, 0);
+      posWasher.position.set(-0.029, 0.164, 0);
 
-      const negCrown = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.024, 0.02, 0.03, 6),
+      const posStud = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.0095, 0.0085, 0.016, 8),
         this.matBrass
       );
-      negCrown.position.set(0.032, 0.203, 0);
+      posStud.position.set(-0.029, 0.173, 0);
 
-      holder.add(body, bottomFlange, topCrimp, insulator, posPost, negCrown);
+      // Polo Negativo (-): coroa sextavada oca de encaixe fêmea (distinta do polo +!)
+      const negOuterCrown = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.0165, 0.0135, 0.017, 6, 1, true),
+        this.matBrass
+      );
+      negOuterCrown.position.set(0.029, 0.171, 0);
+
+      const negBase = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.0135, 0.0135, 0.004, 6),
+        this.matDarkIron
+      );
+      negBase.position.set(0.029, 0.164, 0);
+
+      holder.add(
+        bottomFlange,
+        body,
+        topBezel,
+        insulator,
+        posWasher,
+        posStud,
+        negOuterCrown,
+        negBase
+      );
     } else if (itemId === 'rusty_knife') {
-      // Canivete tático/oxidado esculpido: pomo com argola, talas de madeira com 3 rebites,
-      // guarda/virola de latão, dorso espesso, sulco de sangue/ferrugem e ponta chanfrada clip-point!
+      // Canivete oxidado pousado sobre o fundo do caixote
       const knife = new THREE.Group();
-      knife.position.y = 0.032;
+      knife.position.y = 0.024;
       knife.rotation.x = 0.22;
 
       const pommel = new THREE.Mesh(
-        new THREE.BoxGeometry(0.032, 0.038, 0.046),
+        new THREE.BoxGeometry(0.03, 0.034, 0.042),
         this.matDarkIron
       );
-      pommel.position.set(-0.145, 0, 0);
+      pommel.position.set(-0.135, 0, 0);
 
       const lanyardRing = new THREE.Mesh(
-        new THREE.TorusGeometry(0.016, 0.004, 6, 8),
+        new THREE.TorusGeometry(0.014, 0.0035, 6, 8),
         this.matBrass
       );
       lanyardRing.rotation.x = Math.PI * 0.5;
-      lanyardRing.position.set(-0.17, 0, 0);
+      lanyardRing.position.set(-0.158, 0, 0);
 
       const handleCore = new THREE.Mesh(
-        new THREE.BoxGeometry(0.155, 0.036, 0.048),
+        new THREE.BoxGeometry(0.145, 0.032, 0.044),
         this.matWoodGrip
       );
-      handleCore.position.set(-0.055, 0, 0);
+      handleCore.position.set(-0.05, 0, 0);
 
       const handleSwell = new THREE.Mesh(
-        new THREE.BoxGeometry(0.085, 0.042, 0.053),
+        new THREE.BoxGeometry(0.08, 0.038, 0.048),
         this.matWoodGrip
       );
-      handleSwell.position.set(-0.055, 0, 0);
+      handleSwell.position.set(-0.05, 0, 0);
 
-      for (const rx of [-0.105, -0.055, -0.008]) {
+      for (const rx of [-0.098, -0.05, -0.005]) {
         const rivet = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.0055, 0.0055, 0.046, 6),
+          new THREE.CylinderGeometry(0.005, 0.005, 0.042, 6),
           this.matBrass
         );
         rivet.position.set(rx, 0, 0);
         knife.add(rivet);
       }
 
-      // Guarda / virola de latão maciço
       const bolster = new THREE.Mesh(
-        new THREE.BoxGeometry(0.026, 0.046, 0.068),
+        new THREE.BoxGeometry(0.024, 0.042, 0.062),
         this.matBrass
       );
       bolster.position.set(0.032, 0, 0);
 
-      // Lâmina principal de aço + fio iluminado + sulco oxidado + ponta aguda clip-point
       const bladeMain = new THREE.Mesh(
-        new THREE.BoxGeometry(0.145, 0.01, 0.036),
+        new THREE.BoxGeometry(0.135, 0.009, 0.034),
         this.matSteelBlade
       );
-      bladeMain.position.set(0.116, 0, 0.002);
+      bladeMain.position.set(0.108, 0, 0.002);
 
       const bladeSpine = new THREE.Mesh(
-        new THREE.BoxGeometry(0.145, 0.015, 0.01),
+        new THREE.BoxGeometry(0.135, 0.013, 0.009),
         this.matDarkIron
       );
-      bladeSpine.position.set(0.116, 0, -0.015);
+      bladeSpine.position.set(0.108, 0, -0.014);
 
       const fuller = new THREE.Mesh(
-        new THREE.BoxGeometry(0.11, 0.012, 0.009),
+        new THREE.BoxGeometry(0.1, 0.011, 0.008),
         this.matRustFuller
       );
-      fuller.position.set(0.108, 0, -0.004);
+      fuller.position.set(0.1, 0, -0.004);
 
       const bladeTip = new THREE.Mesh(
-        new THREE.ConeGeometry(0.02, 0.068, 4),
+        new THREE.ConeGeometry(0.019, 0.062, 4),
         this.matSteelBlade
       );
       bladeTip.rotation.z = -Math.PI * 0.5;
       bladeTip.scale.set(1, 1, 0.34);
-      bladeTip.position.set(0.218, 0, 0.002);
+      bladeTip.position.set(0.204, 0, 0.002);
 
       knife.add(
         pommel,
@@ -659,158 +898,180 @@ export class DoomWorldItems {
       );
       holder.add(knife);
     } else if (itemId === 'magnesium_flare') {
-      // Bastão químico com anel octogonal anti-rolagem, punhos recartilhados, virola de latão e tampa riscadora
+      // Bastão químico de magnésio pousado sobre o fundo do caixote (sem atravessar a tampa!)
       const flare = new THREE.Group();
-      flare.position.y = 0.038;
+      flare.position.y = 0.034;
 
+      // Tampão octogonal anti-rolagem na base esquerda (cobre a extremidade sem sobra vermelha!)
+      const hexBase = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.034, 0.032, 0.026, 8),
+        this.matDarkIron
+      );
+      hexBase.rotation.z = Math.PI * 0.5;
+      hexBase.position.x = -0.116;
+
+      // Punho recartilhado escuro junto à base
+      const gripSleeve = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.0285, 0.0285, 0.048, 12),
+        this.matDarkIron
+      );
+      gripSleeve.rotation.z = Math.PI * 0.5;
+      gripSleeve.position.x = -0.08;
+
+      // Tubo encerado carmim com faixa de aviso próxima ao bocal
       const body = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.031, 0.031, 0.27, 10),
+        new THREE.CylinderGeometry(0.0265, 0.0265, 0.215, 12),
         this.matFlareRed
       );
       body.rotation.z = Math.PI * 0.5;
+      body.position.x = 0.004;
 
-      const hexStop = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.044, 0.044, 0.024, 6),
-        this.matDarkIron
-      );
-      hexStop.rotation.z = Math.PI * 0.5;
-      hexStop.position.x = -0.115;
-
-      for (const gx of [-0.065, -0.02]) {
-        const gripBand = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.035, 0.035, 0.018, 10),
-          this.matDarkIron
-        );
-        gripBand.rotation.z = Math.PI * 0.5;
-        gripBand.position.x = gx;
-        flare.add(gripBand);
-      }
-
+      // Virola de latão do bocal de ignição
       const collar = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.035, 0.035, 0.022, 10),
+        new THREE.CylinderGeometry(0.0285, 0.0285, 0.016, 12),
         this.matBrass
       );
       collar.rotation.z = Math.PI * 0.5;
-      collar.position.x = 0.112;
+      collar.position.x = 0.106;
 
+      // Tampa protetora riscadora de fósforo
       const strikerCap = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.037, 0.036, 0.042, 10),
+        new THREE.CylinderGeometry(0.0305, 0.0295, 0.032, 12),
         this.matDarkIron
       );
       strikerCap.rotation.z = Math.PI * 0.5;
-      strikerCap.position.x = 0.142;
+      strikerCap.position.x = 0.128;
 
-      const tipDot = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.024, 0.024, 0.008, 8),
+      const strikerHead = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.022, 0.022, 0.006, 10),
         this.matRedCross
       );
-      tipDot.rotation.z = Math.PI * 0.5;
-      tipDot.position.x = 0.164;
+      strikerHead.rotation.z = Math.PI * 0.5;
+      strikerHead.position.x = 0.146;
 
-      flare.add(body, hexStop, collar, strikerCap, tipDot);
+      flare.add(hexBase, gripSleeve, body, collar, strikerCap, strikerHead);
       holder.add(flare);
     } else if (itemId === 'sector_b_key') {
-      // Chave antiga trabalhada em latão + colar torneado + palhetas duplas + plaqueta gravada
+      // Chave antiga de latão maciço com dentes recortados REAIS (sem bloco cinza sobreposto!) e etiqueta
       const key = new THREE.Group();
-      key.position.y = 0.024;
+      key.position.y = 0.012;
 
+      // Argola oval ornamentada (sem barra cortando o furo ao meio)
       const bow = new THREE.Mesh(
-        new THREE.TorusGeometry(0.052, 0.013, 8, 10),
+        new THREE.TorusGeometry(0.042, 0.01, 8, 12),
         this.matBrass
       );
       bow.rotation.x = Math.PI * 0.5;
-      bow.position.set(-0.085, 0, 0);
+      bow.scale.set(1.05, 0.86, 1.0);
+      bow.position.set(-0.082, 0, 0);
 
-      const bowCross = new THREE.Mesh(
-        new THREE.BoxGeometry(0.014, 0.014, 0.085),
+      for (const sz of [-0.036, 0.036]) {
+        const boss = new THREE.Mesh(
+          new THREE.SphereGeometry(0.011, 6, 6),
+          this.matBrass
+        );
+        boss.position.set(-0.082, 0, sz);
+        key.add(boss);
+      }
+
+      // Colar duplo torneado
+      const collar1 = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.0155, 0.0155, 0.014, 10),
         this.matBrass
       );
-      bowCross.position.set(-0.085, 0, 0);
+      collar1.rotation.z = Math.PI * 0.5;
+      collar1.position.set(-0.032, 0, 0);
 
-      const collar = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.018, 0.018, 0.024, 8),
+      const collar2 = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.0125, 0.0125, 0.01, 10),
         this.matBrass
       );
-      collar.rotation.z = Math.PI * 0.5;
-      collar.position.set(-0.024, 0, 0);
+      collar2.rotation.z = Math.PI * 0.5;
+      collar2.position.set(-0.02, 0, 0);
 
+      // Haste cilíndrica + ponta arredondada
       const shaft = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.01, 0.01, 0.165, 8),
+        new THREE.CylinderGeometry(0.0085, 0.0085, 0.155, 8),
         this.matBrass
       );
       shaft.rotation.z = Math.PI * 0.5;
-      shaft.position.set(0.062, 0, 0);
+      shaft.position.set(0.058, 0, 0);
 
-      const bitMain = new THREE.Mesh(
-        new THREE.BoxGeometry(0.052, 0.014, 0.048),
+      // Dentes/segredos recortados em latão real (com vãos abertos de verdade!)
+      const bitBridge = new THREE.Mesh(
+        new THREE.BoxGeometry(0.052, 0.01, 0.012),
         this.matBrass
       );
-      bitMain.position.set(0.105, 0, 0.024);
+      bitBridge.position.set(0.1, 0, 0.012);
 
-      const bitNotch = new THREE.Mesh(
-        new THREE.BoxGeometry(0.016, 0.016, 0.024),
-        this.matDarkIron
+      const tooth1 = new THREE.Mesh(
+        new THREE.BoxGeometry(0.012, 0.01, 0.032),
+        this.matBrass
       );
-      bitNotch.position.set(0.105, 0, 0.038);
+      tooth1.position.set(0.08, 0, 0.026);
 
+      const tooth2 = new THREE.Mesh(
+        new THREE.BoxGeometry(0.01, 0.01, 0.02),
+        this.matBrass
+      );
+      tooth2.position.set(0.1, 0, 0.02);
+
+      const tooth3 = new THREE.Mesh(
+        new THREE.BoxGeometry(0.014, 0.01, 0.036),
+        this.matBrass
+      );
+      tooth3.position.set(0.119, 0, 0.028);
+
+      // Argola metálica inclinada passando pelo olhal + plaqueta gravada pousada no fundo
       const splitRing = new THREE.Mesh(
-        new THREE.TorusGeometry(0.022, 0.004, 6, 8),
-        this.matSteelBlade
+        new THREE.TorusGeometry(0.016, 0.0032, 6, 10),
+        this.matCleanSteel
       );
-      splitRing.rotation.x = Math.PI * 0.5;
-      splitRing.position.set(-0.145, 0, 0.015);
+      splitRing.rotation.set(1.05, 0.42, 0);
+      splitRing.position.set(-0.132, 0.004, 0.008);
 
       const keyTag = new THREE.Mesh(
-        new THREE.BoxGeometry(0.068, 0.01, 0.042),
-        this.matDarkIron
+        new THREE.BoxGeometry(0.056, 0.006, 0.032),
+        this.matKeyTag
       );
-      keyTag.position.set(-0.165, -0.002, 0.055);
-      keyTag.rotation.y = 0.42;
+      keyTag.position.set(-0.152, -0.005, 0.034);
+      keyTag.rotation.y = 0.48;
 
       key.add(
         bow,
-        bowCross,
-        collar,
+        collar1,
+        collar2,
         shaft,
-        bitMain,
-        bitNotch,
+        bitBridge,
+        tooth1,
+        tooth2,
+        tooth3,
         splitRing,
         keyTag
       );
       holder.add(key);
     } else {
-      // Prancheta de campo metálica/madeira + folha de caderno arqueada com clipe de pressão
+      // Prancheta de campo cabendo folgadamente dentro da bandeja do caixote + folha única (sem duplicar mancha!)
       const board = new THREE.Mesh(
-        new THREE.BoxGeometry(0.26, 0.016, 0.33),
+        new THREE.BoxGeometry(0.27, 0.012, 0.2),
         this.matWoodGrip
       );
-      board.position.y = 0.01;
-      board.rotation.y = 0.18;
+      board.position.y = 0.006;
 
       const clipBase = new THREE.Mesh(
-        new THREE.BoxGeometry(0.11, 0.026, 0.038),
-        this.matSteelBlade
+        new THREE.BoxGeometry(0.028, 0.02, 0.088),
+        this.matCleanSteel
       );
-      clipBase.position.set(-0.024, 0.026, -0.135);
-      clipBase.rotation.y = 0.18;
+      clipBase.position.set(-0.118, 0.018, 0);
 
-      const pageLower = new THREE.Mesh(
-        new THREE.BoxGeometry(0.22, 0.006, 0.16),
+      const pageSheet = new THREE.Mesh(
+        new THREE.BoxGeometry(0.22, 0.005, 0.165),
         this.matPaper
       );
-      pageLower.position.set(0.012, 0.022, 0.055);
-      pageLower.rotation.y = 0.18;
-      pageLower.rotation.x = -0.06;
+      pageSheet.position.set(0.012, 0.015, 0.004);
+      pageSheet.rotation.y = 0.04;
 
-      const pageUpper = new THREE.Mesh(
-        new THREE.BoxGeometry(0.22, 0.006, 0.14),
-        this.matPaper
-      );
-      pageUpper.position.set(-0.012, 0.025, -0.075);
-      pageUpper.rotation.y = 0.18;
-      pageUpper.rotation.x = 0.05;
-
-      holder.add(board, clipBase, pageLower, pageUpper);
+      holder.add(board, clipBase, pageSheet);
     }
 
     return holder;
@@ -818,73 +1079,104 @@ export class DoomWorldItems {
 
   /**
    * Acende e solta um Sinalizador de Magnésio esculpido no piso diante do jogador,
-   * iluminando o setor e afugentando a Aranha por ~16 segundos.
+   * com jato incandescente em camadas preso diretamente ao bocal (sem cubo vermelho opaco gigante!).
    */
   spawnLitFlare(pos: THREE.Vector3, yaw: number): void {
     const fx = pos.x - Math.sin(yaw) * 0.65;
     const fz = pos.z - Math.cos(yaw) * 0.65;
 
     const group = new THREE.Group();
-    group.position.set(fx, 0.042, fz);
+    group.position.set(fx, 0, fz);
 
     const flareBody = new THREE.Group();
+    flareBody.position.y = 0.034;
     flareBody.rotation.y = yaw + 0.5;
+    flareBody.rotation.z = 0.05;
+
+    const hexStop = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.034, 0.032, 0.026, 8),
+      this.matDarkIron
+    );
+    hexStop.rotation.z = Math.PI * 0.5;
+    hexStop.position.x = -0.114;
+    flareBody.add(hexStop);
 
     const stick = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.03, 0.03, 0.26, 10),
+      new THREE.CylinderGeometry(0.026, 0.026, 0.22, 12),
       this.matFlareRed
     );
     stick.rotation.z = Math.PI * 0.5;
     flareBody.add(stick);
 
-    const hexStop = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.042, 0.042, 0.022, 6),
-      this.matDarkIron
-    );
-    hexStop.rotation.z = Math.PI * 0.5;
-    hexStop.position.x = -0.105;
-    flareBody.add(hexStop);
-
     const burnNozzle = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.034, 0.032, 0.025, 8),
+      new THREE.CylinderGeometry(0.029, 0.027, 0.022, 10),
       this.matBrass
     );
     burnNozzle.rotation.z = Math.PI * 0.5;
-    burnNozzle.position.x = 0.125;
+    burnNozzle.position.x = 0.114;
     flareBody.add(burnNozzle);
 
-    // Tampa descartada ao lado no chão
-    const droppedCap = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.034, 0.034, 0.038, 8),
-      this.matDarkIron
-    );
-    droppedCap.rotation.z = 1.2;
-    droppedCap.position.set(0.18, -0.015, 0.14);
-    flareBody.add(droppedCap);
-
-    group.add(flareBody);
-
-    // Chama dupla intensa (núcleo incandescente branco + coroa rubra pulsante)
+    // Jato incandescente de magnésio preso diretamente à boca do sinalizador
     const flameHolder = new THREE.Group();
-    flameHolder.position.set(
-      Math.cos(yaw + 0.5) * 0.15,
-      0.045,
-      -Math.sin(yaw + 0.5) * 0.15
-    );
+    flameHolder.position.set(0.128, 0, 0);
 
-    const outerFlame = new THREE.Mesh(
-      new THREE.OctahedronGeometry(0.095, 0),
-      this.matFlameOuter
-    );
-    outerFlame.scale.set(1.15, 1.45, 1.15);
-
-    const innerCore = new THREE.Mesh(
-      new THREE.OctahedronGeometry(0.052, 0),
+    const slagTip = new THREE.Mesh(
+      new THREE.SphereGeometry(0.019, 8, 6),
       this.matFlameCore
     );
+    slagTip.position.x = -0.004;
 
-    flameHolder.add(outerFlame, innerCore);
-    group.add(flameHolder);
+    const innerJet = new THREE.Mesh(
+      new THREE.ConeGeometry(0.02, 0.078, 8),
+      this.matFlameCore
+    );
+    innerJet.rotation.z = -Math.PI * 0.5;
+    innerJet.position.x = 0.034;
+
+    const midJet = new THREE.Mesh(
+      new THREE.ConeGeometry(0.03, 0.115, 8),
+      this.matFlameMid
+    );
+    midJet.rotation.z = -Math.PI * 0.5;
+    midJet.position.x = 0.048;
+
+    const outerPlume = new THREE.Mesh(
+      new THREE.ConeGeometry(0.042, 0.15, 8),
+      this.matFlameOuter
+    );
+    outerPlume.rotation.z = -Math.PI * 0.5;
+    outerPlume.position.x = 0.062;
+
+    flameHolder.add(outerPlume, midJet, innerJet, slagTip);
+    for (let s = 0; s < 3; s++) {
+      const ang = (s / 3) * Math.PI * 2;
+      const spark = new THREE.Mesh(
+        new THREE.OctahedronGeometry(0.008, 0),
+        this.matFlameCore
+      );
+      spark.position.set(
+        0.075 + s * 0.022,
+        Math.sin(ang) * 0.022,
+        Math.cos(ang) * 0.022
+      );
+      flameHolder.add(spark);
+    }
+
+    flareBody.add(flameHolder);
+    group.add(flareBody);
+
+    // Tampa descartada pousada sobre o piso ao lado (sem atravessar o chão!)
+    const droppedCap = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.029, 0.029, 0.032, 10),
+      this.matDarkIron
+    );
+    droppedCap.rotation.set(0.3, yaw - 0.4, Math.PI * 0.5);
+    droppedCap.position.set(
+      Math.cos(yaw + 1.2) * 0.16,
+      0.029,
+      -Math.sin(yaw + 1.2) * 0.16
+    );
+    group.add(droppedCap);
 
     this.root.add(group);
     this.activeFlares.push({
@@ -916,9 +1208,6 @@ export class DoomWorldItems {
     for (let i = 0; i < this.pickups.length; i++) {
       const p = this.pickups[i];
       if (p.collected) continue;
-
-      // Leve respiração sutil para destacar o suprimento dentro do caixote aberto
-      p.itemMesh.position.y = 0.165 + Math.sin(elapsed * 2.2 + i) * 0.01;
 
       const dx = p.position.x - playerPos.x;
       const dz = p.position.z - playerPos.z;
@@ -954,9 +1243,13 @@ export class DoomWorldItems {
       }
       const lifeRatio = Math.min(1, fl.remainingSec / 2.5);
       const pulse =
-        (0.84 + 0.34 * Math.sin(elapsed * 29 + i * 3)) * lifeRatio;
-      fl.flameMesh.scale.setScalar(Math.max(0.15, pulse));
-      fl.flameMesh.rotation.y = elapsed * 9.5 + i;
+        (0.86 + 0.26 * Math.sin(elapsed * 31 + i * 3)) * lifeRatio;
+      fl.flameMesh.scale.set(
+        Math.max(0.2, pulse),
+        Math.max(0.2, 0.88 + 0.18 * Math.cos(elapsed * 37 + i)),
+        Math.max(0.2, 0.88 + 0.18 * Math.sin(elapsed * 41 + i))
+      );
+      fl.flameMesh.rotation.x = elapsed * 11 + i;
     }
   }
 }

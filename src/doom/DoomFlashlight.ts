@@ -484,22 +484,22 @@ export class DoomFlashlight {
     });
     const sparkMat = new THREE.MeshBasicMaterial({ color: 0xffe89c });
 
-    // Mão/punho esquerdo tático comum a todos os itens rápidos
+    // Mão/punho esquerdo tático compacto comum a todos os itens rápidos (alinhado ao punho sem invadir a câmera)
     const leftArm = new THREE.Group();
     const lSleeve = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.048, 0.06, 0.22, 8),
+      new THREE.CylinderGeometry(0.034, 0.042, 0.17, 8),
       gloveLeatherMat
     );
-    lSleeve.rotation.set(0.55, 0.28, 0.28);
-    lSleeve.position.set(-0.05, -0.11, 0.14);
+    lSleeve.rotation.set(0.26, 0.1, 0.12);
+    lSleeve.position.set(-0.014, -0.115, 0.038);
     const lPlate = new THREE.Mesh(
-      new THREE.BoxGeometry(0.066, 0.02, 0.11),
+      new THREE.BoxGeometry(0.052, 0.016, 0.088),
       gauntletPlateMat
     );
-    lPlate.rotation.set(0.52, 0.25, 0.24);
-    lPlate.position.set(-0.052, -0.06, 0.09);
+    lPlate.rotation.set(0.26, 0.1, 0.12);
+    lPlate.position.set(-0.016, -0.075, 0.022);
     const lFist = new THREE.Mesh(
-      new THREE.BoxGeometry(0.068, 0.064, 0.082),
+      new THREE.BoxGeometry(0.062, 0.058, 0.074),
       gloveLeatherMat
     );
     lFist.position.set(0, -0.012, 0);
@@ -555,100 +555,163 @@ export class DoomFlashlight {
     kTip.position.set(0, 0.298, 0.003);
     knifeProp.add(kGrip, kPommel, kGuard, kBlade, kSpine, kFuller, kTip);
 
-    // 2B) Rolo de Gaze Estéril
+    // 2B) Rolo de Gaze Estéril (miolo oco real + cinta médica + ponta caída natural)
     const bandageProp = new THREE.Group();
-    const bRoll = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.058, 0.058, 0.11, 12),
+    const bRollOuter = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.054, 0.054, 0.098, 14, 1, true),
       gauzeMat
     );
-    bRoll.rotation.z = Math.PI * 0.5;
-    bRoll.position.set(0.02, 0.045, -0.02);
-    const bCore = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.022, 0.022, 0.114, 10),
+    bRollOuter.rotation.z = Math.PI * 0.5;
+    bRollOuter.position.set(0.018, 0.048, -0.016);
+    const bRollInner = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.019, 0.019, 0.098, 10, 1, true),
       darkRingMat
     );
-    bCore.rotation.z = Math.PI * 0.5;
-    bCore.position.copy(bRoll.position);
-    const bCross = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.06, 0.06, 0.032, 12),
+    bRollInner.rotation.z = Math.PI * 0.5;
+    bRollInner.position.copy(bRollOuter.position);
+    for (const side of [-1, 1]) {
+      const bCap = new THREE.Mesh(
+        new THREE.RingGeometry(0.019, 0.054, 14),
+        gauzeMat
+      );
+      bCap.rotation.y = side > 0 ? Math.PI * 0.5 : -Math.PI * 0.5;
+      bCap.position.set(0.018 + side * 0.049, 0.048, -0.016);
+      bandageProp.add(bCap);
+    }
+    const bWrapper = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.0555, 0.0555, 0.036, 14, 1, true),
       crimsonMat
     );
-    bCross.rotation.z = Math.PI * 0.5;
-    bCross.position.copy(bRoll.position);
+    bWrapper.rotation.z = Math.PI * 0.5;
+    bWrapper.position.copy(bRollOuter.position);
     const bStrip = new THREE.Mesh(
-      new THREE.BoxGeometry(0.12, 0.008, 0.068),
+      new THREE.BoxGeometry(0.068, 0.005, 0.058),
       gauzeMat
     );
-    bStrip.position.set(0.095, 0.02, -0.02);
-    bStrip.rotation.z = -0.35;
-    bandageProp.add(bRoll, bCore, bCross, bStrip);
+    bStrip.position.set(0.062, 0.012, 0.012);
+    bStrip.rotation.set(0.28, 0.1, -0.62);
+    bandageProp.add(bRollOuter, bRollInner, bWrapper, bStrip);
 
-    // 2C) Frasco Apotecário de Láudano
+    // 2C) Frasco Apotecário de Láudano (rótulo cilíndrico curvo CONFORME sem aba solta!)
     const morphineProp = new THREE.Group();
     const mBody = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.046, 0.048, 0.11, 8),
+      new THREE.CylinderGeometry(0.044, 0.046, 0.102, 12),
       amberMat
     );
-    mBody.position.set(0.01, 0.055, -0.015);
+    mBody.position.set(0.01, 0.052, -0.015);
     const mShoulder = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.02, 0.046, 0.034, 8),
+      new THREE.CylinderGeometry(0.019, 0.044, 0.03, 12),
       amberMat
     );
-    mShoulder.position.set(0.01, 0.125, -0.015);
-    const mCork = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.018, 0.015, 0.032, 8),
-      brassMat
+    mShoulder.position.set(0.01, 0.118, -0.015);
+    const mNeck = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.017, 0.018, 0.022, 10),
+      amberMat
     );
-    mCork.position.set(0.01, 0.156, -0.015);
+    mNeck.position.set(0.01, 0.142, -0.015);
+    const mLip = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.022, 0.02, 0.008, 10),
+      amberMat
+    );
+    mLip.position.set(0.01, 0.155, -0.015);
+    const mCork = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.016, 0.013, 0.024, 8),
+       woodMat
+    );
+    mCork.position.set(0.01, 0.169, -0.015);
     const mLabel = new THREE.Mesh(
-      new THREE.BoxGeometry(0.056, 0.058, 0.008),
+      new THREE.CylinderGeometry(
+        0.0462,
+        0.0475,
+        0.052,
+        10,
+        1,
+        true,
+        -0.65,
+        1.3
+      ),
       gauzeMat
     );
-    mLabel.position.set(0.01, 0.056, 0.031);
-    morphineProp.add(mBody, mShoulder, mCork, mLabel);
+    mLabel.position.set(0.01, 0.052, -0.015);
+    const mBanner = new THREE.Mesh(
+      new THREE.CylinderGeometry(
+        0.0468,
+        0.0472,
+        0.011,
+        10,
+        1,
+        true,
+        -0.5,
+        1.0
+      ),
+      crimsonMat
+    );
+    mBanner.position.set(0.01, 0.066, -0.015);
+    morphineProp.add(mBody, mShoulder, mNeck, mLip, mCork, mLabel, mBanner);
 
-    // 2D) Bateria Industrial 9V
+    // 2D) Bateria Industrial 9V (faixa superior de cobre rente + placa isolante + polos + / - distintos)
     const batteryProp = new THREE.Group();
-    const batBox = new THREE.Mesh(
-      new THREE.BoxGeometry(0.086, 0.115, 0.058),
-      bezelMat
+    const batLower = new THREE.Mesh(
+      new THREE.BoxGeometry(0.084, 0.082, 0.056),
+      darkRingMat
     );
-    batBox.position.set(0.01, 0.052, -0.01);
-    const batTop = new THREE.Mesh(
-      new THREE.BoxGeometry(0.088, 0.026, 0.06),
+    batLower.position.set(0.01, 0.042, -0.01);
+    const batCopperBand = new THREE.Mesh(
+      new THREE.BoxGeometry(0.084, 0.032, 0.056),
       brassMat
     );
-    batTop.position.set(0.01, 0.105, -0.01);
-    const batP1 = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.011, 0.011, 0.024, 8),
+    batCopperBand.position.set(0.01, 0.099, -0.01);
+    const batInsulator = new THREE.Mesh(
+      new THREE.BoxGeometry(0.072, 0.006, 0.044),
+      darkRingMat
+    );
+    batInsulator.position.set(0.01, 0.118, -0.01);
+    const batPosStud = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.0075, 0.007, 0.014, 8),
       brassMat
     );
-    batP1.position.set(-0.012, 0.128, -0.01);
-    const batP2 = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.015, 0.013, 0.024, 6),
+    batPosStud.position.set(-0.011, 0.127, -0.01);
+    const batNegCrown = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.0125, 0.0105, 0.015, 6),
       brassMat
     );
-    batP2.position.set(0.032, 0.128, -0.01);
-    batteryProp.add(batBox, batTop, batP1, batP2);
+    batNegCrown.position.set(0.031, 0.127, -0.01);
+    batteryProp.add(
+      batLower,
+      batCopperBand,
+      batInsulator,
+      batPosStud,
+      batNegCrown
+    );
 
-    // 2E) Bastão de Magnésio com faísca de ignição
+    // 2E) Bastão de Magnésio com base sextavada, punho escuro, virola e faísca viva
     const flareProp = new THREE.Group();
+    const flHexBase = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.029, 0.028, 0.02, 8),
+      darkRingMat
+    );
+    flHexBase.position.set(0, -0.022, -0.01);
+    const flGrip = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.025, 0.025, 0.045, 10),
+      darkRingMat
+    );
+    flGrip.position.set(0, 0.008, -0.01);
     const flTube = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.024, 0.024, 0.22, 10),
+      new THREE.CylinderGeometry(0.023, 0.023, 0.175, 10),
       flareRedMat
     );
-    flTube.position.set(0, 0.075, -0.01);
+    flTube.position.set(0, 0.095, -0.01);
     const flCollar = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.028, 0.028, 0.022, 8),
+      new THREE.CylinderGeometry(0.0255, 0.0255, 0.018, 10),
       brassMat
     );
-    flCollar.position.set(0, 0.175, -0.01);
+    flCollar.position.set(0, 0.184, -0.01);
     this.flareSparkMesh = new THREE.Mesh(
-      new THREE.OctahedronGeometry(0.048, 0),
+      new THREE.OctahedronGeometry(0.028, 0),
       sparkMat
     );
-    this.flareSparkMesh.position.set(0, 0.215, -0.01);
-    flareProp.add(flTube, flCollar, this.flareSparkMesh);
+    this.flareSparkMesh.position.set(0, 0.212, -0.01);
+    flareProp.add(flHexBase, flGrip, flTube, flCollar, this.flareSparkMesh);
 
     this.quickPropMeshes = {
       knife: knifeProp,
