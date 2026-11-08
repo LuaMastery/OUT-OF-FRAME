@@ -139,6 +139,12 @@ export class DoomFlashlight {
   private switchProgress = 0;
   private flickerWarmup = 0;
 
+  // Estado de queda/desarme da lanterna quando o jogador sofre o bote e desmaia
+  private knockoutDropActive = false;
+  private knockoutDropTimer = 0;
+  private knockoutDropStartProgress = 0;
+  private knockoutWasLit = false;
+
   // Inércia suave ao virar a câmera
   private swayX = 0;
   private swayY = 0;
@@ -742,6 +748,151 @@ export class DoomFlashlight {
   }
 
   /**
+   * Verdadeiro se qualquer modelo 3D em 1ª pessoa (lanterna ou mão esquerda de item rápido) estiver visível.
+   */
+  get isVisibleInView(): boolean {
+    return this.rootGroup.visible || this.quickRootGroup.visible;
+  }
+
+  /**
+   * Guarda e oculta imediatamente qualquer objeto segurado nas mãos (usado durante desmaio, arrasto e despertar).
+   */
+  forceStowImmediate(): void {
+    this.equipped = false;
+    this.lightActive = false;
+    this.equipProgress = 0;
+    this.switchProgress = 0;
+    this.flickerWarmup = 0;
+    this.knockoutDropActive = false;
+    this.knockoutDropTimer = 0;
+    this.knockoutDropStartProgress = 0;
+    this.knockoutWasLit = false;
+    this.activeQuickKind = null;
+    this.quickTimer = 0;
+    this.swayX = 0;
+    this.swayY = 0;
+
+    this.rootGroup.visible = false;
+    this.quickRootGroup.visible = false;
+    for (const k of Object.keys(this.quickPropMeshes) as QuickHandheldKind[]) {
+      this.quickPropMeshes[k].visible = false;
+    }
+
+    this.bulbMaterial.color.setHex(0x3a362e);
+    this.reflectorMaterial.color.setHex(0x4b5059);
+    this.lensMaterial.color.setHex(0x191d23);
+  }
+
+  /**
+   * Acionado no exato instante em que a Aranha Gigante ataca/sequestra o jogador:
+   * - Cancela imediatamente qualquer animação da mão esquerda;
+   * - Se a lanterna estava empunhada, inicia uma queda violenta da mão para fora da tela (~0.40s)
+   *   enquanto a lâmpada falha e apaga no impacto, garantindo que o jogador NUNCA fique segurando
+   *   a lanterna desmaiado ou sendo arrastado!
+   */
+  beginKnockoutDrop(): void {
+    this.activeQuickKind = null;
+    this.quickTimer = 0;
+    this.quickRootGroup.visible = false;
+    for (const k of Object.keys(this.quickPropMeshes) as QuickHandheldKind[]) {
+      this.quickPropMeshes[k].visible = false;
+    }
+
+    const wasShowing = this.equipProgress > 0.015 || this.rootGroup.visible;
+    const wasLit = this.lightActive;
+    this.equipped = false;
+    this.lightActive = false;
+    this.flickerWarmup = 0;
+
+    if (!wasShowing) {
+      this.forceStowImmediate();
+      return;
+    }
+
+    this.knockoutDropActive = true;
+    this.knockoutDropTimer = 0;
+    this.knockoutDropStartProgress = Math.max(0.25, this.equipProgress);
+    this.knockoutWasLit = wasLit;
+  }
+
+  /**
+   * Atualiza a queda da lanterna durante o impacto inicial do bote e oculta totalmente antes do desmaio/arrasto.
+   */
+  updateKnockoutDrop(
+    dt: number,
+    batteryPercent = 100
+  ): {
+    beamIntensity: number;
+    aimYawOffset: number;
+    aimPitchOffset: number;
+  } {
+    this.quickRootGroup.visible = false;
+    this.activeQuickKind = null;
+
+    if (!this.knockoutDropActive) {
+      this.rootGroup.visible = false;
+      this.equipProgress = 0;
+      return { beamIntensity: 0, aimYawOffset: 0, aimPitchOffset: 0 };
+    }
+
+    this.knockoutDropTimer += Math.max(0, dt);
+    const dropDuration = 0.4;
+    const u = Math.min(1, this.knockoutDropTimer / dropDuration);
+
+    if (u >= 1) {
+      this.forceStowImmediate();
+      return { beamIntensity: 0, aimYawOffset: 0, aimPitchOffset: 0 };
+    }
+
+    // Curva acelerada por gravidade + impacto das garras derrubando o braço para baixo/fora da tela
+    const fall = u * u * (1.35 - 0.35 * u);
+    this.equipProgress = this.knockoutDropStartProgress * (1 - u);
+    this.rootGroup.visible = true;
+
+    const startX = 0.235;
+    const startY = -0.195;
+    const startZ = -0.41;
+
+    this.rootGroup.position.set(
+      startX + fall * 0.24,
+      startY - fall * 0.56,
+      startZ + fall * 0.14
+    );
+
+    this.animGroup.rotation.set(
+      0.045 - fall * 1.42,
+      0.11 - fall * 0.52,
+      -0.06 + fall * 1.05
+    );
+
+    // Falha elétrica rápida da lâmpada no choque do bote antes de apagar por completo em ~0.24s
+    let beamIntensity = 0;
+    if (this.knockoutWasLit && batteryPercent > 0.2 && u < 0.6) {
+      const pulse =
+        (u < 0.14) || (u >= 0.24 && u < 0.38)
+          ? 0.85 * (1 - u / 0.6)
+          : 0.08 * (1 - u / 0.6);
+      beamIntensity = Math.max(0, pulse);
+    }
+
+    if (beamIntensity > 0.05) {
+      this.bulbMaterial.color.setHex(0xfff9de);
+      this.reflectorMaterial.color.setHex(0xd8c394);
+      this.lensMaterial.color.setHex(0xfff0be);
+    } else {
+      this.bulbMaterial.color.setHex(0x3a362e);
+      this.reflectorMaterial.color.setHex(0x4b5059);
+      this.lensMaterial.color.setHex(0x191d23);
+    }
+
+    return {
+      beamIntensity,
+      aimYawOffset: -fall * 0.45,
+      aimPitchOffset: -fall * 1.15,
+    };
+  }
+
+  /**
    * Dispara animação 3D imediata em primeira pessoa ao usar um atalho rápido [1], [2] ou [3]!
    */
   triggerQuickItemAction(kind: QuickHandheldKind): void {
@@ -768,6 +919,8 @@ export class DoomFlashlight {
    * - Se empunhada: desliga o foco + inicia animação de guardar.
    */
   toggle(): boolean {
+    this.knockoutDropActive = false;
+    this.knockoutDropTimer = 0;
     this.equipped = !this.equipped;
     if (!this.equipped) {
       this.lightActive = false;

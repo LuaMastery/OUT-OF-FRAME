@@ -542,4 +542,46 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
     );
     expect(webs.snapBurstSequence).toBe(prevSeq + 1);
   });
+
+  it('derruba e oculta a lanterna e itens em 1ª pessoa ao ser sequestrado/desmaiado pela aranha, permitindo reequipar após acordar', () => {
+    const flashlight = new DoomFlashlight(16 / 9);
+
+    // Jogador está com a lanterna acesa na mão direita E usando o canivete na mão esquerda
+    expect(flashlight.toggle()).toBe(true);
+    let activeOut = { beamIntensity: 0, aimYawOffset: 0, aimPitchOffset: 0 };
+    for (let i = 0; i < 12; i++) {
+      activeOut = flashlight.update(0.05, i * 0.2, 3.0, () => {}, 0, 100);
+    }
+    flashlight.triggerQuickItemAction('knife');
+    flashlight.update(0.05, 1.0, 2.0, () => {}, 0, 100);
+    expect(flashlight.isEquipped).toBe(true);
+    expect(flashlight.isVisibleInView).toBe(true);
+    expect(activeOut.beamIntensity).toBeGreaterThan(0.8);
+
+    // Aranha captura o jogador -> inicia queda imediata da lanterna
+    flashlight.beginKnockoutDrop();
+    expect(flashlight.isEquipped).toBe(false);
+
+    // No início do impacto (~0.04s), a mão está caindo para baixo da tela
+    const impactStep = flashlight.updateKnockoutDrop(0.04, 100);
+    expect(impactStep.aimPitchOffset).toBeLessThan(0);
+
+    // Antes do desmaio e do arrasto (~0.42s), o foco e o modelo 3D estão 100% apagados e invisíveis!
+    let afterDrop = impactStep;
+    for (let i = 0; i < 10; i++) {
+      afterDrop = flashlight.updateKnockoutDrop(0.05, 100);
+    }
+    expect(afterDrop.beamIntensity).toBe(0);
+    expect(flashlight.isVisibleInView).toBe(false);
+
+    // Depois de acordar na teia, apertar F volta a sacar e acender a lanterna sem qualquer travamento
+    expect(flashlight.toggle()).toBe(true);
+    let reequipOut = { beamIntensity: 0, aimYawOffset: 0, aimPitchOffset: 0 };
+    for (let i = 0; i < 12; i++) {
+      reequipOut = flashlight.update(0.05, 0, 0, () => {}, 0, 100);
+    }
+    expect(flashlight.isEquipped).toBe(true);
+    expect(flashlight.isVisibleInView).toBe(true);
+    expect(reequipOut.beamIntensity).toBeGreaterThan(0.8);
+  });
 });

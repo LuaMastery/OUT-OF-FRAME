@@ -546,12 +546,18 @@ export class DoomGameApp {
       const dt = Math.min(0.08, Math.max(0.0005, (now - this.lastRaf) / 1000));
       this.lastRaf = now;
       this.update(dt);
+      // Durante o desmaio, arrasto pela aranha, casulo ou morte, nenhum modelo 3D em 1ª pessoa pode aparecer na tela!
+      const showViewmodel =
+        this.activeSequence === 'NONE' ||
+        (this.activeSequence !== 'DEAD_TERMINATED' &&
+          this.seqTime < 0.42 &&
+          this.flashlight.isVisibleInView);
       this.compositor.render(
         this.renderer,
         this.scene,
         this.camera,
-        this.flashlight.viewScene,
-        this.flashlight.viewCamera
+        showViewmodel ? this.flashlight.viewScene : undefined,
+        showViewmodel ? this.flashlight.viewCamera : undefined
       );
       this.rafId = requestAnimationFrame(loop);
     };
@@ -570,6 +576,10 @@ export class DoomGameApp {
     this.keys.clear();
     this.velocity.set(0, 0, 0);
     this.webManager.clearEnsnarement();
+
+    // Derruba imediatamente a lanterna / itens em 1ª pessoa para que o jogador não fique segurando nada desmaiado!
+    this.flashlight.beginKnockoutDrop();
+    this.sharedUniforms.uFlashlightIntensity.value = 0;
 
     this.strikeOriginPos.copy(this.position);
 
@@ -598,6 +608,7 @@ export class DoomGameApp {
 
     if (this.playerHealth > 36) {
       this.activeSequence = 'ABDUCTION_TO_WEB';
+      this.syncInventoryVitals();
       this.sound.playSpiderBrutalAttack();
     } else {
       this.activeSequence = 'PERMADEATH_EXECUTION';
@@ -608,9 +619,40 @@ export class DoomGameApp {
     }
   }
 
+  private syncDroppedFlashlightBeam(dropFl: {
+    beamIntensity: number;
+    aimYawOffset: number;
+    aimPitchOffset: number;
+  }): void {
+    this.sharedUniforms.uFlashlightIntensity.value = dropFl.beamIntensity;
+    if (dropFl.beamIntensity > 0.005) {
+      const camRight = new THREE.Vector3(1, 0, 0).applyQuaternion(
+        this.camera.quaternion
+      );
+      const camUp = new THREE.Vector3(0, 1, 0).applyQuaternion(
+        this.camera.quaternion
+      );
+      this.sharedUniforms.uFlashlightPos.value
+        .copy(this.camera.position)
+        .addScaledVector(camRight, 0.22)
+        .addScaledVector(camUp, -0.22);
+
+      const beamEuler = new THREE.Euler(
+        this.pitch + dropFl.aimPitchOffset,
+        this.yaw + dropFl.aimYawOffset,
+        this.roll,
+        'YXZ'
+      );
+      this.sharedUniforms.uFlashlightDir.value
+        .set(0, 0, -1)
+        .applyEuler(beamEuler)
+        .normalize();
+    }
+  }
+
   /**
    * Executa quadro a quadro a cena em 1ª pessoa:
-   * 1) Ataque visceral com rasgos de garras e queda no chão
+   * 1) Ataque visceral com rasgos de garras e queda no chão (lanterna cai das mãos e apaga!)
    * 2) Desmaio com pálpebras pesadas
    * 3) Visão entreaberta sendo arrastado pelas patas da Aranha Gigante até o Ninho de Teia
    * 4) Aranha colocando o jogador na teia e tecendo seda sobre ele
@@ -619,6 +661,10 @@ export class DoomGameApp {
   private updateHorrorSequence(dt: number): void {
     this.seqTime += dt;
     const t = this.seqTime;
+    const dropFl = this.flashlight.updateKnockoutDrop(dt, this.lanternBattery);
+    if (t >= 0.42) {
+      this.flashlight.forceStowImmediate();
+    }
 
     if (this.activeSequence === 'PERMADEATH_EXECUTION') {
       const u = Math.min(1, t / 1.45);
@@ -650,8 +696,11 @@ export class DoomGameApp {
       );
 
       this.syncCustomSequenceCamera(this.strikeOriginPos, eyeY);
+      this.syncDroppedFlashlightBeam(dropFl);
 
       if (t >= 1.5) {
+        this.flashlight.forceStowImmediate();
+        this.sharedUniforms.uFlashlightIntensity.value = 0;
         this.activeSequence = 'DEAD_TERMINATED';
         this.setCameraFov(74);
         try {
@@ -669,6 +718,7 @@ export class DoomGameApp {
     }
 
     if (this.activeSequence !== 'ABDUCTION_TO_WEB') {
+      this.sharedUniforms.uFlashlightIntensity.value = 0;
       return;
     }
 
@@ -717,8 +767,13 @@ export class DoomGameApp {
       );
 
       this.syncCustomSequenceCamera(this.strikeOriginPos, eyeY);
+      this.syncDroppedFlashlightBeam(dropFl);
       return;
     }
+
+    // A partir do desmaio/arrasto/casulo/despertar, garante que o foco e o modelo 3D estejam 100% desligados e guardados!
+    this.flashlight.forceStowImmediate();
+    this.sharedUniforms.uFlashlightIntensity.value = 0;
 
     // ------------------------------------------------------------------------
     // ESTÁGIO 2 (1.25s -> 2.05s): DESMAIO PROFUNDO
@@ -1126,6 +1181,8 @@ export class DoomGameApp {
     );
 
     if (this.activeSequence !== 'NONE') {
+      this.updateHorrorSequence(0);
+      this.updateFlickeringLightsAndAudio();
       return;
     }
 
