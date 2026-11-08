@@ -171,7 +171,7 @@ export class DoomGameApp {
         }
         this.syncInventoryVitals();
       },
-      onUseHeal: (healAmount, calmAmount) => {
+      onUseHeal: (healAmount, calmAmount, itemKind) => {
         if (
           this.playerHealth >= 99.5 &&
           !this.playerBleeding &&
@@ -179,6 +179,7 @@ export class DoomGameApp {
         ) {
           return false;
         }
+        this.flashlight.triggerQuickItemAction(itemKind);
         this.playerHealth = Math.min(100, this.playerHealth + healAmount);
         this.playerSanity = Math.min(100, this.playerSanity + calmAmount);
         this.playerBleeding = false;
@@ -187,13 +188,36 @@ export class DoomGameApp {
       },
       onUseBattery: (chargeAmount) => {
         if (this.lanternBattery >= 99.5) return false;
+        this.flashlight.triggerQuickItemAction('battery');
         this.lanternBattery = Math.min(100, this.lanternBattery + chargeAmount);
         this.syncInventoryVitals();
         return true;
       },
       onUseFlare: () => {
+        this.flashlight.triggerQuickItemAction('flare');
         this.worldItems.spawnLitFlare(this.position, this.yaw);
         return true;
+      },
+      onUseKnife: () => {
+        this.flashlight.triggerQuickItemAction('knife');
+        this.flashlight.addLookImpulse(0.018, -0.012);
+        this.sound.playItemUse('blade');
+
+        const lookForward = new THREE.Vector3(
+          -Math.sin(this.yaw),
+          0,
+          -Math.cos(this.yaw)
+        );
+        const res = this.webManager.slashWebWithKnife(
+          this.position,
+          lookForward,
+          this.sound
+        );
+        if (res.cutActiveSnare) {
+          this.inventory.setAbductionScreenFX(0, 0, 0, 0);
+          this.syncInventoryVitals();
+        }
+        return { cutWeb: res.cutActiveSnare || res.cutNearbyTrap };
       },
       onCloseRequest: () => {
         this.closeInventoryAndLock();
@@ -342,6 +366,26 @@ export class DoomGameApp {
         }
 
         if (this.inventory.open) {
+          return;
+        }
+
+        // Atalhos rápidos [1], [2], [3]: pega e usa o item imediatamente sem abrir o Tab!
+        if (
+          !e.repeat &&
+          (e.code === 'Digit1' ||
+            e.code === 'Numpad1' ||
+            e.code === 'Digit2' ||
+            e.code === 'Numpad2' ||
+            e.code === 'Digit3' ||
+            e.code === 'Numpad3')
+        ) {
+          const quickIdx =
+            e.code === 'Digit1' || e.code === 'Numpad1'
+              ? 0
+              : e.code === 'Digit2' || e.code === 'Numpad2'
+                ? 1
+                : 2;
+          this.inventory.useQuickSlot(quickIdx);
           return;
         }
 

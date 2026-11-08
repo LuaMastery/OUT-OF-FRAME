@@ -57,6 +57,8 @@ export interface DoomTextureSet {
   lightPanel: THREE.DataTexture;
   floorTile: THREE.DataTexture;
   ceilingGrate: THREE.DataTexture;
+  darkIron: THREE.DataTexture;
+  weatheredWood: THREE.DataTexture;
 }
 
 /**
@@ -297,6 +299,73 @@ export function createDoomTextures(): DoomTextureSet {
     }
   });
 
+  // 7. DARK IRON — Ferro fundido rebitado com desgaste de ferrugem (vigas, grades e tubulações)
+  const darkIron = makePixelTexture(64, 64, (px) => {
+    const rand = mulberry32(199307);
+    for (let y = 0; y < 64; y++) {
+      for (let x = 0; x < 64; x++) {
+        const grit = (rand() - 0.5) * 11;
+        const lx = x % 16;
+        const ly = y % 16;
+
+        let base = 52 + Math.sin(x * 0.4) * 4 + grit;
+        if (lx === 0 || ly === 0) base = 24 + grit * 0.4;
+        else if (lx === 1 || ly === 1) base += 18;
+        else if (lx === 15 || ly === 15) base -= 14;
+
+        // Rebites nos cantos de cada placa 16x16
+        const isRivet =
+          (lx === 3 || lx === 12) && (ly === 3 || ly === 12);
+        if (isRivet) base += 28;
+
+        // Oxidação ferruginosa discreta
+        const rust = rand() < 0.14 ? 14 : 0;
+        px(
+          x,
+          y,
+          base * 0.96 + rust,
+          base * 0.95 + rust * 0.35,
+          base * 1.02 - rust * 0.2
+        );
+      }
+    }
+  });
+
+  // 8. WEATHERED WOOD — Tábuas antigas de caixote com cintas de ferro e pregos (64x64)
+  const weatheredWood = makePixelTexture(64, 64, (px) => {
+    const rand = mulberry32(199308);
+    for (let y = 0; y < 64; y++) {
+      const plank = Math.floor(y / 16);
+      const ly = y % 16;
+      for (let x = 0; x < 64; x++) {
+        const grit = (rand() - 0.5) * 10;
+        const grain =
+          Math.sin((x + plank * 17) * 0.28 + Math.sin(y * 0.7) * 0.6) * 8;
+
+        // Cinta metálica lateral vertical
+        if (x < 5 || x >= 59) {
+          let iron = 44 + grit * 0.6;
+          if (x === 4 || x === 59) iron = 24;
+          if ((ly === 4 || ly === 11) && (x === 2 || x === 61)) iron += 32;
+          px(x, y, iron, iron * 0.98, iron * 1.02);
+          continue;
+        }
+
+        // Fresta escura entre tábuas
+        if (ly === 0) {
+          px(x, y, 26, 20, 15);
+          continue;
+        }
+
+        let tone = 92 + (plank % 2 === 0 ? 6 : -5) + grain + grit;
+        if (ly === 1) tone += 14;
+        if (ly === 15) tone -= 14;
+
+        px(x, y, tone * 1.05, tone * 0.78, tone * 0.54);
+      }
+    }
+  });
+
   return {
     startanWall,
     stoneWall,
@@ -304,5 +373,7 @@ export function createDoomTextures(): DoomTextureSet {
     lightPanel,
     floorTile,
     ceilingGrate,
+    darkIron,
+    weatheredWood,
   };
 }

@@ -48,14 +48,20 @@ export interface PlayerVitalsSnapshot {
 
 export interface DoomInventoryCallbacks {
   onToggleFlashlightFromUI: () => void;
-  onUseHeal: (healAmount: number, calmAmount: number) => boolean;
+  onUseHeal: (
+    healAmount: number,
+    calmAmount: number,
+    itemKind: 'bandage' | 'morphine'
+  ) => boolean;
   onUseBattery: (chargeAmount: number) => boolean;
   onUseFlare: () => boolean;
+  onUseKnife: () => { cutWeb: boolean };
   onCloseRequest: () => void;
   onPermanentDeathTerminate: () => void;
 }
 
 const TOTAL_SLOTS = 12;
+export const QUICK_SLOT_COUNT = 3;
 
 export const ITEM_CATALOG: Record<string, InventoryItemDef> = {
   tactical_lantern: {
@@ -112,9 +118,10 @@ export const ITEM_CATALOG: Record<string, InventoryItemDef> = {
     name: 'Canivete oxidado',
     category: 'Ferramenta',
     description:
-      'Lâmina curta marcada de ferrugem, mas ainda afiada. Permite cortar fios de teia nos corredores com muito mais rapidez.',
+      'Lâmina curta marcada de ferrugem, mas ainda afiada. Use pelo atalho rápido [1–3] para sacá-la imediatamente e cortar fios de teia num único golpe.',
     stackable: false,
-    usable: false,
+    usable: true,
+    actionLabel: 'Usar lâmina',
     droppable: false,
   },
   magnesium_flare: {
@@ -792,6 +799,7 @@ export class DoomInventory {
   private readonly lanternCellsEl: HTMLElement;
 
   private readonly slotCounterEl: HTMLElement;
+  private readonly quickRowEl: HTMLElement;
   private readonly gridEl: HTMLElement;
   private readonly examineFigureEl: HTMLElement;
   private readonly examineTitleEl: HTMLElement;
@@ -807,7 +815,11 @@ export class DoomInventory {
   private slots: Array<InventorySlotEntry | null> = new Array(TOTAL_SLOTS).fill(
     null
   );
+  private quickSlots: Array<string | null> = new Array(QUICK_SLOT_COUNT).fill(
+    null
+  );
   private selectedIndex = 0;
+  private hoveredIndex: number | null = null;
   private isOpen = false;
   private isGameOver = false;
   private pickupFlashTimer = 0;
@@ -913,6 +925,14 @@ export class DoomInventory {
           </aside>
 
           <section class="inv-items-pane">
+            <div class="inv-shortcuts-bar">
+              <div class="inv-pocket-header">
+                <span>Atalhos rápidos [1–3]</span>
+                <span class="inv-quick-hint">aperte 1–3 ou clique para atribuir</span>
+              </div>
+              <div class="inv-quick-row" data-quick-row></div>
+            </div>
+
             <div>
               <div class="inv-pocket-header">
                 <span>Bolsos</span>
@@ -981,6 +1001,9 @@ export class DoomInventory {
     this.slotCounterEl = this.overlayEl.querySelector(
       '[data-slot-counter]'
     ) as HTMLElement;
+    this.quickRowEl = this.overlayEl.querySelector(
+      '[data-quick-row]'
+    ) as HTMLElement;
     this.gridEl = this.overlayEl.querySelector(
       '[data-inv-grid]'
     ) as HTMLElement;
@@ -1021,11 +1044,38 @@ export class DoomInventory {
         this.callbacks.onPermanentDeathTerminate();
       });
 
-    // Navegação por teclado dentro da grade de bolsos quando o inventário está aberto
+    // Navegação por teclado e atribuição de atalhos [1–3] quando o inventário está aberto
     window.addEventListener(
       'keydown',
       (e) => {
         if (!this.isOpen || this.isGameOver) return;
+
+        // Teclas 1, 2, 3 atribuem o item sob o cursor (ou selecionado) ao atalho rápido correspondente!
+        if (
+          !e.repeat &&
+          (e.code === 'Digit1' ||
+            e.code === 'Numpad1' ||
+            e.code === 'Digit2' ||
+            e.code === 'Numpad2' ||
+            e.code === 'Digit3' ||
+            e.code === 'Numpad3')
+        ) {
+          e.preventDefault();
+          const quickIdx =
+            e.code === 'Digit1' || e.code === 'Numpad1'
+              ? 0
+              : e.code === 'Digit2' || e.code === 'Numpad2'
+                ? 1
+                : 2;
+          const targetSlot =
+            this.hoveredIndex !== null && this.slots[this.hoveredIndex]
+              ? this.hoveredIndex
+              : this.selectedIndex;
+          this.selectedIndex = targetSlot;
+          this.toggleQuickSlotForSlot(targetSlot, quickIdx);
+          return;
+        }
+
         let nextIdx = this.selectedIndex;
         if (e.code === 'ArrowRight' || e.code === 'KeyD') {
           nextIdx = (this.selectedIndex + 1) % TOTAL_SLOTS;
@@ -1059,6 +1109,7 @@ export class DoomInventory {
     );
 
     this.addItem('tactical_lantern', 1, true);
+    this.renderQuickSlots();
     this.renderGrid();
     this.renderInspector();
     this.renderVitals();
@@ -1079,7 +1130,7 @@ export class DoomInventory {
     if (!this.isOpen) return rects;
 
     const nodes = this.overlayEl.querySelectorAll(
-      '.inv-slot.filled, .inv-action-btn:not(:disabled), .inv-close-btn'
+      '.inv-quick-slot, .inv-hk-btn, .inv-slot.filled, .inv-action-btn:not(:disabled), .inv-close-btn'
     );
     nodes.forEach((node) => {
       const el = node as HTMLElement;
@@ -1108,10 +1159,12 @@ export class DoomInventory {
   setOpen(next: boolean): void {
     if (this.isOpen === next) return;
     this.isOpen = next;
+    this.hoveredIndex = null;
     this.feedbackEl.textContent = '';
     if (next) {
       this.overlayEl.classList.add('open');
       this.renderVitals();
+      this.renderQuickSlots();
       this.renderGrid();
       this.renderInspector();
       this.startAnatomyLoop();
@@ -1187,6 +1240,112 @@ export class DoomInventory {
     );
   }
 
+  getQuickSlots(): readonly (string | null)[] {
+    return this.quickSlots;
+  }
+
+  getShortcutForItem(itemId: string): number {
+    return this.quickSlots.indexOf(itemId);
+  }
+
+  /**
+   * Atribui (ou limpa) um item utilizável a um dos 3 atalhos rápidos [1], [2] ou [3].
+   * Caso o item já estivesse em outro atalho, troca de posição de forma limpa sem duplicar.
+   */
+  assignQuickSlot(quickIndex: number, itemId: string | null): boolean {
+    if (quickIndex < 0 || quickIndex >= QUICK_SLOT_COUNT) return false;
+
+    if (itemId === null) {
+      this.quickSlots[quickIndex] = null;
+      if (this.isOpen) {
+        this.renderQuickSlots();
+        this.renderGrid();
+        this.renderInspector();
+      }
+      return true;
+    }
+
+    const def = ITEM_CATALOG[itemId];
+    if (!def || !def.usable || !this.hasItem(itemId)) {
+      return false;
+    }
+
+    const prevIdx = this.quickSlots.indexOf(itemId);
+    if (prevIdx >= 0 && prevIdx !== quickIndex) {
+      this.quickSlots[prevIdx] = this.quickSlots[quickIndex];
+    }
+    this.quickSlots[quickIndex] = itemId;
+
+    if (this.isOpen) {
+      this.renderQuickSlots();
+      this.renderGrid();
+      this.renderInspector();
+    }
+    return true;
+  }
+
+  toggleQuickSlotForSlot(slotIndex: number, quickIndex: number): boolean {
+    const entry = this.slots[slotIndex];
+    if (!entry) {
+      this.feedbackEl.textContent =
+        'Selecione um item nos bolsos antes de definir um atalho.';
+      this.sound.invalidInput();
+      return false;
+    }
+    if (!entry.def.usable) {
+      this.feedbackEl.textContent =
+        'Este objeto não pode ser usado por atalho rápido.';
+      this.sound.invalidInput();
+      return false;
+    }
+
+    if (this.quickSlots[quickIndex] === entry.def.id) {
+      this.assignQuickSlot(quickIndex, null);
+      this.feedbackEl.textContent = `${entry.def.name} removido do atalho [${quickIndex + 1}].`;
+      this.sound.playInventorySelect(true);
+      return true;
+    }
+
+    this.assignQuickSlot(quickIndex, entry.def.id);
+    this.feedbackEl.textContent = `${entry.def.name} atribuído ao atalho [${quickIndex + 1}].`;
+    this.sound.playInventorySelect(true);
+    return true;
+  }
+
+  /**
+   * Aciona imediatamente o item vinculado ao atalho [1], [2] ou [3] durante o jogo
+   * (sem precisar abrir o Tab!). Ex.: saca o canivete e corta a teia na hora!
+   */
+  useQuickSlot(quickIndex: number): boolean {
+    if (quickIndex < 0 || quickIndex >= QUICK_SLOT_COUNT) return false;
+    const itemId = this.quickSlots[quickIndex];
+    if (!itemId) {
+      this.sound.invalidInput();
+      return false;
+    }
+
+    const slotIdx = this.slots.findIndex(
+      (s) => s !== null && s.def.id === itemId && s.quantity > 0
+    );
+    if (slotIdx < 0) {
+      this.quickSlots[quickIndex] = null;
+      this.sound.invalidInput();
+      return false;
+    }
+
+    return this.activateSlotItem(slotIdx, true);
+  }
+
+  private autoBindQuickSlotIfAvailable(def: InventoryItemDef): void {
+    // Auto-preenche atalhos livres com suprimentos/ferramentas de emergência (faca, gaze, etc.)
+    if (!def.usable || def.kind === 'lantern') return;
+    if (this.quickSlots.includes(def.id)) return;
+    const freeQuick = this.quickSlots.findIndex((q) => q === null);
+    if (freeQuick >= 0) {
+      this.quickSlots[freeQuick] = def.id;
+    }
+  }
+
   addItem(itemId: string, amount = 1, silent = false): boolean {
     const def = ITEM_CATALOG[itemId];
     if (!def) return false;
@@ -1197,11 +1356,13 @@ export class DoomInventory {
       );
       if (existingIdx >= 0) {
         this.slots[existingIdx]!.quantity += amount;
+        this.autoBindQuickSlotIfAvailable(def);
         if (!silent) {
           this.triggerPickupGlint();
           this.sound.playItemPickup();
         }
         if (this.isOpen) {
+          this.renderQuickSlots();
           this.renderGrid();
           this.renderInspector();
         }
@@ -1218,12 +1379,14 @@ export class DoomInventory {
     if (this.slots[this.selectedIndex] === null) {
       this.selectedIndex = freeIdx;
     }
+    this.autoBindQuickSlotIfAvailable(def);
 
     if (!silent) {
       this.triggerPickupGlint();
       this.sound.playItemPickup();
     }
     if (this.isOpen) {
+      this.renderQuickSlots();
       this.renderGrid();
       this.renderInspector();
     }
@@ -1253,6 +1416,7 @@ export class DoomInventory {
 
     if (this.isOpen) {
       this.renderVitals();
+      this.renderQuickSlots();
       this.renderGrid();
     }
   }
@@ -1340,6 +1504,85 @@ export class DoomInventory {
     this.lanternCellsEl.innerHTML = cellsHtml;
   }
 
+  private renderQuickSlots(): void {
+    this.quickRowEl.innerHTML = '';
+
+    for (let q = 0; q < QUICK_SLOT_COUNT; q++) {
+      const itemId = this.quickSlots[q];
+      const slotIdx = itemId
+        ? this.slots.findIndex((s) => s !== null && s.def.id === itemId)
+        : -1;
+      const entry = slotIdx >= 0 ? this.slots[slotIdx] : null;
+
+      const cell = document.createElement('div');
+      cell.className = `inv-quick-slot${entry ? ' bound' : ''}`;
+      cell.dataset.quickIndex = String(q);
+
+      if (entry) {
+        const iconSrc = this.icons[entry.def.kind];
+        cell.title = `[${q + 1}] ${entry.def.name} — clique para vincular item selecionado | botão direito para limpar`;
+        cell.innerHTML = `
+          <span class="inv-quick-key">[${q + 1}]</span>
+          <img class="inv-slot-sprite" src="${iconSrc}" alt="${entry.def.name}" />
+          ${
+            entry.quantity > 1
+              ? `<span class="inv-slot-qty">×${entry.quantity}</span>`
+              : ''
+          }
+        `;
+      } else {
+        cell.title = `Atalho [${q + 1}] vazio — clique para vincular o item selecionado`;
+        cell.innerHTML = `
+          <span class="inv-quick-key">[${q + 1}]</span>
+          <span class="inv-quick-empty-mark">—</span>
+        `;
+      }
+
+      cell.addEventListener('mouseenter', () => {
+        this.sound.playInventorySelect(false);
+      });
+
+      cell.addEventListener('click', () => {
+        const currentSelected = this.slots[this.selectedIndex];
+        if (currentSelected && currentSelected.def.usable) {
+          if (this.quickSlots[q] === currentSelected.def.id) {
+            // Se já é o próprio item selecionado, alterna/remove ou mantém com feedback claro
+            this.toggleQuickSlotForSlot(this.selectedIndex, q);
+          } else {
+            this.assignQuickSlot(q, currentSelected.def.id);
+            this.feedbackEl.textContent = `${currentSelected.def.name} atribuído ao atalho [${q + 1}].`;
+            this.sound.playInventorySelect(true);
+          }
+          return;
+        }
+
+        // Caso o bolso selecionado esteja vazio/não-utilizável, clicar num atalho ocupado foca aquele item!
+        if (slotIdx >= 0) {
+          this.selectedIndex = slotIdx;
+          this.feedbackEl.textContent = '';
+          this.sound.playInventorySelect(true);
+          this.renderGrid();
+          this.renderInspector();
+        } else {
+          this.feedbackEl.textContent =
+            'Selecione um item utilizável nos bolsos para colocar neste atalho.';
+          this.sound.invalidInput();
+        }
+      });
+
+      cell.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        if (this.quickSlots[q] !== null) {
+          this.assignQuickSlot(q, null);
+          this.feedbackEl.textContent = `Atalho [${q + 1}] limpo.`;
+          this.sound.playInventorySelect(true);
+        }
+      });
+
+      this.quickRowEl.appendChild(cell);
+    }
+  }
+
   private renderGrid(): void {
     const occupied = this.slots.filter((s) => s !== null).length;
     this.slotCounterEl.textContent = `${occupied} / ${TOTAL_SLOTS}`;
@@ -1360,12 +1603,21 @@ export class DoomInventory {
           (entry.def.kind === 'lantern' &&
             this.latestVitals.flashlightEquipped) ||
           entry.def.kind === 'knife';
+        const boundShortcut = this.getShortcutForItem(entry.def.id);
 
-        slotEl.title = entry.def.name;
+        slotEl.title =
+          boundShortcut >= 0
+            ? `${entry.def.name} (Atalho [${boundShortcut + 1}])`
+            : entry.def.name;
         slotEl.innerHTML = `
           ${
             showEquipDot
               ? `<span class="inv-slot-equip-dot${dotActive ? ' active' : ''}"></span>`
+              : ''
+          }
+          ${
+            boundShortcut >= 0
+              ? `<span class="inv-slot-hotkey">[${boundShortcut + 1}]</span>`
               : ''
           }
           <img class="inv-slot-sprite" src="${iconSrc}" alt="${entry.def.name}" />
@@ -1377,7 +1629,14 @@ export class DoomInventory {
         `;
 
         slotEl.addEventListener('mouseenter', () => {
+          this.hoveredIndex = i;
           this.sound.playInventorySelect(false);
+        });
+
+        slotEl.addEventListener('mouseleave', () => {
+          if (this.hoveredIndex === i) {
+            this.hoveredIndex = null;
+          }
         });
 
         slotEl.addEventListener('click', () => {
@@ -1419,9 +1678,11 @@ export class DoomInventory {
     }
 
     const { def } = entry;
+    const boundShortcut = this.getShortcutForItem(def.id);
     this.examineFigureEl.innerHTML = `<img src="${this.icons[def.kind]}" alt="${def.name}" />`;
-    this.examineTitleEl.textContent =
-      entry.quantity > 1 ? `${def.name}  (×${entry.quantity})` : def.name;
+    const qtySuffix = entry.quantity > 1 ? `  (×${entry.quantity})` : '';
+    const hkSuffix = boundShortcut >= 0 ? `  · [${boundShortcut + 1}]` : '';
+    this.examineTitleEl.textContent = `${def.name}${qtySuffix}${hkSuffix}`;
     this.examineDescEl.textContent = def.description;
 
     if (def.noteContent) {
@@ -1432,6 +1693,27 @@ export class DoomInventory {
     }
 
     if (def.usable) {
+      // Seletor rápido de atalhos [1] [2] [3] diretamente na inspeção
+      const hkWrap = document.createElement('div');
+      hkWrap.className = 'inv-shortcut-assign';
+      const hkLabel = document.createElement('span');
+      hkLabel.className = 'inv-shortcut-label';
+      hkLabel.textContent = 'Atalho:';
+      hkWrap.appendChild(hkLabel);
+
+      for (let q = 0; q < QUICK_SLOT_COUNT; q++) {
+        const hkBtn = document.createElement('button');
+        hkBtn.type = 'button';
+        hkBtn.className = `inv-hk-btn${boundShortcut === q ? ' active' : ''}`;
+        hkBtn.textContent = `[${q + 1}]`;
+        hkBtn.title = `Vincular ${def.name} à tecla ${q + 1}`;
+        hkBtn.addEventListener('click', () => {
+          this.toggleQuickSlotForSlot(this.selectedIndex, q);
+        });
+        hkWrap.appendChild(hkBtn);
+      }
+      this.actionsEl.appendChild(hkWrap);
+
       const useBtn = document.createElement('button');
       useBtn.type = 'button';
       useBtn.className = 'inv-action-btn';
@@ -1455,78 +1737,123 @@ export class DoomInventory {
   }
 
   private useSelectedItem(): void {
-    const entry = this.slots[this.selectedIndex];
-    if (!entry) return;
+    this.activateSlotItem(this.selectedIndex, false);
+  }
+
+  private activateSlotItem(slotIndex: number, fromQuickShortcut: boolean): boolean {
+    const entry = this.slots[slotIndex];
+    if (!entry) return false;
     const { def } = entry;
 
     if (def.kind === 'lantern') {
       this.callbacks.onToggleFlashlightFromUI();
-      this.feedbackEl.textContent = this.latestVitals.flashlightEquipped
-        ? 'Lanterna acesa.'
-        : 'Lanterna guardada.';
-      this.renderVitals();
-      this.renderGrid();
-      return;
+      if (!fromQuickShortcut) {
+        this.feedbackEl.textContent = this.latestVitals.flashlightEquipped
+          ? 'Lanterna acesa.'
+          : 'Lanterna guardada.';
+        this.renderVitals();
+        this.renderGrid();
+      }
+      return true;
+    }
+
+    if (def.id === 'rusty_knife') {
+      const res = this.callbacks.onUseKnife();
+      if (!fromQuickShortcut) {
+        this.feedbackEl.textContent = res.cutWeb
+          ? 'Fios de teia cortados!'
+          : 'Golpe de lâmina desferido.';
+        if (res.cutWeb) {
+          this.callbacks.onCloseRequest();
+        }
+      }
+      return true;
     }
 
     if (def.id === 'sterile_bandage') {
-      const used = this.callbacks.onUseHeal(38, 12);
+      const used = this.callbacks.onUseHeal(38, 12, 'bandage');
       if (!used) {
-        this.feedbackEl.textContent = 'Não há cortes para enfaixar agora.';
+        if (!fromQuickShortcut) {
+          this.feedbackEl.textContent = 'Não há cortes para enfaixar agora.';
+        }
         this.sound.invalidInput();
-        return;
+        return false;
       }
       this.sound.playItemUse('heal');
-      this.consumeAt(this.selectedIndex, 1);
-      this.feedbackEl.textContent = 'Ferimentos enfaixados.';
-      return;
+      this.consumeAt(slotIndex, 1);
+      if (!fromQuickShortcut) {
+        this.feedbackEl.textContent = 'Ferimentos enfaixados.';
+      }
+      return true;
     }
 
     if (def.id === 'old_morphine') {
-      const used = this.callbacks.onUseHeal(62, 42);
+      const used = this.callbacks.onUseHeal(62, 42, 'morphine');
       if (!used) {
-        this.feedbackEl.textContent = 'Seu corpo já está estável.';
+        if (!fromQuickShortcut) {
+          this.feedbackEl.textContent = 'Seu corpo já está estável.';
+        }
         this.sound.invalidInput();
-        return;
+        return false;
       }
       this.sound.playItemUse('heal');
-      this.consumeAt(this.selectedIndex, 1);
-      this.feedbackEl.textContent = 'A dor cedeu.';
-      return;
+      this.consumeAt(slotIndex, 1);
+      if (!fromQuickShortcut) {
+        this.feedbackEl.textContent = 'A dor cedeu.';
+      }
+      return true;
     }
 
     if (def.id === 'industrial_battery') {
       const used = this.callbacks.onUseBattery(55);
       if (!used) {
-        this.feedbackEl.textContent = 'A carga da lanterna já está cheia.';
+        if (!fromQuickShortcut) {
+          this.feedbackEl.textContent = 'A carga da lanterna já está cheia.';
+        }
         this.sound.invalidInput();
-        return;
+        return false;
       }
       this.sound.playItemUse('battery');
-      this.consumeAt(this.selectedIndex, 1);
-      this.feedbackEl.textContent = 'Bateria substituída.';
-      return;
+      this.consumeAt(slotIndex, 1);
+      if (!fromQuickShortcut) {
+        this.feedbackEl.textContent = 'Bateria substituída.';
+      }
+      return true;
     }
 
     if (def.id === 'magnesium_flare') {
       const used = this.callbacks.onUseFlare();
       if (used) {
         this.sound.playItemUse('flare');
-        this.consumeAt(this.selectedIndex, 1);
-        this.feedbackEl.textContent = 'Bastão de magnésio aceso no chão.';
+        this.consumeAt(slotIndex, 1);
+        if (!fromQuickShortcut) {
+          this.feedbackEl.textContent = 'Bastão de magnésio aceso no chão.';
+        }
+        return true;
       }
     }
+
+    return false;
   }
 
   private consumeAt(slotIndex: number, count: number): void {
     const entry = this.slots[slotIndex];
     if (!entry) return;
+    const itemId = entry.def.id;
     entry.quantity -= count;
     if (entry.quantity <= 0) {
       this.slots[slotIndex] = null;
+      if (!this.hasItem(itemId)) {
+        for (let q = 0; q < QUICK_SLOT_COUNT; q++) {
+          if (this.quickSlots[q] === itemId) {
+            this.quickSlots[q] = null;
+          }
+        }
+      }
       const nextFilled = this.slots.findIndex((s) => s !== null);
       if (nextFilled >= 0) this.selectedIndex = nextFilled;
     }
+    this.renderQuickSlots();
     this.renderGrid();
     this.renderInspector();
     this.renderVitals();

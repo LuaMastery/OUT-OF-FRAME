@@ -1320,17 +1320,38 @@ export class SoundEngine {
         this.reverbSend ?? undefined
       );
     } else if (kind === 'blade') {
-      // Lâmina cortando teia pegajosa
+      // Saque metálico da lâmina + golpe rápido rasgando o ar/teia
       this.triggerFilteredNoise(
         this.worldDryBus,
         now,
-        0.075,
-        3800,
-        3.2,
-        0.16,
+        0.045,
+        4400,
+        3.8,
+        0.15,
         false,
         this.reverbSend ?? undefined
       );
+      this.triggerFilteredNoise(
+        this.worldDryBus,
+        now + 0.04,
+        0.11,
+        1850,
+        1.4,
+        0.14,
+        false,
+        this.reverbSend ?? undefined
+      );
+      const ring = this.ctx.createOscillator();
+      const rg = this.ctx.createGain();
+      ring.type = 'triangle';
+      ring.frequency.setValueAtTime(2480, now);
+      ring.frequency.exponentialRampToValueAtTime(1120, now + 0.09);
+      rg.gain.setValueAtTime(0.05, now);
+      rg.gain.exponentialRampToValueAtTime(0.0008, now + 0.095);
+      ring.connect(rg);
+      rg.connect(this.worldDryBus);
+      ring.start(now);
+      ring.stop(now + 0.1);
     } else {
       // Papel antigo desdobrando
       this.triggerFilteredNoise(

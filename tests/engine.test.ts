@@ -156,9 +156,21 @@ describe('BrowserShortcutGuard (Proteção contra Ctrl+W)', () => {
     expect(LOCKED_KEYBOARD_CODES).toContain('KeyW');
     expect(LOCKED_KEYBOARD_CODES).toContain('ControlLeft');
     expect(LOCKED_KEYBOARD_CODES).toContain('ControlRight');
+    expect(LOCKED_KEYBOARD_CODES).toContain('Digit1');
+    expect(LOCKED_KEYBOARD_CODES).toContain('Digit2');
+    expect(LOCKED_KEYBOARD_CODES).toContain('Digit3');
 
     expect(
       shouldPreventBrowserShortcut({ code: 'KeyW', key: 'w', ctrlKey: true })
+    ).toBe(true);
+    expect(
+      shouldPreventBrowserShortcut({ code: 'Digit1', key: '1', ctrlKey: true })
+    ).toBe(true);
+    expect(
+      shouldPreventBrowserShortcut({ code: 'Digit2', key: '2', ctrlKey: true })
+    ).toBe(true);
+    expect(
+      shouldPreventBrowserShortcut({ code: 'Digit3', key: '3', ctrlKey: true })
     ).toBe(true);
     expect(
       shouldPreventBrowserShortcut({ code: 'KeyS', key: 's', ctrlKey: true })

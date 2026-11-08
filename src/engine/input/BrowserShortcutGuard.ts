@@ -24,6 +24,12 @@ export const LOCKED_KEYBOARD_CODES: string[] = [
   'KeyC',
   'KeyT',
   'KeyN',
+  'Digit1',
+  'Digit2',
+  'Digit3',
+  'Numpad1',
+  'Numpad2',
+  'Numpad3',
   'Tab',
   'ControlLeft',
   'ControlRight',
@@ -40,6 +46,12 @@ const GAMEPLAY_CODES = new Set<string>([
   'KeyE',
   'KeyF',
   'KeyC',
+  'Digit1',
+  'Digit2',
+  'Digit3',
+  'Numpad1',
+  'Numpad2',
+  'Numpad3',
   'Tab',
   'Space',
   'ControlLeft',
@@ -70,6 +82,12 @@ const BLOCKED_MODIFIER_CODES = new Set<string>([
   'KeyJ',
   'KeyO',
   'KeyU',
+  'Digit1',
+  'Digit2',
+  'Digit3',
+  'Numpad1',
+  'Numpad2',
+  'Numpad3',
   'Tab',
   'Space',
 ]);
@@ -169,7 +187,10 @@ export function shouldPreventBrowserShortcut(e: {
       lowerKey === 'f' ||
       lowerKey === 'r' ||
       lowerKey === 't' ||
-      lowerKey === 'n'
+      lowerKey === 'n' ||
+      lowerKey === '1' ||
+      lowerKey === '2' ||
+      lowerKey === '3'
     ) {
       return true;
     }

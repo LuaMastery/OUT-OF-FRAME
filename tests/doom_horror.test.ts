@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { describe, expect, it } from 'vitest';
-import { ITEM_CATALOG } from '../src/doom/DoomInventory';
+import { DoomFlashlight } from '../src/doom/DoomFlashlight';
+import { ITEM_CATALOG, QUICK_SLOT_COUNT } from '../src/doom/DoomInventory';
 import {
   buildDoomLabyrinth,
   gridCellToWorld,
@@ -12,6 +13,7 @@ import { createDoomSharedUniforms } from '../src/doom/DoomShader';
 import { DoomSpider } from '../src/doom/DoomSpider';
 import { DoomSpiderWebManager } from '../src/doom/DoomSpiderWebs';
 import { createDoomTextures } from '../src/doom/DoomTextures';
+import { DoomWorldItems } from '../src/doom/DoomWorldItems';
 import { SoundEngine } from '../src/engine/audio/SoundEngine';
 
 describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', () => {
@@ -360,5 +362,90 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
     }
     // Confirma que a aranha voltou a se mover ativamente pelo mapa (não ficou congelada!)
     expect(spider.position.distanceTo(postPos)).toBeGreaterThan(0.35);
+  });
+
+  it('corta armadilhas de teia e fios do ninho instantaneamente ao acionar o canivete pelo atalho rápido', () => {
+    expect(QUICK_SLOT_COUNT).toBe(3);
+    expect(ITEM_CATALOG.rusty_knife.usable).toBe(true);
+
+    const scene = new THREE.Scene();
+    const shared = createDoomSharedUniforms();
+    const webs = new DoomSpiderWebManager(scene, shared);
+    const sound = {
+      playWebTrapSnap: () => {},
+      playItemUse: () => {},
+    } as unknown as SoundEngine;
+
+    // 1) Preso numa armadilha de corredor -> golpe de faca liberta na hora!
+    const cellPos = gridCellToWorld(7, 3);
+    webs.spawnWebTrap(cellPos.x, cellPos.z, true);
+    webs.update(
+      0.016,
+      new THREE.Vector3(cellPos.x, 0, cellPos.z),
+      false,
+      false,
+      sound,
+      () => {}
+    );
+    expect(webs.isPlayerEnsnared).toBe(true);
+
+    const slashRes1 = webs.slashWebWithKnife(
+      new THREE.Vector3(cellPos.x, 1.72, cellPos.z),
+      new THREE.Vector3(0, 0, -1),
+      sound
+    );
+    expect(slashRes1.cutActiveSnare).toBe(true);
+    expect(webs.isPlayerEnsnared).toBe(false);
+
+    // 2) Acordou preso no Ninho Principal -> golpe de faca pelo atalho [1] corta a seda na hora!
+    webs.placePlayerInWakingLairWeb();
+    expect(webs.isPlayerEnsnared).toBe(true);
+    expect(webs.getWakingLairSilkFactor(webs.lairCenter)).toBeGreaterThan(0.7);
+
+    const slashRes2 = webs.slashWebWithKnife(
+      new THREE.Vector3(webs.lairCenter.x, 1.72, webs.lairCenter.z),
+      new THREE.Vector3(0, 0, -1),
+      sound
+    );
+    expect(slashRes2.cutActiveSnare).toBe(true);
+    expect(webs.isPlayerEnsnared).toBe(false);
+    expect(webs.getWakingLairSilkFactor(webs.lairCenter)).toBe(0);
+  });
+
+  it('constrói modelagem 3D detalhada de arquitetura, caixotes de suprimento, lanterna e ação rápida de faca', () => {
+    const scene = new THREE.Scene();
+    const shared = createDoomSharedUniforms();
+    const textures = createDoomTextures();
+
+    const built = buildDoomLabyrinth(scene, textures, shared);
+    expect(built.colliders.length).toBeGreaterThan(20);
+    expect(built.lights.length).toBeGreaterThan(8);
+
+    // Verifica objetos 3D compostos e caixotes de suprimentos no mapa
+    const worldItems = new DoomWorldItems(scene, shared);
+    let totalItemMeshes = 0;
+    scene.traverse((obj) => {
+      if ((obj as THREE.Mesh).isMesh) totalItemMeshes++;
+    });
+    expect(totalItemMeshes).toBeGreaterThan(60);
+
+    worldItems.spawnLitFlare(new THREE.Vector3(4, 1.7, -4), 0);
+    expect(worldItems.getActiveFlares().length).toBe(1);
+
+    // Verifica Viewmodel 3D de lanterna + golpe rápido 3D de faca em 1ª pessoa
+    const flashlight = new DoomFlashlight(16 / 9);
+    let viewMeshes = 0;
+    flashlight.viewScene.traverse((obj) => {
+      if ((obj as THREE.Mesh).isMesh) viewMeshes++;
+    });
+    expect(viewMeshes).toBeGreaterThan(35);
+
+    flashlight.triggerQuickItemAction('knife');
+    flashlight.update(0.08, 0, 0, () => {});
+    // Confirma que a mão esquerda com canivete entrou em animação ativa
+    const quickGroup = flashlight.viewScene.children.find(
+      (c) => c instanceof THREE.Group && c.visible
+    );
+    expect(quickGroup).toBeDefined();
   });
 });
