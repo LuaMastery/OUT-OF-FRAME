@@ -412,6 +412,11 @@ export class DoomRadar {
       this.cycleScaleMode();
     });
 
+    this.canvasEl.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.cycleScaleMode();
+    });
+
     parentViewport.appendChild(this.containerEl);
   }
 
@@ -539,8 +544,8 @@ export class DoomRadar {
     style.textContent = `
       .doom-radar-hud {
         position: absolute;
-        top: 14px;
-        right: 14px;
+        top: calc(14px + var(--safe-top, 0px));
+        right: calc(14px + var(--safe-right, 0px));
         z-index: 28;
         display: flex;
         flex-direction: column;
@@ -658,6 +663,36 @@ export class DoomRadar {
 
       .doom-radar-keys {
         color: #5f7a6c;
+      }
+
+      @media (max-width: 760px), (max-height: 500px) {
+        .doom-radar-hud {
+          top: calc(8px + var(--safe-top, 0px));
+          right: calc(8px + var(--safe-right, 0px));
+          padding: 4px 5px;
+          gap: 3px;
+        }
+
+        .doom-radar-title {
+          max-width: 74px;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          font-size: 8.5px;
+        }
+
+        .doom-radar-screen-wrap,
+        .doom-radar-canvas {
+          width: 106px;
+          height: 106px;
+        }
+
+        .doom-radar-legend {
+          display: none;
+        }
+
+        .doom-radar-footer {
+          font-size: 8.5px;
+        }
       }
     `;
     document.head.appendChild(style);

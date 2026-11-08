@@ -4,6 +4,7 @@ import {
   createAstronautArmRig,
   createAstronautMaterials,
 } from './DoomAstronaut';
+import { computeAdaptiveVerticalFov } from './DoomTouchControls';
 
 export type QuickHandheldKind =
   | 'knife'
@@ -190,7 +191,12 @@ export class DoomFlashlight {
   private swayY = 0;
 
   constructor(aspect: number) {
-    this.viewCamera = new THREE.PerspectiveCamera(62, aspect, 0.04, 5.0);
+    this.viewCamera = new THREE.PerspectiveCamera(
+      computeAdaptiveVerticalFov(aspect, 62, 84),
+      aspect,
+      0.04,
+      5.0
+    );
 
     // Iluminação direcional calibrada sem estourar o albedo (>1.0) para preservar 100% da Camuflagem Astronáutica no COLORMAP!
     const ambient = new THREE.AmbientLight(0x88909e, 0.48);
@@ -806,6 +812,7 @@ export class DoomFlashlight {
 
   setAspect(aspect: number): void {
     this.viewCamera.aspect = aspect;
+    this.viewCamera.fov = computeAdaptiveVerticalFov(aspect, 62, 84);
     this.viewCamera.updateProjectionMatrix();
   }
 

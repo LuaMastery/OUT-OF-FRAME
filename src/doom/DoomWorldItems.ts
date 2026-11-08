@@ -1417,4 +1417,34 @@ export class DoomWorldItems {
       fl.flameMesh.rotation.x = elapsed * 11 + i;
     }
   }
+
+  /**
+   * Indica se há um item colecionável na mira próxima do jogador (<2.4m),
+   * permitindo destacar o botão contextual [PEGAR] na interface mobile!
+   */
+  hasInteractableItemInSight(
+    playerPos: THREE.Vector3,
+    cameraPos: THREE.Vector3,
+    cameraDir: THREE.Vector3
+  ): boolean {
+    for (let i = 0; i < this.pickups.length; i++) {
+      const p = this.pickups[i];
+      if (p.collected) continue;
+      const flatDist = Math.hypot(
+        p.position.x - playerPos.x,
+        p.position.z - playerPos.z
+      );
+      if (flatDist > 2.4) continue;
+      const dx = p.position.x - cameraPos.x;
+      const dy = p.position.y - cameraPos.y;
+      const dz = p.position.z - cameraPos.z;
+      const len = Math.sqrt(Math.max(1e-6, dx * dx + dy * dy + dz * dz));
+      const dot =
+        (dx * cameraDir.x + dy * cameraDir.y + dz * cameraDir.z) / len;
+      if (dot > 0.72) {
+        return true;
+      }
+    }
+    return false;
+  }
 }

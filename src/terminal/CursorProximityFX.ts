@@ -51,8 +51,9 @@ export class CursorProximityFX {
   private lastFrameMs = performance.now();
   private disposed = false;
 
-  private readonly onMouseMoveBound: (e: MouseEvent) => void;
-  private readonly onMouseDownBound: () => void;
+  private readonly onMouseMoveBound: (e: PointerEvent) => void;
+  private readonly onMouseDownBound: (e: PointerEvent) => void;
+  private readonly onTouchEndBound: () => void;
   private readonly onMouseLeaveBound: () => void;
   private readonly onResizeBound: () => void;
 
@@ -72,7 +73,8 @@ export class CursorProximityFX {
     this.ctx = context;
     this.resize();
 
-    this.onMouseMoveBound = (e: MouseEvent) => {
+    this.onMouseMoveBound = (e: PointerEvent) => {
+      if (e.pointerType === 'touch') return;
       const firstMove = !this.hasMouse;
       this.mouseX = e.clientX;
       this.mouseY = e.clientY;
@@ -85,7 +87,26 @@ export class CursorProximityFX {
       }
     };
 
-    this.onMouseDownBound = () => {
+    this.onMouseDownBound = (e: PointerEvent) => {
+      if (e.pointerType === 'touch') {
+        this.mouseX = e.clientX;
+        this.mouseY = e.clientY;
+        this.curX1 = e.clientX - 18;
+        this.curY1 = e.clientY - 12;
+        this.curX2 = e.clientX + 18;
+        this.curY2 = e.clientY + 12;
+        if (this.isInteractivePhase()) {
+          this.shockwaves.push({
+            x1: this.curX1,
+            y1: this.curY1,
+            x2: this.curX2,
+            y2: this.curY2,
+            life: 1.0,
+          });
+          this.spawnBurstSparks(8);
+        }
+        return;
+      }
       if (this.bracketAlpha > 0.25 && this.isInteractivePhase()) {
         this.shockwaves.push({
           x1: this.curX1,
@@ -98,16 +119,23 @@ export class CursorProximityFX {
       }
     };
 
+    this.onTouchEndBound = () => {
+      this.hasMouse = false;
+    };
+
     this.onMouseLeaveBound = () => {
       this.hasMouse = false;
     };
 
     this.onResizeBound = () => this.resize();
 
-    window.addEventListener('mousemove', this.onMouseMoveBound, {
+    window.addEventListener('pointermove', this.onMouseMoveBound, {
       passive: true,
     });
-    window.addEventListener('mousedown', this.onMouseDownBound, {
+    window.addEventListener('pointerdown', this.onMouseDownBound, {
+      passive: true,
+    });
+    window.addEventListener('touchend', this.onTouchEndBound, {
       passive: true,
     });
     document.addEventListener('mouseleave', this.onMouseLeaveBound);
@@ -455,8 +483,9 @@ export class CursorProximityFX {
   destroy(): void {
     this.disposed = true;
     cancelAnimationFrame(this.rafId);
-    window.removeEventListener('mousemove', this.onMouseMoveBound);
-    window.removeEventListener('mousedown', this.onMouseDownBound);
+    window.removeEventListener('pointermove', this.onMouseMoveBound);
+    window.removeEventListener('pointerdown', this.onMouseDownBound);
+    window.removeEventListener('touchend', this.onTouchEndBound);
     document.removeEventListener('mouseleave', this.onMouseLeaveBound);
     window.removeEventListener('resize', this.onResizeBound);
     this.canvas.remove();

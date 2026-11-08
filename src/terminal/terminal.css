@@ -18,8 +18,11 @@
 
 /* Camada 1: Tela inicial de carregamento do sistema */
 #terminal-boot-layer {
-  padding: 36px 42px;
+  padding: calc(28px + var(--safe-top, 0px)) calc(32px + var(--safe-right, 0px))
+    calc(24px + var(--safe-bottom, 0px)) calc(32px + var(--safe-left, 0px));
   max-width: 760px;
+  max-height: 100%;
+  overflow-y: auto;
   white-space: pre-wrap;
 }
 
@@ -34,6 +37,9 @@
   display: none;
   flex-direction: column;
   background: #000000;
+  padding-top: var(--safe-top, 0px);
+  padding-left: var(--safe-left, 0px);
+  padding-right: var(--safe-right, 0px);
 }
 
 #terminal-desktop.active {
@@ -103,7 +109,9 @@
   border: 1px solid #a8a8a8;
   display: flex;
   flex-direction: column;
-  min-width: 320px;
+  min-width: min(320px, calc(100vw - 24px));
+  max-width: calc(100% - 12px);
+  max-height: calc(100% - 12px);
 }
 
 .tui-window.opening .tui-window-body {
@@ -171,12 +179,13 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 4px 10px;
+  padding: 5px 10px;
   border-bottom: 1px solid #a8a8a8;
   background: #000000;
   color: #e5e5e5;
   cursor: var(--cursor-move);
   font-size: 14px;
+  touch-action: none;
 }
 
 .tui-window-titlebar:active {
@@ -212,10 +221,37 @@
   flex: 1;
   padding: 12px 14px;
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   white-space: pre-wrap;
   word-break: break-word;
   font-size: 14px;
   line-height: 1.55;
+}
+
+.tui-cmd-quickbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 10px;
+  border-top: 1px solid #333333;
+  background: #060606;
+}
+
+.tui-cmd-chip {
+  background: #0e0e0e;
+  color: #d8d8d8;
+  border: 1px solid #595959;
+  font-family: inherit;
+  font-size: 12px;
+  padding: 4px 8px;
+  cursor: var(--cursor-pointer);
+}
+
+.tui-cmd-chip:hover,
+.tui-cmd-chip:active {
+  background: #e5e5e5;
+  color: #000000;
+  border-color: #ffffff;
 }
 
 .tui-cmd-body {
@@ -319,12 +355,13 @@
 
 /* Barra de tarefas inferior em modo terminal */
 .tui-taskbar {
-  height: 34px;
+  min-height: calc(36px + var(--safe-bottom, 0px));
+  padding: 4px 10px calc(4px + var(--safe-bottom, 0px));
   border-top: 1px solid #e5e5e5;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 10px;
+  gap: 8px;
   background: #000000;
   font-size: 13.5px;
 }
@@ -333,7 +370,12 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  overflow: hidden;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.tui-taskbar-left::-webkit-scrollbar {
+  display: none;
 }
 
 .tui-task-btn {
@@ -342,7 +384,8 @@
   border: 1px solid #888888;
   font-family: inherit;
   font-size: 13px;
-  padding: 2px 10px;
+  padding: 3px 10px;
+  white-space: nowrap;
   cursor: var(--cursor-pointer);
 }
 
@@ -380,16 +423,18 @@
   letter-spacing: 0.05em;
 }
 
-/* Input oculto para digitação na janela do terminal */
+/* Input oculto para digitação na janela do terminal (16px evita zoom automático no iOS Safari) */
 #terminal-hidden-input {
   position: fixed;
-  left: -9999px;
-  top: 0;
+  left: 0;
+  bottom: 0;
   width: 1px;
   height: 1px;
   opacity: 0;
+  font-size: 16px;
   border: none;
   outline: none;
+  pointer-events: none;
 }
 
 /* Camada 3: Canvas da interface binária estilo Superhot (ao abrir out_of_frame.exe) */
@@ -402,6 +447,7 @@
   background: #000000;
   z-index: 80;
   cursor: var(--cursor-default);
+  touch-action: none;
 }
 
 #binary-ui-canvas.cursor-pointer {
@@ -425,5 +471,78 @@
   height: 100%;
   pointer-events: none;
   z-index: 95;
+}
+
+@media (max-width: 680px) {
+  #terminal-root {
+    font-size: 13.5px;
+  }
+
+  #terminal-boot-layer {
+    padding: calc(18px + var(--safe-top, 0px)) 16px
+      calc(18px + var(--safe-bottom, 0px));
+    font-size: 12.5px;
+    line-height: 1.45;
+  }
+
+  .tui-workspace {
+    padding: 14px 12px;
+  }
+
+  .tui-icon-grid {
+    gap: 12px;
+    width: 136px;
+  }
+
+  .tui-icon {
+    width: 132px;
+    padding: 8px 6px;
+  }
+
+  .tui-icon-glyph {
+    font-size: 11.5px;
+  }
+
+  .tui-icon-label {
+    font-size: 12.5px;
+  }
+
+  .tui-window-titlebar {
+    padding: 8px 10px;
+    font-size: 13.5px;
+  }
+
+  .tui-window-close {
+    padding: 4px 8px;
+    font-size: 14px;
+  }
+
+  .tui-start-item {
+    padding: 10px 14px;
+    font-size: 14px;
+  }
+
+  .tui-task-btn {
+    padding: 6px 10px;
+    font-size: 12.5px;
+  }
+}
+
+@media (max-height: 460px) {
+  .tui-workspace {
+    padding: 8px 12px;
+  }
+
+  .tui-icon-grid {
+    flex-direction: row;
+    flex-wrap: wrap;
+    width: auto;
+    gap: 8px;
+  }
+
+  .tui-icon {
+    width: 124px;
+    padding: 4px 6px;
+  }
 }
 

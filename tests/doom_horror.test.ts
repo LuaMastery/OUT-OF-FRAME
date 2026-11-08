@@ -10,6 +10,11 @@ import {
   stepPlayerSlideState,
 } from '../src/doom/DoomGameApp';
 import {
+  computeAdaptiveVerticalFov,
+  computeVirtualJoystickVector,
+} from '../src/doom/DoomTouchControls';
+import { computeBinaryCanvasLayout } from '../src/terminal/TerminalBoot';
+import {
   computeShortcutsHubState,
   ITEM_CATALOG,
   QUICK_SLOT_COUNT,
@@ -2629,5 +2634,46 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
 
     webs.slashWebWithKnife(walker, new THREE.Vector3(0, 0, -1), soundMock);
     expect(cutCount).toBe(1);
+  });
+
+  it('valida controles e layout mobile: analógico 360° furtivo/corrida, FOV vertical adaptativo em retrato e escala binária sem cortes', () => {
+    // 1. Zona morta radial evita deriva involuntária no analógico virtual
+    const idleVec = computeVirtualJoystickVector(2, -2, 44, 0.12);
+    expect(idleVec.magnitude).toBe(0);
+    expect(idleVec.moveX).toBe(0);
+    expect(idleVec.moveY).toBe(0);
+
+    // 2. Empurrar o analógico pela metade para cima gera avanço furtivo contínuo (0 < magnitude < 1)
+    const stealthVec = computeVirtualJoystickVector(0, -24, 44, 0.12);
+    expect(stealthVec.moveY).toBeGreaterThan(0.35);
+    expect(stealthVec.moveY).toBeLessThan(0.75);
+    expect(stealthVec.moveX).toBeCloseTo(0, 4);
+    expect(stealthVec.magnitude).toBeCloseTo(stealthVec.moveY, 4);
+
+    // 3. Arrastar além do raio máximo grampeia em magnitude = 1.0 e clampedDy = -maxRadius
+    const fullForward = computeVirtualJoystickVector(0, -90, 44, 0.12);
+    expect(fullForward.moveY).toBeCloseTo(1, 5);
+    expect(fullForward.magnitude).toBeCloseTo(1, 5);
+    expect(fullForward.clampedDy).toBeCloseTo(-44, 5);
+
+    // 4. FOV vertical adaptativo preserva exatamente 74° no Desktop/Paisagem e abre suavemente no Retrato
+    expect(computeAdaptiveVerticalFov(16 / 9, 74, 98)).toBe(74);
+    expect(computeAdaptiveVerticalFov(20 / 9, 74, 98)).toBe(74);
+    const portraitFov = computeAdaptiveVerticalFov(390 / 844, 74, 98);
+    expect(portraitFov).toBeGreaterThan(88);
+    expect(portraitFov).toBeLessThanOrEqual(98);
+
+    // 5. Escala responsiva do canvas binário out_of_frame.exe em smartphones retrato/paisagem e Desktop
+    const desktopBin = computeBinaryCanvasLayout(1920, 1080);
+    expect(desktopBin.fontPx).toBe(16);
+    expect(desktopBin.cellH).toBe(20);
+
+    const phonePortraitBin = computeBinaryCanvasLayout(360, 740);
+    expect(phonePortraitBin.fontPx).toBeGreaterThanOrEqual(10);
+    expect(phonePortraitBin.fontPx).toBeLessThan(16);
+
+    const phoneLandscapeBin = computeBinaryCanvasLayout(740, 360);
+    expect(phoneLandscapeBin.fontPx).toBeGreaterThanOrEqual(10);
+    expect(phoneLandscapeBin.fontPx).toBeLessThan(16);
   });
 });

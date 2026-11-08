@@ -9,7 +9,8 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 18px;
+  padding: calc(14px + var(--safe-top, 0px)) calc(14px + var(--safe-right, 0px))
+    calc(14px + var(--safe-bottom, 0px)) calc(14px + var(--safe-left, 0px));
   background: rgba(0, 0, 0, 0.92);
   font-family: Consolas, 'Courier New', ui-monospace, monospace;
   color: #e5e5e5;
@@ -23,7 +24,10 @@
 .oof-mp-window {
   position: relative;
   width: min(920px, 96vw);
-  max-height: min(690px, 92vh);
+  max-height: min(
+    690px,
+    calc(100dvh - 24px - var(--safe-top, 0px) - var(--safe-bottom, 0px))
+  );
   display: flex;
   flex-direction: column;
   background: #050706;
@@ -267,8 +271,9 @@
 /* Corpo rolável */
 .oof-mp-body {
   flex: 1;
-  min-height: 310px;
+  min-height: 0;
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   padding: 14px 16px 16px;
 }
 
@@ -615,8 +620,8 @@
 
 .oof-coop-hud {
   position: absolute;
-  top: 14px;
-  left: 14px;
+  top: calc(14px + var(--safe-top, 0px));
+  left: calc(14px + var(--safe-left, 0px));
   z-index: 27;
   display: flex;
   flex-direction: column;
@@ -635,6 +640,39 @@
   display: flex;
   flex-direction: column;
   gap: 5px;
+}
+
+.oof-coop-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.oof-coop-room-Card.collapsed .oof-coop-card-body {
+  display: none;
+}
+
+.oof-coop-room-row-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.oof-coop-collapse-btn {
+  background: #102019;
+  color: #d5f2e3;
+  border: 1px solid #3a6350;
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 5px;
+  cursor: pointer;
+}
+
+.oof-coop-collapse-btn:hover,
+.oof-coop-collapse-btn:active {
+  background: #d5f2e3;
+  color: #050907;
 }
 
 .oof-coop-room-row {
@@ -828,6 +866,7 @@
 .oof-coop-chat-box {
   display: flex;
   gap: 4px;
+  align-items: stretch;
   pointer-events: auto;
 }
 
@@ -837,6 +876,7 @@
 
 .oof-coop-chat-input {
   flex: 1;
+  min-width: 0;
   padding: 5px 8px;
   background: rgba(4, 8, 6, 0.95);
   border: 1px solid #59cc96;
@@ -844,6 +884,31 @@
   font-family: inherit;
   font-size: 12px;
   outline: none;
+}
+
+.oof-coop-chat-send-btn,
+.oof-coop-chat-cancel-btn {
+  padding: 5px 8px;
+  background: #12281e;
+  border: 1px solid #59cc96;
+  color: #c6ffe3;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.oof-coop-chat-cancel-btn {
+  background: #201111;
+  border-color: #9e5a5a;
+  color: #ffd0d0;
+}
+
+.oof-coop-chat-send-btn:active,
+.oof-coop-chat-cancel-btn:active {
+  background: #e5e5e5;
+  color: #000000;
 }
 
 /* Etiquetas 3D sobre os Astronautas aliados e Pings Táticos */
@@ -1011,4 +1076,125 @@
   background: rgba(45, 9, 9, 0.92);
   border-color: #ff5c5c;
   color: #ffc2c2;
+}
+
+@media (max-width: 760px), (max-height: 500px) {
+  .oof-mp-backdrop {
+    padding: calc(6px + var(--safe-top, 0px)) calc(6px + var(--safe-right, 0px))
+      calc(6px + var(--safe-bottom, 0px)) calc(6px + var(--safe-left, 0px));
+  }
+
+  .oof-mp-modal {
+    width: 100%;
+    max-height: calc(100dvh - 12px - var(--safe-top, 0px) - var(--safe-bottom, 0px));
+  }
+
+  .oof-mp-header {
+    padding: 8px 10px;
+    font-size: 12.5px;
+    gap: 6px;
+  }
+
+  .oof-mp-identity-bar {
+    padding: 8px 10px;
+    gap: 8px;
+  }
+
+  .oof-mp-tabs {
+    padding: 0 8px;
+    overflow-x: auto;
+  }
+
+  .oof-mp-tab {
+    padding: 8px 10px;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+
+  .oof-mp-body {
+    padding: 10px 10px 14px;
+    gap: 10px;
+  }
+
+  /* 16px evita auto-zoom do navegador mobile ao focar inputs */
+  .oof-mp-input,
+  .oof-mp-select,
+  .oof-mp-code-input,
+  .oof-mp-callsign-input,
+  .oof-mp-search-input,
+  .oof-mp-text-input,
+  .oof-coop-chat-input {
+    font-size: 16px;
+  }
+
+  .oof-mp-window {
+    width: 100%;
+    max-height: calc(
+      100dvh - 12px - var(--safe-top, 0px) - var(--safe-bottom, 0px)
+    );
+  }
+
+  .oof-mp-code-bar {
+    padding: 8px 10px;
+  }
+
+  .oof-mp-code-input {
+    width: 150px;
+  }
+
+  .oof-mp-search-input {
+    min-width: 140px;
+  }
+
+  .oof-mp-choice-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .oof-mp-code-box {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .oof-mp-room-card {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .oof-mp-room-actions {
+    justify-content: flex-end;
+  }
+
+  .oof-mp-form-row {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .oof-mp-btn {
+    padding: 9px 12px;
+    font-size: 13px;
+  }
+
+  .oof-coop-hud {
+    top: calc(8px + var(--safe-top, 0px));
+    left: calc(8px + var(--safe-left, 0px));
+    max-width: min(226px, 56vw);
+  }
+
+  .oof-coop-room-Card {
+    padding: 5px 7px;
+    gap: 4px;
+  }
+
+  .oof-coop-keys-hint {
+    display: none;
+  }
+
+  .oof-coop-chat-box {
+    width: min(320px, calc(100vw - 20px));
+  }
+
+  .oof-local-afk-sub {
+    display: none;
+  }
 }

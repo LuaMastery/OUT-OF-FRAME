@@ -8,6 +8,30 @@ import { CursorProximityFX } from './CursorProximityFX';
 
 export const BINARY_MENU_ITEMS = ['INICIAR', 'MULTIPLAYER', 'SAIR'] as const;
 
+export interface BinaryCanvasLayout {
+  fontPx: number;
+  cellH: number;
+}
+
+/**
+ * Calcula tamanho de fonte e altura de linha adaptativos para que a grade binária
+ * de `out_of_frame.exe` caiba 100% sem corte horizontal ou vertical em celulares
+ * (tanto em retrato quanto em paisagem) e mantenha 16px/20px no Desktop!
+ */
+export function computeBinaryCanvasLayout(
+  viewportWidth: number,
+  viewportHeight: number
+): BinaryCanvasLayout {
+  const w = Math.max(240, viewportWidth);
+  const h = Math.max(240, viewportHeight);
+  // Garante pelo menos ~45 colunas e ~19 linhas visíveis em qualquer tela de celular
+  const maxFontByWidth = Math.floor((w - 12) / 27.5);
+  const maxFontByHeight = Math.floor((h - 16) / 24.0);
+  const fontPx = Math.max(10, Math.min(16, maxFontByWidth, maxFontByHeight));
+  const cellH = Math.max(13, Math.round(fontPx * 1.25));
+  return { fontPx, cellH };
+}
+
 export type TerminalPhase =
   | 'idle'
   | 'booting'
@@ -144,6 +168,7 @@ export class TerminalBootController {
   private gridCols = 80;
   private gridRows = 30;
   private boxTop = 6;
+  private binaryFontPx = 16;
   private cellW = 10;
   private cellH = 20;
   private menuIndex = 0;
@@ -151,7 +176,7 @@ export class TerminalBootController {
 
   private boundKeyCapture!: (e: KeyboardEvent) => void;
   private boundPointerUnlock!: () => void;
-  private boundMouseMove!: (e: MouseEvent) => void;
+  private boundMouseMove!: (e: PointerEvent) => void;
   private boundMouseUp!: () => void;
   private boundResize!: () => void;
 
@@ -203,6 +228,9 @@ export class TerminalBootController {
     this.hiddenInputEl.type = 'text';
     this.hiddenInputEl.autocomplete = 'off';
     this.hiddenInputEl.spellcheck = false;
+    this.hiddenInputEl.setAttribute('autocapitalize', 'none');
+    this.hiddenInputEl.setAttribute('autocorrect', 'off');
+    this.hiddenInputEl.setAttribute('enterkeyhint', 'send');
 
     this.canvasEl = document.createElement('canvas');
     this.canvasEl.id = 'binary-ui-canvas';
@@ -349,8 +377,8 @@ export class TerminalBootController {
       this.startBtnEl.classList.toggle('active', this.startMenuOpen);
     });
 
-    // Clicar no fundo vazio da área de trabalho desfoca janelas e fecha o menu
-    this.workspaceEl.addEventListener('mousedown', (e) => {
+    // Clicar/tocar no fundo vazio da área de trabalho desfoca janelas e fecha o menu
+    this.workspaceEl.addEventListener('pointerdown', (e) => {
       if (this.phase !== 'desktop') return;
       if (
         e.target === this.workspaceEl ||
@@ -361,15 +389,15 @@ export class TerminalBootController {
       }
     });
 
-    this.canvasEl.addEventListener('mousedown', (e) => {
+    this.canvasEl.addEventListener('pointerdown', (e) => {
       this.sound.unlock();
       if (this.phase === 'binary_interface') {
         this.handleCanvasClick(e.clientX, e.clientY);
       }
     });
 
-    this.canvasEl.addEventListener('mousemove', (e) => {
-      if (this.phase !== 'binary_interface') return;
+    this.canvasEl.addEventListener('pointermove', (e) => {
+      if (this.phase !== 'binary_interface' || e.pointerType === 'touch') return;
       for (const box of this.menuHitboxes) {
         if (
           e.clientX >= box.x &&
@@ -388,8 +416,8 @@ export class TerminalBootController {
       this.canvasEl.classList.remove('cursor-pointer');
     });
 
-    // Movimento de arrasto de janelas TUI
-    this.boundMouseMove = (e: MouseEvent) => {
+    // Movimento de arrasto de janelas TUI (mouse e toque!)
+    this.boundMouseMove = (e: PointerEvent) => {
       if (!this.draggingWin || this.phase !== 'desktop') return;
       const wsRect = this.workspaceEl.getBoundingClientRect();
       const maxX = Math.max(0, wsRect.width - this.draggingWin.el.offsetWidth);
@@ -407,15 +435,16 @@ export class TerminalBootController {
       this.draggingWin.el.style.left = `${nextX}px`;
       this.draggingWin.el.style.top = `${nextY}px`;
     };
-    window.addEventListener('mousemove', this.boundMouseMove);
+    window.addEventListener('pointermove', this.boundMouseMove);
 
     this.boundMouseUp = () => {
       this.draggingWin = null;
       document.body.classList.remove('tui-dragging-window');
     };
-    window.addEventListener('mouseup', this.boundMouseUp);
+    window.addEventListener('pointerup', this.boundMouseUp);
+    window.addEventListener('pointercancel', this.boundMouseUp);
 
-    // Entrada de texto na janela "terminal"
+    // Entrada de texto na janela "terminal" (incluindo teclado virtual de celulares)
     this.hiddenInputEl.addEventListener('input', () => {
       if (
         this.phase !== 'desktop' ||
@@ -424,13 +453,20 @@ export class TerminalBootController {
       ) {
         return;
       }
-      const val = this.hiddenInputEl.value;
-      if (val.length > this.prevInputLen) {
-        const lastChar = val[val.length - 1];
+      const rawVal = this.hiddenInputEl.value;
+      if (rawVal.includes('\n') || rawVal.includes('\r')) {
+        const clean = rawVal.replace(/[\r\n]+/g, '');
+        this.hiddenInputEl.value = clean;
+        this.sound.keyEnter();
+        this.submitTerminalWindowCommand(clean);
+        return;
+      }
+      if (rawVal.length > this.prevInputLen) {
+        const lastChar = rawVal[rawVal.length - 1];
         this.sound.keyType(lastChar === ' ');
       }
-      this.prevInputLen = val.length;
-      this.typedSpanEl.textContent = val;
+      this.prevInputLen = rawVal.length;
+      this.typedSpanEl.textContent = rawVal;
     });
 
     this.hiddenInputEl.addEventListener('keydown', (e) => {
@@ -549,6 +585,26 @@ export class TerminalBootController {
     window.addEventListener('keydown', this.boundKeyCapture, true);
 
     this.boundResize = () => {
+      if (this.phase === 'desktop') {
+        const wsRect = this.workspaceEl.getBoundingClientRect();
+        for (const [id, win] of this.windows.entries()) {
+          const isCmd = id === 'terminal';
+          const desiredW = Math.min(
+            isCmd ? 480 : 400,
+            Math.max(250, Math.floor(wsRect.width - 16))
+          );
+          const desiredH = Math.min(
+            isCmd ? 290 : 210,
+            Math.max(150, Math.floor(wsRect.height - 16))
+          );
+          win.el.style.width = `${desiredW}px`;
+          win.el.style.height = `${desiredH}px`;
+          const curLeft = parseFloat(win.el.style.left) || 8;
+          const curTop = parseFloat(win.el.style.top) || 8;
+          win.el.style.left = `${Math.max(4, Math.min(curLeft, Math.max(4, wsRect.width - desiredW - 4)))}px`;
+          win.el.style.top = `${Math.max(4, Math.min(curTop, Math.max(4, wsRect.height - desiredH - 4)))}px`;
+        }
+      }
       if (
         this.phase === 'program_starting' ||
         this.phase === 'binary_interface'
@@ -789,18 +845,29 @@ export class TerminalBootController {
 
     const isCmd = id === 'terminal';
     const title = isCmd ? 'terminal' : 'notas.txt';
-    const winW = isCmd ? 480 : 400;
-    const winH = isCmd ? 290 : 210;
-
     const wsRect = this.workspaceEl.getBoundingClientRect();
-    const targetLeft = Math.min(
-      isCmd ? 220 : 260,
-      Math.max(12, wsRect.width - winW - 12)
+    const winW = Math.min(
+      isCmd ? 480 : 400,
+      Math.max(250, Math.floor(wsRect.width - 16))
     );
-    const targetTop = Math.min(
-      isCmd ? 48 : 96,
-      Math.max(12, wsRect.height - winH - 12)
+    const winH = Math.min(
+      isCmd ? 290 : 210,
+      Math.max(160, Math.floor(wsRect.height - 18))
     );
+
+    const isCompactMobile = wsRect.width < 640;
+    const targetLeft = isCompactMobile
+      ? Math.max(6, Math.floor((wsRect.width - winW) * 0.5))
+      : Math.min(
+          isCmd ? 220 : 260,
+          Math.max(12, wsRect.width - winW - 12)
+        );
+    const targetTop = isCompactMobile
+      ? Math.max(8, Math.min(isCmd ? 28 : 48, Math.floor(wsRect.height - winH - 8)))
+      : Math.min(
+          isCmd ? 48 : 96,
+          Math.max(12, wsRect.height - winH - 12)
+        );
 
     const fromRect = this.getIconScreenRect(id);
     const toRect = {
@@ -844,7 +911,7 @@ export class TerminalBootController {
         closeBtn.type = 'button';
         closeBtn.className = 'tui-window-close';
         closeBtn.textContent = '[X]';
-        closeBtn.addEventListener('mousedown', (e) => e.stopPropagation());
+        closeBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
         closeBtn.addEventListener('click', (e) => {
           e.stopPropagation();
           this.closeWindow(id);
@@ -858,16 +925,49 @@ export class TerminalBootController {
           : 'tui-window-body';
 
         winEl.append(titlebar, bodyEl);
+
+        if (isCmd) {
+          // Barra tátil de comandos rápidos para facilitar no celular (sem remover a digitação livre!)
+          const quickBar = document.createElement('div');
+          quickBar.className = 'tui-cmd-quickbar';
+          for (const cmd of ['ajuda', 'executar', 'notas', 'limpar']) {
+            const chip = document.createElement('button');
+            chip.type = 'button';
+            chip.className = 'tui-cmd-chip';
+            chip.textContent = `[${cmd}]`;
+            chip.addEventListener('pointerdown', (e) => e.stopPropagation());
+            chip.addEventListener('click', (e) => {
+              e.stopPropagation();
+              this.sound.unlock();
+              this.sound.keyEnter();
+              this.focusWindow('terminal');
+              if (this.typedSpanEl) this.typedSpanEl.textContent = cmd;
+              this.submitTerminalWindowCommand(cmd);
+            });
+            quickBar.appendChild(chip);
+          }
+          winEl.appendChild(quickBar);
+
+          bodyEl.addEventListener('click', () => {
+            this.focusWindow('terminal');
+            try {
+              this.hiddenInputEl.focus({ preventScroll: true });
+            } catch {
+              this.hiddenInputEl.focus();
+            }
+          });
+        }
+
         this.workspaceEl.appendChild(winEl);
 
-        winEl.addEventListener('mousedown', (e) => {
+        winEl.addEventListener('pointerdown', (e) => {
           e.stopPropagation();
           this.closeStartMenu();
           this.focusWindow(id);
         });
 
-        titlebar.addEventListener('mousedown', (e) => {
-          if (e.button !== 0) return;
+        titlebar.addEventListener('pointerdown', (e) => {
+          if (e.pointerType === 'mouse' && e.button !== 0) return;
           this.closeStartMenu();
           this.focusWindow(id);
           const rect = winEl.getBoundingClientRect();
@@ -1292,23 +1392,25 @@ export class TerminalBootController {
     this.canvasEl.height = Math.floor(h * dpr);
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-    this.ctx.font = '16px Consolas, "Courier New", monospace';
+    const layout = computeBinaryCanvasLayout(w, h);
+    this.binaryFontPx = layout.fontPx;
+    this.ctx.font = `${this.binaryFontPx}px Consolas, "Courier New", monospace`;
     const measured = this.ctx.measureText('0');
-    this.cellW = Math.max(8, Math.ceil(measured.width));
-    this.cellH = 20;
+    this.cellW = Math.max(6, Math.ceil(measured.width));
+    this.cellH = layout.cellH;
 
-    this.gridCols = Math.max(44, Math.floor(w / this.cellW));
-    this.gridRows = Math.max(20, Math.floor(h / this.cellH));
+    this.gridCols = Math.max(34, Math.floor(w / this.cellW));
+    this.gridRows = Math.max(16, Math.floor(h / this.cellH));
   }
 
   private rebuildBinaryBlueprint(alreadyLocked: boolean): void {
     const cols = this.gridCols;
     const rows = this.gridRows;
 
-    const boxW = Math.min(58, cols - 6);
-    const boxH = 18;
-    const left = Math.floor((cols - boxW) * 0.5);
-    const top = Math.floor((rows - boxH) * 0.5);
+    const boxW = Math.min(58, Math.max(30, cols - 4));
+    const boxH = Math.min(18, Math.max(15, rows - 2));
+    const left = Math.max(1, Math.floor((cols - boxW) * 0.5));
+    const top = Math.max(1, Math.floor((rows - boxH) * 0.5));
     this.boxTop = top;
 
     const right = left + boxW - 1;
@@ -1367,17 +1469,25 @@ export class TerminalBootController {
       devLine
     );
 
+    const menuStartOffset = boxH >= 18 ? 8 : 6;
     for (let idx = 0; idx < BINARY_MENU_ITEMS.length; idx++) {
       const opt = BINARY_MENU_ITEMS[idx];
       writeText(
         Math.floor((cols - opt.length) * 0.5),
-        top + 8 + idx * 2,
+        top + menuStartOffset + idx * 2,
         opt,
         true
       );
     }
 
-    const hint = '[SETAS] MOVER   [ENTER] CONFIRMAR';
+    const isCoarseTouch =
+      typeof window !== 'undefined' &&
+      (('ontouchstart' in window) ||
+        (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0));
+    const fullHint = isCoarseTouch
+      ? '[TOQUE] SELECIONAR / INICIAR'
+      : '[SETAS] MOVER   [ENTER] CONFIRMAR';
+    const hint = boxW - 6 < fullHint.length ? '[TOQUE] SELECIONAR' : fullHint;
     writeText(Math.floor((cols - hint.length) * 0.5), bottom - 2, hint);
 
     const entries = Array.from(map.values());
@@ -1416,7 +1526,7 @@ export class TerminalBootController {
     ctx.fillStyle = '#000000';
     ctx.fillRect(0, 0, w, h);
 
-    ctx.font = '16px Consolas, "Courier New", monospace';
+    ctx.font = `${this.binaryFontPx}px Consolas, "Courier New", monospace`;
     ctx.textBaseline = 'top';
 
     const elapsed = now - this.coalescingStart;
@@ -1495,8 +1605,12 @@ export class TerminalBootController {
   }
 
   private drawInitialDevNotice(alpha: number, binaryCorruption: number): void {
-    const msg = 'Este programa ainda está em desenvolvimento.';
-    const startCol = Math.floor((this.gridCols - msg.length) * 0.5);
+    const fullMsg = 'Este programa ainda está em desenvolvimento.';
+    const msg =
+      this.gridCols < fullMsg.length + 2
+        ? 'Programa em desenvolvimento.'
+        : fullMsg;
+    const startCol = Math.max(1, Math.floor((this.gridCols - msg.length) * 0.5));
     const row = Math.floor(this.gridRows * 0.5);
 
     this.ctx.fillStyle = `rgba(229, 229, 229, ${alpha.toFixed(2)})`;
@@ -1511,7 +1625,8 @@ export class TerminalBootController {
 
   private drawAssembledMenuItems(): void {
     const items = BINARY_MENU_ITEMS;
-    const baseRow = this.boxTop + 8;
+    const boxH = Math.min(18, Math.max(15, this.gridRows - 2));
+    const baseRow = this.boxTop + (boxH >= 18 ? 8 : 6);
     this.menuHitboxes = [];
 
     for (let idx = 0; idx < items.length; idx++) {
@@ -1520,12 +1635,20 @@ export class TerminalBootController {
       const col = Math.floor((this.gridCols - label.length) * 0.5);
       const row = baseRow + idx * 2;
 
-      const px = col * this.cellW - 6;
+      const px = col * this.cellW - 8;
       const py = row * this.cellH - 1;
-      const pw = label.length * this.cellW + 12;
-      const ph = this.cellH;
+      const pw = label.length * this.cellW + 16;
+      const ph = this.cellH + 2;
 
-      this.menuHitboxes.push({ index: idx, x: px, y: py, w: pw, h: ph });
+      // Área de toque generosa vertical/horizontal sem sobrepor o item vizinho
+      const hitPadY = Math.floor(this.cellH * 0.42);
+      this.menuHitboxes.push({
+        index: idx,
+        x: px - 10,
+        y: py - hitPadY,
+        w: pw + 20,
+        h: ph + hitPadY * 2,
+      });
 
       if (selected) {
         this.ctx.fillStyle = '#e5e5e5';
@@ -1588,8 +1711,9 @@ export class TerminalBootController {
     cancelAnimationFrame(this.rafId);
     window.removeEventListener('keydown', this.boundKeyCapture, true);
     window.removeEventListener('pointerdown', this.boundPointerUnlock);
-    window.removeEventListener('mousemove', this.boundMouseMove);
-    window.removeEventListener('mouseup', this.boundMouseUp);
+    window.removeEventListener('pointermove', this.boundMouseMove);
+    window.removeEventListener('pointerup', this.boundMouseUp);
+    window.removeEventListener('pointercancel', this.boundMouseUp);
     window.removeEventListener('resize', this.boundResize);
     if (disposeAudio) {
       this.sound.dispose();

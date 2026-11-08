@@ -186,30 +186,37 @@ export class DoomMultiplayerCoordinator {
     this.hudRootEl = document.createElement('div');
     this.hudRootEl.className = 'oof-coop-hud';
     this.hudRootEl.innerHTML = `
-      <div class="oof-coop-room-Card">
+      <div class="oof-coop-room-Card" data-coop-card>
         <div class="oof-coop-room-row">
           <span class="oof-coop-room-tag" data-coop-room-tag></span>
-          <span class="oof-coop-ping" data-coop-ping>ONLINE</span>
-        </div>
-        <div class="oof-coop-mini-actions">
-          <button type="button" class="oof-coop-mini-btn" data-coop-copy-code title="Copiar Número da Sala">[COPIAR Nº]</button>
-          <button type="button" class="oof-coop-mini-btn" data-coop-copy-link title="Copiar Link de Convite Direto">[LINK]</button>
-          <button type="button" class="oof-coop-mini-btn" data-coop-mask title="Mostrar/Ocultar código na tela">[OCULTAR Nº]</button>
-          <button type="button" class="oof-coop-mini-btn" data-coop-leave title="Desconectar desta sala">[SAIR]</button>
-        </div>
-        <div class="oof-coop-voice-bar" data-coop-voice-bar>
-          <button type="button" class="oof-coop-voice-btn" data-coop-voice-btn title="Alternar modo do Microfone [Z] ou segurar [B] para falar">[🎙 SEGURE B]</button>
-          <div class="oof-coop-voice-meter" title="Volume da sua voz (Voz alta atrai a Aranha!)">
-            <div class="oof-coop-voice-meter-fill" data-coop-voice-fill></div>
+          <div class="oof-coop-room-row-right">
+            <span class="oof-coop-ping" data-coop-ping>ONLINE</span>
+            <button type="button" class="oof-coop-collapse-btn" data-coop-collapse title="Recolher/Expandir Painel">[−]</button>
           </div>
-          <span class="oof-coop-voice-hint" data-coop-voice-hint>[Z] MODO</span>
         </div>
-        <div class="oof-coop-squad-list" data-coop-squad></div>
-        <div class="oof-coop-keys-hint">[B] Falar (Voz 3D)  •  [Z] Modo Mic  •  [T] Rádio  •  [V] Ping</div>
+        <div class="oof-coop-card-body" data-coop-card-body>
+          <div class="oof-coop-mini-actions">
+            <button type="button" class="oof-coop-mini-btn" data-coop-copy-code title="Copiar Número da Sala">[COPIAR Nº]</button>
+            <button type="button" class="oof-coop-mini-btn" data-coop-copy-link title="Copiar Link de Convite Direto">[LINK]</button>
+            <button type="button" class="oof-coop-mini-btn" data-coop-mask title="Mostrar/Ocultar código na tela">[OCULTAR Nº]</button>
+            <button type="button" class="oof-coop-mini-btn" data-coop-leave title="Desconectar desta sala">[SAIR]</button>
+          </div>
+          <div class="oof-coop-voice-bar" data-coop-voice-bar>
+            <button type="button" class="oof-coop-voice-btn" data-coop-voice-btn title="Alternar modo do Microfone [Z] ou segurar [B] para falar">[🎙 SEGURE B]</button>
+            <div class="oof-coop-voice-meter" title="Volume da sua voz (Voz alta atrai a Aranha!)">
+              <div class="oof-coop-voice-meter-fill" data-coop-voice-fill></div>
+            </div>
+            <span class="oof-coop-voice-hint" data-coop-voice-hint>[Z] MODO</span>
+          </div>
+          <div class="oof-coop-squad-list" data-coop-squad></div>
+          <div class="oof-coop-keys-hint">[B] Falar (Voz 3D)  •  [Z] Modo Mic  •  [T] Rádio  •  [V] Ping</div>
+        </div>
       </div>
       <div class="oof-coop-chat-feed" data-coop-feed></div>
       <div class="oof-coop-chat-box hidden" data-coop-chat-box>
-        <input type="text" class="oof-coop-chat-input" data-coop-chat-input maxlength="90" placeholder="Mensagem de rádio para o esquadrão... [Enter]" autocomplete="off" />
+        <input type="text" class="oof-coop-chat-input" data-coop-chat-input maxlength="90" enterkeyhint="send" placeholder="Mensagem de rádio..." autocomplete="off" />
+        <button type="button" class="oof-coop-chat-send-btn" data-coop-chat-send>[ENVIAR]</button>
+        <button type="button" class="oof-coop-chat-cancel-btn" data-coop-chat-cancel title="Fechar">[✕]</button>
       </div>
     `;
     this.viewportEl.appendChild(this.hudRootEl);
@@ -624,6 +631,38 @@ export class DoomMultiplayerCoordinator {
           false
         );
         this.renderSquadHud();
+        return true;
+      }
+    }
+    return false;
+  }
+
+  hasTrappedAllyInRescueRange(
+    localPos: THREE.Vector3,
+    spiderPos?: THREE.Vector3,
+    hasKnife = false
+  ): boolean {
+    const abd = this.getActiveRemoteAbduction();
+    if (
+      abd &&
+      hasKnife &&
+      spiderPos &&
+      (Math.hypot(spiderPos.x - localPos.x, spiderPos.z - localPos.z) <= 3.6 ||
+        Math.hypot(
+          abd.victimPos.x - localPos.x,
+          abd.victimPos.z - localPos.z
+        ) <= 3.6)
+    ) {
+      return true;
+    }
+    for (const ally of this.allies.values()) {
+      if (!ally.ensnared || ally.dead) continue;
+      if (
+        Math.hypot(
+          ally.currentPos.x - localPos.x,
+          ally.currentPos.z - localPos.z
+        ) <= 3.1
+      ) {
         return true;
       }
     }
@@ -1136,22 +1175,53 @@ export class DoomMultiplayerCoordinator {
       this.cycleVoiceMode();
     });
 
+    const collapseBtn = this.hudRootEl.querySelector(
+      '[data-coop-collapse]'
+    ) as HTMLButtonElement | null;
+    const cardEl = this.hudRootEl.querySelector(
+      '[data-coop-card]'
+    ) as HTMLDivElement | null;
+    collapseBtn?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (!cardEl) return;
+      const collapsed = cardEl.classList.toggle('collapsed');
+      collapseBtn.textContent = collapsed ? '[+]' : '[−]';
+    });
+
+    const submitCurrentChat = () => {
+      const text = this.chatInputEl.value.trim();
+      if (text.length > 0) {
+        this.pushRadioFeed(`${this.session.localPlayerName}: ${text}`, false);
+        this.client.broadcastWorldEvent({
+          kind: 'chat',
+          senderId: this.session.localPlayerId,
+          senderName: this.session.localPlayerName,
+          text,
+          ts: Date.now(),
+        });
+      }
+      this.closeRadioChatInput();
+    };
+
+    this.hudRootEl
+      .querySelector('[data-coop-chat-send]')
+      ?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        submitCurrentChat();
+      });
+
+    this.hudRootEl
+      .querySelector('[data-coop-chat-cancel]')
+      ?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.closeRadioChatInput();
+      });
+
     this.chatInputEl.addEventListener('keydown', (e) => {
       e.stopPropagation();
       if (e.key === 'Enter') {
         e.preventDefault();
-        const text = this.chatInputEl.value.trim();
-        if (text.length > 0) {
-          this.pushRadioFeed(`${this.session.localPlayerName}: ${text}`, false);
-          this.client.broadcastWorldEvent({
-            kind: 'chat',
-            senderId: this.session.localPlayerId,
-            senderName: this.session.localPlayerName,
-            text,
-            ts: Date.now(),
-          });
-        }
-        this.closeRadioChatInput();
+        submitCurrentChat();
       } else if (e.key === 'Escape') {
         e.preventDefault();
         this.closeRadioChatInput();
