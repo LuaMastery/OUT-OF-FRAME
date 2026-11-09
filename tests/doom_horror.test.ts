@@ -3093,10 +3093,12 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
     const hostLayout = createRandomArenaLayout({
       worldSeed: roomWorldSeed,
       playerSeed: 11111,
+      isMultiplayer: true,
     });
     const guestLayout = createRandomArenaLayout({
       worldSeed: roomWorldSeed,
       playerSeed: 22222,
+      isMultiplayer: true,
     });
     expect(hostLayout.lairCell).toEqual(guestLayout.lairCell);
     expect(hostLayout.cratePlacements).toEqual(guestLayout.cratePlacements);
@@ -6514,6 +6516,7 @@ describe('Salas Especiais 7x7 Isoladas c/ Chaves, Rádio VHF de Longa Distância
     const layout = createRandomArenaLayout({
       worldSeed: hashArenaSeed('oof-keys-and-walkie-v1'),
       playerSeed: 77,
+      isMultiplayer: true,
     });
     expect(layout.cratePlacements.length).toBe(25);
     const lootIds = new Set(

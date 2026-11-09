@@ -76,6 +76,8 @@ export interface CreateArenaLayoutOptions {
   playerSeed?: number;
   /** Quantidade total de caixotes espalhados pela arena (padrão: 25). */
   crateCount?: number;
+  /** Sala cooperativa, mesmo antes de outros jogadores entrarem. O padrão é solo. */
+  isMultiplayer?: boolean;
 }
 
 const SCENE_LAYOUT_USERDATA_KEY = 'doomArenaLayout';
@@ -330,11 +332,13 @@ function hasDirectGridSightline(a: GridCoord, b: GridCoord): boolean {
  */
 export function buildRandomCrateLootPool(
   totalCrates: number,
-  rng: () => number
+  rng: () => number,
+  isMultiplayer = false
 ): string[] {
   const uniqueEssentials = [
     'field_radar',
-    'field_walkie_talkie',
+    // No solo, ocupa o mesmo espaço com um suprimento útil sem alterar o sorteio.
+    isMultiplayer ? 'field_walkie_talkie' : 'industrial_battery',
     'rusty_knife',
     'sector_b_key',
     ...SPECIAL_ROOM_KEY_ITEM_IDS,
@@ -646,7 +650,7 @@ export function createRandomArenaLayout(
     }
   }
 
-  const lootPool = buildRandomCrateLootPool(selectedCrateCells.length, worldRng);
+  const lootPool = buildRandomCrateLootPool(selectedCrateCells.length, worldRng, options.isMultiplayer);
   const cratePlacements: CrateRandomPlacement[] = selectedCrateCells.map(
     (slot, idx) => {
       const wall = slot.walls[rngInt(worldRng, 0, slot.walls.length)];

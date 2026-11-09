@@ -596,6 +596,7 @@ export class DoomGameApp {
               `oof-arena-world:${initialMultiplayerSession.roomCode}`
             ),
             playerSeed: createRandomArenaSeed(),
+            isMultiplayer: true,
           }
         : {}
     );
