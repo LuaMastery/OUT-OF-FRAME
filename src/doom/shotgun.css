@@ -18,3 +18,20 @@
 @media (pointer: coarse) {
   .doom-shotgun-objective { top: 5px; font-size: 10px; max-width: 70vw; }
 }
+
+.doom-taser-status {
+  position: absolute;
+  left: 50%;
+  bottom: 90px;
+  transform: translateX(-50%);
+  z-index: 8;
+  padding: 6px 10px;
+  border: 1px solid rgba(98, 213, 235, .7);
+  background: rgba(5, 15, 20, .85);
+  color: #b0efff;
+  font: 700 11px/1.3 monospace;
+  letter-spacing: .04em;
+  text-align: center;
+  pointer-events: none;
+}
+.doom-taser-status.hidden { display: none; }

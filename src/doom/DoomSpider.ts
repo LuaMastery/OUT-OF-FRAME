@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { TASER_STUN_SECONDS } from './DoomTaser';
 import { SoundEngine } from '../engine/audio/SoundEngine';
 import { StaticColliderBox } from '../engine/physics/SpatialSweep';
 import {
@@ -43,6 +44,7 @@ export type SpiderBehaviorState =
   | 'FRENZY_CHASE'
   | 'CINEMATIC_SEQUENCE'
   | 'FLEE_RETREAT'
+  | 'STUNNED'
   | 'DEAD';
 
 export type SpiderCinematicMode =
@@ -470,6 +472,8 @@ export class DoomSpider {
   private surfaceMode: SpiderSurfaceMode = 'CEILING';
   private state: SpiderBehaviorState = 'STALK_PATROL';
   private shotgunHealth = 100;
+  private stunRemaining = 0;
+  private readonly stunArcs = new THREE.Group();
   private stateTimer = 0;
   private surfaceDecisionTimer = 3.5;
   private webCooldownTimer = 6.0;
@@ -534,6 +538,20 @@ export class DoomSpider {
 
     this.buildProceduralLimbSpecs();
     this.buildBodyCore();
+    // Electrical arcs are attached to the body, so they follow wall/ceiling poses.
+    const arcMaterial = new THREE.LineBasicMaterial({ color: 0x7be7ff, transparent: true, opacity: 0.95 });
+    for (const x of [-0.55, 0, 0.55]) {
+      const geometry = new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(x - 0.12, 0.2, -0.35),
+        new THREE.Vector3(x + 0.04, 0.45, -0.14),
+        new THREE.Vector3(x - 0.06, 0.26, 0.08),
+        new THREE.Vector3(x + 0.1, 0.48, 0.32),
+      ]);
+      this.stunArcs.add(new THREE.Line(geometry, arcMaterial));
+    }
+    this.stunArcs.name = 'SpiderTaserArcs';
+    this.stunArcs.visible = false;
+    this.bodyGroup.add(this.stunArcs);
     this.buildProceduralLimbMeshes();
     this.buildProceduralTentacleMeshes();
 
@@ -541,6 +559,19 @@ export class DoomSpider {
   }
 
   get isDead(): boolean { return this.state === 'DEAD'; }
+  get isStunned(): boolean { return this.state === 'STUNNED'; }
+
+  /** Captures are never interrupted: only a free, living spider can be stunned. */
+  applyTaserStun(duration = TASER_STUN_SECONDS): boolean {
+    if (this.isDead || this.state === 'CINEMATIC_SEQUENCE' || !Number.isFinite(duration) || duration <= 0) return false;
+    this.stunRemaining = Math.max(this.stunRemaining, Math.min(duration, TASER_STUN_SECONDS));
+    this.state = 'STUNNED';
+    this.stateTimer = 0;
+    this.smoothVel.set(0, 0, 0);
+    this.commandedSpeed = 0;
+    this.stunArcs.visible = true;
+    return true;
+  }
 
   /** During abduction the victim remains attached until the nest, never dropped. */
   applyShotgunDamage(damage: number): boolean {
@@ -551,6 +582,7 @@ export class DoomSpider {
       this.smoothVel.set(0, 0, 0);
       this.hideCaptureTentacles();
       this.rootGroup.visible = false;
+      this.stunArcs.visible = false;
     }
     return true;
   }
@@ -606,7 +638,7 @@ export class DoomSpider {
   relocateAwayAfterAbduction(
     avoidWorldPositions?: readonly THREE.Vector3[]
   ): void {
-    if (this.isDead) return;
+    if (this.isDead || this.isStunned) return;
     let bestCell = pickRandomWalkableCellFarFrom(
       this.webManager.lairCenter.x,
       this.webManager.lairCenter.z,
@@ -653,7 +685,7 @@ export class DoomSpider {
   finishAbductionRetreat(
     observerPositions?: readonly THREE.Vector3[]
   ): void {
-    if (this.isDead) return;
+    if (this.isDead || this.isStunned) return;
     this.cinematicMode = null;
     this.lastCinematicMode = null;
     this.cinematicRagdollHooks = null;
@@ -701,6 +733,7 @@ export class DoomSpider {
     fwdZ: number;
     state: SpiderBehaviorState;
     shotgunHealth: number;
+    stunRemaining: number;
     surfaceMode: SpiderSurfaceMode;
     cinematicMode: SpiderCinematicMode | null;
     cinematicProgress: number;
@@ -724,6 +757,7 @@ export class DoomSpider {
       fwdZ: this.currentForward.z,
       state: this.state,
       shotgunHealth: this.shotgunHealth,
+      stunRemaining: this.stunRemaining,
       surfaceMode: this.surfaceMode,
       cinematicMode:
         this.state === 'CINEMATIC_SEQUENCE' ? this.cinematicMode : null,
@@ -822,7 +856,7 @@ export class DoomSpider {
     listenerPos?: THREE.Vector3,
     listenerYaw = 0
   ): void {
-    if (this.isDead || this.state === 'CINEMATIC_SEQUENCE') return;
+    if (this.isDead || this.isStunned || this.state === 'CINEMATIC_SEQUENCE') return;
     this.postAbductionGraceTimer = 0;
     this.lastKnownPlayerPos.copy(lairPos);
     this.searchingAroundLastKnown = false;
@@ -861,7 +895,7 @@ export class DoomSpider {
     listenerPos?: THREE.Vector3,
     listenerYaw = 0
   ): void {
-    if (this.isDead) return;
+    if (this.isDead || this.isStunned) return;
     this.hideCaptureTentacles();
     this.cinematicRagdollHooks = null;
     const audioPos = listenerPos ?? threatPos;
@@ -927,6 +961,7 @@ export class DoomSpider {
       fwdZ: number;
       state: string;
       shotgunHealth?: number;
+      stunRemaining?: number;
       surfaceMode: 'FLOOR' | 'WALL' | 'CEILING';
       cinematicMode?: SpiderCinematicMode | null;
       cinematicProgress?: number;
@@ -944,6 +979,10 @@ export class DoomSpider {
     if (typeof pkt.shotgunHealth === 'number' && Number.isFinite(pkt.shotgunHealth)) {
       this.shotgunHealth = Math.max(0, Math.min(100, pkt.shotgunHealth));
     }
+    if (typeof pkt.stunRemaining === 'number' && Number.isFinite(pkt.stunRemaining)) {
+      this.stunRemaining = Math.max(0, Math.min(TASER_STUN_SECONDS, pkt.stunRemaining));
+    }
+    this.stunArcs.visible = pkt.state === 'STUNNED';
     if (pkt.state === 'DEAD') {
       this.state = 'DEAD'; this.shotgunHealth = 0;
       this.rootGroup.visible = false; this.hideCaptureTentacles();
@@ -1259,7 +1298,7 @@ export class DoomSpider {
     listenerPos?: THREE.Vector3,
     listenerYaw = 0
   ): void {
-    if (this.isDead || this.state === 'CINEMATIC_SEQUENCE') return;
+    if (this.isDead || this.isStunned || this.state === 'CINEMATIC_SEQUENCE') return;
 
     this.lastKnownPlayerPos.copy(trapWorldPos);
     this.searchingAroundLastKnown = false;
@@ -1918,6 +1957,20 @@ export class DoomSpider {
     }
 
     const safeDt = Math.min(0.05, Math.max(0.0005, dt));
+    if (this.isStunned) {
+      this.stunRemaining = Math.max(0, this.stunRemaining - safeDt);
+      const distance = Math.hypot(playerPos.x - this.bodyPos.x, playerPos.z - this.bodyPos.z);
+      this.stunArcs.visible = true;
+      this.stunArcs.rotation.y = Math.sin(elapsed * 18) * 0.08;
+      this.updateBodyAndLimbsIK(safeDt, elapsed, playerPos, 0, distance);
+      if (this.stunRemaining <= 0) {
+        this.state = 'STALK_PATROL';
+        this.stateTimer = 0;
+        this.pathRepathTimer = 0;
+        this.stunArcs.visible = false;
+      }
+      return { cameraShakeAmount: 0, playerDistance: distance };
+    }
     const frameStartX = this.bodyPos.x;
     const frameStartY = this.bodyPos.y;
     const frameStartZ = this.bodyPos.z;

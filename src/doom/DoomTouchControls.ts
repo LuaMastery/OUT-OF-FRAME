@@ -123,6 +123,7 @@ export interface DoomTouchCallbacks {
   /** Abre o menu de danças / alterna a coreografia em cena */
   onDancePress: () => void;
   onShotgunPress?: () => void;
+  onTaserPress?: () => void;
 }
 
 /**
@@ -212,6 +213,7 @@ export class DoomTouchControls {
           <span class="oof-touch-btn-icon">⌄</span>
           <span class="oof-touch-btn-label" data-touch-crouch-label>AGACHAR</span>
         </button>
+        <button type="button" class="oof-touch-btn" data-area="taser" data-touch-taser><span class="oof-touch-btn-icon">⚡</span><span class="oof-touch-btn-label">TASER</span></button>
         <button type="button" class="oof-touch-btn" data-area="shotgun" data-touch-shotgun><span class="oof-touch-btn-icon">⊕</span><span class="oof-touch-btn-label">SHOTGUN</span></button>
         <button type="button" class="oof-touch-btn" data-area="dance" data-touch-dance>
           <span class="oof-touch-btn-icon">🎭</span>
@@ -481,6 +483,11 @@ export class DoomTouchControls {
       passive: true,
     });
 
+    const taserBtn = this.rootEl.querySelector('[data-touch-taser]') as HTMLButtonElement;
+    taserBtn.addEventListener('touchstart', e => {
+      e.preventDefault(); e.stopPropagation(); this.enableTouchUi();
+      this.callbacks.onActivity(); this.callbacks.onTaserPress?.();
+    }, { passive: false });
     const shotgunBtn = this.rootEl.querySelector('[data-touch-shotgun]') as HTMLButtonElement;
     shotgunBtn.addEventListener('touchstart', e => {
       e.preventDefault(); e.stopPropagation(); this.enableTouchUi();

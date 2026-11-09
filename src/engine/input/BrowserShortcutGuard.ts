@@ -26,6 +26,7 @@ export const LOCKED_KEYBOARD_CODES: string[] = [
   'KeyV',
   'KeyM',
   'KeyN',
+  'KeyJ',
   'Digit1',
   'Digit2',
   'Digit3',
@@ -41,6 +42,7 @@ export const LOCKED_KEYBOARD_CODES: string[] = [
 ];
 
 const GAMEPLAY_CODES = new Set<string>([
+  'KeyJ',
   'KeyW',
   'KeyA',
   'KeyS',

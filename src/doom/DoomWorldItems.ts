@@ -566,6 +566,14 @@ export class DoomWorldItems {
   }
 
   private populateLabyrinthItems(): void {
+    // Taser shares a shell crate rather than replacing any loot or adding a 26th crate.
+    // Both clients derive the same crate from the shared world seed.
+    const shellCrates = this.arenaLayout.cratePlacements
+      .map((placement, index) => placement.itemId === 'shotgun_shells' ? index : -1)
+      .filter(index => index >= 0);
+    const taserCrateIndex = shellCrates.length
+      ? shellCrates[this.arenaLayout.worldSeed % shellCrates.length]
+      : -1;
     this.arenaLayout.cratePlacements.forEach((p, idx) => {
       const world = gridCellToWorld(p.gx, p.gz);
       const wx = world.x + p.ox;
@@ -581,7 +589,8 @@ export class DoomWorldItems {
 
       // Apoiado FISICAMENTE sobre o forro interno do caixote (y = 0.095), alinhado à bandeja sem flutuar nem atravessar paredes!
       const itemMesh = this.buildItemMesh(p.itemId);
-      itemMesh.position.set(0, 0.095, 0.01);
+      if (idx === taserCrateIndex) itemMesh.name = 'WorldTaserShells';
+      itemMesh.position.set(0, 0.095, idx === taserCrateIndex ? -0.075 : 0.01);
       itemMesh.rotation.y = p.itemTiltYaw;
       crate.add(itemMesh);
 
@@ -598,6 +607,22 @@ export class DoomWorldItems {
         radarJitterZ: p.radarJitterZ,
         collected: false,
       });
+      if (idx === taserCrateIndex) {
+        // The shell box sits at the rear of the liner and the Taser at the front;
+        // neither crosses the tray's rims or intersects the other pickup.
+        const taser = this.buildItemMesh('field_taser');
+        taser.name = 'WorldTaser';
+        taser.position.set(0, 0.095, 0.075);
+        crate.add(taser);
+        const offset = new THREE.Vector3(0, 0, 0.075).applyAxisAngle(new THREE.Vector3(0, 1, 0), p.crateYaw);
+        this.pickups.push({
+          id: 'pickup-field-taser', itemId: 'field_taser', group, itemMesh: taser,
+          position: new THREE.Vector3(wx + offset.x, 0.18, wz + offset.z),
+          cellWorldX: world.x, cellWorldZ: world.z,
+          radarJitterX: p.radarJitterX, radarJitterZ: p.radarJitterZ,
+          collected: false,
+        });
+      }
     });
   }
 
@@ -705,7 +730,20 @@ export class DoomWorldItems {
   private buildItemMesh(itemId: string): THREE.Object3D {
     const holder = new THREE.Group();
 
-    if (itemId.startsWith('shotgun_')) {
+    if (itemId === 'field_taser') {
+      const yellow = new THREE.MeshLambertMaterial({ color: 0xd7a627, flatShading: true });
+      const body = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.065, 0.08), yellow);
+      body.position.y = 0.075;
+      const grip = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.075, 0.07), this.matDarkIron);
+      grip.position.set(0.045, 0.0375, 0);
+      const rail = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.014, 0.065), this.matDarkIron);
+      rail.position.set(0.035, 0.114, 0);
+      holder.add(body, grip, rail);
+      for (const z of [-0.026, 0.026]) {
+        const tip = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.012, 0.012), this.matCleanSteel);
+        tip.position.set(-0.1, 0.075, z); holder.add(tip);
+      }
+    } else if (itemId.startsWith('shotgun_')) {
       const steel = this.matDarkIron;
       const box = (w: number, h: number, d: number, x = 0, y = h / 2, z = 0) => {
         const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), steel);
@@ -1433,9 +1471,15 @@ export class DoomWorldItems {
     for (let i = 0; i < this.pickups.length; i++) {
       const p = this.pickups[i];
       if (p.collected) continue;
+      // The Taser and shells occupy the same crate; show only one radar signal
+      // until the shells are collected, then keep a signal for the Taser alone.
+      if (p.itemId === 'field_taser' && this.pickups.some(other =>
+        other !== p && other.group === p.group && !other.collected
+      )) continue;
 
       const isHighSignature =
         p.itemId === 'rusty_knife' ||
+        p.itemId === 'field_taser' ||
         p.itemId === 'sector_b_key' ||
         p.itemId.startsWith('key_') ||
         p.itemId === 'field_radar' ||

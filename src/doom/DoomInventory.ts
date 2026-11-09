@@ -18,7 +18,8 @@ export type InventoryItemKind =
   | 'note'
   | 'shotgun_part'
   | 'shotgun'
-  | 'shotgun_ammo';
+  | 'shotgun_ammo'
+  | 'taser';
 
 export interface InventoryItemDef {
   id: string;
@@ -66,6 +67,7 @@ export interface DoomInventoryCallbacks {
   onUseBattery: (chargeAmount: number) => boolean;
   onUseFlare: () => boolean;
   onToggleShotgun?: () => void;
+  onToggleTaser?: () => void;
   onUseKnife: () => { cutWeb: boolean };
   onUseKey?: (itemId?: string) => boolean | void;
   onToggleRadar?: () => boolean;
@@ -331,6 +333,17 @@ export const ITEM_CATALOG: Record<string, InventoryItemDef> = {
     actionLabel: 'Alternar [R]',
     droppable: false,
   },
+  field_taser: {
+    id: 'field_taser',
+    kind: 'taser',
+    name: 'Taser de contenção',
+    category: 'Equipamento tático',
+    description: 'Dispositivo elétrico de curto alcance. Atordoa a aranha por 5 segundos sem causar dano; a bateria recarrega automaticamente em 9 segundos. Não interrompe uma captura em andamento. Pressione [J] para equipar e clique para disparar.',
+    stackable: false,
+    usable: true,
+    actionLabel: 'Equipar [J]',
+    droppable: false,
+  },
   shotgun_receiver: {
     id: 'shotgun_receiver',
     kind: 'shotgun_part',
@@ -487,6 +500,7 @@ function buildItemIcons(): Record<InventoryItemKind, string> {
     'shotgun_part',
     'shotgun',
     'shotgun_ammo',
+    'taser',
   ];
 
   const out = {} as Record<InventoryItemKind, string>;
@@ -713,6 +727,15 @@ function buildItemIcons(): Record<InventoryItemKind, string> {
       box(10, 24, 3, 3, '#ab8f54');
       box(15, 24, 3, 2, '#252c27');
       box(20, 24, 2, 2, '#59b889');
+    } else if (kind === 'taser') {
+      box(5, 10, 21, 9, '#d9a82d');
+      box(6, 11, 19, 7, '#f1c44c');
+      box(17, 18, 6, 10, '#283038');
+      box(19, 19, 4, 7, '#3d474b');
+      box(3, 11, 3, 2, '#b5c8cf');
+      box(3, 16, 3, 2, '#b5c8cf');
+      line(11, 13, 14, 13, '#23343c');
+      line(13, 12, 11, 16, '#23343c');
     } else if (kind === 'shotgun_part') {
       // Peça de shotgun em aço escovado com detalhes de encaixe (bloco do receptor)
       box(6, 12, 20, 9, '#59606c');
@@ -2795,7 +2818,8 @@ export class DoomInventory {
       def.kind === 'radar' ||
       def.kind === 'walkie' ||
       def.kind === 'shotgun_part' ||
-      def.kind === 'shotgun'
+      def.kind === 'shotgun' ||
+      def.kind === 'taser'
     ) {
       return;
     }
@@ -3342,6 +3366,11 @@ export class DoomInventory {
       this.wakeShortcutsHub(6000, 'SHOTGUN MONTADA · PROCURE CARTUCHOS · [H] EQUIPAR');
       this.sound.playInventorySelect(true);
       this.renderGrid(); this.renderInspector();
+      return true;
+    }
+    if (def.kind === 'taser') {
+      if (!fromQuickShortcut) this.callbacks.onCloseRequest();
+      this.callbacks.onToggleTaser?.();
       return true;
     }
     if (def.kind === 'shotgun') {

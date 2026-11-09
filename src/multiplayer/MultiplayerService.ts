@@ -164,6 +164,7 @@ export interface NetworkSpiderPacket {
   fwdZ: number;
   state: string;
   shotgunHealth?: number;
+  stunRemaining?: number;
   surfaceMode: 'FLOOR' | 'WALL' | 'CEILING';
   cinematicMode?:
     | 'STRIKE_ATTACK'
@@ -180,6 +181,7 @@ export interface NetworkSpiderPacket {
 }
 
 export type NetworkWorldEvent =
+  | { kind: 'taser_shot'; senderId: string; x: number; y: number; z: number; dx: number; dy: number; dz: number; ts: number }
   | { kind: 'shotgun_shot'; senderId: string; x: number; y: number; z: number; dx: number; dy: number; dz: number; ts: number }
   | {
       kind: 'chat';

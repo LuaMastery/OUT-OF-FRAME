@@ -2954,6 +2954,21 @@ export class SoundEngine {
     );
   }
 
+  playTaserDischarge(): void {
+    if (!this.isRunning() || !this.ctx || !this.worldDryBus || !this.reverbSend) return;
+    const now = this.ctx.currentTime;
+    this.triggerFilteredNoise(this.worldDryBus, now, 0.22, 3100, 2.2, 0.22, 'crackle', this.reverbSend);
+    const oscillator = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    oscillator.type = 'sawtooth';
+    oscillator.frequency.setValueAtTime(1500, now);
+    oscillator.frequency.exponentialRampToValueAtTime(500, now + 0.16);
+    gain.gain.setValueAtTime(0.1, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.2);
+    oscillator.connect(gain); gain.connect(this.worldDryBus);
+    oscillator.start(now); oscillator.stop(now + 0.21);
+  }
+
   playShotgunBlast(): void {
     if (!this.isRunning() || !this.ctx || !this.worldDryBus || !this.reverbSend) return;
     const now = this.ctx.currentTime;

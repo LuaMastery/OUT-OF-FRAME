@@ -1,3 +1,4 @@
+import { DoomTaserViewmodel, TASER_ITEM_ID, TASER_RANGE, TASER_RECHARGE_SECONDS, TASER_STUN_SECONDS, taserImpactDistance, advanceTaserRecharge } from '../src/doom/DoomTaser';
 import { SHOTGUN_PART_IDS, SHOTGUN_ITEM_ID, SHOTGUN_AMMO_ITEM_ID, canAssembleShotgun, computeShotgunBlastDamage, shotgunImpactDistance, DoomShotgunViewmodel } from '../src/doom/DoomShotgun';
 import * as THREE from 'three';
 import { describe, expect, it, vi } from 'vitest';
@@ -9,6 +10,7 @@ import { DoomFlashlight, QuickHandheldKind } from '../src/doom/DoomFlashlight';
 import {
   createInitialSlideState,
   stepPlayerSlideState,
+  DoomGameApp,
 } from '../src/doom/DoomGameApp';
 import {
   computeAdaptiveVerticalFov,
@@ -1045,7 +1047,9 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
         );
       }
     }
-    expect(collectedCount).toBe(25);
+    // 25 caixotes, com o Taser adicional na mesma caixa de cartuchos.
+    expect(collectedCount).toBe(26);
+    expect(collectedIds.has('field_taser')).toBe(true);
     expect(collectedIds.has('torn_log_04')).toBe(true);
     expect(collectedIds.has('field_radar')).toBe(true);
     expect(collectedIds.has('rusty_knife')).toBe(true);
@@ -4185,6 +4189,7 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
       });
 
       let knifeUsedCount = 0;
+      let taserToggleCount = 0;
       let healUsedCount = 0;
       let flareUsedCount = 0;
 
@@ -4202,6 +4207,7 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
             flareUsedCount++;
             return true;
           },
+          onToggleTaser: () => { taserToggleCount++; },
           onUseKnife: () => {
             knifeUsedCount++;
             return { cutWeb: true };
@@ -4330,6 +4336,12 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
       expect(inv.addItem(SHOTGUN_AMMO_ITEM_ID, 8, true)).toBe(true);
       expect(inv.consumeItemById(SHOTGUN_AMMO_ITEM_ID)).toBe(true);
       expect(inv.getItemCount(SHOTGUN_AMMO_ITEM_ID)).toBe(7);
+      expect(inv.addItem(TASER_ITEM_ID, 1, true)).toBe(true);
+      expect(inv.addItem(TASER_ITEM_ID, 1, true)).toBe(false);
+      const taserSlot = internals.slots.findIndex(slot => slot?.def.id === TASER_ITEM_ID);
+      expect(internals.activateSlotItem(taserSlot, false)).toBe(true);
+      expect(taserToggleCount).toBe(1);
+      expect(inv.hasItem(TASER_ITEM_ID)).toBe(true);
 
       inv.destroy();
     } finally {
@@ -7052,5 +7064,176 @@ describe('Shotgun: peças, munição e aranha', () => {
     guest.applyRemoteNetworkState(0.016, 2, host.getNetworkSnapshot(), victim, 0, () => { throw Error('dead spider caught player'); });
     expect(guest.isDead).toBe(true);
     expect(guest.getNetworkSnapshot().shotgunHealth).toBe(0);
+  });
+});
+
+
+describe('Taser de contenção da aranha', () => {
+  it('é distribuído uma vez por mapa, sem retirar peças, munição ou caixotes', () => {
+    for (const seed of [1, 42, 500, 9011, 75012]) {
+      const layout = createRandomArenaLayout({ worldSeed: seed, playerSeed: seed });
+      expect(layout.cratePlacements).toHaveLength(25);
+      expect(layout.cratePlacements.filter(p => SHOTGUN_PART_IDS.some(id => id === p.itemId))).toHaveLength(4);
+      expect(layout.cratePlacements.filter(p => p.itemId === SHOTGUN_AMMO_ITEM_ID).length).toBeGreaterThanOrEqual(2);
+      for (const id of ['industrial_battery', 'sterile_bandage', 'magnesium_flare', 'old_morphine'])
+        expect(layout.cratePlacements.some(p => p.itemId === id)).toBe(true);
+      const scene = new THREE.Scene();
+      const items = new DoomWorldItems(scene, createDoomSharedUniforms(), layout);
+      const tasers = items.getPickupsSnapshot().filter(p => p.itemId === TASER_ITEM_ID);
+      expect(tasers).toHaveLength(1);
+      const taserMesh = scene.getObjectByName('WorldTaser');
+      const shellsMesh = scene.getObjectByName('WorldTaserShells');
+      expect(taserMesh).toBeDefined();
+      expect(shellsMesh).toBeDefined();
+      scene.updateMatrixWorld(true);
+      expect(new THREE.Box3().setFromObject(taserMesh!).intersectsBox(new THREE.Box3().setFromObject(shellsMesh!))).toBe(false);
+      const otherLayout = createRandomArenaLayout({ worldSeed: seed, playerSeed: seed + 1 });
+      const coopItems = new DoomWorldItems(new THREE.Scene(), createDoomSharedUniforms(), otherLayout);
+      expect(coopItems.getPickupsSnapshot().find(p => p.itemId === TASER_ITEM_ID)?.position.toArray()).toEqual(tasers[0].position.toArray());
+      expect(items.getUncollectedEquipmentSignals()).toHaveLength(25);
+      const rejectTaserInventory = { addItem: (id: string) => id !== TASER_ITEM_ID } as unknown as DoomInventory;
+      items.updateAndCheckPickups(0.016, 1, tasers[0].position, tasers[0].position, new THREE.Vector3(0, 0, -1), false, rejectTaserInventory);
+      expect(items.getUncollectedEquipmentSignals().some(signal => signal.id === tasers[0].id)).toBe(true);
+    }
+  });
+
+  it('tem alcance limitado, respeita paredes, pode errar e tem modelo 3D', () => {
+    const origin = new THREE.Vector3(0, 1, 0), direction = new THREE.Vector3(0, 0, -1);
+    expect(taserImpactDistance(origin, direction, new THREE.Vector3(0, 1, -6), [])).toBeCloseTo(4.95);
+    expect(taserImpactDistance(origin, direction, new THREE.Vector3(0, 1, -(TASER_RANGE + 2)), [])).toBeNull();
+    expect(taserImpactDistance(origin, direction, new THREE.Vector3(4, 1, -6), [])).toBeNull();
+    expect(taserImpactDistance(origin, direction, new THREE.Vector3(0, 1, -6), [new THREE.Box3(new THREE.Vector3(-1, 0, -3), new THREE.Vector3(1, 3, -2))])).toBeNull();
+    expect(taserImpactDistance(origin, new THREE.Vector3(), new THREE.Vector3(0, 1, -6), [])).toBeNull();
+    expect(TASER_RECHARGE_SECONDS).toBeGreaterThan(TASER_STUN_SECONDS);
+    expect(advanceTaserRecharge(TASER_RECHARGE_SECONDS, 0)).toBe(TASER_RECHARGE_SECONDS);
+    expect(advanceTaserRecharge(TASER_RECHARGE_SECONDS, 3)).toBe(6);
+    expect(advanceTaserRecharge(2, 3)).toBe(0);
+    expect(advanceTaserRecharge(2, -3)).toBe(2);
+    const model = new DoomTaserViewmodel(16 / 9);
+    model.equip(); model.update(0.05, 0, 0); expect(model.isVisibleInView).toBe(true);
+    model.fire();
+    expect(model.viewScene.children.some(child => child.visible)).toBe(true);
+    model.stow();
+    for (let i = 0; i < 30; i++) model.update(0.05, 0, 0);
+    expect(model.isVisibleInView).toBe(false);
+    model.dispose();
+  });
+
+  it('imobiliza sem causar dano, não ataca, retoma a IA e sincroniza a duração para outro host', () => {
+    const scene = new THREE.Scene();
+    const shared = createDoomSharedUniforms();
+    const layout = createRandomArenaLayout({ worldSeed: 8181, playerSeed: 8181 });
+    const webs = new DoomSpiderWebManager(scene, shared, layout);
+    const sound = { playSpiderScream: () => {}, playSpiderFootstep: () => {}, playSpiderChitter: () => {} } as unknown as SoundEngine;
+    const host = new DoomSpider(scene, shared, [], webs, sound, layout);
+    const guest = new DoomSpider(scene, shared, [], webs, sound, layout);
+    const victim = host.position.clone().setY(0);
+    const position = host.position.clone();
+    const caught = vi.fn();
+    expect(host.applyTaserStun()).toBe(true);
+    expect(host.isStunned).toBe(true);
+    expect(host.getNetworkSnapshot().shotgunHealth).toBe(100);
+    expect(host.applyShotgunDamage(20)).toBe(true);
+    expect(host.getNetworkSnapshot().shotgunHealth).toBe(80);
+    expect(host.isStunned).toBe(true);
+    expect(scene.getObjectByName('SpiderTaserArcs')?.visible).toBe(true);
+    host.commandReturnToDevourVictim(victim);
+    host.alertToWebTrap(victim, victim);
+    host.finishAbductionRetreat();
+    host.interruptAbductionAndFlee(victim);
+    expect(host.isStunned).toBe(true);
+    for (let frame = 0; frame < 30; frame++)
+      host.update(0.05, frame * 0.05, victim, 0, true, false, false, new THREE.Vector3(0, 0, -1), [], caught);
+    expect(host.position.distanceTo(position)).toBeLessThan(0.00001);
+    expect(caught).not.toHaveBeenCalled();
+    expect(host.getNetworkSnapshot().stunRemaining).toBeCloseTo(3.5);
+    guest.applyRemoteNetworkState(0.016, 2, host.getNetworkSnapshot(), victim, 0, caught);
+    expect(guest.isStunned).toBe(true);
+    expect(guest.getNetworkSnapshot().stunRemaining).toBeCloseTo(3.5);
+    // O cliente promovido a host continua o tempo recebido, em vez de se soltar cedo.
+    for (let frame = 0; frame < 72; frame++)
+      guest.update(0.05, 2 + frame * 0.05, victim, 0, false, false, false, new THREE.Vector3(0, 0, -1), [], caught);
+    expect(guest.isStunned).toBe(false);
+    expect(guest.isDead).toBe(false);
+    expect(caught).not.toHaveBeenCalled();
+  });
+
+  it('não solta um jogador capturado, nem atordoa uma aranha morta', () => {
+    const scene = new THREE.Scene();
+    const shared = createDoomSharedUniforms();
+    const layout = createRandomArenaLayout({ worldSeed: 123, playerSeed: 123 });
+    const webs = new DoomSpiderWebManager(scene, shared, layout);
+    const sound = { playSpiderScream: () => {} } as unknown as SoundEngine;
+    const spider = new DoomSpider(scene, shared, [], webs, sound, layout);
+    const victim = new THREE.Vector3(0, 0, 0), position = new THREE.Vector3(0, 1.4, 2);
+    spider.updateCinematicSequence(0.016, 1, 'DRAGGING_TO_WEB', 0.5, position, victim, victim);
+    expect(spider.applyTaserStun()).toBe(false);
+    expect(spider.currentState).toBe('CINEMATIC_SEQUENCE');
+    expect(spider.getNetworkSnapshot().cinematicMode).toBe('DRAGGING_TO_WEB');
+    spider.relocateAwayAfterAbduction();
+    spider.applyShotgunDamage(1000);
+    expect(spider.applyTaserStun()).toBe(false);
+    expect(spider.isDead).toBe(true);
+  });
+
+  it('alterna as duas armas e respeita a recarga também quando o disparo erra', () => {
+    const taser = {
+      isEquipped: false,
+      equip() { this.isEquipped = true; },
+      stow() { this.isEquipped = false; },
+      fire: vi.fn(),
+    };
+    const shotgun = {
+      isEquipped: true,
+      equip() { this.isEquipped = true; },
+      stow() { this.isEquipped = false; },
+    };
+    const sound = { playTaserDischarge: vi.fn() };
+    const inventory = { open: false, gameOverVisible: false, hasItem: () => true, wakeShortcutsHub: vi.fn(), getItemCount: () => 4 };
+    const game = Object.assign(Object.create(DoomGameApp.prototype), {
+      taser, shotgun, sound, inventory, engaged: true,
+      pauseMenu: { open: false }, danceMenu: { isOpen: false }, danceId: null,
+      activeSequence: 'NONE', multiplayer: null, taserRechargeRemaining: 0,
+      camera: new THREE.PerspectiveCamera(), stopDance: vi.fn(), updateTaserHud: vi.fn(),
+      applyTaserHit: vi.fn(() => false),
+    }) as unknown as { toggleTaser(): void; fireTaser(): void; toggleShotgun(): void; taserRechargeRemaining: number; activeSequence: string };
+    game.toggleTaser();
+    expect(taser.isEquipped).toBe(true);
+    expect(shotgun.isEquipped).toBe(false);
+    game.fireTaser();
+    expect(taser.fire).toHaveBeenCalledTimes(1);
+    expect(game.taserRechargeRemaining).toBe(TASER_RECHARGE_SECONDS);
+    game.fireTaser();
+    expect(taser.fire).toHaveBeenCalledTimes(1);
+    game.taserRechargeRemaining = advanceTaserRecharge(game.taserRechargeRemaining, TASER_RECHARGE_SECONDS);
+    game.fireTaser();
+    expect(taser.fire).toHaveBeenCalledTimes(2);
+    game.toggleShotgun();
+    expect(taser.isEquipped).toBe(false);
+    expect(shotgun.isEquipped).toBe(true);
+    game.activeSequence = 'DRAGGING_TO_WEB';
+    game.toggleTaser();
+    expect(taser.isEquipped).toBe(false);
+    expect(sound.playTaserDischarge).toHaveBeenCalledTimes(2);
+  });
+
+  it('o host valida posição, direção e intervalo das descargas recebidas', () => {
+    const onTaserShot = vi.fn();
+    const coordinator = Object.assign(Object.create(DoomMultiplayerCoordinator.prototype), {
+      client: { isHost: true }, session: { localPlayerId: 'host' },
+      allies: new Map([['guest', { currentPos: new THREE.Vector3(0, 0, 0), dead: false, inSequence: false }]]),
+      remoteTaserLastShot: new Map<string, number>(), hooks: { onTaserShot },
+    }) as unknown as { handleWorldEvent(event: object): void; remoteTaserLastShot: Map<string, number> };
+    const shot = { kind: 'taser_shot', senderId: 'guest', x: 0, y: 1.5, z: 0, dx: 0, dy: 0, dz: -1, ts: 1 };
+    coordinator.handleWorldEvent({ ...shot, x: 20 });
+    coordinator.handleWorldEvent({ ...shot, dz: 10 });
+    expect(onTaserShot).not.toHaveBeenCalled();
+    coordinator.handleWorldEvent(shot);
+    expect(onTaserShot).toHaveBeenCalledTimes(1);
+    coordinator.handleWorldEvent(shot);
+    expect(onTaserShot).toHaveBeenCalledTimes(1);
+    coordinator.remoteTaserLastShot.set('guest', performance.now() - TASER_RECHARGE_SECONDS * 1000);
+    coordinator.handleWorldEvent(shot);
+    expect(onTaserShot).toHaveBeenCalledTimes(2);
   });
 });
