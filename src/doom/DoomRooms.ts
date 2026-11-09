@@ -797,6 +797,7 @@ interface RoomMaterials {
   mossSoil: THREE.ShaderMaterial;
   bioFluid: THREE.ShaderMaterial;
   specimenGlass: THREE.ShaderMaterial;
+  cryoWindow: THREE.ShaderMaterial;
   labTile: THREE.ShaderMaterial;
   techFloor: THREE.ShaderMaterial;
   bunkFabric: THREE.ShaderMaterial;
@@ -1137,6 +1138,22 @@ function createRoomMaterials(
     'vec4(clamp(max(glowRgb, passiveRgb), 0.0, 1.0), 1.0)',
     'vec4(clamp(max(glowRgb, passiveRgb), 0.0, 1.0), 0.26)'
   );
+  // Vidro criogênico discreto: uma lâmina fina, sem as tampas opacas de uma caixa.
+  const cryoWindowTex = makeRoomPixelTex(64, 64, (px) => {
+    for (let y = 0; y < 64; y++) for (let x = 0; x < 64; x++) {
+      const frost = hash2i(x >> 1, y >> 1, 791) > 0.96 ? 24 : 0;
+      const edge = x < 4 || x > 59 || y < 3 || y > 60 ? 14 : 0;
+      px(x, y, 34 + frost + edge, 130 + frost + edge, 140 + frost + edge);
+    }
+  });
+  const cryoWindow = createDoomSurfaceMaterial(cryoWindowTex, sharedUniforms, { fullBright: true, useLocalUv: true });
+  cryoWindow.transparent = true;
+  cryoWindow.depthWrite = false;
+  cryoWindow.side = THREE.DoubleSide;
+  cryoWindow.fragmentShader = cryoWindow.fragmentShader.replace(
+    'vec4(clamp(max(glowRgb, passiveRgb), 0.0, 1.0), 1.0)',
+    'vec4(clamp(max(glowRgb, passiveRgb), 0.0, 1.0), 0.28)'
+  );
   const lampShade = createDoomSurfaceMaterial(shadeTex, sharedUniforms, { useLocalUv: true, baseLight: 0.25 });
   const bankerShade = createDoomSurfaceMaterial(greenShadeTex, sharedUniforms, { useLocalUv: true, baseLight: 0.25 });
   lampShade.side = THREE.DoubleSide;
@@ -1145,6 +1162,7 @@ function createRoomMaterials(
   return {
     computerScreen,
     specimenGlass,
+    cryoWindow,
     lampShade,
     bankerShade,
     annexWall: createDoomSurfaceMaterial(textures.annexWall, sharedUniforms, {
@@ -1400,6 +1418,30 @@ function pushRoomCyl(
   if (xf.yaw !== 0) g.rotateY(xf.yaw);
   g.translate(xf.cx, 0, xf.cz);
   bucket.push(g);
+}
+
+/** Superfície cilíndrica sem tampas: evita faces transparentes coplanares com as bases. */
+function pushRoomGlassCylinder(
+  bucket: THREE.BufferGeometry[], xf: LocalXf,
+  radius: number, height: number, x: number, y: number, z: number
+): void {
+  const geometry = new THREE.CylinderGeometry(radius, radius, height, 24, 1, true);
+  geometry.translate(x, y, z);
+  if (xf.yaw) geometry.rotateY(xf.yaw);
+  geometry.translate(xf.cx, 0, xf.cz);
+  bucket.push(geometry);
+}
+
+/** Lâmina planar frontal, não um bloco com faces transparentes internas. */
+function pushRoomFrontPane(
+  bucket: THREE.BufferGeometry[], xf: LocalXf,
+  width: number, height: number, x: number, y: number, z: number
+): void {
+  const geometry = new THREE.PlaneGeometry(width, height);
+  geometry.translate(x, y, z);
+  if (xf.yaw) geometry.rotateY(xf.yaw);
+  geometry.translate(xf.cx, 0, xf.cz);
+  bucket.push(geometry);
 }
 
 /** Casca aberta: nenhuma tampa sólida atravessa o difusor do abajur. */
@@ -2546,43 +2588,32 @@ function emitRoomFurniturePiece(
     }
 
     case 'bio_specimen_tank': {
-      // Câmara cilíndrica de contenção xenobiológica com pedestal de válvulas, bio-fluido, espécime aracnídeo suspenso e duto superior
-      pushRoomCyl(b.darkIron, xf, 0.48, 0.52, 0.22, 14, 0, 0.11, 0);
-      pushRoomCyl(b.metalTrim, xf, 0.45, 0.47, 0.12, 14, 0, 0.28, 0);
-      // Painel frontal de telemetria na base do tanque
-      pushRoomBox(b.computerScreen, xf, 0.26, 0.11, 0.04, 0, 0.18, 0.48, -0.2, 0, 0);
-      // Coluna de vidro com espécime visível através do fluido
-      pushRoomCyl(b.specimenGlass, xf, 0.38, 0.38, 1.66, 14, 0, 1.17, 0);
-      // Corpo e oito patas visíveis, inteiramente dentro do vidro.
+      // Base e tampa ocultam as extremidades da casca, sem discos transparentes coplanares.
+      pushRoomCyl(b.darkIron, xf, 0.47, 0.50, 0.22, 24, 0, 0.11, 0);
+      pushRoomCyl(b.metalTrim, xf, 0.44, 0.46, 0.12, 24, 0, 0.28, 0);
+      pushRoomBox(b.computerScreen, xf, 0.24, 0.09, 0.025, 0, 0.16, 0.483);
+      pushRoomGlassCylinder(b.specimenGlass, xf, 0.38, 1.69, 0, 1.17, 0);
+
+      // Espécime articulado suspenso: oito patas, todas contidas no cilindro.
       pushRoomSphere(b.darkIron, xf, 0.115, 0, 1.16, -0.10);
       pushRoomSphere(b.darkIron, xf, 0.075, 0, 1.16, 0.075);
       for (const side of [-1, 1]) {
-        for (const z of [-0.12, -0.05, 0.04, 0.11]) {
+        for (const [index, z] of [-0.12, -0.05, 0.04, 0.11].entries()) {
           const spread = z * 0.35;
+          const knee = new THREE.Vector3(side * (0.17 + index * 0.008), 1.25 - index * 0.045, z + spread);
           pushRoomRod(b.darkIron, xf, 0.012,
-            new THREE.Vector3(side * 0.055, 1.16, z),
-            new THREE.Vector3(side * 0.19, 1.20, z + spread));
-          pushRoomRod(b.darkIron, xf, 0.01,
-            new THREE.Vector3(side * 0.19, 1.20, z + spread),
-            new THREE.Vector3(side * 0.29, 1.05, z + spread * 2));
+            new THREE.Vector3(side * 0.055, 1.16, z), knee);
+          pushRoomRod(b.darkIron, xf, 0.01, knee,
+            new THREE.Vector3(side * (0.26 + index * 0.01), 1.16 - index * 0.085, z + spread * 2));
         }
       }
-      // Cúpula superior blindada + 4 tirantes estruturais + duto de exaustão até a sanca
-      pushRoomCyl(b.metalTrim, xf, 0.45, 0.45, 0.1, 14, 0, 2.05, 0);
-      pushRoomCyl(b.darkIron, xf, 0.4, 0.47, 0.26, 14, 0, 2.23, 0);
-      pushRoomCyl(b.darkIron, xf, 0.085, 0.085, 0.72, 8, 0, 2.68, -0.08);
+      // Quatro suportes terminam dentro dos anéis, sem avançar além da caixa de colisão.
+      pushRoomCyl(b.metalTrim, xf, 0.44, 0.44, 0.10, 24, 0, 2.05, 0);
+      pushRoomCyl(b.darkIron, xf, 0.38, 0.46, 0.22, 24, 0, 2.21, 0);
+      pushRoomCyl(b.metalTrim, xf, 0.12, 0.12, 0.07, 16, 0, 2.355, 0);
       for (const ang of [0.6, 2.54, 3.74, 5.68]) {
-        pushRoomCyl(
-          b.darkIron,
-          xf,
-          0.028,
-          0.028,
-          1.78,
-          6,
-          Math.cos(ang) * 0.43,
-          1.17,
-          Math.sin(ang) * 0.43
-        );
+        pushRoomCyl(b.darkIron, xf, 0.026, 0.026, 1.78, 8,
+          Math.cos(ang) * 0.43, 1.17, Math.sin(ang) * 0.43);
       }
       break;
     }
@@ -2641,20 +2672,50 @@ function emitRoomFurniturePiece(
     }
 
     case 'cryo_biohazard_cabinet': {
-      // Câmara dupla criogênica de risco biológico + cilindro externo de Nitrogênio Líquido
-      pushRoomBox(b.darkIron, xf, 1.22, 0.1, 0.66, -0.08, 0.05, 0);
-      pushRoomBox(b.metalTrim, xf, 1.18, 1.98, 0.62, -0.08, 1.09, 0);
-      pushRoomBox(b.darkIron, xf, 1.12, 1.78, 0.04, -0.08, 1.06, 0.31);
-      pushRoomBox(b.computerScreen, xf, 0.52, 0.11, 0.03, -0.08, 1.98, 0.315);
-      for (const wxOff of [-0.35, 0.19]) {
-        pushRoomBox(b.bioFluid, xf, 0.38, 0.98, 0.05, wxOff, 1.22, 0.315);
-        pushRoomBox(b.metalTrim, xf, 0.035, 0.26, 0.06, wxOff + (wxOff < 0 ? 0.21 : -0.21), 1.12, 0.335);
+      // Estrutura vazada real: fundo, laterais e teto, em vez de vidro sobre um bloco sólido.
+      const centerX = -0.17;
+      pushRoomBox(b.darkIron, xf, 1.04, 0.12, 0.60, centerX, 0.06, 0);
+      pushRoomBox(b.darkIron, xf, 1.00, 1.70, 0.04, centerX, 0.97, -0.27);
+      for (const x of [-0.65, 0.31]) {
+        pushRoomBox(b.metalTrim, xf, 0.04, 1.70, 0.52, x, 0.97, 0.01);
       }
-      // Cilindro criogênico Dewar acoplado na lateral direita + tubulação isolada
-      pushRoomCyl(b.metalTrim, xf, 0.16, 0.16, 1.56, 10, 0.56, 0.78, 0);
-      pushRoomCyl(b.darkIron, xf, 0.17, 0.17, 0.06, 10, 0.56, 0.45, 0);
-      pushRoomCyl(b.darkIron, xf, 0.17, 0.17, 0.06, 10, 0.56, 1.15, 0);
-      pushRoomBox(b.darkIron, xf, 0.18, 0.05, 0.05, 0.44, 1.62, 0);
+      pushRoomBox(b.metalTrim, xf, 1.00, 0.06, 0.56, centerX, 1.85, 0);
+      pushRoomBox(b.darkIron, xf, 1.04, 0.14, 0.60, centerX, 1.95, 0);
+      // Monitor fica à frente do painel, não enterrado em uma face coplanar.
+      pushRoomBox(b.computerScreen, xf, 0.42, 0.075, 0.014, centerX, 1.95, 0.308);
+
+      // Duas portas, com caixilhos separados e vidros planos.
+      for (const cx of [-0.415, 0.075]) {
+        pushRoomBox(b.metalTrim, xf, 0.46, 0.42, 0.035, cx, 0.33, 0.295);
+        pushRoomBox(b.metalTrim, xf, 0.46, 0.155, 0.035, cx, 1.7425, 0.295);
+        for (const dx of [-0.21, 0.21]) {
+          pushRoomBox(b.darkIron, xf, 0.04, 1.125, 0.04, cx + dx, 1.1025, 0.305);
+        }
+        pushRoomFrontPane(b.cryoWindow, xf, 0.38, 1.12, cx, 1.105, 0.316);
+        // Puxador fora do vidro, apoiado na borda interna de cada porta.
+        const hx = cx + (cx < centerX ? 0.19 : -0.19);
+        pushRoomBox(b.darkIron, xf, 0.025, 0.20, 0.035, hx, 1.10, 0.33);
+        for (const sy of [0.70, 1.12, 1.50]) {
+          pushRoomBox(b.metalTrim, xf, 0.40, 0.025, 0.34, cx, sy, -0.02);
+          // Frascos em cima da prateleira, separados entre si e do vidro.
+          for (const dx of [-0.10, 0.10]) {
+            pushRoomCyl(b.bioFluid, xf, 0.032, 0.032, 0.13, 12, cx + dx, sy + 0.078, -0.02);
+            pushRoomCyl(b.darkIron, xf, 0.034, 0.034, 0.014, 12, cx + dx, sy + 0.148, -0.02);
+          }
+        }
+        // Grelhas discretas no painel inferior.
+        for (const y of [0.23, 0.28, 0.33]) {
+          pushRoomBox(b.darkIron, xf, 0.23, 0.012, 0.012, cx, y, 0.318);
+        }
+      }
+      // Reservatório lateral separado do corpo; conexões curtas ocupam apenas o vão.
+      pushRoomCyl(b.darkIron, xf, 0.14, 0.14, 0.12, 16, 0.54, 0.06, 0);
+      pushRoomCyl(b.metalTrim, xf, 0.12, 0.13, 1.30, 16, 0.54, 0.769, 0);
+      for (const y of [0.32, 1.14]) {
+        pushRoomCyl(b.darkIron, xf, 0.14, 0.14, 0.06, 16, 0.54, y, 0);
+      }
+      pushRoomCyl(b.darkIron, xf, 0.065, 0.065, 0.10, 12, 0.54, 1.468, 0);
+      pushRoomBox(b.darkIron, xf, 0.09, 0.04, 0.05, 0.375, 1.31, 0);
       break;
     }
 
@@ -3445,6 +3506,7 @@ export function buildDoomThemedRooms(
     mossSoil: [],
     bioFluid: [],
     specimenGlass: [],
+    cryoWindow: [],
     labTile: [],
     techFloor: [],
     bunkFabric: [],
@@ -3501,6 +3563,17 @@ export function buildDoomThemedRooms(
 
   const keys = Object.keys(buckets) as Array<keyof RoomMaterials>;
   for (const k of keys) {
+    if (k === 'specimenGlass' || k === 'cryoWindow') {
+      // Vidros de objetos diferentes precisam ser ordenados individualmente em relação à câmera.
+      // Num único mesh mesclado, o Three.js não consegue ordenar os tanques entre si.
+      for (const geometry of buckets[k]) {
+        geometry.computeBoundingSphere();
+        const mesh = new THREE.Mesh(geometry, mats[k]);
+        mesh.name = `MazeRoom_${k}`;
+        parentGroup.add(mesh);
+      }
+      continue;
+    }
     const merged = mergeRoomGeos(buckets[k]);
     if (merged) {
       const mesh = new THREE.Mesh(merged, mats[k]);
@@ -3531,6 +3604,8 @@ export function buildDoomThemedRooms(
     disposeDoors();
     mats.computerScreen.dispose();
     mats.specimenGlass.dispose();
+    (mats.cryoWindow.uniforms.uMap.value as THREE.Texture).dispose();
+    mats.cryoWindow.dispose();
     for (const shade of [mats.lampShade, mats.bankerShade]) {
       (shade.uniforms.uMap.value as THREE.Texture).dispose();
       shade.dispose();
