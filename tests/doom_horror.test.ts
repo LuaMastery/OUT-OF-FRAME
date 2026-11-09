@@ -4867,16 +4867,17 @@ describe('Botão de Pausa no HUD, Tela de Pausa Completa & 26 Configurações Re
         }
       );
 
-      // 1. Botão de Pausa visível no HUD superior (#doom-pause-trigger-btn)
-      const triggerBtn = viewportEl.querySelector('#doom-pause-trigger-btn');
-      expect(triggerBtn).not.toBeNull();
+      // Não há botão de pausa na HUD, e voltar/Esc não abre a pausa.
+      expect(viewportEl.querySelector('#doom-pause-trigger-btn')).toBeNull();
       expect(pauseMenu.open).toBe(false);
+      pauseMenu.handleEscapeOrBack();
+      expect(pauseMenu.open).toBe(false);
+      expect(pauseOpenedCount).toBe(0);
 
-      // Clicar no botão de Pausa abre imediatamente a Tela de Pausa!
-      triggerBtn!.dispatch('click');
+      // O menu continua acessível pelo inventário e pela tecla P.
+      pauseMenu.setOpen(true);
       expect(pauseMenu.open).toBe(true);
       expect(pauseOpenedCount).toBe(1);
-      expect(triggerBtn!.classList.contains('hidden-by-ui')).toBe(true);
 
       // 2. Navegar para Configurações exibe exatamente as 26 linhas persistentes
       const openSettingsBtn = viewportEl.querySelector(

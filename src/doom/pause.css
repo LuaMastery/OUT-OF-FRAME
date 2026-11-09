@@ -1,71 +1,6 @@
 /* ==========================================================================
-   BOTÃO DE PAUSA NO HUD, RETÍCULO CENTRAL, TELEMETRIA FPS & TELA DE PAUSA / CONFIGS
+   RETÍCULO CENTRAL, TELEMETRIA FPS & TELA DE PAUSA / CONFIGS
    ========================================================================== */
-
-#doom-pause-trigger-btn {
-  position: fixed;
-  top: calc(12px + var(--safe-top, 0px));
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 28;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 11px;
-  background: rgba(7, 7, 9, 0.82);
-  border: 1px solid #353028;
-  color: #cfc6b4;
-  font-family: 'Courier New', Consolas, monospace;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  cursor: var(--cursor-pointer);
-  opacity: 0.64;
-  user-select: none;
-  -webkit-user-select: none;
-  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.55);
-  transition:
-    opacity 0.14s linear,
-    border-color 0.12s linear,
-    background-color 0.12s linear;
-}
-
-#doom-pause-trigger-btn:hover {
-  opacity: 0.98;
-  border-color: #9e8f77;
-  background: rgba(15, 14, 17, 0.96);
-  color: #efe7d6;
-}
-
-#doom-pause-trigger-btn:active {
-  cursor: var(--cursor-pointer-active);
-}
-
-#doom-pause-trigger-btn.hidden-by-ui {
-  opacity: 0 !important;
-  visibility: hidden;
-  pointer-events: none;
-}
-
-.pause-trigger-icon {
-  display: inline-flex;
-  gap: 2px;
-  align-items: center;
-}
-
-.pause-trigger-icon span {
-  display: block;
-  width: 2.5px;
-  height: 9px;
-  background: #d8be86;
-}
-
-.pause-trigger-key {
-  color: #847b6b;
-  font-weight: 400;
-  font-size: 10px;
-}
 
 /* Retículo central discreto configurável (off / dot / cross) */
 #doom-crosshair-hud {
@@ -677,16 +612,6 @@
 }
 
 @media (max-width: 720px) {
-  #doom-pause-trigger-btn {
-    top: calc(8px + var(--safe-top, 0px));
-    padding: 4px 9px;
-    font-size: 10px;
-  }
-
-  .pause-trigger-key {
-    display: none;
-  }
-
   .pause-main-wrap {
     grid-template-columns: 1fr;
     padding: 16px;

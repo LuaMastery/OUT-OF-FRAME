@@ -32,7 +32,6 @@ interface BoundSettingControlUpdater {
 }
 
 export class DoomPauseMenu {
-  private readonly triggerBtnEl: HTMLButtonElement;
   private readonly crosshairEl: HTMLDivElement;
   private readonly fpsBadgeEl: HTMLDivElement;
   private readonly overlayEl: HTMLDivElement;
@@ -96,43 +95,7 @@ export class DoomPauseMenu {
     this.fpsBadgeEl.textContent = '60 FPS · 250p';
     parentViewport.appendChild(this.fpsBadgeEl);
 
-    // 3. Botão visível de Pausa no topo central da tela (funciona em Desktop e Mobile!)
-    this.triggerBtnEl = document.createElement('button');
-    this.triggerBtnEl.id = 'doom-pause-trigger-btn';
-    this.triggerBtnEl.type = 'button';
-    this.triggerBtnEl.title = 'Pausar jogo e abrir configurações [Esc / P]';
-    this.triggerBtnEl.innerHTML = `
-      <span class="pause-trigger-icon" aria-hidden="true"><span></span><span></span></span>
-      <span>PAUSA</span>
-      <span class="pause-trigger-key">[ESC]</span>
-    `;
-    parentViewport.appendChild(this.triggerBtnEl);
-
-    let lastTouchPauseMs = 0;
-    this.triggerBtnEl.addEventListener(
-      'touchstart',
-      (e) => {
-        e.stopPropagation();
-      },
-      { passive: true }
-    );
-    this.triggerBtnEl.addEventListener(
-      'touchend',
-      (e) => {
-        e.stopPropagation();
-        lastTouchPauseMs = performance.now();
-        this.setOpen(true);
-      },
-      { passive: true }
-    );
-    this.triggerBtnEl.addEventListener('click', (e) => {
-      e.stopPropagation();
-      if (performance.now() - lastTouchPauseMs < 400) return;
-      this.setOpen(true);
-    });
-    this.bindHoverSound(this.triggerBtnEl, 'hud-pause-trigger');
-
-    // 4. Overlay Completo da Tela de Pausa + 26 Configurações + Guia de Controles
+    // Menu de configurações continua acessível por [P] ou pelo inventário.
     this.overlayEl = document.createElement('div');
     this.overlayEl.id = 'doom-pause-overlay';
     this.overlayEl.innerHTML = `
@@ -252,7 +215,7 @@ export class DoomPauseMenu {
 
               <div class="pause-ctrl-card">
                 <div class="pause-ctrl-title">Sistema & Sobrevivência</div>
-                <div class="pause-ctrl-line"><span>Pausar / Menu Principal</span><span class="pause-ctrl-key">Esc / P · ou via Tab</span></div>
+                <div class="pause-ctrl-line"><span>Pausa / Configurações</span><span class="pause-ctrl-key">P · ou via Tab</span></div>
                 <div class="pause-ctrl-line"><span>Voz alta atrai a criatura</span><span class="pause-ctrl-key">Sussurre perto!</span></div>
                 <div class="pause-ctrl-line"><span>Cortar teia instantâneo</span><span class="pause-ctrl-key">Canivete</span></div>
                 <div class="pause-ctrl-line"><span>Espantar aranha / Resgatar</span><span class="pause-ctrl-key">Magnésio</span></div>
@@ -378,10 +341,7 @@ export class DoomPauseMenu {
   }
 
   handleEscapeOrBack(): void {
-    if (!this.isOpen) {
-      this.setOpen(true);
-      return;
-    }
+    if (!this.isOpen) return;
     if (this.currentView !== 'main') {
       this.switchView('main');
       this.sound.playInventorySelect(true);
@@ -451,7 +411,6 @@ export class DoomPauseMenu {
 
   private syncAuxHudVisibility(): void {
     const hideAux = this.isOpen || this.hudSuppressed;
-    this.triggerBtnEl.classList.toggle('hidden-by-ui', hideAux);
     this.crosshairEl.classList.toggle('hidden-by-ui', hideAux);
   }
 
@@ -884,7 +843,6 @@ export class DoomPauseMenu {
     );
     this.unsubscribeSettings();
     this.proximityFX.destroy();
-    this.triggerBtnEl.remove();
     this.crosshairEl.remove();
     this.fpsBadgeEl.remove();
     this.overlayEl.remove();

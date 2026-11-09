@@ -1,22 +1,28 @@
+/* A small, low-contrast reminder that leaves the centre of the view clear. */
 .doom-shotgun-objective {
   position: absolute;
-  top: 14px;
+  top: calc(8px + var(--safe-top, 0px));
   left: 50%;
   transform: translateX(-50%);
   z-index: 8;
-  max-width: min(620px, 90vw);
-  padding: 7px 12px;
-  border: 1px solid rgba(211, 168, 88, .55);
-  background: rgba(9, 10, 12, .78);
-  color: #f2d499;
-  font: 700 11px/1.35 monospace;
+  box-sizing: border-box;
+  max-width: min(290px, 46vw);
+  padding: 3px 7px;
+  border: 1px solid rgba(211, 168, 88, .24);
+  background: rgba(9, 10, 12, .58);
+  color: #dac79f;
+  font: 600 10px/1.25 monospace;
   text-align: center;
-  letter-spacing: .04em;
   pointer-events: none;
 }
 .doom-shotgun-objective.hidden { display: none; }
-@media (pointer: coarse) {
-  .doom-shotgun-objective { top: 5px; font-size: 10px; max-width: 70vw; }
+@media (max-width: 720px) {
+  .doom-shotgun-objective {
+    top: calc(6px + var(--safe-top, 0px));
+    max-width: 46vw;
+    font-size: 9px;
+    padding: 2px 5px;
+  }
 }
 
 .doom-taser-status {

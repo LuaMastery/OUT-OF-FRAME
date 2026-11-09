@@ -578,7 +578,7 @@ export class DoomTouchControls {
       target.closest(
         '.oof-touch-joy-zone, .oof-touch-btn, .oof-touch-coop-btn, ' +
           '#doom-shortcuts-hub, #doom-inventory-overlay, .oof-coop-hud, ' +
-          '.doom-radar-hud, #doom-capture-gameover, #doom-pause-trigger-btn, #doom-pause-overlay'
+          '.doom-radar-hud, #doom-capture-gameover, #doom-pause-overlay'
       )
     );
   }
