@@ -5,6 +5,7 @@ import {
   getOrCreateSceneArenaLayout,
 } from './DoomArenaRandomizer';
 import { buildDoomMapObstacles } from './DoomObstacles';
+import { buildDoomThemedRooms } from './DoomRooms';
 import {
   createDoomSurfaceMaterial,
   DoomSharedUniforms,
@@ -1391,6 +1392,15 @@ export function buildDoomLabyrinth(
       root.add(m);
     }
   }
+
+  // 5b. SALAS ESPECIAIS 3D (Sala dos Computadores, Lab Biológico, Quartos, Enfermaria, Vegetação, Biblioteca e Reatores)
+  buildDoomThemedRooms(
+    root,
+    arenaLayout.roomFurniturePlacements,
+    textures,
+    sharedUniforms,
+    colliders
+  );
 
   // 6. OBSTÁCULOS TÁTICOS 3D (Barris de Ferro, Tonéis de Madeira, Prateleiras, Caixotes, Barricadas & Vigas Arriadas)
   buildDoomMapObstacles(

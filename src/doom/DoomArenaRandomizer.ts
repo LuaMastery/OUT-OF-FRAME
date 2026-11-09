@@ -10,6 +10,10 @@ import {
   generateArenaObstacles,
   ObstaclePlacement,
 } from './DoomObstacles';
+import {
+  generateThemedRoomFurnishings,
+  RoomFurniturePlacement,
+} from './DoomRooms';
 
 export interface GridCoord {
   gx: number;
@@ -46,6 +50,7 @@ export interface DoomArenaLayout {
   readonly initialWebTrapCells: ReadonlyArray<GridCoord>;
   readonly cratePlacements: ReadonlyArray<CrateRandomPlacement>;
   readonly obstaclePlacements: ReadonlyArray<ObstaclePlacement>;
+  readonly roomFurniturePlacements: ReadonlyArray<RoomFurniturePlacement>;
 }
 
 export interface CreateArenaLayoutOptions {
@@ -472,6 +477,16 @@ export function createRandomArenaLayout(
     `${lairCell.gx + chosenDragDir.dx},${lairCell.gz + chosenDragDir.dz}`,
   ]);
 
+  // 1b. Gera o mobiliário 3D temático das 7 Salas Especiais (Computadores, Lab Biológico,
+  //     Quartos, Enfermaria, Vegetação, Biblioteca e Reatores) sincronizado por `worldSeed`!
+  const roomFurniturePlacements = generateThemedRoomFurnishings({
+    reservedLairCellKeys: reservedLairKeys,
+    lairCell,
+  });
+  const usedRoomFurnitureKeys = new Set(
+    roomFurniturePlacements.map((rf) => `${rf.gx},${rf.gz}`)
+  );
+
   // 2. Sorteia as armadilhas iniciais de teia exclusivamente por `worldSeed` (sincronizadas no Co-op!)
   const trapCount = rngInt(worldRng, 6, 9); // 6 a 8 armadilhas iniciais
   const allOpenTrapCandidates: GridCoord[] = [];
@@ -479,6 +494,7 @@ export function createRandomArenaLayout(
     for (let gx = 1; gx < LABYRINTH_MAP[gz].length - 1; gx++) {
       if (isSolidCell(LABYRINTH_MAP, gx, gz)) continue;
       if (reservedLairKeys.has(`${gx},${gz}`)) continue;
+      if (usedRoomFurnitureKeys.has(`${gx},${gz}`)) continue;
       if (Math.hypot(gx - lairCell.gx, gz - lairCell.gz) < 3.0) continue;
       allOpenTrapCandidates.push({ gx, gz });
     }
@@ -510,6 +526,7 @@ export function createRandomArenaLayout(
       if (ch !== '.' && ch !== 'P') continue;
       if (isNearReactorCollar(gx, gz)) continue;
       if (reservedLairKeys.has(`${gx},${gz}`)) continue;
+      if (usedRoomFurnitureKeys.has(`${gx},${gz}`)) continue;
 
       const timberAxis = getTimberPostAxis(gx, gz);
       const validWalls: Array<{ nx: number; nz: number }> = [];
@@ -608,12 +625,13 @@ export function createRandomArenaLayout(
     usedCrateCellKeys: usedCrateKeys,
     initialWebTrapCells,
     lairCell,
+    existingRoomFurniture: roomFurniturePlacements,
   });
   const usedObstacleKeys = new Set(
     obstaclePlacements.map((o) => `${o.gx},${o.gz}`)
   );
 
-  // 4. Sorteia o ponto seguro de Spawn do Jogador por `playerSeed` (livre de Ninho, Teias, Caixotes e Obstáculos!)
+  // 4. Sorteia o ponto seguro de Spawn do Jogador por `playerSeed` (livre de Ninho, Teias, Caixotes, Salas Mobiliadas e Obstáculos!)
   const spawnCandidates: GridCoord[] = [];
   for (let gz = 1; gz < LABYRINTH_MAP.length - 1; gz++) {
     for (let gx = 1; gx < LABYRINTH_MAP[gz].length - 1; gx++) {
@@ -621,6 +639,7 @@ export function createRandomArenaLayout(
       if (ch !== '.' && ch !== 'P') continue;
       if (isNearReactorCollar(gx, gz)) continue;
       if (reservedLairKeys.has(`${gx},${gz}`)) continue;
+      if (usedRoomFurnitureKeys.has(`${gx},${gz}`)) continue;
       if (usedCrateKeys.has(`${gx},${gz}`)) continue;
       if (usedObstacleKeys.has(`${gx},${gz}`)) continue;
 
@@ -686,6 +705,7 @@ export function createRandomArenaLayout(
       const ch = LABYRINTH_MAP[gz][gx];
       if (ch !== '.' && ch !== 'P') continue;
       if (isNearReactorCollar(gx, gz)) continue;
+      if (usedRoomFurnitureKeys.has(`${gx},${gz}`)) continue;
       if (usedObstacleKeys.has(`${gx},${gz}`)) continue;
 
       const w = gridCellToWorld(gx, gz);
@@ -755,6 +775,7 @@ export function createRandomArenaLayout(
     initialWebTrapCells,
     cratePlacements,
     obstaclePlacements,
+    roomFurniturePlacements,
   };
 }
 

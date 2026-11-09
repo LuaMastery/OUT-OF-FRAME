@@ -30,9 +30,11 @@ import {
   evaluateDoomLightFlicker,
   isStoneSectorWorld,
   syncLightPanelEmissionAttribute,
+  worldToGridCell,
 } from './DoomMazeBuilder';
 import { DoomPauseMenu } from './DoomPauseMenu';
 import { DoomRadar } from './DoomRadar';
+import { DoomRoomId, getThemedRoomAtCell } from './DoomRooms';
 import {
   DoomGameSettings,
   DoomSettingsStore,
@@ -365,6 +367,11 @@ export class DoomGameApp {
   private tabHiddenSinceMs: number | null = null;
   private localAfk = false;
   private readonly localAfkBannerEl: HTMLDivElement;
+  private readonly roomBannerEl: HTMLDivElement;
+  private readonly roomBannerTitleEl: HTMLDivElement;
+  private readonly roomBannerSubEl: HTMLDivElement;
+  private currentThemedRoomId: DoomRoomId | null = null;
+  private roomBannerHideAtSec = 0;
   private elapsed = 0;
   private lastRaf = performance.now();
   private rafId = 0;
@@ -395,6 +402,23 @@ export class DoomGameApp {
       '<span>AUSENTE / INDISPONÍVEL</span>' +
       '<span class="oof-local-afk-sub">• Mova o mouse ou pressione qualquer tecla para retomar</span>';
     this.viewportEl.appendChild(this.localAfkBannerEl);
+
+    this.roomBannerEl = document.createElement('div');
+    this.roomBannerEl.id = 'doom-room-banner';
+    this.roomBannerEl.className = 'doom-room-banner';
+    const roomKicker = document.createElement('div');
+    roomKicker.className = 'doom-room-banner-kicker';
+    roomKicker.textContent = 'SETOR IDENTIFICADO';
+    this.roomBannerTitleEl = document.createElement('div');
+    this.roomBannerTitleEl.className = 'doom-room-banner-title';
+    this.roomBannerSubEl = document.createElement('div');
+    this.roomBannerSubEl.className = 'doom-room-banner-sub';
+    this.roomBannerEl.append(
+      roomKicker,
+      this.roomBannerTitleEl,
+      this.roomBannerSubEl
+    );
+    this.viewportEl.appendChild(this.roomBannerEl);
 
     this.renderer = new THREE.WebGLRenderer({
       canvas: this.canvas,
@@ -2919,6 +2943,26 @@ export class DoomGameApp {
       isPushToTalkActive: Boolean(this.multiplayer?.localVoiceSpeaking),
     });
 
+    const curGrid = worldToGridCell(this.position.x, this.position.z);
+    const curThemedRoom = getThemedRoomAtCell(curGrid.gx, curGrid.gz);
+    const nextRoomId = curThemedRoom?.id ?? null;
+    if (nextRoomId !== this.currentThemedRoomId) {
+      this.currentThemedRoomId = nextRoomId;
+      if (curThemedRoom) {
+        this.roomBannerTitleEl.textContent = curThemedRoom.name;
+        this.roomBannerSubEl.textContent = curThemedRoom.subtitle;
+        this.roomBannerHideAtSec = this.elapsed + 3.1;
+      }
+    }
+    const shouldShowRoomBanner =
+      this.engaged &&
+      !this.pauseMenu.open &&
+      !this.inventory.open &&
+      !this.inventory.gameOverVisible &&
+      this.elapsed < this.roomBannerHideAtSec &&
+      this.currentThemedRoomId !== null;
+    this.roomBannerEl.classList.toggle('is-visible', shouldShowRoomBanner);
+
     this.radar.update(
       this.position.x,
       this.position.z,
@@ -3269,6 +3313,7 @@ export class DoomGameApp {
     this.sound.setFocusMuted(false);
     unlockSystemKeyboardKeys();
     this.localAfkBannerEl.remove();
+    this.roomBannerEl.remove();
     this.pauseMenu.destroy();
     this.touchControls.destroy();
     this.multiplayer?.destroy();

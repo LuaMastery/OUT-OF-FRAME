@@ -48,6 +48,10 @@ import {
 } from '../src/doom/DoomRadar';
 import { DoomPauseMenu } from '../src/doom/DoomPauseMenu';
 import {
+  getThemedRoomAtCell,
+  THEMED_ROOMS,
+} from '../src/doom/DoomRooms';
+import {
   DEFAULT_DOOM_SETTINGS,
   DOOM_SETTINGS_DESCRIPTORS,
   DOOM_SETTINGS_STORAGE_KEY,
@@ -4543,7 +4547,10 @@ describe('Obstáculos Táticos 3D no Mapa (Barris de Ferro, Madeira, Prateleiras
     const items = new DoomWorldItems(scene, shared);
 
     const obstacleColliders = maze.colliders.filter((c) => c.isObstacle);
-    expect(obstacleColliders.length).toBe(layoutA.obstaclePlacements.length);
+    expect(obstacleColliders.length).toBe(
+      layoutA.obstaclePlacements.length +
+        layoutA.roomFurniturePlacements.length
+    );
 
     for (const meshName of [
       'MazeObstaclesIronBarrel',
@@ -4648,5 +4655,200 @@ describe('Obstáculos Táticos 3D no Mapa (Barris de Ferro, Madeira, Prateleiras
     expect(spiderAny.hasLineOfSight(eyeFrom, hidingPlayer, true)).toBe(false);
   });
 });
+
+describe('Salas Especiais 3D (Computadores, Lab Biológico, Quartos, Enfermaria, Vegetação, Biblioteca & Reatores)', () => {
+  it('constrói todas as 7 Salas Especiais com mobiliário 3D próprio, texturas pixel-art exclusivas, colisores sólidos e rótulos no Radar', () => {
+    expect(THEMED_ROOMS.length).toBe(7);
+
+    // 1. Verifica mapeamento espacial e nomes no Radar sem quebrar pontos clássicos
+    expect(getThemedRoomAtCell(12, 1)?.id).toBe('computer_room');
+    expect(getThemedRoomAtCell(7, 4)?.id).toBe('biology_lab');
+    expect(getThemedRoomAtCell(4, 11)?.id).toBe('crew_quarters');
+    expect(getThemedRoomAtCell(24, 11)?.id).toBe('medical_ward');
+    expect(getThemedRoomAtCell(6, 19)?.id).toBe('vegetation_room');
+    expect(getThemedRoomAtCell(22, 20)?.id).toBe('library_room');
+    expect(getThemedRoomAtCell(22, 5)?.id).toBe('reactor_hall');
+
+    expect(getSectorNameForCell(12, 1)).toBe('SALA DOS COMPUTADORES');
+    expect(getSectorNameForCell(7, 4)).toBe('LABORATÓRIO BIOLÓGICO');
+    expect(getSectorNameForCell(4, 11)).toBe('QUARTOS DA EQUIPE');
+    expect(getSectorNameForCell(24, 11)).toBe('ENFERMARIA & QUARENTENA');
+    expect(getSectorNameForCell(6, 19)).toBe('SALA DE VEGETAÇÃO');
+    expect(getSectorNameForCell(22, 20)).toBe('BIBLIOTECA & ARQUIVOS');
+    expect(getSectorNameForCell(22, 5)).toBe('SALÃO DOS REATORES');
+    expect(getSectorNameForCell(2, 1)).toBe('ESCLUSA NOROESTE');
+    expect(getSectorNameForCell(14, 11)).toBe('ÁTRIO CENTRAL');
+    expect(getSectorNameForCell(14, 23)).toBe('GRANDE NINHO SUL');
+
+    // 2. Determinismo 100% no Co-op e presença de todos os móveis temáticos
+    const worldSeed = hashArenaSeed('oof-special-rooms-suite-v1');
+    const hostLayout = createRandomArenaLayout({
+      worldSeed,
+      playerSeed: 1001,
+    });
+    const guestLayout = createRandomArenaLayout({
+      worldSeed,
+      playerSeed: 9009,
+    });
+
+    expect(hostLayout.roomFurniturePlacements.length).toBeGreaterThanOrEqual(45);
+    expect(hostLayout.roomFurniturePlacements).toEqual(
+      guestLayout.roomFurniturePlacements
+    );
+
+    const roomsWithFurniture = new Set(
+      hostLayout.roomFurniturePlacements.map((p) => p.roomId)
+    );
+    for (const r of THEMED_ROOMS) {
+      expect(roomsWithFurniture.has(r.id)).toBe(true);
+    }
+
+    const furnitureKinds = new Set(
+      hostLayout.roomFurniturePlacements.map((p) => p.kind)
+    );
+    for (const expectedKind of [
+      'server_rack_bank',
+      'crt_workstation_desk',
+      'bio_specimen_tank',
+      'autopsy_surgical_table',
+      'xenobio_lab_bench',
+      'cryo_biohazard_cabinet',
+      'astronaut_bunk_bed',
+      'crew_locker_bank',
+      'crew_mess_table',
+      'cabin_nightstand_desk',
+      'medical_gurney_bed',
+      'medical_supply_cabinet',
+      'vitals_monitor_cart',
+      'hydroponic_tree_planter',
+      'botanical_fern_trough',
+      'irrigation_nutrient_tank',
+      'oak_bookshelf_tall',
+      'library_reading_table',
+      'archive_catalog_cabinet',
+      'reactor_capacitor_console',
+    ] as const) {
+      expect(furnitureKinds.has(expectedKind)).toBe(true);
+    }
+
+    // 3. Constrói a cena 3D completa e valida malhas e texturas dedicadas das salas
+    const scene = new THREE.Scene();
+    const shared = createDoomSharedUniforms();
+    const textures = createDoomTextures();
+    const maze = buildDoomLabyrinth(scene, textures, shared, hostLayout);
+    const items = new DoomWorldItems(scene, shared, hostLayout);
+
+    for (const roomMeshName of [
+      'MazeRoom_serverRack',
+      'MazeRoom_crtScreen',
+      'MazeRoom_bookshelf',
+      'MazeRoom_libraryRug',
+      'MazeRoom_foliage',
+      'MazeRoom_mossSoil',
+      'MazeRoom_bioFluid',
+      'MazeRoom_labTile',
+      'MazeRoom_techFloor',
+      'MazeRoom_bunkFabric',
+      'MazeRoom_cleanLinen',
+      'MazeRoom_medicalCross',
+      'MazeRoom_warmLampGlow',
+    ]) {
+      const mesh = scene.getObjectByName(roomMeshName) as THREE.Mesh | undefined;
+      expect(mesh).toBeDefined();
+      expect(mesh!.geometry.getAttribute('position').count).toBeGreaterThan(12);
+    }
+
+    // 4. Zero sobreposição entre móveis de sala, 25 caixotes de itens, obstáculos de corredor e spawn
+    const roomKeys = new Set(
+      hostLayout.roomFurniturePlacements.map((p) => `${p.gx},${p.gz}`)
+    );
+    for (const c of hostLayout.cratePlacements) {
+      expect(roomKeys.has(`${c.gx},${c.gz}`)).toBe(false);
+    }
+    for (const o of hostLayout.obstaclePlacements) {
+      expect(roomKeys.has(`${o.gx},${o.gz}`)).toBe(false);
+    }
+    expect(
+      roomKeys.has(
+        `${hostLayout.playerSpawnCell.gx},${hostLayout.playerSpawnCell.gz}`
+      )
+    ).toBe(false);
+
+    const roomColliders = maze.colliders.filter((c) =>
+      c.id.startsWith('room-prop-')
+    );
+    expect(roomColliders.length).toBe(hostLayout.roomFurniturePlacements.length);
+
+    for (const pickup of items.getPickupsSnapshot()) {
+      for (const col of roomColliders) {
+        expect(col.box.containsPoint(pickup.position)).toBe(false);
+      }
+    }
+
+    // 5. Colisão sólida real contra a Mesa de Leitura da Biblioteca & oclusão de visão da Aranha!
+    const readingTable = hostLayout.roomFurniturePlacements.find(
+      (p) => p.kind === 'library_reading_table'
+    )!;
+    const playerAtTable = new THREE.Vector3(
+      readingTable.worldX,
+      0,
+      readingTable.worldZ
+    );
+    resolveCylinderWorldCollisions(
+      playerAtTable,
+      new THREE.Vector3(),
+      0.52,
+      1.8,
+      roomColliders
+    );
+    expect(
+      Math.hypot(
+        playerAtTable.x - readingTable.worldX,
+        playerAtTable.z - readingTable.worldZ
+      )
+    ).toBeGreaterThan(0.35);
+
+    const webs = new DoomSpiderWebManager(scene, shared, hostLayout);
+    const mockSound = {
+      playSpiderFootstep: () => {},
+      playSpiderChitter: () => {},
+      playSpiderScream: () => {},
+      playSpiderWebSpin: () => {},
+    } as unknown as SoundEngine;
+    const spider = new DoomSpider(
+      scene,
+      shared,
+      maze.colliders,
+      webs,
+      mockSound,
+      hostLayout
+    );
+    const spiderAny = spider as unknown as {
+      hasLineOfSight: (
+        from: THREE.Vector3,
+        to: THREE.Vector3,
+        crouching: boolean
+      ) => boolean;
+    };
+
+    const serverRack = hostLayout.roomFurniturePlacements.find(
+      (p) => p.kind === 'server_rack_bank'
+    )!;
+    const spiderEye = new THREE.Vector3(
+      serverRack.worldX,
+      1.1,
+      serverRack.minZ - 0.5
+    );
+    const crouchedBehindRack = new THREE.Vector3(
+      serverRack.worldX,
+      0,
+      serverRack.maxZ + 0.5
+    );
+    expect(spiderAny.hasLineOfSight(spiderEye, crouchedBehindRack, true)).toBe(
+      false
+    );
+  });
+});
+
 
 

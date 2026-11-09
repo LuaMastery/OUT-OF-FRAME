@@ -7,6 +7,7 @@ import {
   STONE_SECTOR_START_ROW,
   worldToGridCell,
 } from './DoomMazeBuilder';
+import { getThemedRoomAtCell } from './DoomRooms';
 
 export type RadarScaleMode = 'FULL' | 'LOCAL';
 
@@ -59,18 +60,17 @@ export function getSectorNameForCell(
     return gz >= STONE_SECTOR_START_ROW ? 'GRANDE NINHO SUL' : 'NINHO DA ARANHA';
   }
 
+  const themedRoom = getThemedRoomAtCell(gx, gz);
+  if (themedRoom) {
+    return themedRoom.name;
+  }
+
   if (gz < STONE_SECTOR_START_ROW) {
     if (gz <= 7 && gx <= 10) {
-      if (gx >= 5 && gx <= 9 && gz >= 3 && gz <= 5) {
-        return 'ENFERMARIA MÉDICA';
-      }
       return 'ESCLUSA NOROESTE';
     }
     if (gz <= 8 && gx >= 18) {
       return 'SALÃO DOS REATORES';
-    }
-    if (gz <= 7 && gx >= 11 && gx <= 17) {
-      return 'PONTE DE COMANDO';
     }
     if (gx >= 10 && gx <= 18 && gz >= 8 && gz <= 15) {
       return 'ÁTRIO CENTRAL';
@@ -169,9 +169,34 @@ export function renderRadarMinimapCanvas(
       }
 
       // Corredor / salão transitável: visível em todo o mapa para o jogador nunca se perder,
-      // com brilho mais vivo nas galerias já percorridas!
+      // com brilho mais vivo nas galerias já percorridas e nuance sutil nas Salas Especiais!
+      const room = getThemedRoomAtCell(gx, gz);
       if (isArchCell(LABYRINTH_MAP, gx, gz)) {
         ctx.fillStyle = explored ? '#2d5746' : '#183026';
+      } else if (room) {
+        switch (room.id) {
+          case 'computer_room':
+            ctx.fillStyle = explored ? '#183b40' : '#0c1f22';
+            break;
+          case 'biology_lab':
+            ctx.fillStyle = explored ? '#1b4238' : '#0e241e';
+            break;
+          case 'vegetation_room':
+            ctx.fillStyle = explored ? '#204523' : '#112512';
+            break;
+          case 'library_room':
+            ctx.fillStyle = explored ? '#3b291d' : '#1e150f';
+            break;
+          case 'crew_quarters':
+            ctx.fillStyle = explored ? '#25392a' : '#131e16';
+            break;
+          case 'medical_ward':
+            ctx.fillStyle = explored ? '#1d3c3b' : '#0f2020';
+            break;
+          default:
+            ctx.fillStyle = explored ? '#1c3b2e' : '#0e2019';
+            break;
+        }
       } else if (isStone) {
         ctx.fillStyle = explored ? '#2a2a19' : '#15160e';
       } else {

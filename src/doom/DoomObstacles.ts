@@ -9,6 +9,7 @@ import {
 } from './DoomMazeBuilder';
 import { createDoomSurfaceMaterial, DoomSharedUniforms } from './DoomShader';
 import { DoomTextureSet } from './DoomTextures';
+import { getThemedRoomAtCell } from './DoomRooms';
 
 export type DoomObstacleKind =
   | 'iron_barrel_cluster'
@@ -48,6 +49,14 @@ export interface GenerateObstaclesInput {
   usedCrateCellKeys: ReadonlySet<string>;
   initialWebTrapCells: ReadonlyArray<{ gx: number; gz: number }>;
   lairCell: { gx: number; gz: number };
+  existingRoomFurniture?: ReadonlyArray<{
+    gx: number;
+    gz: number;
+    minX: number;
+    maxX: number;
+    minZ: number;
+    maxZ: number;
+  }>;
 }
 
 /** Células com plafons de teto em `DoomMazeBuilder.ts` (mantidas livres de estantes altas e vigas arriadas) */
@@ -273,8 +282,14 @@ function shuffleWithRng<T>(arr: T[], rng: () => number): T[] {
 export function generateArenaObstacles(
   input: GenerateObstaclesInput
 ): ObstaclePlacement[] {
-  const { rng, reservedCellKeys, usedCrateCellKeys, initialWebTrapCells, lairCell } =
-    input;
+  const {
+    rng,
+    reservedCellKeys,
+    usedCrateCellKeys,
+    initialWebTrapCells,
+    lairCell,
+    existingRoomFurniture = [],
+  } = input;
   const rows = LABYRINTH_MAP.length;
   const cols = LABYRINTH_MAP[0].length;
   const lightKeepouts = buildLightPanelKeepoutBoxes();
@@ -284,6 +299,10 @@ export function generateArenaObstacles(
 
   const placements: ObstaclePlacement[] = [];
   const occupiedCells = new Set<string>();
+  for (let i = 0; i < existingRoomFurniture.length; i++) {
+    const rf = existingRoomFurniture[i];
+    occupiedCells.add(`${rf.gx},${rf.gz}`);
+  }
 
   const hitsAnyLightKeepout = (box: Aabb2D): boolean => {
     const padded: Aabb2D = {
@@ -302,6 +321,11 @@ export function generateArenaObstacles(
     box: Aabb2D,
     minGap: number
   ): boolean => {
+    for (let i = 0; i < existingRoomFurniture.length; i++) {
+      if (aabb2DDistance(box, existingRoomFurniture[i]) < Math.max(minGap, 1.48)) {
+        return false;
+      }
+    }
     for (let i = 0; i < placements.length; i++) {
       const p = placements[i];
       if (p.role === 'crawl') continue;
@@ -321,6 +345,15 @@ export function generateArenaObstacles(
     if (webTrapKeys.has(key)) return false;
     if (isNearReactorCollar(gx, gz)) return false;
     if (Math.hypot(gx - lairCell.gx, gz - lairCell.gz) <= 2.4) return false;
+    const room = getThemedRoomAtCell(gx, gz);
+    if (
+      room &&
+      (room.id === 'library_room' ||
+        room.id === 'biology_lab' ||
+        room.id === 'vegetation_room')
+    ) {
+      return false;
+    }
     return true;
   };
 
@@ -331,6 +364,7 @@ export function generateArenaObstacles(
   for (let gz = 1; gz < rows - 1; gz++) {
     for (let gx = 1; gx < cols - 1; gx++) {
       if (!isCellEligibleBase(gx, gz)) continue;
+      if (getThemedRoomAtCell(gx, gz) !== null) continue;
       if (CEILING_LIGHT_CELL_KEYS.has(`${gx},${gz}`)) continue;
       if (getTimberPostAxis(gx, gz) !== null) continue;
 
