@@ -90,6 +90,8 @@ import {
 import {
   applyMetricBoxUvs,
   applyMetricCylinderUvs,
+  buildDoomMapObstacles,
+  ObstaclePlacement,
 } from '../src/doom/DoomObstacles';
 import { createDoomTextures } from '../src/doom/DoomTextures';
 import { DoomWorldItems } from '../src/doom/DoomWorldItems';
@@ -5845,6 +5847,150 @@ describe('Ragdoll Verlet 3D Desmaiado, 4 Tentáculos da Aranha & Casulo de Teia 
     }
     expect(maxStoneU).toBeCloseTo(1.44 / 1.45, 3);
     expect(minPositiveStoneV).toBeCloseTo(0.16 / 1.45, 3);
+  });
+
+  it('garante zero objetos virados ao contrário nas paredes Leste/Oeste, zero barril afundando na estante, cantoneiras niveladas e zero interpenetração entre tambores/pedras', () => {
+    const layout = createRandomArenaLayout({
+      worldSeed: hashArenaSeed('oof-geometry-orientation-audit-v1'),
+      playerSeed: 2026,
+    });
+
+    // 1. TODOS os obstáculos de parede ('wall') apontam a frente (+Z rotacionado por yaw) PARA DENTRO do corredor (nunca contra a parede!)
+    let westWallObsCount = 0;
+    let eastWallObsCount = 0;
+    for (const obs of layout.obstaclePlacements) {
+      if (obs.role !== 'wall') continue;
+      const cellCenter = gridCellToWorld(obs.gx, obs.gz);
+      const toCorridorX = cellCenter.x - obs.worldX;
+      const toCorridorZ = cellCenter.z - obs.worldZ;
+      // Em Three.js rotateY(yaw), o vetor frontal local (0, 0, +1) vira (sin(yaw), 0, cos(yaw))
+      const frontX = Math.sin(obs.yaw);
+      const frontZ = Math.cos(obs.yaw);
+      if (Math.abs(frontX) > 0.9) {
+        if (frontX > 0) westWallObsCount++;
+        else eastWallObsCount++;
+      }
+      // Produto escalar com o deslocamento até o centro do corredor deve ser estritamente positivo!
+      expect(frontX * toCorridorX + frontZ * toCorridorZ).toBeGreaterThan(0.2);
+    }
+    expect(westWallObsCount).toBeGreaterThan(3);
+    expect(eastWallObsCount).toBeGreaterThan(3);
+
+    // 2. TODAS as mobílias encostadas nas paredes N/S/L/O das 7 Salas Especiais apontam a frente (+Z) para o interior da sala!
+    let westOrEastRoomProps = 0;
+    for (const fp of layout.roomFurniturePlacements) {
+      const cellCenter = gridCellToWorld(fp.gx, fp.gz);
+      const dx = cellCenter.x - fp.worldX;
+      const dz = cellCenter.z - fp.worldZ;
+      if (Math.hypot(dx, dz) < 0.05) continue; // Ilha 'CENTER'
+      const frontX = Math.sin(fp.yaw);
+      const frontZ = Math.cos(fp.yaw);
+      if (Math.abs(frontX) > 0.9) westOrEastRoomProps++;
+      expect(frontX * dx + frontZ * dz).toBeGreaterThan(0.15);
+    }
+    expect(westOrEastRoomProps).toBeGreaterThanOrEqual(12);
+
+    // 3. Estante rústica de madeira ('wooden_shelving_rack'): barril de carvalho apoiado EM CIMA da prateleira (y >= 0.245, jamais atravessando até o chão!)
+    const shared = createDoomSharedUniforms();
+    const textures = createDoomTextures();
+    const shelfGroup = new THREE.Group();
+    const shelfSample: ObstaclePlacement = {
+      id: 'audit-wood-shelf',
+      kind: 'wooden_shelving_rack',
+      role: 'wall',
+      gx: 5,
+      gz: 20,
+      worldX: 0,
+      worldZ: 0,
+      yaw: 0,
+      variant: 0,
+      minX: -0.73,
+      maxX: 0.73,
+      minY: 0,
+      maxY: 2.1,
+      minZ: -0.34,
+      maxZ: 0.34,
+    };
+    buildDoomMapObstacles(shelfGroup, [shelfSample], textures, shared, []);
+    const shelfOak = shelfGroup.getObjectByName('MazeObstaclesOakWood') as THREE.Mesh;
+    expect(shelfOak).toBeDefined();
+    const shelfOakPos = shelfOak.geometry.getAttribute('position');
+    let minShelfBarrelY = Infinity;
+    for (let i = 0; i < shelfOakPos.count; i++) {
+      minShelfBarrelY = Math.min(minShelfBarrelY, shelfOakPos.getY(i));
+    }
+    expect(minShelfBarrelY).toBeGreaterThanOrEqual(0.245);
+
+    // 4. Barricada de pedras ('stone_rubble_barricade'): blocos de pedra à esquerda e tonel de madeira à direita totalmente disjuntos em X!
+    const rubbleGroup = new THREE.Group();
+    const rubbleSample: ObstaclePlacement = {
+      ...shelfSample,
+      id: 'audit-stone-rubble',
+      kind: 'stone_rubble_barricade',
+    };
+    buildDoomMapObstacles(rubbleGroup, [rubbleSample], textures, shared, []);
+    const rubbleStonePos = (
+      rubbleGroup.getObjectByName('MazeObstaclesStone') as THREE.Mesh
+    ).geometry.getAttribute('position');
+    const rubbleBarrelPos = (
+      rubbleGroup.getObjectByName('MazeObstaclesOakWood') as THREE.Mesh
+    ).geometry.getAttribute('position');
+    let maxStoneX = -Infinity;
+    for (let i = 0; i < rubbleStonePos.count; i++) {
+      maxStoneX = Math.max(maxStoneX, rubbleStonePos.getX(i));
+    }
+    let minBarrelX = Infinity;
+    for (let i = 0; i < rubbleBarrelPos.count; i++) {
+      minBarrelX = Math.min(minBarrelX, rubbleBarrelPos.getX(i));
+    }
+    expect(maxStoneX).toBeLessThan(minBarrelX - 0.08);
+
+    // 5. Dupla de tonéis de madeira ('wooden_barrel_cluster' variant 0): tonel tombado à esquerda não invade o tonel em pé à direita!
+    const barrelDuoGroup = new THREE.Group();
+    const barrelDuoSample: ObstaclePlacement = {
+      ...shelfSample,
+      id: 'audit-wood-barrel-duo',
+      kind: 'wooden_barrel_cluster',
+      variant: 0,
+    };
+    buildDoomMapObstacles(barrelDuoGroup, [barrelDuoSample], textures, shared, []);
+    const duoWoodCapPos = (
+      barrelDuoGroup.getObjectByName('MazeObstaclesWood') as THREE.Mesh
+    ).geometry.getAttribute('position');
+    // O tampo direito do tonel tombado fica em x < 0.08, enquanto o bojo esquerdo do tonel em pé (cx=0.36, r=0.265) começa em x ~ 0.095!
+    let maxFallenCapX = -Infinity;
+    for (let i = 0; i < duoWoodCapPos.count; i++) {
+      const y = duoWoodCapPos.getY(i);
+      const x = duoWoodCapPos.getX(i);
+      // Filtra apenas tampos do tonel tombado (x < 0.12 e y > 0.08)
+      if (x < 0.12 && y > 0.08) {
+        maxFallenCapX = Math.max(maxFallenCapX, x);
+      }
+    }
+    expect(maxFallenCapX).toBeLessThan(0.08);
+
+    // 6. Tambores de ferro + galão frontal ('iron_barrel_cluster' variant 1): galão não invade o raio de nenhum dos dois tambores!
+    const ironClusterGroup = new THREE.Group();
+    const ironClusterSample: ObstaclePlacement = {
+      ...shelfSample,
+      id: 'audit-iron-barrel-jerrycan',
+      kind: 'iron_barrel_cluster',
+      variant: 1,
+    };
+    buildDoomMapObstacles(ironClusterGroup, [ironClusterSample], textures, shared, []);
+    const jerrycanPos = (
+      ironClusterGroup.getObjectByName('MazeObstaclesMetal') as THREE.Mesh
+    ).geometry.getAttribute('position');
+    for (let i = 0; i < jerrycanPos.count; i++) {
+      const vx = jerrycanPos.getX(i);
+      const vy = jerrycanPos.getY(i);
+      const vz = jerrycanPos.getZ(i);
+      if (vy > 0.4) continue; // Ignora os dois pequenos bujões no topo dos tambores (y ~ 0.90)
+      const distLeftDrum = Math.hypot(vx - -0.34, vz - -0.07);
+      const distRightDrum = Math.hypot(vx - 0.34, vz - -0.07);
+      expect(distLeftDrum).toBeGreaterThan(0.258);
+      expect(distRightDrum).toBeGreaterThan(0.248);
+    }
   });
 });
 

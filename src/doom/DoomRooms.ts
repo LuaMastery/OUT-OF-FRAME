@@ -394,7 +394,7 @@ const CURATED_ROOM_SPECS: ReadonlyArray<RawRoomFurnitureSpec> = [
   { roomId: 'biology_lab', kind: 'bio_specimen_tank', gx: -3, gz: 3, attach: 'N' },
   { roomId: 'biology_lab', kind: 'xenobio_lab_bench', gx: -1, gz: 3, attach: 'N' },
   { roomId: 'biology_lab', kind: 'cryo_biohazard_cabinet', gx: -5, gz: 4, attach: 'W' },
-  { roomId: 'biology_lab', kind: 'autopsy_surgical_table', gx: -3, gz: 5, attach: 'CENTER', centerYaw: 0 },
+  { roomId: 'biology_lab', kind: 'autopsy_surgical_table', gx: -3, gz: 5, attach: 'CENTER', centerYaw: Math.PI * 0.5 },
   { roomId: 'biology_lab', kind: 'cryo_biohazard_cabinet', gx: -5, gz: 6, attach: 'W' },
   { roomId: 'biology_lab', kind: 'bio_specimen_tank', gx: -5, gz: 7, attach: 'S' },
   { roomId: 'biology_lab', kind: 'bio_specimen_tank', gx: -3, gz: 7, attach: 'S' },
@@ -415,7 +415,7 @@ const CURATED_ROOM_SPECS: ReadonlyArray<RawRoomFurnitureSpec> = [
   { roomId: 'medical_ward', kind: 'medical_supply_cabinet', gx: 29, gz: 10, attach: 'N' },
   { roomId: 'medical_ward', kind: 'medical_gurney_bed', gx: 31, gz: 10, attach: 'N' },
   { roomId: 'medical_ward', kind: 'medical_gurney_bed', gx: 33, gz: 10, attach: 'N' },
-  { roomId: 'medical_ward', kind: 'vitals_monitor_cart', gx: 31, gz: 12, attach: 'CENTER', centerYaw: Math.PI * 0.5 },
+  { roomId: 'medical_ward', kind: 'vitals_monitor_cart', gx: 31, gz: 12, attach: 'CENTER', centerYaw: -Math.PI * 0.5 },
   { roomId: 'medical_ward', kind: 'medical_supply_cabinet', gx: 33, gz: 12, attach: 'E' },
   { roomId: 'medical_ward', kind: 'medical_supply_cabinet', gx: 29, gz: 14, attach: 'S' },
   { roomId: 'medical_ward', kind: 'medical_gurney_bed', gx: 31, gz: 14, attach: 'S' },
@@ -439,7 +439,7 @@ const CURATED_ROOM_SPECS: ReadonlyArray<RawRoomFurnitureSpec> = [
   { roomId: 'vegetation_room', kind: 'irrigation_nutrient_tank', gx: 8, gz: 29, attach: 'N' },
   { roomId: 'vegetation_room', kind: 'hydroponic_tree_planter', gx: 4, gz: 30, attach: 'W' },
   { roomId: 'vegetation_room', kind: 'hydroponic_tree_planter', gx: 8, gz: 30, attach: 'E' },
-  { roomId: 'vegetation_room', kind: 'hydroponic_tree_planter', gx: 6, gz: 31, attach: 'CENTER', centerYaw: 0 },
+  { roomId: 'vegetation_room', kind: 'hydroponic_tree_planter', gx: 6, gz: 31, attach: 'CENTER', centerYaw: Math.PI },
   { roomId: 'vegetation_room', kind: 'botanical_fern_trough', gx: 4, gz: 32, attach: 'W' },
   { roomId: 'vegetation_room', kind: 'botanical_fern_trough', gx: 8, gz: 32, attach: 'E' },
   { roomId: 'vegetation_room', kind: 'hydroponic_tree_planter', gx: 4, gz: 33, attach: 'S' },
@@ -459,10 +459,14 @@ export function generateThemedRoomFurnishings(_opts: {
     Exclude<RawRoomFurnitureSpec['attach'], 'CENTER'>,
     { nx: number; nz: number; yaw: number }
   > = {
+    // Norte (-Z): costas (-Z) na parede Norte, frente (+Z) para Sul (+Z) -> yaw = 0
     N: { nx: 0, nz: -1, yaw: 0 },
+    // Sul (+Z): costas (-Z) na parede Sul, frente (+Z) para Norte (-Z) -> yaw = PI
     S: { nx: 0, nz: 1, yaw: Math.PI },
-    W: { nx: -1, nz: 0, yaw: -Math.PI * 0.5 },
-    E: { nx: 1, nz: 0, yaw: Math.PI * 0.5 },
+    // Oeste (-X): costas (-Z) na parede Oeste, frente (+Z) para Leste (+X) -> yaw = +PI/2
+    W: { nx: -1, nz: 0, yaw: Math.PI * 0.5 },
+    // Leste (+X): costas (-Z) na parede Leste, frente (+Z) para Oeste (-X) -> yaw = -PI/2
+    E: { nx: 1, nz: 0, yaw: -Math.PI * 0.5 },
   };
 
   for (let i = 0; i < CURATED_ROOM_SPECS.length; i++) {
@@ -1613,80 +1617,86 @@ function emitRoomFurniturePiece(
 
   switch (p.kind) {
     case 'server_rack_bank': {
-      // Banco duplo Mainframe 42U com moldura chanfrada, bobinas de fita, exaustores superiores e barramentos
+      // Banco duplo Mainframe 42U com frente escalonada em Z (ZERO sobreposição entre gabinete, painel e visor CRT!)
       for (const ox of [-0.39, 0.39]) {
         pushRoomBox(b.darkIron, xf, 0.74, 0.1, 0.68, ox, 0.05, 0);
-        pushRoomBox(b.metalTrim, xf, 0.72, 2.1, 0.64, ox, 1.15, -0.02);
-        pushRoomBox(b.serverRack, xf, 0.66, 2.02, 0.08, ox, 1.15, 0.28);
+        pushRoomBox(b.metalTrim, xf, 0.72, 2.1, 0.6, ox, 1.15, -0.02);
+        pushRoomBox(b.serverRack, xf, 0.66, 2.02, 0.032, ox, 1.15, 0.298);
         // Pilastras laterais frisadas do gabinete
-        pushRoomBox(b.darkIron, xf, 0.05, 2.08, 0.66, ox - 0.35, 1.15, 0);
-        pushRoomBox(b.darkIron, xf, 0.05, 2.08, 0.66, ox + 0.35, 1.15, 0);
+        pushRoomBox(b.darkIron, xf, 0.048, 2.08, 0.63, ox - 0.35, 1.15, -0.005);
+        pushRoomBox(b.darkIron, xf, 0.048, 2.08, 0.63, ox + 0.35, 1.15, -0.005);
         // Topo blindado + turbina de exaustão superior
-        pushRoomBox(b.metalTrim, xf, 0.76, 0.07, 0.7, ox, 2.23, 0);
+        pushRoomBox(b.metalTrim, xf, 0.76, 0.07, 0.68, ox, 2.23, 0);
         pushRoomCyl(b.darkIron, xf, 0.19, 0.21, 0.09, 10, ox, 2.31, -0.04);
-        // Bobinas duplas de fita magnética + visor de diagnóstico CRT
-        pushRoomCyl(b.metalTrim, xf, 0.11, 0.11, 0.035, 12, ox - 0.14, 1.76, 0.33, Math.PI * 0.5, 0, 0);
-        pushRoomCyl(b.metalTrim, xf, 0.11, 0.11, 0.035, 12, ox + 0.14, 1.76, 0.33, Math.PI * 0.5, 0, 0);
-        pushRoomBox(b.crtScreen, xf, 0.42, 0.12, 0.02, ox, 1.44, 0.325);
+        // Bobinas duplas de fita magnética + visor de diagnóstico CRT ressaltado
+        pushRoomCyl(b.metalTrim, xf, 0.11, 0.11, 0.028, 12, ox - 0.14, 1.76, 0.332, Math.PI * 0.5, 0, 0);
+        pushRoomCyl(b.metalTrim, xf, 0.11, 0.11, 0.028, 12, ox + 0.14, 1.76, 0.332, Math.PI * 0.5, 0, 0);
+        pushRoomBox(b.crtScreen, xf, 0.42, 0.12, 0.016, ox, 1.44, 0.324);
       }
       // Eletrodutos gêmeos subindo para o teto técnico
-      pushRoomCyl(b.darkIron, xf, 0.05, 0.05, 0.88, 8, -0.24, 2.74, -0.18);
-      pushRoomCyl(b.darkIron, xf, 0.05, 0.05, 0.88, 8, 0.24, 2.74, -0.18);
+      pushRoomCyl(b.darkIron, xf, 0.05, 0.05, 0.72, 8, -0.24, 2.66, -0.18);
+      pushRoomCyl(b.darkIron, xf, 0.05, 0.05, 0.72, 8, 0.24, 2.66, -0.18);
       break;
     }
 
     case 'crt_workstation_desk': {
-      // Console de comando técnico em L com 2 monitores CRT tubo completo, CPU torre, luminária e cadeira giratória 5 pontas!
-      pushRoomBox(b.metalTrim, xf, 1.52, 0.065, 0.76, 0, 0.75, -0.04);
-      pushRoomBox(b.darkIron, xf, 1.56, 0.04, 0.05, 0, 0.74, 0.34);
-      pushRoomBox(b.darkIron, xf, 0.08, 0.74, 0.7, -0.7, 0.37, -0.04);
-      pushRoomBox(b.darkIron, xf, 0.08, 0.74, 0.7, 0.7, 0.37, -0.04);
-      pushRoomBox(b.darkIron, xf, 1.34, 0.54, 0.04, 0, 0.42, -0.36);
+      // Console de comando técnico com 2 monitores CRT (bezel escuro + vidro fosforescente + tubo traseiro), teclados e cadeira 5 pontas!
+      pushRoomBox(b.metalTrim, xf, 1.52, 0.06, 0.72, 0, 0.75, -0.08);
+      pushRoomBox(b.darkIron, xf, 1.54, 0.036, 0.03, 0, 0.745, 0.285);
+      pushRoomBox(b.darkIron, xf, 0.075, 0.72, 0.68, -0.7, 0.36, -0.08);
+      pushRoomBox(b.darkIron, xf, 0.075, 0.72, 0.68, 0.7, 0.36, -0.08);
+      pushRoomBox(b.darkIron, xf, 1.34, 0.52, 0.035, 0, 0.44, -0.41);
       // Gabinete torre workstation + estabilizador sob a bancada
-      pushRoomBox(b.serverRack, xf, 0.25, 0.52, 0.5, 0.48, 0.26, -0.06);
-      pushRoomBox(b.darkIron, xf, 0.22, 0.22, 0.36, -0.48, 0.11, -0.1);
+      pushRoomBox(b.serverRack, xf, 0.24, 0.52, 0.48, 0.48, 0.26, -0.12);
+      pushRoomBox(b.darkIron, xf, 0.22, 0.22, 0.34, -0.48, 0.11, -0.16);
 
       for (const [mx, yawTilt] of [
         [-0.36, 0.14],
         [0.28, -0.14],
       ] as const) {
-        // Base articulada + carcaça de monitor CRT profundo com tubo traseiro + tela fosforescente
-        pushRoomCyl(b.darkIron, xf, 0.11, 0.14, 0.06, 8, mx, 0.81, -0.1);
-        pushRoomBox(b.metalTrim, xf, 0.46, 0.39, 0.32, mx, 1.04, -0.08, 0, yawTilt, 0);
-        pushRoomBox(b.darkIron, xf, 0.26, 0.24, 0.18, mx - Math.sin(yawTilt) * 0.2, 1.02, -0.26, 0, yawTilt, 0);
-        pushRoomBox(b.crtScreen, xf, 0.38, 0.29, 0.025, mx + Math.sin(yawTilt) * 0.16, 1.05, 0.08, 0, yawTilt, 0);
-        // Teclado mecânico esculpido + mouse
-        pushRoomBox(b.darkIron, xf, 0.38, 0.035, 0.16, mx, 0.8, 0.19, 0.1, yawTilt * 0.4, 0);
-        pushRoomBox(b.cleanLinen, xf, 0.34, 0.02, 0.11, mx, 0.818, 0.19, 0.1, yawTilt * 0.4, 0);
+        const pivZ = -0.14;
+        const s = Math.sin(yawTilt);
+        const c = Math.cos(yawTilt);
+        // Pedestal giratório + carcaça principal + tubo catódico traseiro + moldura + vidro CRT verde brilhante!
+        pushRoomCyl(b.darkIron, xf, 0.105, 0.13, 0.06, 8, mx, 0.81, pivZ);
+        pushRoomBox(b.metalTrim, xf, 0.45, 0.38, 0.24, mx, 1.03, pivZ, 0, yawTilt, 0);
+        pushRoomBox(b.darkIron, xf, 0.24, 0.22, 0.14, mx - s * 0.18, 1.01, pivZ - c * 0.18, 0, yawTilt, 0);
+        pushRoomBox(b.darkIron, xf, 0.46, 0.39, 0.022, mx + s * 0.128, 1.03, pivZ + c * 0.128, 0, yawTilt, 0);
+        pushRoomBox(b.crtScreen, xf, 0.38, 0.29, 0.016, mx + s * 0.143, 1.035, pivZ + c * 0.143, 0, yawTilt, 0);
+        // Teclado mecânico esculpido apoiado na superfície da mesa
+        const kx = mx + s * 0.28;
+        const kz = pivZ + c * 0.28;
+        pushRoomBox(b.darkIron, xf, 0.38, 0.028, 0.15, kx, 0.795, kz, 0.08, yawTilt * 0.5, 0);
+        pushRoomBox(b.cleanLinen, xf, 0.34, 0.014, 0.1, kx, 0.812, kz, 0.08, yawTilt * 0.5, 0);
       }
       // Luminária articulada de bancada
-      pushRoomCyl(b.metalTrim, xf, 0.018, 0.018, 0.38, 6, -0.66, 0.96, -0.24, 0.2, 0, -0.18);
-      pushRoomBox(b.warmLampGlow, xf, 0.18, 0.03, 0.09, -0.58, 1.15, -0.16);
+      pushRoomCyl(b.metalTrim, xf, 0.018, 0.018, 0.38, 6, -0.66, 0.96, -0.28, 0.2, 0, -0.18);
+      pushRoomBox(b.warmLampGlow, xf, 0.18, 0.03, 0.09, -0.58, 1.15, -0.2);
 
-      // Cadeira giratória ergonômica com estrela de 5 pés, pistão, braços e encosto curvo
+      // Cadeira giratória ergonômica com estrela de 5 pés contida dentro da caixa de colisão
       const chairX = -0.04;
-      const chairZ = 0.34;
+      const chairZ = 0.23;
       for (let leg = 0; leg < 5; leg++) {
         const a = (leg * Math.PI * 2) / 5;
         pushRoomBox(
           b.darkIron,
           xf,
-          0.045,
-          0.035,
-          0.26,
-          chairX + Math.sin(a) * 0.12,
+          0.042,
+          0.034,
+          0.24,
+          chairX + Math.sin(a) * 0.11,
           0.04,
-          chairZ + Math.cos(a) * 0.12,
+          chairZ + Math.cos(a) * 0.11,
           0,
           a,
           0
         );
       }
-      pushRoomCyl(b.darkIron, xf, 0.038, 0.045, 0.38, 8, chairX, 0.23, chairZ);
-      pushRoomBox(b.bunkFabric, xf, 0.44, 0.07, 0.42, chairX, 0.44, chairZ);
-      pushRoomBox(b.bunkFabric, xf, 0.42, 0.42, 0.07, chairX, 0.69, chairZ + 0.19, -0.1, 0, 0);
-      pushRoomBox(b.darkIron, xf, 0.04, 0.2, 0.28, chairX - 0.23, 0.55, chairZ + 0.02);
-      pushRoomBox(b.darkIron, xf, 0.04, 0.2, 0.28, chairX + 0.23, 0.55, chairZ + 0.02);
+      pushRoomCyl(b.darkIron, xf, 0.036, 0.044, 0.38, 8, chairX, 0.23, chairZ);
+      pushRoomBox(b.bunkFabric, xf, 0.44, 0.068, 0.4, chairX, 0.44, chairZ);
+      pushRoomBox(b.bunkFabric, xf, 0.42, 0.42, 0.065, chairX, 0.69, chairZ + 0.18, -0.1, 0, 0);
+      pushRoomBox(b.darkIron, xf, 0.038, 0.2, 0.26, chairX - 0.23, 0.55, chairZ + 0.02);
+      pushRoomBox(b.darkIron, xf, 0.038, 0.2, 0.26, chairX + 0.23, 0.55, chairZ + 0.02);
       break;
     }
 
@@ -1864,21 +1874,21 @@ function emitRoomFurniturePiece(
     }
 
     case 'crew_mess_table': {
-      // Mesa de refeitório da tripulação com bancos duplos nos DOIS lados, bandejas, garrafa térmica e canecas
-      pushRoomBox(b.oakWood, xf, 1.56, 0.075, 0.64, 0, 0.76, 0);
-      pushRoomBox(b.weatheredWood, xf, 1.6, 0.04, 0.68, 0, 0.74, 0);
-      pushRoomBox(b.darkIron, xf, 0.1, 0.73, 0.52, -0.62, 0.365, 0);
-      pushRoomBox(b.darkIron, xf, 0.1, 0.73, 0.52, 0.62, 0.365, 0);
-      for (const bz of [-0.42, 0.42]) {
-        pushRoomBox(b.weatheredWood, xf, 1.44, 0.055, 0.24, 0, 0.44, bz);
-        pushRoomBox(b.darkIron, xf, 0.065, 0.42, 0.2, -0.54, 0.21, bz);
-        pushRoomBox(b.darkIron, xf, 0.065, 0.42, 0.2, 0.54, 0.21, bz);
+      // Mesa de refeitório da tripulação com tampo limpo apoiado sobre saia inferior (ZERO Z-fighting!), bancos duplos e utensílios
+      pushRoomBox(b.oakWood, xf, 1.56, 0.06, 0.64, 0, 0.775, 0);
+      pushRoomBox(b.weatheredWood, xf, 1.46, 0.045, 0.56, 0, 0.722, 0);
+      pushRoomBox(b.darkIron, xf, 0.1, 0.7, 0.5, -0.62, 0.35, 0);
+      pushRoomBox(b.darkIron, xf, 0.1, 0.7, 0.5, 0.62, 0.35, 0);
+      for (const bz of [-0.4, 0.4]) {
+        pushRoomBox(b.weatheredWood, xf, 1.44, 0.055, 0.22, 0, 0.44, bz);
+        pushRoomBox(b.darkIron, xf, 0.065, 0.42, 0.18, -0.54, 0.21, bz);
+        pushRoomBox(b.darkIron, xf, 0.065, 0.42, 0.18, 0.54, 0.21, bz);
       }
-      // Bandejas inox, jarra e canecas sobre a mesa
-      pushRoomBox(b.metalTrim, xf, 0.36, 0.025, 0.24, -0.36, 0.81, 0.12);
-      pushRoomBox(b.metalTrim, xf, 0.36, 0.025, 0.24, 0.34, 0.81, -0.12);
-      pushRoomCyl(b.metalTrim, xf, 0.045, 0.045, 0.11, 8, -0.12, 0.85, 0.1);
-      pushRoomCyl(b.darkIron, xf, 0.065, 0.075, 0.2, 8, 0.04, 0.89, -0.02);
+      // Bandejas inox, jarra e canecas sobre a mesa (topo exato em 0.805)
+      pushRoomBox(b.metalTrim, xf, 0.36, 0.022, 0.24, -0.36, 0.817, 0.12);
+      pushRoomBox(b.metalTrim, xf, 0.36, 0.022, 0.24, 0.34, 0.817, -0.12);
+      pushRoomCyl(b.metalTrim, xf, 0.045, 0.045, 0.11, 8, -0.12, 0.86, 0.1);
+      pushRoomCyl(b.darkIron, xf, 0.065, 0.075, 0.2, 8, 0.04, 0.905, -0.02);
       break;
     }
 
@@ -1923,9 +1933,9 @@ function emitRoomFurniturePiece(
         pushRoomBox(b.metalTrim, xf, 0.03, 0.24, 0.03, -0.52, 0.85, rz);
         pushRoomBox(b.metalTrim, xf, 0.03, 0.24, 0.03, 0.4, 0.85, rz);
       }
-      pushRoomBox(b.cleanLinen, xf, 1.62, 0.14, 0.72, 0, 0.78, 0);
-      pushRoomBox(b.medicalCross, xf, 0.96, 0.15, 0.74, 0.24, 0.785, 0);
-      pushRoomBox(b.cleanLinen, xf, 0.32, 0.09, 0.52, -0.58, 0.9, 0, 0, 0, -0.12);
+      pushRoomBox(b.cleanLinen, xf, 1.62, 0.12, 0.7, 0, 0.78, 0);
+      pushRoomBox(b.medicalCross, xf, 0.92, 0.02, 0.714, 0.24, 0.85, 0);
+      pushRoomBox(b.cleanLinen, xf, 0.32, 0.085, 0.52, -0.58, 0.885, 0, 0, 0, -0.12);
       // Haste inox de soro IV com duas bolsas suspensas
       pushRoomCyl(b.metalTrim, xf, 0.02, 0.02, 1.68, 6, -0.8, 0.84, 0.37);
       pushRoomBox(b.metalTrim, xf, 0.24, 0.025, 0.025, -0.8, 1.66, 0.37);
@@ -1975,10 +1985,13 @@ function emitRoomFurniturePiece(
     }
 
     case 'hydroponic_tree_planter': {
-      // Canteiro monumental de pedra e madeira + Árvore subterrânea ramificada com raízes expostas, 7 volumes de copa e halo de luz UV!
+      // Canteiro monumental de pedra com borda vazada de madeira + substrato interno limpo (ZERO sobreposição!) + Árvore ramificada
       pushRoomBox(b.stone, xf, 1.44, 0.48, 0.84, 0, 0.24, 0);
-      pushRoomBox(b.weatheredWood, xf, 1.54, 0.075, 0.9, 0, 0.49, 0);
-      pushRoomBox(b.mossSoil, xf, 1.38, 0.06, 0.74, 0, 0.48, 0);
+      pushRoomBox(b.weatheredWood, xf, 1.5, 0.06, 0.09, 0, 0.51, 0.405);
+      pushRoomBox(b.weatheredWood, xf, 1.5, 0.06, 0.09, 0, 0.51, -0.405);
+      pushRoomBox(b.weatheredWood, xf, 0.09, 0.06, 0.72, -0.705, 0.51, 0);
+      pushRoomBox(b.weatheredWood, xf, 0.09, 0.06, 0.72, 0.705, 0.51, 0);
+      pushRoomBox(b.mossSoil, xf, 1.32, 0.04, 0.72, 0, 0.5, 0);
 
       // Raízes aparentes + tronco retorcido + 3 galhos estruturais
       pushRoomBox(b.weatheredWood, xf, 0.42, 0.1, 0.12, -0.12, 0.54, 0.04, 0, 0.3, -0.2);
@@ -2001,10 +2014,13 @@ function emitRoomFurniturePiece(
     }
 
     case 'botanical_fern_trough': {
-      // Canteiro hidropônico de dois níveis com tubulação de gotejamento, samambaias em leque, flora bioluminescente e coifa Grow-Light
-      pushRoomBox(b.weatheredWood, xf, 1.5, 0.44, 0.76, 0, 0.22, 0);
-      pushRoomBox(b.darkIron, xf, 1.54, 0.055, 0.8, 0, 0.4, 0);
-      pushRoomBox(b.mossSoil, xf, 1.4, 0.055, 0.68, 0, 0.44, 0);
+      // Canteiro hidropônico com colar perimetral de ferro + substrato elevado limpo + samambaias e coifa Grow-Light
+      pushRoomBox(b.weatheredWood, xf, 1.5, 0.42, 0.76, 0, 0.21, 0);
+      pushRoomBox(b.darkIron, xf, 1.54, 0.05, 0.06, 0, 0.445, 0.37);
+      pushRoomBox(b.darkIron, xf, 1.54, 0.05, 0.06, 0, 0.445, -0.37);
+      pushRoomBox(b.darkIron, xf, 0.06, 0.05, 0.68, -0.74, 0.445, 0);
+      pushRoomBox(b.darkIron, xf, 0.06, 0.05, 0.68, 0.74, 0.445, 0);
+      pushRoomBox(b.mossSoil, xf, 1.42, 0.04, 0.68, 0, 0.44, 0);
 
       for (const fx of [-0.46, 0.0, 0.46]) {
         for (const ang of [-0.62, -0.2, 0.2, 0.62]) {
@@ -2076,14 +2092,14 @@ function emitRoomFurniturePiece(
       // Cornija clássica superior escalonada + livros inclinados 3D
       pushRoomBox(b.weatheredWood, xf, w + 0.1, 0.13, d + 0.1, 0, h - 0.04, 0);
       pushRoomBox(b.bookshelf, xf, 0.22, 0.26, 0.18, -0.36, 0.8, 0.2, 0, 0, 0.18);
-      // Trilho metálico superior + escada inclinada de biblioteca
+      // Trilho metálico superior + escada inclinada de biblioteca com degraus 100% alinhados às longarinas!
       pushRoomCyl(b.metalTrim, xf, 0.018, 0.018, w - 0.04, 6, 0, 2.08, 0.31, 0, 0, Math.PI * 0.5);
-      pushRoomBox(b.weatheredWood, xf, 0.038, 2.1, 0.045, 0.32, 1.04, 0.34, -0.1, 0, 0);
-      pushRoomBox(b.weatheredWood, xf, 0.038, 2.1, 0.045, 0.62, 1.04, 0.34, -0.1, 0, 0);
+      pushRoomBox(b.weatheredWood, xf, 0.038, 2.08, 0.045, 0.32, 1.04, 0.34, -0.1, 0, 0);
+      pushRoomBox(b.weatheredWood, xf, 0.038, 2.08, 0.045, 0.62, 1.04, 0.34, -0.1, 0, 0);
       for (let step = 0; step < 6; step++) {
-        const ly = 0.28 + step * 0.31;
-        const lz = 0.44 - step * 0.031;
-        pushRoomBox(b.weatheredWood, xf, 0.32, 0.03, 0.055, 0.47, ly, lz);
+        const ly = 0.28 + step * 0.3;
+        const lz = 0.34 + (1.04 - ly) * Math.tan(0.1);
+        pushRoomBox(b.weatheredWood, xf, 0.28, 0.028, 0.046, 0.47, ly, lz);
       }
       break;
     }
@@ -2148,9 +2164,9 @@ function emitRoomFurniturePiece(
       for (const fx of [-0.62, -0.36, -0.1, 0.16, 0.42, 0.64]) {
         pushRoomBox(b.metalTrim, xf, 0.04, 0.72, 0.78, fx, 0.46, 0);
       }
-      pushRoomBox(b.serverRack, xf, 1.46, 0.38, 0.44, 0, 1.1, 0.12, -0.38, 0, 0);
-      pushRoomBox(b.crtScreen, xf, 0.48, 0.24, 0.03, -0.36, 1.15, 0.33, -0.38, 0, 0);
-      pushRoomBox(b.crtScreen, xf, 0.36, 0.18, 0.03, 0.34, 1.14, 0.33, -0.38, 0, 0);
+      pushRoomBox(b.serverRack, xf, 1.46, 0.38, 0.4, 0, 1.1, 0.12, -0.38, 0, 0);
+      pushRoomBox(b.crtScreen, xf, 0.48, 0.24, 0.018, -0.36, 1.178, 0.314, -0.38, 0, 0);
+      pushRoomBox(b.crtScreen, xf, 0.36, 0.18, 0.018, 0.34, 1.178, 0.314, -0.38, 0, 0);
       // 3 Isoladores de alta tensão com discos cerâmicos empilhados + esferas corona
       for (const cx of [-0.46, 0.0, 0.46]) {
         pushRoomCyl(b.bioFluid, xf, 0.1, 0.1, 0.78, 10, cx, 1.38, -0.18);
