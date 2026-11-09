@@ -714,6 +714,115 @@ interface LocalTransform {
   yaw: number;
 }
 
+interface BoxUvOptions {
+  /** Escala métrica (metros por repetição 128x128) para texels quadrados e nítidos */
+  metersPerTile?: number;
+  /** Alinha automaticamente os veios/tábuas ao longo da maior dimensão de cada face */
+  alignLongAxis?: boolean;
+  /** Recorte vertical opcional [vMin, vMax] (ex.: faixa de advertência industrial) */
+  vRange?: readonly [number, number];
+}
+
+interface CylinderUvOptions {
+  openEnded?: boolean;
+  uRepeat?: number;
+  vMin?: number;
+  vMax?: number;
+  metersPerTile?: number;
+}
+
+/**
+ * Aplica mapeamento UV métrico por face em `BoxGeometry` ANTES de rotações/translações:
+ * - Elimina esticamento de texels em peças compridas, finas ou verticais;
+ * - Mantém texels alinhados à orientação real de peças inclinadas, tombadas ou giradas;
+ * - Quando `alignLongAxis = true`, alinha os veios da madeira ao longo do eixo mais comprido da peça.
+ */
+export function applyMetricBoxUvs(
+  geo: THREE.BoxGeometry,
+  sx: number,
+  sy: number,
+  sz: number,
+  opts?: BoxUvOptions
+): void {
+  const tile = Math.max(0.08, opts?.metersPerTile ?? 0.9);
+  const alignLong = opts?.alignLongAxis ?? true;
+  const vRange = opts?.vRange;
+
+  const normAttr = geo.getAttribute('normal');
+  const uvAttr = geo.getAttribute('uv');
+  if (!normAttr || !uvAttr) return;
+
+  for (let i = 0; i < uvAttr.count; i++) {
+    const nx = Math.abs(normAttr.getX(i));
+    const ny = Math.abs(normAttr.getY(i));
+    const rawU = uvAttr.getX(i);
+    const rawV = uvAttr.getY(i);
+
+    let faceW = sx;
+    let faceH = sy;
+    if (nx > 0.5) {
+      faceW = sz;
+      faceH = sy;
+    } else if (ny > 0.5) {
+      faceW = sx;
+      faceH = sz;
+    }
+
+    if (vRange) {
+      const u = rawU * (faceW / tile);
+      const v = vRange[0] + rawV * (vRange[1] - vRange[0]);
+      uvAttr.setXY(i, u, v);
+      continue;
+    }
+
+    if (alignLong && faceH > faceW * 1.15) {
+      uvAttr.setXY(i, rawV * (faceH / tile), rawU * (faceW / tile));
+    } else {
+      uvAttr.setXY(i, rawU * (faceW / tile), rawV * (faceH / tile));
+    }
+  }
+  uvAttr.needsUpdate = true;
+}
+
+/**
+ * Aplica mapeamento UV cilíndrico sem costura lateral + tampas planares métricas (sem pinçamento radial)
+ * em `CylinderGeometry` ANTES de rotações/translações.
+ */
+export function applyMetricCylinderUvs(
+  geo: THREE.CylinderGeometry,
+  rTop: number,
+  rBot: number,
+  height: number,
+  opts?: CylinderUvOptions
+): void {
+  const posAttr = geo.getAttribute('position');
+  const normAttr = geo.getAttribute('normal');
+  const uvAttr = geo.getAttribute('uv');
+  if (!posAttr || !normAttr || !uvAttr) return;
+
+  const tile = Math.max(0.08, opts?.metersPerTile ?? 0.9);
+  const meanCirc = Math.PI * (rTop + rBot);
+  const sideURepeat =
+    opts?.uRepeat ?? Math.max(1, Math.round(meanCirc / tile));
+  const vMin = opts?.vMin ?? 0;
+  const vMax = opts?.vMax ?? Math.max(0.04, height / tile);
+
+  for (let i = 0; i < uvAttr.count; i++) {
+    const ny = Math.abs(normAttr.getY(i));
+    if (ny > 0.9) {
+      // Tampa superior/inferior: projeção planar métrica centrada (sem distorção em pizza!)
+      const px = posAttr.getX(i);
+      const pz = posAttr.getZ(i);
+      uvAttr.setXY(i, 0.5 + px / tile, 0.5 + pz / tile);
+    } else {
+      const rawU = uvAttr.getX(i);
+      const rawV = uvAttr.getY(i);
+      uvAttr.setXY(i, rawU * sideURepeat, vMin + rawV * (vMax - vMin));
+    }
+  }
+  uvAttr.needsUpdate = true;
+}
+
 function addLocalBox(
   bucket: THREE.BufferGeometry[],
   xf: LocalTransform,
@@ -725,9 +834,11 @@ function addLocalBox(
   lz: number,
   rx = 0,
   ry = 0,
-  rz = 0
+  rz = 0,
+  uvOpts?: BoxUvOptions
 ): void {
   const g = new THREE.BoxGeometry(sx, sy, sz);
+  applyMetricBoxUvs(g, sx, sy, sz, uvOpts);
   if (rx !== 0 || ry !== 0 || rz !== 0) {
     g.applyMatrix4(
       new THREE.Matrix4().makeRotationFromEuler(
@@ -755,9 +866,18 @@ function addLocalCylinder(
   lz: number,
   rx = 0,
   ry = 0,
-  rz = 0
+  rz = 0,
+  uvOpts?: CylinderUvOptions
 ): void {
-  const g = new THREE.CylinderGeometry(rTop, rBot, height, segs);
+  const g = new THREE.CylinderGeometry(
+    rTop,
+    rBot,
+    height,
+    segs,
+    1,
+    Boolean(uvOpts?.openEnded)
+  );
+  applyMetricCylinderUvs(g, rTop, rBot, height, uvOpts);
   if (rx !== 0 || ry !== 0 || rz !== 0) {
     g.applyMatrix4(
       new THREE.Matrix4().makeRotationFromEuler(
@@ -776,6 +896,7 @@ function addLocalCylinder(
 interface ObstacleGeoBuckets {
   ironBarrel: THREE.BufferGeometry[];
   oakWood: THREE.BufferGeometry[];
+  crateWood: THREE.BufferGeometry[];
   weatheredWood: THREE.BufferGeometry[];
   metalTrim: THREE.BufferGeometry[];
   darkIron: THREE.BufferGeometry[];
@@ -793,8 +914,22 @@ function emitUprightIronBarrel(
 ): void {
   const r = 0.265 * scale;
   const h = 0.92 * scale;
-  // Corpo principal de aço pintado/oxidado
-  addLocalCylinder(b.ironBarrel, xf, r, r, h, 12, lx, h * 0.5, lz, 0, rotY, 0);
+  // Casco cilíndrico aberto nas pontas: UV 0..1 envolve 100% do tambor com frisos e faixa central exatos!
+  addLocalCylinder(
+    b.ironBarrel,
+    xf,
+    r,
+    r,
+    h,
+    12,
+    lx,
+    h * 0.5,
+    lz,
+    0,
+    rotY,
+    0,
+    { openEnded: true, uRepeat: 1, vMin: 0, vMax: 1 }
+  );
   // 4 aros de reforço de ferro escuro (base, 1/3, 2/3 e borda superior)
   for (const frac of [0.035, 0.34, 0.67, 0.965]) {
     addLocalCylinder(
@@ -812,16 +947,27 @@ function emitUprightIronBarrel(
       0
     );
   }
-  // Tampa interna rebaixada + bujão sextavado e respiro metálico
+  // Tampos superior e inferior rebaixados em aço escuro (evita vazar a faixa amarela na tampa!)
   addLocalCylinder(
     b.darkIron,
     xf,
-    r * 0.88,
-    r * 0.88,
+    r * 0.97,
+    r * 0.97,
+    0.022 * scale,
+    12,
+    lx,
+    h - 0.012 * scale,
+    lz
+  );
+  addLocalCylinder(
+    b.darkIron,
+    xf,
+    r * 0.97,
+    r * 0.97,
     0.02 * scale,
     12,
     lx,
-    h - 0.008 * scale,
+    0.012 * scale,
     lz
   );
   const bx = lx + Math.cos(rotY) * (r * 0.46);
@@ -861,10 +1007,12 @@ function emitFallenIronBarrel(
   const r = 0.255;
   const h = 0.88;
   const cy = r + 0.015;
+  const cos = Math.cos(axisYaw);
+  const sin = Math.sin(axisYaw);
   // Calços de madeira sob o barril deitado
   addLocalBox(b.weatheredWood, xf, 0.14, 0.06, 0.48, lx - 0.2, 0.03, lz, 0, axisYaw, 0);
   addLocalBox(b.weatheredWood, xf, 0.14, 0.06, 0.48, lx + 0.2, 0.03, lz, 0, axisYaw, 0);
-  // Cilindro deitado no eixo X (rz = PI/2)
+  // Casco cilíndrico deitado no eixo X (rz = PI/2) com textura acompanhando a rotação!
   addLocalCylinder(
     b.ironBarrel,
     xf,
@@ -877,6 +1025,39 @@ function emitFallenIronBarrel(
     lz,
     0,
     axisYaw,
+    Math.PI * 0.5,
+    { openEnded: true, uRepeat: 1, vMin: 0, vMax: 1 }
+  );
+  // Tampos circulares rebaixados em ferro escuro nas DUAS extremidades do tambor tombado
+  for (const endOff of [-0.426, 0.426]) {
+    addLocalCylinder(
+      b.darkIron,
+      xf,
+      r * 0.97,
+      r * 0.97,
+      0.024,
+      12,
+      lx + cos * endOff,
+      cy,
+      lz - sin * endOff,
+      0,
+      axisYaw,
+      Math.PI * 0.5
+    );
+  }
+  // Bujão metálico na tampa frontal do barril tombado
+  addLocalCylinder(
+    b.metalTrim,
+    xf,
+    0.034,
+    0.034,
+    0.03,
+    6,
+    lx + cos * 0.442,
+    cy + r * 0.42,
+    lz - sin * 0.442,
+    0,
+    axisYaw,
     Math.PI * 0.5
   );
   for (const off of [-0.39, -0.13, 0.13, 0.39]) {
@@ -887,9 +1068,9 @@ function emitFallenIronBarrel(
       r * 1.045,
       0.032,
       12,
-      lx + Math.cos(axisYaw) * off,
+      lx + cos * off,
       cy,
-      lz - Math.sin(axisYaw) * off,
+      lz - sin * off,
       0,
       axisYaw,
       Math.PI * 0.5
@@ -910,7 +1091,7 @@ function emitUprightWoodenBarrel(
   const rBelly = 0.295 * scale;
   const h = 0.94 * scale;
 
-  // Silhueta abaulada em 3 seções troncocônicas (fundo -> bojo -> topo)
+  // Silhueta abaulada em 3 seções troncocônicas com UV vertical contínuo (0->0.34->0.66->1.0) e 16 aduelas!
   addLocalCylinder(
     b.oakWood,
     xf,
@@ -923,7 +1104,8 @@ function emitUprightWoodenBarrel(
     lz,
     0,
     rotY,
-    0
+    0,
+    { openEnded: true, uRepeat: 2, vMin: 0.0, vMax: 0.34 }
   );
   addLocalCylinder(
     b.oakWood,
@@ -937,7 +1119,8 @@ function emitUprightWoodenBarrel(
     lz,
     0,
     rotY,
-    0
+    0,
+    { openEnded: true, uRepeat: 2, vMin: 0.34, vMax: 0.66 }
   );
   addLocalCylinder(
     b.oakWood,
@@ -951,7 +1134,8 @@ function emitUprightWoodenBarrel(
     lz,
     0,
     rotY,
-    0
+    0,
+    { openEnded: true, uRepeat: 2, vMin: 0.66, vMax: 1.0 }
   );
 
   // 4 arcos/cintas de ferro escuro envolvendo o tonel
@@ -978,17 +1162,36 @@ function emitUprightWoodenBarrel(
     );
   }
 
-  // Tampo superior de tábuas rebaixado + batoque/rolha de madeira
+  // Tampos superior e inferior de tábuas rebaixados + batoque metálico
   addLocalCylinder(
     b.weatheredWood,
     xf,
-    rEnd * 0.9,
-    rEnd * 0.9,
-    0.025 * scale,
-    10,
+    rEnd * 0.95,
+    rEnd * 0.95,
+    0.026 * scale,
+    12,
     lx,
-    h - 0.012 * scale,
-    lz
+    h - 0.014 * scale,
+    lz,
+    0,
+    rotY,
+    0,
+    { metersPerTile: 0.58 }
+  );
+  addLocalCylinder(
+    b.weatheredWood,
+    xf,
+    rEnd * 0.95,
+    rEnd * 0.95,
+    0.024 * scale,
+    12,
+    lx,
+    0.014 * scale,
+    lz,
+    0,
+    rotY,
+    0,
+    { metersPerTile: 0.58 }
   );
   addLocalCylinder(
     b.darkIron,
@@ -1019,6 +1222,7 @@ function emitFallenWoodenBarrel(
 
   const cos = Math.cos(axisYaw);
   const sin = Math.sin(axisYaw);
+  // Bojo central (x_local: -0.17 .. +0.17)
   addLocalCylinder(
     b.oakWood,
     xf,
@@ -1031,22 +1235,10 @@ function emitFallenWoodenBarrel(
     lz,
     0,
     axisYaw,
-    Math.PI * 0.5
+    Math.PI * 0.5,
+    { openEnded: true, uRepeat: 2, vMin: 0.33, vMax: 0.67 }
   );
-  addLocalCylinder(
-    b.oakWood,
-    xf,
-    rEnd,
-    rBelly,
-    0.27,
-    12,
-    lx + cos * 0.3,
-    cy,
-    lz - sin * 0.3,
-    0,
-    axisYaw,
-    Math.PI * 0.5
-  );
+  // Seção +X (sob rz = +PI/2, +Y aponta para o bojo central e -Y aponta para a ponta +X!)
   addLocalCylinder(
     b.oakWood,
     xf,
@@ -1054,13 +1246,48 @@ function emitFallenWoodenBarrel(
     rEnd,
     0.27,
     12,
-    lx - cos * 0.3,
+    lx + cos * 0.305,
     cy,
-    lz + sin * 0.3,
+    lz - sin * 0.305,
     0,
     axisYaw,
-    Math.PI * 0.5
+    Math.PI * 0.5,
+    { openEnded: true, uRepeat: 2, vMin: 0.0, vMax: 0.33 }
   );
+  // Seção -X (sob rz = +PI/2, -Y aponta para o bojo central e +Y aponta para a ponta -X!)
+  addLocalCylinder(
+    b.oakWood,
+    xf,
+    rEnd,
+    rBelly,
+    0.27,
+    12,
+    lx - cos * 0.305,
+    cy,
+    lz + sin * 0.305,
+    0,
+    axisYaw,
+    Math.PI * 0.5,
+    { openEnded: true, uRepeat: 2, vMin: 0.67, vMax: 1.0 }
+  );
+  // Tampos de madeira rebaixados nas duas extremidades do tonel tombado
+  for (const endOff of [-0.426, 0.426]) {
+    addLocalCylinder(
+      b.weatheredWood,
+      xf,
+      rEnd * 0.95,
+      rEnd * 0.95,
+      0.024,
+      12,
+      lx + cos * endOff,
+      cy,
+      lz - sin * endOff,
+      0,
+      axisYaw,
+      Math.PI * 0.5,
+      { metersPerTile: 0.58 }
+    );
+  }
   for (const [off, hr] of [
     [-0.36, rEnd * 1.05],
     [-0.14, rBelly * 1.03],
@@ -1097,9 +1324,9 @@ function emitHeavyWoodenCrate(
   localYaw = 0
 ): void {
   const cy = baseY + sy * 0.5;
-  // Miolo de tábuas
+  // Miolo de tábuas horizontais de carga (sem esticar e sem costuras falsas!)
   addLocalBox(
-    b.oakWood,
+    b.crateWood,
     xf,
     sx - 0.04,
     sy - 0.03,
@@ -1109,7 +1336,8 @@ function emitHeavyWoodenCrate(
     lz,
     0,
     localYaw,
-    0
+    0,
+    { metersPerTile: 0.72, alignLongAxis: false }
   );
   // Molduras superior e inferior de madeira grossa
   addLocalBox(
@@ -1123,7 +1351,8 @@ function emitHeavyWoodenCrate(
     lz,
     0,
     localYaw,
-    0
+    0,
+    { metersPerTile: 0.85, alignLongAxis: true }
   );
   addLocalBox(
     b.weatheredWood,
@@ -1136,7 +1365,8 @@ function emitHeavyWoodenCrate(
     lz,
     0,
     localYaw,
-    0
+    0,
+    { metersPerTile: 0.85, alignLongAxis: true }
   );
 
   // 4 colunas verticais de canto + ferragens escuras nos vértices
@@ -1159,7 +1389,8 @@ function emitHeavyWoodenCrate(
         pz,
         0,
         localYaw,
-        0
+        0,
+        { metersPerTile: 0.85, alignLongAxis: true }
       );
       addLocalBox(
         b.darkIron,
@@ -1190,7 +1421,7 @@ function emitHeavyWoodenCrate(
     }
   }
 
-  // Travessa diagonal nas faces frontal e traseira
+  // Travessa diagonal nas faces frontal e traseira (veios correm exatamente na diagonal da mão-francesa!)
   const diagLen = Math.hypot(sx - 0.12, sy - 0.12);
   const diagTilt = Math.atan2(sy - 0.12, sx - 0.12);
   for (const zSign of [-1, 1]) {
@@ -1208,7 +1439,8 @@ function emitHeavyWoodenCrate(
       fzz,
       0,
       localYaw,
-      diagTilt * zSign
+      diagTilt * zSign,
+      { metersPerTile: 0.85, alignLongAxis: true }
     );
   }
 }
@@ -1235,8 +1467,21 @@ function emitObstacleGeometry(
       } else {
         emitUprightIronBarrel(b, xf, -0.31, -0.05, 0.3, 1.02);
         emitUprightIronBarrel(b, xf, 0.25, -0.06, 1.9, 0.96);
-        // Galão metálico menor encostado na frente
-        addLocalBox(b.ironBarrel, xf, 0.24, 0.38, 0.18, 0.0, 0.19, 0.18, 0, 0.25, 0);
+        // Galão metálico menor encostado na frente (aço rebitado proporcional)
+        addLocalBox(
+          b.metalTrim,
+          xf,
+          0.24,
+          0.38,
+          0.18,
+          0.0,
+          0.19,
+          0.18,
+          0,
+          0.25,
+          0,
+          { metersPerTile: 0.52 }
+        );
         addLocalBox(b.darkIron, xf, 0.12, 0.05, 0.05, 0.0, 0.4, 0.18, 0, 0.25, 0);
       }
       break;
@@ -1290,17 +1535,62 @@ function emitObstacleGeometry(
         addLocalBox(b.darkIron, xf, rackW + 0.01, 0.058, 0.028, 0, sy, -hd - 0.01);
       }
 
-      // Carga estocada nas prateleiras (caixas fechadas, tambores técnicos, maletas de ferro)
+      // Carga estocada nas prateleiras (caixas fechadas, tambores técnicos com tampas próprias, maletas de ferro)
       emitHeavyWoodenCrate(b, xf, 0.48, 0.44, 0.44, -0.36, 0.185, 0.0, 0.06);
-      addLocalCylinder(b.ironBarrel, xf, 0.16, 0.16, 0.48, 10, 0.28, 0.425, -0.02);
+      addLocalCylinder(
+        b.ironBarrel,
+        xf,
+        0.16,
+        0.16,
+        0.48,
+        10,
+        0.28,
+        0.425,
+        -0.02,
+        0,
+        0,
+        0,
+        { openEnded: true, uRepeat: 1, vMin: 0, vMax: 1 }
+      );
+      addLocalCylinder(b.darkIron, xf, 0.158, 0.158, 0.02, 10, 0.28, 0.658, -0.02);
       addLocalCylinder(b.darkIron, xf, 0.168, 0.168, 0.03, 10, 0.28, 0.56, -0.02);
 
-      addLocalBox(b.ironBarrel, xf, 0.42, 0.34, 0.42, -0.34, 0.97, 0.02, 0, -0.08, 0);
+      // Maleta técnica blindada de aço na 2ª prateleira
+      addLocalBox(
+        b.metalTrim,
+        xf,
+        0.42,
+        0.32,
+        0.42,
+        -0.34,
+        0.96,
+        0.02,
+        0,
+        -0.08,
+        0,
+        { metersPerTile: 0.64 }
+      );
+      addLocalBox(
+        b.darkIron,
+        xf,
+        0.44,
+        0.04,
+        0.44,
+        -0.34,
+        1.13,
+        0.02,
+        0,
+        -0.08,
+        0
+      );
       emitHeavyWoodenCrate(b, xf, 0.52, 0.42, 0.44, 0.26, 0.805, -0.01, -0.05);
 
       addLocalBox(b.darkIron, xf, 0.46, 0.28, 0.38, -0.28, 1.56, 0.0, 0, 0.1, 0);
       addLocalBox(b.metalTrim, xf, 0.48, 0.04, 0.4, -0.28, 1.71, 0.0, 0, 0.1, 0);
       if (p.variant !== 1) {
+        const dYaw = 0.12;
+        const dc = Math.cos(dYaw);
+        const ds = Math.sin(dYaw);
         addLocalCylinder(
           b.ironBarrel,
           xf,
@@ -1312,9 +1602,26 @@ function emitObstacleGeometry(
           1.55,
           0.02,
           0,
-          0.12,
-          Math.PI * 0.5
+          dYaw,
+          Math.PI * 0.5,
+          { openEnded: true, uRepeat: 1, vMin: 0, vMax: 1 }
         );
+        for (const eOff of [-0.212, 0.212]) {
+          addLocalCylinder(
+            b.darkIron,
+            xf,
+            0.128,
+            0.128,
+            0.02,
+            10,
+            0.32 + dc * eOff,
+            1.55,
+            0.02 - ds * eOff,
+            0,
+            dYaw,
+            Math.PI * 0.5
+          );
+        }
       }
       break;
     }
@@ -1338,34 +1645,70 @@ function emitObstacleGeometry(
         addLocalBox(b.weatheredWood, xf, 0.05, 0.07, rackD, sx, 1.78, 0);
       }
 
-      // 3 pranchões pesados de madeira
+      // 3 pranchões pesados de tábuas corridas ao longo da estante
       for (const sy of [0.22, 1.0, 1.8]) {
-        addLocalBox(b.oakWood, xf, rackW, 0.058, rackD - 0.02, 0, sy, 0);
+        addLocalBox(
+          b.crateWood,
+          xf,
+          rackW,
+          0.058,
+          rackD - 0.02,
+          0,
+          sy,
+          0,
+          0,
+          0,
+          0,
+          { metersPerTile: 0.78, alignLongAxis: true }
+        );
       }
 
-      // Carga rústica: barrilzinho de madeira, caixotes e blocos
+      // Carga rústica: barrilzinho de madeira, caixotes e barrilete deitado com tampos
       emitUprightWoodenBarrel(b, xf, -0.34, 0.0, 0.5, 0.68);
       emitHeavyWoodenCrate(b, xf, 0.5, 0.48, 0.44, 0.28, 0.25, 0.0, -0.07);
       emitHeavyWoodenCrate(b, xf, 0.46, 0.44, 0.42, -0.26, 1.03, 0.02, 0.09);
-      addLocalCylinder(
-        b.oakWood,
-        xf,
-        0.15,
-        0.15,
-        0.44,
-        10,
-        0.3,
-        1.18,
-        0.0,
-        0,
-        0.1,
-        Math.PI * 0.5
-      );
+      {
+        const kYaw = 0.1;
+        const kc = Math.cos(kYaw);
+        const ks = Math.sin(kYaw);
+        addLocalCylinder(
+          b.oakWood,
+          xf,
+          0.15,
+          0.15,
+          0.44,
+          10,
+          0.3,
+          1.18,
+          0.0,
+          0,
+          kYaw,
+          Math.PI * 0.5,
+          { openEnded: true, uRepeat: 2, vMin: 0, vMax: 1 }
+        );
+        for (const eOff of [-0.212, 0.212]) {
+          addLocalCylinder(
+            b.weatheredWood,
+            xf,
+            0.146,
+            0.146,
+            0.02,
+            10,
+            0.3 + kc * eOff,
+            1.18,
+            -ks * eOff,
+            0,
+            kYaw,
+            Math.PI * 0.5,
+            { metersPerTile: 0.5 }
+          );
+        }
+      }
       break;
     }
 
     case 'wooden_crate_stack': {
-      // Estrado/pallet de madeira no chão
+      // Estrado/pallet de madeira no chão com ripas orientadas no sentido real das tábuas
       const palW = p.role === 'island' ? 1.2 : 1.24;
       const palD = p.role === 'island' ? 1.04 : 0.72;
       for (const sz of [-palD * 0.38, 0, palD * 0.38]) {
@@ -1373,14 +1716,18 @@ function emitObstacleGeometry(
       }
       for (let i = -2; i <= 2; i++) {
         addLocalBox(
-          b.oakWood,
+          b.crateWood,
           xf,
           palW * 0.17,
           0.03,
           palD,
           i * (palW * 0.2),
           0.075,
-          0
+          0,
+          0,
+          0,
+          0,
+          { metersPerTile: 0.72, alignLongAxis: true }
         );
       }
 
@@ -1427,9 +1774,22 @@ function emitObstacleGeometry(
         // Escoras traseiras inclinadas
         addLocalBox(b.darkIron, xf, 0.075, 0.96, 0.075, sx, 0.48, -0.12, 0.34, 0, 0);
       }
-      // Chapa blindada principal levemente inclinada + fresta tática superior
+      // Chapa blindada principal levemente inclinada + faixa de advertência industrial nítida
       addLocalBox(b.metalTrim, xf, bw, 0.78, 0.09, 0, 0.45, 0.12, -0.14, 0, 0);
-      addLocalBox(b.ironBarrel, xf, bw - 0.08, 0.22, 0.1, 0, 0.52, 0.13, -0.14, 0, 0);
+      addLocalBox(
+        b.ironBarrel,
+        xf,
+        bw - 0.08,
+        0.2,
+        0.1,
+        0,
+        0.52,
+        0.13,
+        -0.14,
+        0,
+        0,
+        { metersPerTile: 0.85, alignLongAxis: false, vRange: [0.438, 0.562] }
+      );
       // Escudo superior com fresta de observação
       addLocalBox(b.darkIron, xf, 0.44, 0.22, 0.09, -0.43, 0.98, 0.05, -0.14, 0, 0);
       addLocalBox(b.darkIron, xf, 0.44, 0.22, 0.09, 0.43, 0.98, 0.05, -0.14, 0, 0);
@@ -1438,10 +1798,49 @@ function emitObstacleGeometry(
     }
 
     case 'stone_rubble_barricade': {
-      // Blocos pesados de alvenaria desmoronada + pranchões cruzados + barril encostado
-      addLocalBox(b.stone, xf, 0.68, 0.56, 0.58, -0.28, 0.28, -0.04, 0, 0.08, 0);
-      addLocalBox(b.stone, xf, 0.52, 0.48, 0.48, -0.24, 0.78, -0.06, 0.05, -0.14, 0.04);
-      addLocalBox(b.stone, xf, 0.48, 0.42, 0.5, 0.28, 0.21, 0.06, 0, 0.22, 0);
+      // Blocos pesados de alvenaria desmoronada com fiadas proporcionais acompanhando a inclinação de cada bloco!
+      addLocalBox(
+        b.stone,
+        xf,
+        0.68,
+        0.56,
+        0.58,
+        -0.28,
+        0.28,
+        -0.04,
+        0,
+        0.08,
+        0,
+        { metersPerTile: 1.45, alignLongAxis: false }
+      );
+      addLocalBox(
+        b.stone,
+        xf,
+        0.52,
+        0.48,
+        0.48,
+        -0.24,
+        0.78,
+        -0.06,
+        0.05,
+        -0.14,
+        0.04,
+        { metersPerTile: 1.45, alignLongAxis: false }
+      );
+      addLocalBox(
+        b.stone,
+        xf,
+        0.48,
+        0.42,
+        0.5,
+        0.28,
+        0.21,
+        0.06,
+        0,
+        0.22,
+        0,
+        { metersPerTile: 1.45, alignLongAxis: false }
+      );
       // Pranchões de escoramento cruzados
       addLocalBox(b.weatheredWood, xf, 1.28, 0.14, 0.07, 0, 0.62, 0.18, 0, 0.04, 0.14);
       addLocalBox(b.weatheredWood, xf, 1.22, 0.13, 0.07, 0.04, 0.92, 0.12, 0, -0.05, -0.11);
@@ -1462,7 +1861,7 @@ function emitObstacleGeometry(
         }
         // Viga mestra de madeira arriada (base em y ~ 1.20m) + segunda tora cruzada acima
         addLocalBox(b.weatheredWood, xf, span, 0.24, 0.28, 0, 1.34, -0.06, 0, 0, 0.035);
-        addLocalBox(b.oakWood, xf, span - 0.06, 0.2, 0.22, 0, 1.66, 0.08, 0, 0, -0.045);
+        addLocalBox(b.crateWood, xf, span - 0.06, 0.2, 0.22, 0, 1.66, 0.08, 0, 0, -0.045);
         // Cintas de ferro prendendo a viga rachada
         for (const bx of [-0.85, 0, 0.85]) {
           addLocalBox(b.darkIron, xf, 0.09, 0.28, 0.32, bx, 1.34, -0.06);
@@ -1477,9 +1876,9 @@ function emitObstacleGeometry(
         addLocalBox(b.metalTrim, xf, span, 0.22, 0.24, 0, 1.33, -0.08, 0, 0, -0.03);
         addLocalBox(b.darkIron, xf, span, 0.05, 0.3, 0, 1.22, -0.08, 0, 0, -0.03);
         addLocalBox(b.darkIron, xf, span, 0.05, 0.3, 0, 1.44, -0.08, 0, 0, -0.03);
-        // Duto/cano pressurizado paralelo com flanges rebitados
+        // Duto/cano pressurizado paralelo em aço rebitado proporcional + flanges
         addLocalCylinder(
-          b.ironBarrel,
+          b.metalTrim,
           xf,
           0.135,
           0.135,
@@ -1490,7 +1889,8 @@ function emitObstacleGeometry(
           0.1,
           0,
           0,
-          Math.PI * 0.5
+          Math.PI * 0.5,
+          { metersPerTile: 0.72 }
         );
         for (const fx of [-0.9, 0, 0.9]) {
           addLocalCylinder(
@@ -1607,6 +2007,7 @@ export function buildDoomMapObstacles(
   const buckets: ObstacleGeoBuckets = {
     ironBarrel: [],
     oakWood: [],
+    crateWood: [],
     weatheredWood: [],
     metalTrim: [],
     darkIron: [],
@@ -1626,34 +2027,47 @@ export function buildDoomMapObstacles(
     });
   }
 
+  const obstacleMatOpts = { useLocalUv: true, baseLight: 0.21 } as const;
   const matIronBarrel = createDoomSurfaceMaterial(
     textures.ironBarrel,
-    sharedUniforms
+    sharedUniforms,
+    obstacleMatOpts
   );
   const matOakWood = createDoomSurfaceMaterial(
     textures.oakStave,
-    sharedUniforms
+    sharedUniforms,
+    obstacleMatOpts
+  );
+  const matCrateWood = createDoomSurfaceMaterial(
+    textures.cratePlanks,
+    sharedUniforms,
+    obstacleMatOpts
   );
   const matWeatheredWood = createDoomSurfaceMaterial(
     textures.weatheredWood,
-    sharedUniforms
+    sharedUniforms,
+    obstacleMatOpts
   );
   const matMetalTrim = createDoomSurfaceMaterial(
     textures.metalTrim,
-    sharedUniforms
+    sharedUniforms,
+    obstacleMatOpts
   );
   const matDarkIron = createDoomSurfaceMaterial(
     textures.darkIron,
-    sharedUniforms
+    sharedUniforms,
+    obstacleMatOpts
   );
   const matStone = createDoomSurfaceMaterial(
     textures.stoneWall,
-    sharedUniforms
+    sharedUniforms,
+    obstacleMatOpts
   );
 
   const meshDefs: Array<[THREE.BufferGeometry[], THREE.Material, string]> = [
     [buckets.ironBarrel, matIronBarrel, 'MazeObstaclesIronBarrel'],
     [buckets.oakWood, matOakWood, 'MazeObstaclesOakWood'],
+    [buckets.crateWood, matCrateWood, 'MazeObstaclesCrateWood'],
     [buckets.weatheredWood, matWeatheredWood, 'MazeObstaclesWood'],
     [buckets.metalTrim, matMetalTrim, 'MazeObstaclesMetal'],
     [buckets.darkIron, matDarkIron, 'MazeObstaclesDarkIron'],

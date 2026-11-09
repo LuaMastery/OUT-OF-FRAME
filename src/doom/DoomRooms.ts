@@ -844,7 +844,7 @@ function createRoomMaterials(
       fullBright: true,
       useLocalUv: true,
     }),
-    oakWood: createDoomSurfaceMaterial(textures.oakStave, sharedUniforms, {
+    oakWood: createDoomSurfaceMaterial(textures.cratePlanks, sharedUniforms, {
       useLocalUv: true,
     }),
     weatheredWood: createDoomSurfaceMaterial(
@@ -876,6 +876,83 @@ interface LocalXf {
 
 type GeoBuckets = Record<keyof RoomMaterials, THREE.BufferGeometry[]>;
 
+interface RoomMetricUvRule {
+  metersPerTile: number;
+  alignLongAxis: boolean;
+}
+
+const roomBucketMetricUv = new WeakMap<
+  THREE.BufferGeometry[],
+  RoomMetricUvRule
+>();
+
+function applyRoomBoxMetricUv(
+  geo: THREE.BoxGeometry,
+  sx: number,
+  sy: number,
+  sz: number,
+  rule: RoomMetricUvRule
+): void {
+  const tile = Math.max(0.08, rule.metersPerTile);
+  const normAttr = geo.getAttribute('normal');
+  const uvAttr = geo.getAttribute('uv');
+  if (!normAttr || !uvAttr) return;
+
+  for (let i = 0; i < uvAttr.count; i++) {
+    const nx = Math.abs(normAttr.getX(i));
+    const ny = Math.abs(normAttr.getY(i));
+    const rawU = uvAttr.getX(i);
+    const rawV = uvAttr.getY(i);
+
+    let faceW = sx;
+    let faceH = sy;
+    if (nx > 0.5) {
+      faceW = sz;
+      faceH = sy;
+    } else if (ny > 0.5) {
+      faceW = sx;
+      faceH = sz;
+    }
+
+    if (rule.alignLongAxis && faceH > faceW * 1.15) {
+      uvAttr.setXY(i, rawV * (faceH / tile), rawU * (faceW / tile));
+    } else {
+      uvAttr.setXY(i, rawU * (faceW / tile), rawV * (faceH / tile));
+    }
+  }
+  uvAttr.needsUpdate = true;
+}
+
+function applyRoomCylMetricUv(
+  geo: THREE.CylinderGeometry,
+  rTop: number,
+  rBot: number,
+  h: number,
+  rule: RoomMetricUvRule
+): void {
+  const posAttr = geo.getAttribute('position');
+  const normAttr = geo.getAttribute('normal');
+  const uvAttr = geo.getAttribute('uv');
+  if (!posAttr || !normAttr || !uvAttr) return;
+
+  const tile = Math.max(0.08, rule.metersPerTile);
+  const uRep = Math.max(1, Math.round((Math.PI * (rTop + rBot)) / tile));
+  const vMax = Math.max(0.04, h / tile);
+
+  for (let i = 0; i < uvAttr.count; i++) {
+    if (Math.abs(normAttr.getY(i)) > 0.9) {
+      uvAttr.setXY(
+        i,
+        0.5 + posAttr.getX(i) / tile,
+        0.5 + posAttr.getZ(i) / tile
+      );
+    } else {
+      uvAttr.setXY(i, uvAttr.getX(i) * uRep, uvAttr.getY(i) * vMax);
+    }
+  }
+  uvAttr.needsUpdate = true;
+}
+
 function pushRoomBox(
   bucket: THREE.BufferGeometry[],
   xf: LocalXf,
@@ -890,6 +967,10 @@ function pushRoomBox(
   rz = 0
 ): void {
   const g = new THREE.BoxGeometry(sx, sy, sz);
+  const uvRule = roomBucketMetricUv.get(bucket);
+  if (uvRule) {
+    applyRoomBoxMetricUv(g, sx, sy, sz, uvRule);
+  }
   if (rx !== 0 || ry !== 0 || rz !== 0) {
     g.applyMatrix4(
       new THREE.Matrix4().makeRotationFromEuler(
@@ -918,6 +999,10 @@ function pushRoomCyl(
   rz = 0
 ): void {
   const g = new THREE.CylinderGeometry(rTop, rBot, h, segs);
+  const uvRule = roomBucketMetricUv.get(bucket);
+  if (uvRule) {
+    applyRoomCylMetricUv(g, rTop, rBot, h, uvRule);
+  }
   if (rx !== 0 || ry !== 0 || rz !== 0) {
     g.applyMatrix4(
       new THREE.Matrix4().makeRotationFromEuler(
@@ -1433,6 +1518,27 @@ export function buildDoomThemedRooms(
     darkIron: [],
     stone: [],
   };
+
+  roomBucketMetricUv.set(buckets.oakWood, {
+    metersPerTile: 0.85,
+    alignLongAxis: true,
+  });
+  roomBucketMetricUv.set(buckets.weatheredWood, {
+    metersPerTile: 0.85,
+    alignLongAxis: true,
+  });
+  roomBucketMetricUv.set(buckets.metalTrim, {
+    metersPerTile: 0.85,
+    alignLongAxis: true,
+  });
+  roomBucketMetricUv.set(buckets.darkIron, {
+    metersPerTile: 0.8,
+    alignLongAxis: true,
+  });
+  roomBucketMetricUv.set(buckets.stone, {
+    metersPerTile: 1.45,
+    alignLongAxis: false,
+  });
 
   emitThemedRoomFloors(buckets);
 

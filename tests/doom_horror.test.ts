@@ -83,6 +83,10 @@ import {
   STAMINA_SLIDE_BURST_COST,
   stepPlayerStaminaState,
 } from '../src/doom/DoomStamina';
+import {
+  applyMetricBoxUvs,
+  applyMetricCylinderUvs,
+} from '../src/doom/DoomObstacles';
 import { createDoomTextures } from '../src/doom/DoomTextures';
 import { DoomWorldItems } from '../src/doom/DoomWorldItems';
 import {
@@ -5568,6 +5572,155 @@ describe('Ragdoll Verlet 3D Desmaiado, 4 Tentáculos da Aranha & Casulo de Teia 
       () => {}
     );
     expect(freedStep.speedMultiplier).toBeGreaterThan(0.95);
+  });
+
+  it('mapeia UVs locais métricas e cilíndricas sem esticar nem projetar textura de parede nos obstáculos 3D', () => {
+    const textures = createDoomTextures();
+    expect(textures.cratePlanks).toBeDefined();
+    expect(textures.cratePlanks.image.width).toBe(128);
+    expect(textures.cratePlanks.image.height).toBe(128);
+
+    // 1. weatheredWood não deve ter cintas pretas assadas nas extremidades X (tiling contínuo!)
+    const woodData = textures.weatheredWood.image.data as Uint8Array;
+    let edgeSum = 0;
+    let edgeCount = 0;
+    let midSum = 0;
+    let midCount = 0;
+    for (let y = 0; y < 128; y++) {
+      for (let x = 0; x < 128; x++) {
+        const idx = (y * 128 + x) * 4;
+        const lum = (woodData[idx] + woodData[idx + 1] + woodData[idx + 2]) / 3;
+        if (x < 7 || x >= 121) {
+          edgeSum += lum;
+          edgeCount++;
+        } else if (x >= 48 && x < 80) {
+          midSum += lum;
+          midCount++;
+        }
+      }
+    }
+    const edgeAvg = edgeSum / edgeCount;
+    const midAvg = midSum / midCount;
+    expect(Math.abs(edgeAvg - midAvg)).toBeLessThan(12);
+
+    // 2. applyMetricBoxUvs elimina esticamento em vigas finas/altas e respeita alignLongAxis
+    const postGeo = new THREE.BoxGeometry(0.06, 2.1, 0.06);
+    applyMetricBoxUvs(postGeo, 0.06, 2.1, 0.06, {
+      metersPerTile: 0.9,
+      alignLongAxis: true,
+    });
+    const postUv = postGeo.getAttribute('uv');
+    let maxPostU = 0;
+    let maxPostV = 0;
+    for (let i = 0; i < postUv.count; i++) {
+      maxPostU = Math.max(maxPostU, postUv.getX(i));
+      maxPostV = Math.max(maxPostV, postUv.getY(i));
+    }
+    // Com alignLongAxis = true, os veios correm ao longo dos 2.1m (U ~ 2.33) e a espessura 0.06m usa V ~ 0.067
+    expect(maxPostU).toBeCloseTo(2.1 / 0.9, 3);
+    expect(maxPostV).toBeCloseTo(0.06 / 0.9, 3);
+
+    const crateInnerGeo = new THREE.BoxGeometry(0.7, 0.75, 0.62);
+    applyMetricBoxUvs(crateInnerGeo, 0.7, 0.75, 0.62, {
+      metersPerTile: 0.72,
+      alignLongAxis: false,
+    });
+    const crateUv = crateInnerGeo.getAttribute('uv');
+    let maxCrateV = 0;
+    for (let i = 0; i < crateUv.count; i++) {
+      maxCrateV = Math.max(maxCrateV, crateUv.getY(i));
+    }
+    expect(maxCrateV).toBeCloseTo(0.75 / 0.72, 3);
+
+    // 3. applyMetricCylinderUvs envolve cascos abertos sem costuras e projeta tampas planares sem pinçamento
+    const drumShell = new THREE.CylinderGeometry(0.265, 0.265, 0.92, 12, 1, true);
+    applyMetricCylinderUvs(drumShell, 0.265, 0.265, 0.92, {
+      openEnded: true,
+      uRepeat: 1,
+      vMin: 0,
+      vMax: 1,
+    });
+    const shellUv = drumShell.getAttribute('uv');
+    let shellMaxU = 0;
+    let shellMaxV = 0;
+    for (let i = 0; i < shellUv.count; i++) {
+      shellMaxU = Math.max(shellMaxU, shellUv.getX(i));
+      shellMaxV = Math.max(shellMaxV, shellUv.getY(i));
+    }
+    expect(shellMaxU).toBeCloseTo(1, 3);
+    expect(shellMaxV).toBeCloseTo(1, 3);
+
+    // 4. Todas as 7 malhas consolidadas de obstáculos do labirinto usam uUseLocalUv = 1 e UVs finitas
+    const scene = new THREE.Scene();
+    const sharedUniforms = createDoomSharedUniforms();
+    const maze = buildDoomLabyrinth(scene, textures, sharedUniforms);
+    expect(maze.arenaLayout.obstaclePlacements.length).toBe(138);
+
+    const obstacleMeshNames = [
+      'MazeObstaclesIronBarrel',
+      'MazeObstaclesOakWood',
+      'MazeObstaclesCrateWood',
+      'MazeObstaclesWood',
+      'MazeObstaclesMetal',
+      'MazeObstaclesDarkIron',
+      'MazeObstaclesStone',
+    ];
+
+    for (const name of obstacleMeshNames) {
+      const mesh = scene.getObjectByName(name) as THREE.Mesh | undefined;
+      expect(mesh).toBeDefined();
+      const mat = mesh!.material as THREE.ShaderMaterial;
+      expect(mat.uniforms.uUseLocalUv.value).toBe(1);
+
+      const pos = mesh!.geometry.getAttribute('position');
+      const uv = mesh!.geometry.getAttribute('uv');
+      expect(pos.count).toBeGreaterThan(24);
+      expect(uv.count).toBe(pos.count);
+      for (let i = 0; i < uv.count; i++) {
+        expect(Number.isFinite(uv.getX(i))).toBe(true);
+        expect(Number.isFinite(uv.getY(i))).toBe(true);
+      }
+    }
+
+    // 5. Mobiliário estrutural das salas temáticas também usa UVs métricas sem esticamento 0..1
+    for (const roomMeshName of [
+      'MazeRoom_oakWood',
+      'MazeRoom_weatheredWood',
+      'MazeRoom_metalTrim',
+      'MazeRoom_darkIron',
+    ]) {
+      const mesh = scene.getObjectByName(roomMeshName) as THREE.Mesh | undefined;
+      expect(mesh).toBeDefined();
+      const mat = mesh!.material as THREE.ShaderMaterial;
+      expect(mat.uniforms.uUseLocalUv.value).toBe(1);
+      const uv = mesh!.geometry.getAttribute('uv');
+      let maxU = 0;
+      for (let i = 0; i < uv.count; i++) {
+        maxU = Math.max(maxU, uv.getX(i));
+      }
+      expect(maxU).toBeGreaterThan(1.5);
+    }
+
+    const stoneRoomMesh = scene.getObjectByName('MazeRoom_stone') as
+      | THREE.Mesh
+      | undefined;
+    expect(stoneRoomMesh).toBeDefined();
+    expect(
+      (stoneRoomMesh!.material as THREE.ShaderMaterial).uniforms.uUseLocalUv
+        .value
+    ).toBe(1);
+    const stoneUv = stoneRoomMesh!.geometry.getAttribute('uv');
+    let maxStoneU = 0;
+    let minPositiveStoneV = Infinity;
+    for (let i = 0; i < stoneUv.count; i++) {
+      maxStoneU = Math.max(maxStoneU, stoneUv.getX(i));
+      const vy = stoneUv.getY(i);
+      if (vy > 0.001) {
+        minPositiveStoneV = Math.min(minPositiveStoneV, vy);
+      }
+    }
+    expect(maxStoneU).toBeCloseTo(1.44 / 1.45, 3);
+    expect(minPositiveStoneV).toBeCloseTo(0.16 / 1.45, 3);
   });
 });
 

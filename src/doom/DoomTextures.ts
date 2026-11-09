@@ -68,6 +68,7 @@ export interface DoomTextureSet {
   stoneVaultCeiling: THREE.DataTexture;
   darkIron: THREE.DataTexture;
   weatheredWood: THREE.DataTexture;
+  cratePlanks: THREE.DataTexture;
   ironBarrel: THREE.DataTexture;
   oakStave: THREE.DataTexture;
 }
@@ -629,35 +630,103 @@ export function createDoomTextures(): DoomTextureSet {
     }
   });
 
-  // 11. WEATHERED WOOD (128x128) — Vigas de madeira escura envelhecida com veios e ferragens
+  // 11. WEATHERED WOOD (128x128) — Pranchões e vigas de madeira escura envelhecida 100% contínuos (sem faixas de ferro cortando tábuas!)
   const weatheredWood = makePixelTexture(S, S, (px) => {
     const rand = mulberry32(199308);
+    const buttJointX = [28, 92, 54, 114];
     for (let y = 0; y < S; y++) {
       const plank = Math.floor(y / 32);
       const ly = y % 32;
+      const jointX = buttJointX[plank];
       for (let x = 0; x < S; x++) {
-        const grit = (rand() - 0.5) * 8;
+        const grit = (rand() - 0.5) * 7;
         const grain =
-          Math.sin((x + plank * 23) * 0.19 + Math.sin(y * 0.45) * 0.7) * 7;
+          Math.sin((x + plank * 29) * 0.16 + Math.sin(y * 0.42) * 0.85) * 6.5 +
+          Math.sin((y + plank * 11) * 0.65 + Math.cos(x * 0.09) * 1.4) * 3.5;
 
-        if (x < 7 || x >= 121) {
-          let iron = 38 + grit * 0.5;
-          if (x === 6 || x === 121) iron = 20;
-          if ((ly === 7 || ly === 24) && (x === 3 || x === 124)) iron += 22;
-          px(x, y, iron, iron * 0.98, iron * 1.02);
-          continue;
-        }
-
+        // Fresta horizontal profunda entre pranchões
         if (ly === 0) {
-          px(x, y, 22, 17, 13);
+          px(x, y, 22, 16, 12);
           continue;
         }
 
-        let tone = 76 + (plank % 2 === 0 ? 5 : -4) + grain + grit;
-        if (ly === 1) tone += 10;
-        if (ly === 31) tone -= 10;
+        // Junta de topo escalonada entre tábuas + par de pregos oxidados
+        const dxJoint = ((x - jointX) % S + S) % S;
+        if (dxJoint === 0) {
+          px(x, y, 25, 19, 14);
+          continue;
+        }
+        const isNail =
+          (dxJoint === 4 || dxJoint === S - 4) && (ly === 7 || ly === 25);
+        if (isNail) {
+          px(x, y, 36, 33, 31);
+          continue;
+        }
 
-        px(x, y, tone * 1.04, tone * 0.76, tone * 0.52);
+        const knotDist = Math.hypot(
+          ((x + plank * 43) % 96) - 48,
+          ly - (plank % 2 === 0 ? 14 : 19)
+        );
+        const knot = knotDist < 3.6 ? -15 + knotDist * 3.2 : 0;
+
+        let tone =
+          75 + (plank % 2 === 0 ? 5 : -4) + grain + grit + knot;
+        if (ly === 1 || dxJoint === 1) tone += 9;
+        if (ly === 31 || dxJoint === S - 1) tone -= 9;
+
+        px(x, y, tone * 1.05, tone * 0.76, tone * 0.51);
+      }
+    }
+  });
+
+  // 11b. CRATE PLANKS (128x128) — Tábuas horizontais de caixotes de carga com pregos e veios nítidos
+  const cratePlanks = makePixelTexture(S, S, (px) => {
+    const rand = mulberry32(199312);
+    const boardHeights = [21, 22, 21, 21, 22, 21]; // soma exata = 128
+    const boardStarts: number[] = [];
+    let acc = 0;
+    for (const h of boardHeights) {
+      boardStarts.push(acc);
+      acc += h;
+    }
+
+    for (let y = 0; y < S; y++) {
+      let bIdx = 0;
+      for (let i = 0; i < boardStarts.length; i++) {
+        if (y >= boardStarts[i]) bIdx = i;
+      }
+      const ly = y - boardStarts[bIdx];
+      const bh = boardHeights[bIdx];
+
+      for (let x = 0; x < S; x++) {
+        if (ly === 0) {
+          px(x, y, 26, 19, 13);
+          continue;
+        }
+
+        const grit = (rand() - 0.5) * 6.5;
+        const fiber =
+          Math.sin((x + bIdx * 31) * 0.14 + Math.sin(y * 0.52) * 0.75) * 6 +
+          (hash2i(x >> 1, y, 912) - 0.5) * 6;
+        const knotDist = Math.hypot(
+          ((x + bIdx * 53) % 112) - 56,
+          ly - Math.floor(bh * 0.52)
+        );
+        const knot = knotDist < 3.1 ? -14 + knotDist * 3.4 : 0;
+
+        // Pregos discretos de montagem a cada 64px
+        const lx64 = x % 64;
+        if ((lx64 === 5 || lx64 === 58) && (ly === 5 || ly === bh - 5)) {
+          px(x, y, 38, 35, 32);
+          continue;
+        }
+
+        let tone =
+          88 + ((bIdx * 5) % 3 - 1) * 5 + fiber + grit + knot;
+        if (ly === 1) tone += 9;
+        if (ly === bh - 1) tone -= 9;
+
+        px(x, y, tone * 1.07, tone * 0.8, tone * 0.53);
       }
     }
   });
@@ -797,6 +866,7 @@ export function createDoomTextures(): DoomTextureSet {
     stoneVaultCeiling,
     darkIron,
     weatheredWood,
+    cratePlanks,
     ironBarrel,
     oakStave,
   };
