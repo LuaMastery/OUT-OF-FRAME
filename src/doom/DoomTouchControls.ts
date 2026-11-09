@@ -122,6 +122,7 @@ export interface DoomTouchCallbacks {
   onRadioChatPress: () => void;
   /** Abre o menu de danças / alterna a coreografia em cena */
   onDancePress: () => void;
+  onShotgunPress?: () => void;
 }
 
 /**
@@ -211,6 +212,7 @@ export class DoomTouchControls {
           <span class="oof-touch-btn-icon">⌄</span>
           <span class="oof-touch-btn-label" data-touch-crouch-label>AGACHAR</span>
         </button>
+        <button type="button" class="oof-touch-btn" data-area="shotgun" data-touch-shotgun><span class="oof-touch-btn-icon">⊕</span><span class="oof-touch-btn-label">SHOTGUN</span></button>
         <button type="button" class="oof-touch-btn" data-area="dance" data-touch-dance>
           <span class="oof-touch-btn-icon">🎭</span>
           <span class="oof-touch-btn-label" data-touch-dance-label>DANÇAR</span>
@@ -478,6 +480,12 @@ export class DoomTouchControls {
     this.useBtnEl.addEventListener('touchcancel', releaseUseBtn, {
       passive: true,
     });
+
+    const shotgunBtn = this.rootEl.querySelector('[data-touch-shotgun]') as HTMLButtonElement;
+    shotgunBtn.addEventListener('touchstart', e => {
+      e.preventDefault(); e.stopPropagation(); this.enableTouchUi();
+      this.callbacks.onActivity(); this.callbacks.onShotgunPress?.();
+    }, { passive: false });
 
     // DANÇAR (abre o menu de coreografias / troca a dança em cena)
     this.danceBtnEl.addEventListener(

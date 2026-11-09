@@ -327,6 +327,8 @@ export function buildRandomCrateLootPool(
     ...SPECIAL_ROOM_KEY_ITEM_IDS,
     'torn_log_04',
     'arachnid_report_09',
+    'shotgun_receiver', 'shotgun_barrel', 'shotgun_pump', 'shotgun_stock',
+    'shotgun_shells', 'shotgun_shells',
   ];
 
   const pool: string[] = [];

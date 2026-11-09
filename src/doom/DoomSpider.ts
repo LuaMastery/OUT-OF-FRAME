@@ -42,7 +42,8 @@ export type SpiderBehaviorState =
   | 'ALERT_WINDUP'
   | 'FRENZY_CHASE'
   | 'CINEMATIC_SEQUENCE'
-  | 'FLEE_RETREAT';
+  | 'FLEE_RETREAT'
+  | 'DEAD';
 
 export type SpiderCinematicMode =
   | 'STRIKE_ATTACK'
@@ -468,6 +469,7 @@ export class DoomSpider {
 
   private surfaceMode: SpiderSurfaceMode = 'CEILING';
   private state: SpiderBehaviorState = 'STALK_PATROL';
+  private shotgunHealth = 100;
   private stateTimer = 0;
   private surfaceDecisionTimer = 3.5;
   private webCooldownTimer = 6.0;
@@ -538,6 +540,21 @@ export class DoomSpider {
     this.respawnFarFromPlayer();
   }
 
+  get isDead(): boolean { return this.state === 'DEAD'; }
+
+  /** During abduction the victim remains attached until the nest, never dropped. */
+  applyShotgunDamage(damage: number): boolean {
+    if (this.isDead || this.state === 'CINEMATIC_SEQUENCE' || !Number.isFinite(damage) || damage <= 0) return false;
+    this.shotgunHealth = Math.max(0, this.shotgunHealth - damage);
+    if (this.shotgunHealth <= 0) {
+      this.state = 'DEAD';
+      this.smoothVel.set(0, 0, 0);
+      this.hideCaptureTentacles();
+      this.rootGroup.visible = false;
+    }
+    return true;
+  }
+
   get currentState(): SpiderBehaviorState {
     return this.state;
   }
@@ -589,6 +606,7 @@ export class DoomSpider {
   relocateAwayAfterAbduction(
     avoidWorldPositions?: readonly THREE.Vector3[]
   ): void {
+    if (this.isDead) return;
     let bestCell = pickRandomWalkableCellFarFrom(
       this.webManager.lairCenter.x,
       this.webManager.lairCenter.z,
@@ -635,6 +653,7 @@ export class DoomSpider {
   finishAbductionRetreat(
     observerPositions?: readonly THREE.Vector3[]
   ): void {
+    if (this.isDead) return;
     this.cinematicMode = null;
     this.lastCinematicMode = null;
     this.cinematicRagdollHooks = null;
@@ -681,6 +700,7 @@ export class DoomSpider {
     fwdY: number;
     fwdZ: number;
     state: SpiderBehaviorState;
+    shotgunHealth: number;
     surfaceMode: SpiderSurfaceMode;
     cinematicMode: SpiderCinematicMode | null;
     cinematicProgress: number;
@@ -703,6 +723,7 @@ export class DoomSpider {
       fwdY: this.currentForward.y,
       fwdZ: this.currentForward.z,
       state: this.state,
+      shotgunHealth: this.shotgunHealth,
       surfaceMode: this.surfaceMode,
       cinematicMode:
         this.state === 'CINEMATIC_SEQUENCE' ? this.cinematicMode : null,
@@ -801,7 +822,7 @@ export class DoomSpider {
     listenerPos?: THREE.Vector3,
     listenerYaw = 0
   ): void {
-    if (this.state === 'CINEMATIC_SEQUENCE') return;
+    if (this.isDead || this.state === 'CINEMATIC_SEQUENCE') return;
     this.postAbductionGraceTimer = 0;
     this.lastKnownPlayerPos.copy(lairPos);
     this.searchingAroundLastKnown = false;
@@ -840,6 +861,7 @@ export class DoomSpider {
     listenerPos?: THREE.Vector3,
     listenerYaw = 0
   ): void {
+    if (this.isDead) return;
     this.hideCaptureTentacles();
     this.cinematicRagdollHooks = null;
     const audioPos = listenerPos ?? threatPos;
@@ -904,6 +926,7 @@ export class DoomSpider {
       fwdY: number;
       fwdZ: number;
       state: string;
+      shotgunHealth?: number;
       surfaceMode: 'FLOOR' | 'WALL' | 'CEILING';
       cinematicMode?: SpiderCinematicMode | null;
       cinematicProgress?: number;
@@ -918,6 +941,15 @@ export class DoomSpider {
   ): { cameraShakeAmount: number; playerDistance: number } {
     const safeDt = Math.min(0.05, Math.max(0.0005, dt));
 
+    if (typeof pkt.shotgunHealth === 'number' && Number.isFinite(pkt.shotgunHealth)) {
+      this.shotgunHealth = Math.max(0, Math.min(100, pkt.shotgunHealth));
+    }
+    if (pkt.state === 'DEAD') {
+      this.state = 'DEAD'; this.shotgunHealth = 0;
+      this.rootGroup.visible = false; this.hideCaptureTentacles();
+      return { cameraShakeAmount: 0, playerDistance: 0 };
+    }
+    if (this.isDead) return { cameraShakeAmount: 0, playerDistance: 0 };
     // Se a própria máquina local está sofrendo a cena em 1ª pessoa, não sobrescreve
     if (this.state === 'CINEMATIC_SEQUENCE' && !this.remoteDrivenCinematic) {
       return { cameraShakeAmount: 0, playerDistance: 0 };
@@ -1101,6 +1133,7 @@ export class DoomSpider {
       | readonly [THREE.Vector3, THREE.Vector3, THREE.Vector3, THREE.Vector3]
       | null
   ): void {
+    if (this.isDead) return;
     this.remoteDrivenCinematic = true;
     this.updateCinematicSequence(
       dt,
@@ -1226,7 +1259,7 @@ export class DoomSpider {
     listenerPos?: THREE.Vector3,
     listenerYaw = 0
   ): void {
-    if (this.state === 'CINEMATIC_SEQUENCE') return;
+    if (this.isDead || this.state === 'CINEMATIC_SEQUENCE') return;
 
     this.lastKnownPlayerPos.copy(trapWorldPos);
     this.searchingAroundLastKnown = false;
@@ -1270,6 +1303,7 @@ export class DoomSpider {
       | readonly [THREE.Vector3, THREE.Vector3, THREE.Vector3, THREE.Vector3]
       | null
   ): void {
+    if (this.isDead) return;
     const modeChanged = this.lastCinematicMode !== mode;
     const jumpedFar =
       this.state !== 'CINEMATIC_SEQUENCE' ||
@@ -1879,7 +1913,7 @@ export class DoomSpider {
     cameraShakeAmount: number;
     playerDistance: number;
   } {
-    if (this.state === 'CINEMATIC_SEQUENCE') {
+    if (this.state === 'DEAD' || this.state === 'CINEMATIC_SEQUENCE') {
       return { cameraShakeAmount: 0, playerDistance: 0 };
     }
 

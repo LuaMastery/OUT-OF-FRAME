@@ -1,3 +1,4 @@
+import { SHOTGUN_PART_IDS, SHOTGUN_ITEM_ID } from './DoomShotgun';
 import { SoundEngine } from '../engine/audio/SoundEngine';
 import {
   CursorProximityFX,
@@ -14,7 +15,10 @@ export type InventoryItemKind =
   | 'key'
   | 'radar'
   | 'walkie'
-  | 'note';
+  | 'note'
+  | 'shotgun_part'
+  | 'shotgun'
+  | 'shotgun_ammo';
 
 export interface InventoryItemDef {
   id: string;
@@ -61,6 +65,7 @@ export interface DoomInventoryCallbacks {
   ) => boolean;
   onUseBattery: (chargeAmount: number) => boolean;
   onUseFlare: () => boolean;
+  onToggleShotgun?: () => void;
   onUseKnife: () => { cutWeb: boolean };
   onUseKey?: (itemId?: string) => boolean | void;
   onToggleRadar?: () => boolean;
@@ -326,6 +331,77 @@ export const ITEM_CATALOG: Record<string, InventoryItemDef> = {
     actionLabel: 'Alternar [R]',
     droppable: false,
   },
+  shotgun_receiver: {
+    id: 'shotgun_receiver',
+    kind: 'shotgun_part',
+    name: 'Corpo da Shotgun',
+    category: 'Arma — Peça',
+    description:
+      'Bloco de aço com o mecanismo de ação de pump, ferrolho e gatilho. Uma das quatro peças da shotgun de combate escondida no complexo.',
+    stackable: false,
+    usable: true,
+    actionLabel: 'Montar shotgun',
+    droppable: false,
+  },
+  shotgun_barrel: {
+    id: 'shotgun_barrel',
+    kind: 'shotgun_part',
+    name: 'Cano da Shotgun 18"',
+    category: 'Arma — Peça',
+    description:
+      'Cano de aço blindado com ponteira de mira. Uma das quatro peças da shotgun de combate escondida no complexo.',
+    stackable: false,
+    usable: true,
+    actionLabel: 'Montar shotgun',
+    droppable: false,
+  },
+  shotgun_pump: {
+    id: 'shotgun_pump',
+    kind: 'shotgun_part',
+    name: 'Bomba da Shotgun',
+    category: 'Arma — Peça',
+    description:
+      'Guarda-mão de polímero que bombeia o cartucho. Uma das quatro peças da shotgun de combate escondida no complexo.',
+    stackable: false,
+    usable: true,
+    actionLabel: 'Montar shotgun',
+    droppable: false,
+  },
+  shotgun_stock: {
+    id: 'shotgun_stock',
+    kind: 'shotgun_part',
+    name: 'Coronha da Shotgun',
+    category: 'Arma — Peça',
+    description:
+      'Coronha de madeira rebaixada com encosto de borracha. Uma das quatro peças da shotgun de combate escondida no complexo.',
+    stackable: false,
+    usable: true,
+    actionLabel: 'Montar shotgun',
+    droppable: false,
+  },
+  combat_shotgun: {
+    id: 'combat_shotgun',
+    kind: 'shotgun',
+    name: 'Shotgun de Combate 12 Gauge',
+    category: 'Arma',
+    description:
+      'Arma montada com as quatro peças do arsenal do laboratório. Pressione [H] para equipar e clique para disparar. Cada tiro consome um cartucho 12 Gauge.',
+    stackable: false,
+    usable: true,
+    actionLabel: 'Equipar [H]',
+    droppable: false,
+  },
+  shotgun_shells: {
+    id: 'shotgun_shells',
+    kind: 'shotgun_ammo',
+    name: 'Cartucho 12 Gauge',
+    category: 'Munição',
+    description:
+      'Estojo de latão com carga de chumbo e pólvora. Sem cartuchos a shotgun é só um cano pesado — cada disparo consome um.',
+    stackable: true,
+    usable: false,
+    droppable: true,
+  },
   torn_log_04: {
     id: 'torn_log_04',
     kind: 'note',
@@ -408,6 +484,9 @@ function buildItemIcons(): Record<InventoryItemKind, string> {
     'radar',
     'walkie',
     'note',
+    'shotgun_part',
+    'shotgun',
+    'shotgun_ammo',
   ];
 
   const out = {} as Record<InventoryItemKind, string>;
@@ -634,6 +713,34 @@ function buildItemIcons(): Record<InventoryItemKind, string> {
       box(10, 24, 3, 3, '#ab8f54');
       box(15, 24, 3, 2, '#252c27');
       box(20, 24, 2, 2, '#59b889');
+    } else if (kind === 'shotgun_part') {
+      // Peça de shotgun em aço escovado com detalhes de encaixe (bloco do receptor)
+      box(6, 12, 20, 9, '#59606c');
+      box(7, 13, 18, 7, '#6d7583');
+      box(6, 12, 20, 2, '#878f9d');
+      box(9, 15, 5, 3, '#2f353f');
+      box(18, 14, 3, 5, '#3d444f');
+      px(11, 16, '#c8a44f');
+      px(12, 16, '#c8a44f');
+    } else if (kind === 'shotgun') {
+      // Shotgun de combate montada: cano, receptor, bomba e coronha
+      box(3, 12, 26, 3, '#6d7583'); // cano
+      px(2, 13, '#d9be82'); // ponteira
+      box(12, 13, 8, 6, '#4d5460'); // receptor
+      box(9, 14, 4, 5, '#22262d'); // bomba
+      box(19, 14, 9, 7, '#6b4324'); // coronha
+      box(27, 13, 3, 8, '#3f2a18');
+      box(14, 18, 2, 3, '#2b3038'); // gatilho
+      line(4, 15, 11, 15, '#98a1ad');
+    } else if (kind === 'shotgun_ammo') {
+      // Cartucho 12 Gauge: estojo de latão com chumbo e pó vermelho
+      box(8, 6, 16, 20, '#b08a3f');
+      box(9, 7, 14, 18, '#d0a94f');
+      box(8, 22, 16, 4, '#8e6f2f');
+      box(11, 4, 10, 3, '#a3332c'); // primer vermelho
+      box(12, 3, 8, 2, '#c4463c');
+      line(9, 12, 22, 12, '#e7c775');
+      line(9, 17, 22, 17, '#8e6f2f');
     } else if (kind === 'walkie') {
       // Rádio Comunicador VHF de Longa Distância (Walkie-Talkie tático com antena, grade de alto-falante, LCD e PTT laranja)
       box(10, 2, 2, 8, '#95a19b');
@@ -2268,6 +2375,10 @@ export class DoomInventory {
     );
   }
 
+  getItemCount(itemId: string): number {
+    return this.slots.reduce((sum, slot) => sum + (slot?.def.id === itemId ? slot.quantity : 0), 0);
+  }
+
   getQuickSlots(): readonly (string | null)[] {
     return this.quickSlots;
   }
@@ -2682,7 +2793,9 @@ export class DoomInventory {
       def.kind === 'lantern' ||
       def.kind === 'key' ||
       def.kind === 'radar' ||
-      def.kind === 'walkie'
+      def.kind === 'walkie' ||
+      def.kind === 'shotgun_part' ||
+      def.kind === 'shotgun'
     ) {
       return;
     }
@@ -3215,6 +3328,27 @@ export class DoomInventory {
     if (!entry) return false;
     const { def } = entry;
 
+    if (def.kind === 'shotgun_part') {
+      const missing = SHOTGUN_PART_IDS.filter(id => !this.hasItem(id));
+      if (missing.length) {
+        this.feedbackEl.textContent = `Shotgun: ${4 - missing.length}/4 peças. Procure as peças restantes nos caixotes.`;
+        this.sound.invalidInput();
+        return false;
+      }
+      // Remover as quatro peças libera espaço antes de adicionar a arma montada.
+      for (const id of SHOTGUN_PART_IDS) this.consumeItemById(id);
+      this.addItem(SHOTGUN_ITEM_ID, 1, true);
+      this.feedbackEl.textContent = 'Shotgun montada! Procure cartuchos e pressione [H] para equipar.';
+      this.wakeShortcutsHub(6000, 'SHOTGUN MONTADA · PROCURE CARTUCHOS · [H] EQUIPAR');
+      this.sound.playInventorySelect(true);
+      this.renderGrid(); this.renderInspector();
+      return true;
+    }
+    if (def.kind === 'shotgun') {
+      if (!fromQuickShortcut) this.callbacks.onCloseRequest();
+      this.callbacks.onToggleShotgun?.();
+      return true;
+    }
     if (def.kind === 'lantern') {
       this.callbacks.onToggleFlashlightFromUI();
       if (!fromQuickShortcut) {

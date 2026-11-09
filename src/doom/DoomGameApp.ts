@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import './shotgun.css';
 import { SoundEngine } from '../engine/audio/SoundEngine';
 import {
   acquireFullscreenAndKeyboardLock,
@@ -32,6 +33,7 @@ import {
 } from './DoomDance';
 import { DoomDanceMenu } from './DoomDanceMenu';
 import { DoomFlashlight } from './DoomFlashlight';
+import { DoomShotgunViewmodel, SHOTGUN_ITEM_ID, SHOTGUN_AMMO_ITEM_ID, SHOTGUN_PART_IDS, shotgunImpactDistance, computeShotgunBlastDamage } from './DoomShotgun';
 import { DoomInventory } from './DoomInventory';
 import {
   buildDoomLabyrinth,
@@ -308,6 +310,8 @@ export class DoomGameApp {
   private readonly sharedUniforms: DoomSharedUniforms;
   private readonly astronaut: DoomAstronaut;
   private readonly flashlight: DoomFlashlight;
+  private readonly shotgun: DoomShotgunViewmodel;
+  private shotgunNextShotMs = 0;
   private readonly inventory: DoomInventory;
   private readonly radar: DoomRadar;
   private readonly worldItems: DoomWorldItems;
@@ -413,6 +417,7 @@ export class DoomGameApp {
   private readonly cocoonHintEl: HTMLDivElement;
   private readonly danceMenu: DoomDanceMenu;
   private readonly danceHudEl: HTMLDivElement;
+  private readonly shotgunObjectiveEl: HTMLDivElement;
   private readonly danceHudIconEl: HTMLSpanElement;
   private readonly danceHudNameEl: HTMLDivElement;
   private readonly danceHudHintEl: HTMLDivElement;
@@ -531,6 +536,10 @@ export class DoomGameApp {
       this.danceHudHintEl
     );
     this.viewportEl.appendChild(this.danceHudEl);
+    this.shotgunObjectiveEl = document.createElement('div');
+    this.shotgunObjectiveEl.className = 'doom-shotgun-objective';
+    this.shotgunObjectiveEl.setAttribute('aria-live', 'polite');
+    this.viewportEl.appendChild(this.shotgunObjectiveEl);
 
     this.danceMenu = new DoomDanceMenu(
       this.viewportEl,
@@ -564,6 +573,7 @@ export class DoomGameApp {
     );
     this.sharedUniforms = createDoomSharedUniforms();
     this.flashlight = new DoomFlashlight(aspect);
+    this.shotgun = new DoomShotgunViewmodel(aspect);
 
     // Gera layout aleatório a cada partida (caixas, itens, spawn do jogador, ninho, teias e aranha),
     // mantendo o mundo sincronizado por código de sala no Co-op enquanto o spawn de cada jogador varia!
@@ -666,6 +676,7 @@ export class DoomGameApp {
         this.syncInventoryVitals();
         return true;
       },
+      onToggleShotgun: () => this.toggleShotgun(),
       onUseFlare: () => {
         if (this.webManager.isLockedInMultiplayerCocoon) {
           this.sound.playStruggleEffort();
@@ -852,6 +863,10 @@ export class DoomGameApp {
         this.touchControls.resetTransientInputs();
         this.multiplayer.openRadioChatInput();
       },
+      onShotgunPress: () => {
+        if (this.shotgun.isEquipped) this.fireShotgun();
+        else this.toggleShotgun();
+      },
       onDancePress: () => {
         // No celular: abre o menu de danças; se já estiver dançando, troca
         // direto para a próxima coreografia do catálogo.
@@ -982,6 +997,7 @@ export class DoomGameApp {
     this.touchControls.setLookSensitivityScale(s.touchLookSensitivity / 100);
 
     this.flashlight.setHandedness(s.viewmodelHand);
+    this.shotgun.setHandedness(s.viewmodelHand);
     this.flashlight.setHeadBobMultiplier(s.headBobIntensity / 100);
     this.inventory.setUserInterfaceSettings({
       hubIdleOpacityPercent: s.shortcutsHubIdleOpacity,
@@ -1070,6 +1086,7 @@ export class DoomGameApp {
       this.viewportEl,
       this.sound,
       {
+        onShotgunShot: (origin, direction) => { this.applyShotgunHit(origin, direction); },
         onReceiveFlare: (pos, yaw) => {
           this.worldItems.spawnLitFlare(pos, yaw);
           if (
@@ -1442,6 +1459,11 @@ export class DoomGameApp {
           return;
         }
 
+        if (e.code === 'KeyH' && !e.repeat && !this.inventory.open) {
+          e.preventDefault();
+          this.toggleShotgun();
+          return;
+        }
         if (e.code === 'KeyG' && !e.repeat) {
           e.preventDefault();
           e.stopPropagation();
@@ -1863,6 +1885,10 @@ export class DoomGameApp {
           return;
         }
         if (e.button === 0) {
+          if (this.shotgun.isEquipped && hadPointerLockBeforeClick) {
+            this.fireShotgun();
+            return;
+          }
           if (
             this.inventory.hasWheelSelectedQuickSlot() &&
             (hadPointerLockBeforeClick || this.inventory.isWheelSelectionRecent())
@@ -1975,6 +2001,7 @@ export class DoomGameApp {
     );
     this.camera.updateProjectionMatrix();
     this.flashlight.setAspect(aspect);
+    this.shotgun.setAspect(aspect);
     this.renderer.setSize(w, h);
     this.compositor.resize(w, h);
   }
@@ -2014,23 +2041,78 @@ export class DoomGameApp {
         this.renderer,
         this.scene,
         this.camera,
-        showViewmodel ? this.flashlight.viewScene : undefined,
-        showViewmodel ? this.flashlight.viewCamera : undefined
+        showViewmodel ? (this.shotgun.isVisibleInView ? this.shotgun.viewScene : this.flashlight.viewScene) : undefined,
+        showViewmodel ? (this.shotgun.isVisibleInView ? this.shotgun.viewCamera : this.flashlight.viewCamera) : undefined
       );
       this.rafId = requestAnimationFrame(loop);
     };
     this.rafId = requestAnimationFrame(loop);
   }
 
-  /**
-   * Acionado quando a Aranha Gigante alcança o jogador!
-   * - Em Multiplayer (se ainda não estava preso no Casulo do Ninho): Derruba em Ragdoll desmaiado ->
-   *   Estende os 4 Tentáculos -> Puxa pelos corredores até prender na Teia (exigindo resgate dos amigos antes de ser devorado)!
-   * - Se já estava preso no Casulo sem ser salvo a tempo (ou <=36% vida no Modo Solo): DEVORADO / MORTE PERMANENTE!
-   */
-  private triggerSpiderCatch(overrideSpiderPos?: THREE.Vector3): void {
-    if (this.activeSequence !== 'NONE') return;
+  private updateShotgunObjective(): void {
+    const found = SHOTGUN_PART_IDS.filter(id => this.inventory.hasItem(id)).length;
+    const assembled = this.inventory.hasItem(SHOTGUN_ITEM_ID);
+    const ammo = this.inventory.getItemCount(SHOTGUN_AMMO_ITEM_ID);
+    const text = this.spider.isDead ? 'OBJETIVO CONCLUÍDO · ARANHA DESTRUÍDA' :
+      !assembled ? (found === 4 ? 'OBJETIVO · MONTE A SHOTGUN NO INVENTÁRIO [TAB]' : `OBJETIVO · ENCONTRE AS PEÇAS DA SHOTGUN ${found}/4`) :
+      !ammo ? 'OBJETIVO · PROCURE CARTUCHOS NOS CAIXOTES' :
+      `OBJETIVO · DESTRUA A ARANHA  |  ${ammo} CARTUCHOS  |  [H] EQUIPAR · CLIQUE ATIRAR`;
+    if (this.shotgunObjectiveEl.textContent !== text) this.shotgunObjectiveEl.textContent = text;
+    this.shotgunObjectiveEl.classList.toggle('hidden', !this.engaged || this.inventory.open || this.pauseMenu.open || Boolean(this.danceId) || this.activeSequence !== 'NONE');
+  }
 
+  private toggleShotgun(): void {
+    if (!this.engaged || this.pauseMenu.open || this.inventory.open || this.activeSequence !== 'NONE' || this.danceMenu.isOpen) return;
+    if (!this.inventory.hasItem(SHOTGUN_ITEM_ID)) {
+      const count = SHOTGUN_PART_IDS.filter(id => this.inventory.hasItem(id)).length;
+      this.inventory.wakeShortcutsHub(5000, `SHOTGUN ${count}/4 PEÇAS · MONTE NO INVENTÁRIO [TAB]`);
+      return;
+    }
+    if (this.shotgun.isEquipped) {
+      this.shotgun.stow();
+      this.inventory.wakeShortcutsHub(2500, 'SHOTGUN GUARDADA · [H] EQUIPAR');
+    } else {
+      this.stopDance('action');
+      this.shotgun.equip();
+      this.inventory.wakeShortcutsHub(4500, `SHOTGUN · ${this.inventory.getItemCount(SHOTGUN_AMMO_ITEM_ID)} CARTUCHOS · CLIQUE PARA ATIRAR`);
+    }
+  }
+
+  private fireShotgun(): void {
+    if (!this.engaged || !this.shotgun.isEquipped || this.pauseMenu.open || this.inventory.open || this.danceMenu.isOpen || this.danceId || this.activeSequence !== 'NONE' || this.multiplayer?.isChatTyping) return;
+    const now = performance.now();
+    if (now < this.shotgunNextShotMs) return;
+    if (!this.inventory.consumeItemById(SHOTGUN_AMMO_ITEM_ID)) {
+      this.inventory.wakeShortcutsHub(3500, 'SEM CARTUCHOS · PROCURE MUNIÇÃO NOS CAIXOTES');
+      this.sound.invalidInput(); this.shotgunNextShotMs = now + 500; return;
+    }
+    this.shotgunNextShotMs = now + 700;
+    this.shotgun.fire(); this.sound.playShotgunBlast();
+    const direction = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion).normalize();
+    const hit = !this.multiplayer || this.multiplayer.isHost
+      ? this.applyShotgunHit(this.camera.position, direction) : false;
+    if (this.multiplayer && !this.multiplayer.isHost) this.multiplayer.emitShotgunShot(this.camera.position, direction);
+    if (!hit) this.inventory.wakeShortcutsHub(3000, `SHOTGUN · ${this.inventory.getItemCount(SHOTGUN_AMMO_ITEM_ID)} CARTUCHOS`);
+  }
+
+  /** Host performs its own intersection and occlusion test; clients never choose damage. */
+  private applyShotgunHit(origin: THREE.Vector3, direction: THREE.Vector3): boolean {
+    if (this.spider.isDead) return false;
+    const distance = shotgunImpactDistance(origin, direction, this.spider.position, this.colliders.map(collider => collider.box));
+    if (distance === null) return false;
+    if (this.spider.applyShotgunDamage(computeShotgunBlastDamage(distance))) {
+      if (this.spider.isDead) this.inventory.wakeShortcutsHub(10000, 'ARANHA DESTRUÍDA!');
+      else this.inventory.wakeShortcutsHub(2500, 'ACERTOU A ARANHA!');
+      return true;
+    }
+    return false;
+  }
+
+  /** Inicia a captura; no cooperativo a vítima só pode ser resgatada no ninho. */
+  private triggerSpiderCatch(overrideSpiderPos?: THREE.Vector3): void {
+    if (this.activeSequence !== 'NONE' || this.spider.isDead) return;
+
+    this.shotgun.stow();
     // A Aranha arrancando o jogador cancela qualquer coreografia em andamento
     this.stopDance('capture');
 
@@ -2790,6 +2872,7 @@ export class DoomGameApp {
   private update(dt: number): void {
     if (!this.engaged || this.disposed) return;
 
+    this.updateShotgunObjective();
     const isLocalAfk = this.refreshLocalAfkStatus();
 
     if (this.activeSequence === 'DEAD_TERMINATED') {
@@ -3063,7 +3146,9 @@ export class DoomGameApp {
         this.cocoonDevourMaxSec = this.multiplayer?.hasLivingAllies() ? 45 : 14;
         this.cocoonDevourTimerSec = this.cocoonDevourMaxSec;
       }
-      this.cocoonDevourTimerSec = Math.max(0, this.cocoonDevourTimerSec - dt);
+      if (!this.spider.isDead) {
+        this.cocoonDevourTimerSec = Math.max(0, this.cocoonDevourTimerSec - dt);
+      }
       const ratio = Math.max(
         0,
         Math.min(
@@ -3071,11 +3156,13 @@ export class DoomGameApp {
           this.cocoonDevourTimerSec / Math.max(1, this.cocoonDevourMaxSec)
         )
       );
-      const isCrit = this.cocoonDevourTimerSec <= 14;
+      const isCrit = !this.spider.isDead && this.cocoonDevourTimerSec <= 14;
       this.cocoonHudEl.classList.add('is-visible');
       this.cocoonHudEl.classList.toggle('is-critical', isCrit);
       this.cocoonBarFillEl.style.width = `${(ratio * 100).toFixed(1)}%`;
-      this.cocoonSubEl.textContent = isCrit
+      this.cocoonSubEl.textContent = this.spider.isDead
+        ? 'ARANHA DESTRUÍDA · CHAME UM AMIGO PARA CORTAR A TEIA NO NINHO'
+        : isCrit
         ? `A ARANHA ESTÁ VOLTANDO PARA DEVORAR VOCÊ (${Math.ceil(this.cocoonDevourTimerSec)}s)! GRITE PELO RÁDIO [E / ESPAÇO]!`
         : `CHAME UM AMIGO PARA CORTAR A TEIA [E / FACA] — DEVORAÇÃO EM ${Math.ceil(this.cocoonDevourTimerSec)}s ([ESPAÇO] RÁDIO SOS)`;
 
@@ -3092,7 +3179,7 @@ export class DoomGameApp {
         this.spider.commandReturnToDevourVictim(this.position);
       }
 
-      if (this.cocoonDevourTimerSec <= 0) {
+      if (!this.spider.isDead && this.cocoonDevourTimerSec <= 0) {
         const devourSpiderPos = new THREE.Vector3(
           this.position.x + this.webManager.dragDirection.x * 1.08,
           1.38,
@@ -3297,6 +3384,8 @@ export class DoomGameApp {
       this.lanternBattery,
       this.slideState.slideAmount
     );
+
+    this.shotgun.update(dt, this.bobPhase, planarSpeed);
 
     const spiderHearsSprint =
       sprinting || (isSliding && this.slideState.slideTimer < 0.2);
@@ -3510,7 +3599,14 @@ export class DoomGameApp {
       this.inventory,
       (pickedItemId) => {
         pickedUpAnyItem = true;
-        if (pickedItemId === 'field_radar') {
+        if (SHOTGUN_PART_IDS.some(id => id === pickedItemId)) {
+          const count = SHOTGUN_PART_IDS.filter(id => this.inventory.hasItem(id)).length;
+          this.inventory.wakeShortcutsHub(6500, count === 4
+            ? '4/4 PEÇAS · ABRA [TAB] E MONTE A SHOTGUN'
+            : `SHOTGUN: ${count}/4 PEÇAS · PROCURE NOS CAIXOTES`);
+        } else if (pickedItemId === SHOTGUN_AMMO_ITEM_ID) {
+          this.inventory.wakeShortcutsHub(5000, `CARTUCHOS: ${this.inventory.getItemCount(SHOTGUN_AMMO_ITEM_ID)} · [H] EQUIPAR`);
+        } else if (pickedItemId === 'field_radar') {
           this.radar.unlockAndActivate();
           this.flashlight.triggerQuickItemAction('radar');
           this.sound.playRadarPing(true);
@@ -4261,7 +4357,9 @@ export class DoomGameApp {
     this.doorLockPromptEl.remove();
     this.cocoonHudEl.remove();
     this.danceHudEl.remove();
+    this.shotgunObjectiveEl.remove();
     this.danceMenu.destroy();
+    this.shotgun.dispose();
     this.specialRoomDoors.dispose();
     this.pauseMenu.destroy();
     this.touchControls.destroy();

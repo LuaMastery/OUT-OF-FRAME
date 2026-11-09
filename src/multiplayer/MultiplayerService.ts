@@ -163,6 +163,7 @@ export interface NetworkSpiderPacket {
   fwdY: number;
   fwdZ: number;
   state: string;
+  shotgunHealth?: number;
   surfaceMode: 'FLOOR' | 'WALL' | 'CEILING';
   cinematicMode?:
     | 'STRIKE_ATTACK'
@@ -179,6 +180,7 @@ export interface NetworkSpiderPacket {
 }
 
 export type NetworkWorldEvent =
+  | { kind: 'shotgun_shot'; senderId: string; x: number; y: number; z: number; dx: number; dy: number; dz: number; ts: number }
   | {
       kind: 'chat';
       senderId: string;

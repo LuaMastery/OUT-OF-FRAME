@@ -705,7 +705,34 @@ export class DoomWorldItems {
   private buildItemMesh(itemId: string): THREE.Object3D {
     const holder = new THREE.Group();
 
-    if (itemId === 'sterile_bandage') {
+    if (itemId.startsWith('shotgun_')) {
+      const steel = this.matDarkIron;
+      const box = (w: number, h: number, d: number, x = 0, y = h / 2, z = 0) => {
+        const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), steel);
+        mesh.position.set(x, y, z); holder.add(mesh); return mesh;
+      };
+      if (itemId === 'shotgun_barrel') {
+        const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 0.32, 12), steel);
+        barrel.rotation.z = Math.PI / 2; barrel.position.y = 0.022; holder.add(barrel);
+      } else if (itemId === 'shotgun_receiver') {
+        box(0.15, 0.065, 0.07); box(0.06, 0.035, 0.03, 0.02, 0.08);
+      } else if (itemId === 'shotgun_pump') {
+        const pump = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.16, 10), steel);
+        pump.rotation.z = Math.PI / 2; pump.position.y = 0.035; holder.add(pump);
+      } else if (itemId === 'shotgun_stock') {
+        const stock = box(0.18, 0.06, 0.07); stock.rotation.z = -0.18;
+        box(0.022, 0.095, 0.075, -0.09, 0.048);
+      } else {
+        const shellMat = new THREE.MeshLambertMaterial({ color: 0xa12e25 });
+        const brassMat = new THREE.MeshLambertMaterial({ color: 0xc39a48 });
+        for (let i = -1; i <= 1; i++) {
+          const shell = new THREE.Mesh(new THREE.CylinderGeometry(0.017, 0.017, 0.075, 10), shellMat);
+          shell.rotation.z = Math.PI / 2; shell.position.set(0, 0.018, i * 0.04); holder.add(shell);
+          const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 0.014, 10), brassMat);
+          cap.rotation.z = Math.PI / 2; cap.position.set(-0.04, 0.018, i * 0.04); holder.add(cap);
+        }
+      }
+    } else if (itemId === 'sterile_bandage') {
       // Rolo de gaze estéril com cavidade central oca REAL, espiral visível no topo,
       // cinta de papel médico com cruz vermelha nítida e aba curta pousada dentro do caixote
       const outerWall = new THREE.Mesh(
@@ -1459,7 +1486,7 @@ export class DoomWorldItems {
       }
 
       if (shouldCollect) {
-        if (inventory.addItem(p.itemId, 1, false)) {
+        if (inventory.addItem(p.itemId, p.itemId === 'shotgun_shells' ? 8 : 1, false)) {
           p.collected = true;
           p.itemMesh.visible = false;
           onItemCollected?.(p.itemId);

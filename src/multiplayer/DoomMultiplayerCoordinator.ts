@@ -93,6 +93,7 @@ interface ActiveTacticalPing {
 
 export interface MultiplayerCoordinatorHooks {
   onReceiveFlare: (pos: THREE.Vector3, yaw: number) => void;
+  onShotgunShot?: (origin: THREE.Vector3, direction: THREE.Vector3) => void;
   onRescuedByAlly: (rescuerName: string) => void;
   onAbductionInterruptedByAlly: (
     rescuerName: string,
@@ -1118,6 +1119,7 @@ export class DoomMultiplayerCoordinator {
       fwdY: number;
       fwdZ: number;
       state: string;
+      shotgunHealth?: number;
       surfaceMode: 'FLOOR' | 'WALL' | 'CEILING';
       cinematicMode?: SpiderCinematicMode | null;
       cinematicProgress?: number;
@@ -2007,8 +2009,23 @@ export class DoomMultiplayerCoordinator {
     return grp;
   }
 
+  emitShotgunShot(origin: THREE.Vector3, direction: THREE.Vector3): void {
+    this.client.broadcastWorldEvent({ kind: 'shotgun_shot', senderId: this.session.localPlayerId,
+      x: origin.x, y: origin.y, z: origin.z, dx: direction.x, dy: direction.y, dz: direction.z, ts: Date.now() });
+  }
+
   private handleWorldEvent(ev: NetworkWorldEvent): void {
-    if (ev.kind === 'chat') {
+    if (ev.kind === 'shotgun_shot') {
+      if (!this.client.isHost || ev.senderId === this.session.localPlayerId) return;
+      const ally = this.allies.get(ev.senderId);
+      const values = [ev.x, ev.y, ev.z, ev.dx, ev.dy, ev.dz];
+      if (!ally || values.some(v => !Number.isFinite(v))) return;
+      const origin = new THREE.Vector3(ev.x, ev.y, ev.z);
+      if (Math.hypot(origin.x - ally.currentPos.x, origin.z - ally.currentPos.z) > 3 || Math.abs(origin.y - ally.currentPos.y) > 3) return;
+      const direction = new THREE.Vector3(ev.dx, ev.dy, ev.dz);
+      if (direction.lengthSq() < 0.9 || direction.lengthSq() > 1.1) return;
+      this.hooks.onShotgunShot?.(origin, direction.normalize());
+    } else if (ev.kind === 'chat') {
       if (ev.senderId !== this.session.localPlayerId) {
         if (this.sound.playRadioSquelch) {
           this.sound.playRadioSquelch(true);

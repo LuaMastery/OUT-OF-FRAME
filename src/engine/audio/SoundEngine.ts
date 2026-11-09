@@ -2954,6 +2954,18 @@ export class SoundEngine {
     );
   }
 
+  playShotgunBlast(): void {
+    if (!this.isRunning() || !this.ctx || !this.worldDryBus || !this.reverbSend) return;
+    const now = this.ctx.currentTime;
+    this.triggerFilteredNoise(this.worldDryBus, now, 0.42, 1600, 0.8, 0.5, 'crackle', this.reverbSend);
+    const osc = this.ctx.createOscillator(), gain = this.ctx.createGain();
+    osc.type = 'sine'; osc.frequency.setValueAtTime(110, now);
+    osc.frequency.exponentialRampToValueAtTime(35, now + 0.2);
+    gain.gain.setValueAtTime(0.4, now); gain.gain.exponentialRampToValueAtTime(0.001, now + 0.3);
+    osc.connect(gain); gain.connect(this.worldDryBus); gain.connect(this.reverbSend);
+    osc.start(now); osc.stop(now + 0.31);
+  }
+
   /** Bote e aperto das patas longas da aranha capturando o jogador */
   playSpiderCaptureImpact(): void {
     if (

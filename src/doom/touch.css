@@ -110,7 +110,7 @@
   display: grid;
   grid-template-columns: repeat(2, auto);
   grid-template-areas:
-    '. sprint'
+    'shotgun sprint'
     'use crouch'
     'dance dance';
   gap: 10px;
@@ -118,6 +118,8 @@
   justify-items: end;
   pointer-events: none;
 }
+
+[data-area="shotgun"] { grid-area: shotgun; }
 
 .oof-touch-btn {
   pointer-events: auto;

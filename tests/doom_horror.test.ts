@@ -1,3 +1,4 @@
+import { SHOTGUN_PART_IDS, SHOTGUN_ITEM_ID, SHOTGUN_AMMO_ITEM_ID, canAssembleShotgun, computeShotgunBlastDamage, shotgunImpactDistance, DoomShotgunViewmodel } from '../src/doom/DoomShotgun';
 import * as THREE from 'three';
 import { describe, expect, it, vi } from 'vitest';
 import {
@@ -4311,6 +4312,25 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
       expect(inv.hasWheelSelectedQuickSlot()).toBe(false);
       expect(flareUsedCount).toBe(0);
 
+      // Montagem exige todas as peças e transforma os quatro itens em uma arma.
+      const internals = inv as unknown as {
+        slots: Array<{ def: { id: string } } | null>;
+        activateSlotItem(index: number, quick: boolean): boolean;
+      };
+      inv.addItem(SHOTGUN_PART_IDS[0], 1, true);
+      const partIndex = internals.slots.findIndex(slot => slot?.def.id === SHOTGUN_PART_IDS[0]);
+      expect(internals.activateSlotItem(partIndex, false)).toBe(false);
+      expect(inv.hasItem(SHOTGUN_ITEM_ID)).toBe(false);
+      for (const id of SHOTGUN_PART_IDS.slice(1)) inv.addItem(id, 1, true);
+      expect(canAssembleShotgun(id => inv.hasItem(id))).toBe(true);
+      expect(internals.activateSlotItem(partIndex, false)).toBe(true);
+      expect(inv.hasItem(SHOTGUN_ITEM_ID)).toBe(true);
+      expect(SHOTGUN_PART_IDS.every(id => !inv.hasItem(id))).toBe(true);
+      expect(inv.consumeItemById(SHOTGUN_AMMO_ITEM_ID)).toBe(false);
+      expect(inv.addItem(SHOTGUN_AMMO_ITEM_ID, 8, true)).toBe(true);
+      expect(inv.consumeItemById(SHOTGUN_AMMO_ITEM_ID)).toBe(true);
+      expect(inv.getItemCount(SHOTGUN_AMMO_ITEM_ID)).toBe(7);
+
       inv.destroy();
     } finally {
       globalThis.requestAnimationFrame = prevRaf;
@@ -6960,5 +6980,77 @@ describe('Correção do Canal VHF do Rádio Comunicador (voz de rádio não vaza
     );
     expect(longe.audible).toBe(false);
     expect(longe.gain).toBe(0);
+  });
+});
+
+
+describe('Shotgun: peças, munição e aranha', () => {
+  it('garante as quatro peças únicas em caixotes diferentes e cartuchos em várias sementes', () => {
+    for (const seed of [1, 42, 500, 9011, 75012]) {
+      const layout = createRandomArenaLayout({ worldSeed: seed, playerSeed: seed });
+      expect(layout.cratePlacements).toHaveLength(25);
+      const pieces = layout.cratePlacements.filter(p => SHOTGUN_PART_IDS.some(id => id === p.itemId));
+      expect(pieces).toHaveLength(4);
+      expect(new Set(pieces.map(p => p.itemId)).size).toBe(4);
+      expect(new Set(pieces.map(p => `${p.gx},${p.gz}`)).size).toBe(4);
+      expect(layout.cratePlacements.filter(p => p.itemId === SHOTGUN_AMMO_ITEM_ID).length).toBeGreaterThanOrEqual(2);
+    }
+  });
+
+  it('coleta uma caixa de cartuchos como oito tiros e não duplica ao recolher novamente', () => {
+    const scene = new THREE.Scene();
+    const layout = createRandomArenaLayout({ worldSeed: 42, playerSeed: 42 });
+    const items = new DoomWorldItems(scene, createDoomSharedUniforms(), layout);
+    const pickup = items.getPickupsSnapshot().find(p => p.itemId === SHOTGUN_AMMO_ITEM_ID)!;
+    expect(pickup).toBeDefined();
+    const addItem = vi.fn(() => true);
+    const inventory = { addItem } as unknown as DoomInventory;
+    const camera = pickup.position.clone();
+    items.updateAndCheckPickups(0.016, 1, pickup.position, camera, new THREE.Vector3(0, 0, -1), false, inventory);
+    expect(addItem).toHaveBeenCalledWith(SHOTGUN_AMMO_ITEM_ID, 8, false);
+    const calls = addItem.mock.calls.length;
+    items.updateAndCheckPickups(0.016, 2, pickup.position, camera, new THREE.Vector3(0, 0, -1), false, inventory);
+    expect(addItem.mock.calls.length).toBe(calls);
+  });
+
+  it('testa mira, oclusão, distância, dano e viewmodel sem inventar projéteis através de paredes', () => {
+    const origin = new THREE.Vector3(0, 1, 0), direction = new THREE.Vector3(0, 0, -1);
+    const target = new THREE.Vector3(0, 1, -6);
+    expect(shotgunImpactDistance(origin, direction, target, [])).toBeCloseTo(4.95);
+    expect(shotgunImpactDistance(origin, direction, target, [new THREE.Box3(new THREE.Vector3(-1, 0, -3), new THREE.Vector3(1, 3, -2))])).toBeNull();
+    expect(shotgunImpactDistance(origin, direction, new THREE.Vector3(10, 1, -6), [])).toBeNull();
+    expect(shotgunImpactDistance(origin, direction, new THREE.Vector3(0, 1, -40), [])).toBeNull();
+    expect(computeShotgunBlastDamage(2)).toBeGreaterThan(computeShotgunBlastDamage(12));
+    expect(computeShotgunBlastDamage(30)).toBe(0);
+    const model = new DoomShotgunViewmodel(16 / 9);
+    model.equip(); model.update(0.05, 0, 0); expect(model.isVisibleInView).toBe(true);
+    model.fire(); expect(model.isFiring).toBe(true); model.dispose();
+  });
+
+  it('não interrompe o sequestro com tiros e replica a destruição para o cliente', () => {
+    const scene = new THREE.Scene();
+    const shared = createDoomSharedUniforms();
+    const layout = createRandomArenaLayout({ worldSeed: 123, playerSeed: 123 });
+    const webs = new DoomSpiderWebManager(scene, shared, layout);
+    const sound = { playSpiderScream: () => {}, playSpiderFootstep: () => {}, playSpiderChitter: () => {} } as unknown as SoundEngine;
+    const host = new DoomSpider(scene, shared, [], webs, sound, layout);
+    const guest = new DoomSpider(scene, shared, [], webs, sound, layout);
+    const victim = new THREE.Vector3(0, 0, 0), position = new THREE.Vector3(0, 1.4, 2);
+    host.updateCinematicSequence(0.016, 1, 'DRAGGING_TO_WEB', 0.5, position, victim, victim);
+    expect(host.applyShotgunDamage(500)).toBe(false);
+    expect(host.currentState).toBe('CINEMATIC_SEQUENCE');
+    host.relocateAwayAfterAbduction();
+    expect(host.applyShotgunDamage(60)).toBe(true);
+    expect(host.isDead).toBe(false);
+    expect(host.getNetworkSnapshot().shotgunHealth).toBe(40);
+    host.applyShotgunDamage(40);
+    expect(host.isDead).toBe(true);
+    host.commandReturnToDevourVictim(victim);
+    host.alertToWebTrap(victim, victim);
+    host.finishAbductionRetreat();
+    expect(host.isDead).toBe(true);
+    guest.applyRemoteNetworkState(0.016, 2, host.getNetworkSnapshot(), victim, 0, () => { throw Error('dead spider caught player'); });
+    expect(guest.isDead).toBe(true);
+    expect(guest.getNetworkSnapshot().shotgunHealth).toBe(0);
   });
 });
