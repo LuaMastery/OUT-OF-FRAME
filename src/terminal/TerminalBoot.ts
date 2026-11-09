@@ -97,21 +97,13 @@ interface BinarySlot {
   bit: '0' | '1';
 }
 
-interface MenuHitbox {
-  index: number;
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-}
 
 /**
  * Sistema de Terminal:
  * 1. Carregamento normal de inicialização do terminal.
  * 2. Área de trabalho versão terminal interativa (ícones ASCII, janelas em modo texto,
  *    barra de tarefas com menu e relógio, linha de comando).
- * 3. Ao abrir `out_of_frame.exe`: exibe aviso de desenvolvimento e une código binário
- *    aos poucos formando a interface estilo Superhot.
+ * 3. Ao abrir `out_of_frame.exe`: exibe uma breve transição binária e o menu cinematográfico.
  */
 export class TerminalBootController {
   private phase: TerminalPhase = 'idle';
@@ -157,6 +149,8 @@ export class TerminalBootController {
 
   // Canvas da convergência binária (out_of_frame.exe)
   private canvasEl!: HTMLCanvasElement;
+  private mainMenuEl!: HTMLElement;
+  private mainMenuButtons: HTMLButtonElement[] = [];
   private ctx!: CanvasRenderingContext2D;
   private timers: number[] = [];
   private rafId = 0;
@@ -167,12 +161,10 @@ export class TerminalBootController {
   private slots: BinarySlot[] = [];
   private gridCols = 80;
   private gridRows = 30;
-  private boxTop = 6;
   private binaryFontPx = 16;
   private cellW = 10;
   private cellH = 20;
   private menuIndex = 0;
-  private menuHitboxes: MenuHitbox[] = [];
 
   private boundKeyCapture!: (e: KeyboardEvent) => void;
   private boundPointerUnlock!: () => void;
@@ -235,6 +227,53 @@ export class TerminalBootController {
     this.canvasEl = document.createElement('canvas');
     this.canvasEl.id = 'binary-ui-canvas';
 
+    this.mainMenuEl = document.createElement('main');
+    this.mainMenuEl.className = 'oof-title-screen';
+    this.mainMenuEl.setAttribute('aria-label', 'Menu principal de OUT-OF-FRAME');
+    this.mainMenuEl.hidden = true;
+    this.mainMenuEl.innerHTML = `
+      <div class="oof-title-screen__background" aria-hidden="true"></div>
+      <div class="oof-title-screen__veil" aria-hidden="true"></div>
+      <div class="oof-title-screen__content">
+        <div class="oof-title-screen__heading">
+          <p class="oof-title-screen__eyebrow">UM COMPLEXO. NENHUMA SAÍDA.</p>
+          <h1>OUT<span class="oof-title-screen__hyphen">-</span>OF<span class="oof-title-screen__hyphen">-</span>FRAME</h1>
+          <p class="oof-title-screen__subtitle">A SOBREVIVÊNCIA COMEÇA NO ESCURO</p>
+        </div>
+        <nav class="oof-title-screen__nav" aria-label="Opções do jogo">
+          <button type="button" data-title-index="0"><span>INICIAR</span><small>JOGAR SOZINHO</small></button>
+          <button type="button" data-title-index="1"><span>MULTIPLAYER</span><small>JOGAR EM EQUIPE</small></button>
+          <button type="button" data-title-index="2"><span>SAIR</span><small>VOLTAR AO TERMINAL</small></button>
+        </nav>
+      </div>
+      <div class="oof-title-screen__footer" aria-hidden="true">
+        <span>OUT-OF-FRAME <b> / </b> EM DESENVOLVIMENTO</span>
+        <span>SETAS PARA NAVEGAR <b> · </b> ENTER PARA SELECIONAR</span>
+      </div>
+    `;
+    this.mainMenuButtons = Array.from(this.mainMenuEl.querySelectorAll<HTMLButtonElement>('[data-title-index]'));
+    this.mainMenuButtons.forEach((button, index) => {
+      button.addEventListener('pointerenter', (event) => {
+        if (this.phase !== 'binary_interface' || this.multiplayerModal?.visible || event.pointerType === 'touch') return;
+        if (this.menuIndex !== index) {
+          this.menuIndex = index;
+          this.syncMainMenuSelection();
+          this.sound.menuMove();
+        }
+      });
+      button.addEventListener('focus', () => {
+        if (this.phase !== 'binary_interface' || this.multiplayerModal?.visible) return;
+        this.menuIndex = index;
+        this.syncMainMenuSelection();
+      });
+      button.addEventListener('click', () => {
+        if (this.phase !== 'binary_interface' || this.multiplayerModal?.visible) return;
+        this.sound.unlock();
+        this.menuIndex = index;
+        this.executeMenuSelection();
+      });
+    });
+
     this.zoomLayerEl = document.createElement('div');
     this.zoomLayerEl.id = 'tui-zoom-layer';
 
@@ -243,6 +282,7 @@ export class TerminalBootController {
       this.desktopEl,
       this.hiddenInputEl,
       this.canvasEl,
+      this.mainMenuEl,
       this.zoomLayerEl
     );
     this.mountParent.appendChild(this.rootEl);
@@ -258,13 +298,8 @@ export class TerminalBootController {
 
     this.proximityFx = new CursorProximityFX(
       this.rootEl,
-      () =>
-        this.phase === 'desktop' ||
-        (this.phase === 'binary_interface' && !this.multiplayerModal?.visible),
-      () =>
-        this.phase === 'binary_interface' && !this.multiplayerModal?.visible
-          ? this.menuHitboxes
-          : []
+      () => this.phase === 'desktop',
+      () => []
     );
 
     this.multiplayerModal = new MultiplayerMenuModal(this.rootEl, {
@@ -274,7 +309,7 @@ export class TerminalBootController {
         this.options.onLaunchImmediateGesture(session);
       },
       onClose: () => {
-        // Permanece na interface binária de out_of_frame.exe
+        if (this.phase === 'binary_interface') this.mainMenuButtons[this.menuIndex]?.focus();
       },
     });
   }
@@ -387,33 +422,6 @@ export class TerminalBootController {
         this.closeStartMenu();
         this.focusWindow(null);
       }
-    });
-
-    this.canvasEl.addEventListener('pointerdown', (e) => {
-      this.sound.unlock();
-      if (this.phase === 'binary_interface') {
-        this.handleCanvasClick(e.clientX, e.clientY);
-      }
-    });
-
-    this.canvasEl.addEventListener('pointermove', (e) => {
-      if (this.phase !== 'binary_interface' || e.pointerType === 'touch') return;
-      for (const box of this.menuHitboxes) {
-        if (
-          e.clientX >= box.x &&
-          e.clientX <= box.x + box.w &&
-          e.clientY >= box.y &&
-          e.clientY <= box.y + box.h
-        ) {
-          if (this.menuIndex !== box.index) {
-            this.menuIndex = box.index;
-            this.sound.menuMove();
-          }
-          this.canvasEl.classList.add('cursor-pointer');
-          return;
-        }
-      }
-      this.canvasEl.classList.remove('cursor-pointer');
     });
 
     // Movimento de arrasto de janelas TUI (mouse e toque!)
@@ -568,10 +576,12 @@ export class TerminalBootController {
         if (e.key === 'ArrowUp' || e.code === 'KeyW') {
           e.preventDefault();
           this.menuIndex = (this.menuIndex - 1 + count) % count;
+          this.syncMainMenuSelection(true);
           this.sound.menuMove();
         } else if (e.key === 'ArrowDown' || e.code === 'KeyS') {
           e.preventDefault();
           this.menuIndex = (this.menuIndex + 1) % count;
+          this.syncMainMenuSelection(true);
           this.sound.menuMove();
         } else if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
@@ -605,12 +615,9 @@ export class TerminalBootController {
           win.el.style.top = `${Math.max(4, Math.min(curTop, Math.max(4, wsRect.height - desiredH - 4)))}px`;
         }
       }
-      if (
-        this.phase === 'program_starting' ||
-        this.phase === 'binary_interface'
-      ) {
+      if (this.phase === 'program_starting') {
         this.setupCanvasMetrics();
-        this.rebuildBinaryBlueprint(this.phase === 'binary_interface');
+        this.rebuildBinaryBlueprint(false);
       }
     };
     window.addEventListener('resize', this.boundResize);
@@ -1318,6 +1325,7 @@ export class TerminalBootController {
               if (this.phase !== 'desktop') return;
 
               this.phase = 'program_starting';
+              this.menuIndex = 0;
               try {
                 const params = new URLSearchParams(window.location.search);
                 if (normalizeRoomCode(params.get('room') || '').length >= 4) {
@@ -1340,7 +1348,7 @@ export class TerminalBootController {
                   return;
                 }
                 this.renderBinaryFrame(now);
-                this.rafId = requestAnimationFrame(tick);
+                if (this.phase === 'program_starting') this.rafId = requestAnimationFrame(tick);
               };
               this.rafId = requestAnimationFrame(tick);
             },
@@ -1356,6 +1364,7 @@ export class TerminalBootController {
     cancelAnimationFrame(this.rafId);
     this.sound.stopCoalesceDrone();
     this.canvasEl.classList.remove('active');
+    this.mainMenuEl.hidden = true;
     this.canvasEl.classList.remove('cursor-pointer', 'cursor-pressing');
     document.body.classList.remove('tui-dragging-window');
     this.phase = 'desktop';
@@ -1411,7 +1420,6 @@ export class TerminalBootController {
     const boxH = Math.min(18, Math.max(15, rows - 2));
     const left = Math.max(1, Math.floor((cols - boxW) * 0.5));
     const top = Math.max(1, Math.floor((rows - boxH) * 0.5));
-    this.boxTop = top;
 
     const right = left + boxW - 1;
     const bottom = top + boxH - 1;
@@ -1547,6 +1555,10 @@ export class TerminalBootController {
     if (rawT >= 1.0 && this.phase === 'program_starting') {
       this.phase = 'binary_interface';
       this.sound.interfaceLocked();
+      this.canvasEl.classList.remove('active');
+      this.mainMenuEl.hidden = false;
+      this.syncMainMenuSelection(true);
+      return;
     }
 
     if (rawT < 0.5) {
@@ -1599,9 +1611,6 @@ export class TerminalBootController {
       this.sound.binaryCoalesceGrain(rawT, lockedFrac);
     }
 
-    if (this.phase === 'binary_interface') {
-      this.drawAssembledMenuItems();
-    }
   }
 
   private drawInitialDevNotice(alpha: number, binaryCorruption: number): void {
@@ -1623,59 +1632,12 @@ export class TerminalBootController {
     }
   }
 
-  private drawAssembledMenuItems(): void {
-    const items = BINARY_MENU_ITEMS;
-    const boxH = Math.min(18, Math.max(15, this.gridRows - 2));
-    const baseRow = this.boxTop + (boxH >= 18 ? 8 : 6);
-    this.menuHitboxes = [];
-
-    for (let idx = 0; idx < items.length; idx++) {
-      const selected = idx === this.menuIndex;
-      const label = selected ? `> ${items[idx]} <` : `  ${items[idx]}  `;
-      const col = Math.floor((this.gridCols - label.length) * 0.5);
-      const row = baseRow + idx * 2;
-
-      const px = col * this.cellW - 8;
-      const py = row * this.cellH - 1;
-      const pw = label.length * this.cellW + 16;
-      const ph = this.cellH + 2;
-
-      // Área de toque generosa vertical/horizontal sem sobrepor o item vizinho
-      const hitPadY = Math.floor(this.cellH * 0.42);
-      this.menuHitboxes.push({
-        index: idx,
-        x: px - 10,
-        y: py - hitPadY,
-        w: pw + 20,
-        h: ph + hitPadY * 2,
-      });
-
-      if (selected) {
-        this.ctx.fillStyle = '#e5e5e5';
-        this.ctx.fillRect(px, py, pw, ph);
-        this.ctx.fillStyle = '#000000';
-      } else {
-        this.ctx.fillStyle = '#e5e5e5';
-      }
-
-      this.ctx.fillText(label, col * this.cellW, row * this.cellH);
-    }
-  }
-
-  private handleCanvasClick(clientX: number, clientY: number): void {
-    if (this.multiplayerModal?.visible) return;
-    for (const box of this.menuHitboxes) {
-      if (
-        clientX >= box.x &&
-        clientX <= box.x + box.w &&
-        clientY >= box.y &&
-        clientY <= box.y + box.h
-      ) {
-        this.menuIndex = box.index;
-        this.executeMenuSelection();
-        return;
-      }
-    }
+  private syncMainMenuSelection(focus = false): void {
+    this.mainMenuButtons.forEach((button, index) => {
+      const selected = index === this.menuIndex;
+      button.classList.toggle('is-selected', selected);
+    });
+    if (focus) this.mainMenuButtons[this.menuIndex]?.focus({ preventScroll: true });
   }
 
   private executeMenuSelection(): void {
