@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { TASER_RECHARGE_SECONDS } from '../doom/DoomTaser';
 import { DoomAstronaut } from '../doom/DoomAstronaut';
+import { parseQuickItemAction, QUICK_ITEM_DURATIONS, HeldWeapon, QuickHandheldKind, QuickItemAction } from '../doom/DoomItemAction';
 import {
   computeDoomDancePose,
   DoomDanceId,
@@ -56,6 +57,9 @@ interface RemoteAllyEntity {
   crouch: number;
   slide: number;
   slideTarget: number;
+  quickItemAction: QuickItemAction | null;
+  lastItemPoseTs: number;
+  heldWeapon: HeldWeapon | null;
   flashlightOn: boolean;
   flashDir: THREE.Vector3;
   health: number;
@@ -95,6 +99,8 @@ interface ActiveTacticalPing {
 }
 
 export interface MultiplayerCoordinatorHooks {
+  createQuickItemProps?: () => Record<QuickHandheldKind, THREE.Object3D>;
+  createWeaponProps?: () => Record<HeldWeapon, THREE.Object3D>;
   onReceiveFlare: (pos: THREE.Vector3, yaw: number) => void;
   onShotgunShot?: (origin: THREE.Vector3, direction: THREE.Vector3) => void;
   onTaserShot?: (origin: THREE.Vector3, direction: THREE.Vector3) => void;
@@ -1096,6 +1102,8 @@ export class DoomMultiplayerCoordinator {
       bobPhase: number;
       crouch: number;
       slide?: number;
+      quickItemAction?: QuickItemAction | null;
+      heldWeapon?: HeldWeapon | null;
       flashlightOn: boolean;
       flashDir: THREE.Vector3;
       health: number;
@@ -1257,6 +1265,8 @@ export class DoomMultiplayerCoordinator {
         bobPhase: localState.bobPhase,
         crouch: localState.crouch,
         slide: nextLocalAfk ? 0 : localState.slide ?? 0,
+        quickItemAction: nextLocalAfk ? null : localState.quickItemAction ?? null,
+        heldWeapon: nextLocalAfk ? null : localState.heldWeapon ?? null,
         flashlightOn: localState.flashlightOn,
         flashDirX: localState.flashDir.x,
         flashDirY: localState.flashDir.y,
@@ -1374,6 +1384,10 @@ export class DoomMultiplayerCoordinator {
         }
       }
 
+      if (ally.quickItemAction) {
+        ally.quickItemAction.progress += Math.max(0, dt) / QUICK_ITEM_DURATIONS[ally.quickItemAction.kind];
+        if (ally.quickItemAction.progress >= 1) ally.quickItemAction = null;
+      }
       if (ally.dead) {
         ally.astronaut.setFirstPersonMode(true);
         ally.beamGroup.visible = false;
@@ -1411,6 +1425,13 @@ export class DoomMultiplayerCoordinator {
           dt,
           ally.slide
         );
+        if (ally.heldWeapon && !ally.afk && !ally.ensnared && !ally.cocoonLocked && !ally.inSequence && !isBeingDragged) {
+          ally.astronaut.applyThirdPersonHeldWeapon(ally.heldWeapon);
+        }
+        // A normal web snare can be cut with the knife; a cocoon, capture or drag cannot.
+        if (ally.quickItemAction && !ally.afk && !ally.cocoonLocked && !ally.inSequence && !isBeingDragged) {
+          ally.astronaut.applyThirdPersonItemAction(ally.quickItemAction);
+        }
       }
 
       // Foco sutil no bocal ancorado exatamente na frente da lente da lanterna 3D sólida do aliado
@@ -1731,6 +1752,8 @@ export class DoomMultiplayerCoordinator {
     let ent = this.allies.get(pkt.id);
     if (!ent) {
       const astronaut = new DoomAstronaut(this.scene, this.sharedUniforms);
+      if (this.hooks.createQuickItemProps) astronaut.setThirdPersonItemProps(this.hooks.createQuickItemProps());
+      if (this.hooks.createWeaponProps) astronaut.setThirdPersonWeaponProps(this.hooks.createWeaponProps());
       astronaut.setFirstPersonMode(false);
 
       const beamGroup = this.createAllyFlashlightBeamMesh();
@@ -1770,6 +1793,9 @@ export class DoomMultiplayerCoordinator {
         crouch: pkt.crouch,
         slide: 0,
         slideTarget: 0,
+        quickItemAction: null,
+        lastItemPoseTs: -Infinity,
+        heldWeapon: null,
         flashlightOn: pkt.flashlightOn,
         flashDir: new THREE.Vector3(
           pkt.flashDirX || 0,
@@ -1821,6 +1847,11 @@ export class DoomMultiplayerCoordinator {
     ent.pitch = pkt.pitch;
     ent.speed = pkt.speed;
     ent.crouch = pkt.crouch;
+    if (Number.isFinite(pkt.ts) && pkt.ts > ent.lastItemPoseTs) {
+      ent.lastItemPoseTs = pkt.ts;
+      ent.quickItemAction = parseQuickItemAction(pkt.quickItemAction);
+      ent.heldWeapon = pkt.heldWeapon === 'shotgun' || pkt.heldWeapon === 'taser' ? pkt.heldWeapon : null;
+    }
     ent.slideTarget = typeof pkt.slide === 'number' && Number.isFinite(pkt.slide)
       ? Math.max(0, Math.min(1, pkt.slide)) : 0;
     ent.flashlightOn = pkt.flashlightOn;

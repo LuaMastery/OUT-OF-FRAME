@@ -117,6 +117,9 @@ export interface NetworkPlayerPosePacket {
   crouch: number;
   /** Intensidade do deslize; ausente em clientes antigos. */
   slide?: number;
+  /** Optional, purely visual item animation snapshot. */
+  quickItemAction?: import('../doom/DoomItemAction').QuickItemAction | null;
+  heldWeapon?: import('../doom/DoomItemAction').HeldWeapon | null;
   flashlightOn: boolean;
   flashDirX: number;
   flashDirY: number;

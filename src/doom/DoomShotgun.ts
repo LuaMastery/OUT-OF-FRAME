@@ -383,6 +383,7 @@ export class DoomShotgunViewmodel {
       new THREE.ConeGeometry(0.075, 0.19, 8),
       this.muzzleFlashMaterial
     );
+    this.muzzleFlash.name = 'ShotgunMuzzleFlash';
     this.muzzleFlash.rotation.x = -Math.PI * 0.5;
     this.muzzleFlash.position.set(0, 0.024, -0.55);
     gun.add(this.muzzleFlash);
@@ -391,6 +392,7 @@ export class DoomShotgunViewmodel {
       new THREE.CylinderGeometry(0.0095, 0.0095, 0.05, 8),
       brassMat
     );
+    this.ejectShell.name = 'ShotgunEjectShell';
     this.ejectShell.visible = false;
     gun.add(this.ejectShell);
 
@@ -402,6 +404,16 @@ export class DoomShotgunViewmodel {
     this.rootGroup.position.set(0.17, -0.13, -0.02);
     this.rootGroup.visible = false;
     this.viewScene.add(this.rootGroup);
+  }
+
+  createThirdPersonWeapon(): THREE.Object3D {
+    const gun = this.animGroup.children[0].clone(true);
+    for (const name of ['ShotgunMuzzleFlash', 'ShotgunEjectShell']) {
+      const effect = gun.getObjectByName(name);
+      if (effect) effect.visible = false;
+    }
+    gun.position.set(0, 0.085, -0.085);
+    return gun;
   }
 
   setAspect(aspect: number): void {

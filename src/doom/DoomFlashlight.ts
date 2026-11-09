@@ -6,15 +6,8 @@ import {
 } from './DoomAstronaut';
 import { computeAdaptiveVerticalFov } from './DoomTouchControls';
 
-export type QuickHandheldKind =
-  | 'knife'
-  | 'bandage'
-  | 'morphine'
-  | 'battery'
-  | 'flare'
-  | 'key'
-  | 'radar'
-  | 'walkie';
+import { QUICK_ITEM_DURATIONS, QuickHandheldKind, QuickItemAction } from './DoomItemAction';
+export type { QuickHandheldKind } from './DoomItemAction';
 
 /**
  * Textura pixel-art 32x32 (NearestFilter) de alumínio anodizado usinado com recartilhado tático.
@@ -173,6 +166,7 @@ export class DoomFlashlight {
   private activeQuickKind: QuickHandheldKind | null = null;
   private quickTimer = 0;
   private quickDuration = 0.5;
+  private quickMode: 'use' | 'pickup' = 'use';
 
   private equipped = false;
   private lightActive = false;
@@ -848,6 +842,35 @@ export class DoomFlashlight {
       walkieKnob
     );
 
+    // Peças e munição coletadas também têm representação própria, sem montar a arma automaticamente.
+    const pickupBox = (w: number, h: number, d: number, mat: THREE.Material, x = 0, y = h / 2, z = 0) => {
+      const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+      mesh.position.set(x, y, z);
+      return mesh;
+    };
+    const pickupCylinder = (radius: number, height: number, mat: THREE.Material, y = height / 2) => {
+      const mesh = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, height, 10), mat);
+      mesh.position.y = y;
+      return mesh;
+    };
+    const taserPickup = new THREE.Group();
+    const taserYellow = new THREE.MeshLambertMaterial({ color: 0xd7a627, flatShading: true });
+    taserPickup.add(pickupBox(0.065, 0.13, 0.08, taserYellow), pickupBox(0.04, 0.07, 0.045, darkRingMat, 0, -0.025));
+    const receiverPickup = new THREE.Group();
+    receiverPickup.add(pickupBox(0.065, 0.15, 0.07, darkRingMat), pickupBox(0.035, 0.045, 0.03, brassMat, 0, 0.12));
+    const barrelPickup = new THREE.Group();
+    barrelPickup.add(pickupCylinder(0.018, 0.32, darkRingMat));
+    const pumpPickup = new THREE.Group();
+    pumpPickup.add(pickupCylinder(0.034, 0.16, darkRingMat));
+    const stockPickup = new THREE.Group();
+    stockPickup.add(pickupBox(0.06, 0.18, 0.07, woodMat), pickupBox(0.075, 0.03, 0.09, woodMat, 0, 0.18));
+    const shellsPickup = new THREE.Group();
+    for (const x of [-0.035, 0, 0.035]) {
+      const shell = pickupCylinder(0.015, 0.075, flareRedMat); shell.position.x = x;
+      const cap = pickupCylinder(0.016, 0.012, brassMat, 0.006); cap.position.x = x;
+      shellsPickup.add(shell, cap);
+    }
+
     this.quickPropMeshes = {
       knife: knifeProp,
       bandage: bandageProp,
@@ -857,6 +880,12 @@ export class DoomFlashlight {
       key: keyProp,
       radar: radarProp,
       walkie: walkieProp,
+      taser: taserPickup,
+      shotgun_receiver: receiverPickup,
+      shotgun_barrel: barrelPickup,
+      shotgun_pump: pumpPickup,
+      shotgun_stock: stockPickup,
+      shotgun_shells: shellsPickup,
     };
 
     for (const k of Object.keys(this.quickPropMeshes) as QuickHandheldKind[]) {
@@ -887,6 +916,20 @@ export class DoomFlashlight {
    */
   get isVisibleInView(): boolean {
     return this.rootGroup.visible || this.quickRootGroup.visible;
+  }
+
+  /** Snapshot visual only; gameplay effects remain local/authoritative. */
+  get quickItemAction(): QuickItemAction | null {
+    return this.activeQuickKind && this.quickTimer < this.quickDuration
+      ? { kind: this.activeQuickKind, progress: this.quickTimer / this.quickDuration, mode: this.quickMode }
+      : null;
+  }
+
+  /** Clone the actual first-person objects for the ally's hand; shared geometry/materials are not disposed by the ally. */
+  createThirdPersonQuickProps(): Record<QuickHandheldKind, THREE.Object3D> {
+    return Object.fromEntries(
+      (Object.keys(this.quickPropMeshes) as QuickHandheldKind[]).map(kind => [kind, this.quickPropMeshes[kind].clone(true)])
+    ) as Record<QuickHandheldKind, THREE.Object3D>;
   }
 
   /**
@@ -1041,21 +1084,11 @@ export class DoomFlashlight {
   /**
    * Dispara animação 3D imediata com o Braço Esquerdo Original do Astronauta (`AstronautLeftArm`)!
    */
-  triggerQuickItemAction(kind: QuickHandheldKind): void {
+  triggerQuickItemAction(kind: QuickHandheldKind, mode: 'use' | 'pickup' = 'use'): void {
     this.activeQuickKind = kind;
+    this.quickMode = mode;
     this.quickTimer = 0;
-    this.quickDuration =
-      kind === 'knife'
-        ? 0.46
-        : kind === 'flare'
-          ? 0.52
-          : kind === 'battery'
-            ? 0.54
-            : kind === 'key'
-              ? 0.58
-              : kind === 'radar' || kind === 'walkie'
-                ? 0.68
-                : 0.62;
+    this.quickDuration = QUICK_ITEM_DURATIONS[kind];
 
     if (kind === 'knife' || kind === 'flare') {
       this.leftAstronautArm.setGripPose('knife');
@@ -1118,6 +1151,16 @@ export class DoomFlashlight {
     this.leftAstronautArm.setInUse(true);
     this.quickAnimGroup.rotation.set(0, 0, 0);
     const kind = this.activeQuickKind;
+
+    if (this.quickMode === 'pickup') {
+      const reach = Math.sin(u * Math.PI);
+      this.quickRootGroup.position.set(-0.29 + reach * 0.04, -0.30 + reach * 0.12, 0.04 - reach * 0.08);
+      this.leftAstronautArm.shoulderPivot.rotation.set(0.65 + reach * 0.65, -0.08, 0.1);
+      this.leftAstronautArm.elbowPivot.rotation.set(0.55 + reach * 0.25, -0.12, 0.2);
+      this.leftAstronautArm.wristPivot.rotation.set(0, 0.15, -0.08);
+      this.knifeBladePivot.rotation.x = -2.05;
+      return;
+    }
 
     if (kind === 'knife') {
       // Animação EVA Anatômica do Canivete Oxidado (`AstronautLeftArm` ancorado no ombro esquerdo):

@@ -7,6 +7,7 @@ import {
   DoomAstronaut,
 } from '../src/doom/DoomAstronaut';
 import { DoomFlashlight, QuickHandheldKind } from '../src/doom/DoomFlashlight';
+import { QuickItemAction } from '../src/doom/DoomItemAction';
 import {
   createInitialSlideState,
   stepPlayerSlideState,
@@ -3611,10 +3612,11 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
       expect(guestJoin.ok).toBe(true);
 
       const receivedEvents: NetworkWorldEvent[] = [];
+      const receivedActionPoses: NetworkPlayerPosePacket[] = [];
       const guestClient = new MultiplayerRoomClient(
         guestJoin.session!,
         {
-          onRemotePlayerPose: () => {},
+          onRemotePlayerPose: (pkt) => receivedActionPoses.push(pkt),
           onRemotePlayerLeft: () => {},
           onSpiderSync: () => {},
           onWorldEvent: (ev) => receivedEvents.push(ev),
@@ -3634,6 +3636,8 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
         viewportEl as unknown as HTMLElement,
         new SoundEngine(),
         {
+          createQuickItemProps: () => new DoomFlashlight(1).createThirdPersonQuickProps(),
+          createWeaponProps: () => ({ shotgun: new DoomShotgunViewmodel(1).createThirdPersonWeapon(), taser: new DoomTaserViewmodel(1).createThirdPersonWeapon() }),
           onReceiveFlare: () => {},
           onRescuedByAlly: () => {},
           onAbductionInterruptedByAlly: () => {},
@@ -3757,9 +3761,9 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
         await new Promise((r) => setTimeout(r, 35));
         const ally = (coordinator as any).allies.get('guest-chat-t');
         expect(ally.slideTarget).toBe(1);
-        const tickSlide = () => coordinator.update(0.05, 1.5, camTest, {
+        const tickSlide = (action: QuickItemAction | null = null) => coordinator.update(0.05, 1.5, camTest, {
           pos: new THREE.Vector3(10, 0, 10), yaw: 0, pitch: 0, speed: 0,
-          bobPhase: 0, crouch: 0, flashlightOn: false, flashDir: new THREE.Vector3(0, 0, -1),
+          bobPhase: 0, crouch: 0, quickItemAction: action, heldWeapon: 'taser', flashlightOn: false, flashDir: new THREE.Vector3(0, 0, -1),
           health: 100, bleeding: false, ensnared: false, inSequence: false, dead: false,
         }, {
           x: 0, y: 1.42, z: 0, upX: 0, upY: 1, upZ: 0,
@@ -3777,6 +3781,41 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
         const priorSlide = ally.slide;
         tickSlide();
         expect(ally.slide).toBeLessThan(priorSlide);
+        const hostFlashlight = new DoomFlashlight(1);
+        hostFlashlight.triggerQuickItemAction('knife');
+        tickSlide(hostFlashlight.quickItemAction);
+        tickSlide(hostFlashlight.quickItemAction);
+        await new Promise((r) => setTimeout(r, 35));
+        expect(receivedActionPoses.some(pkt => pkt.quickItemAction?.kind === 'knife' && pkt.heldWeapon === 'taser')).toBe(true);
+
+        // Pacotes reais transportam a ação e a arma; o aliado vê o objeto na mão.
+        guestClient.broadcastPlayerPose({ ...slidePose, slide: 0, heldWeapon: 'shotgun', quickItemAction: { kind: 'knife', progress: 0.35 } });
+        await new Promise((r) => setTimeout(r, 35));
+        tickSlide();
+        expect(ally.astronaut.thirdPersonItemGroup.visible).toBe(true);
+        expect(ally.astronaut.thirdPersonItemGroup.getObjectByName('AstronautThirdPersonItem-knife').visible).toBe(true);
+        expect(ally.astronaut.thirdPersonWeaponGroup.visible).toBe(false);
+        // Sem novos pacotes, a ação deve terminar em vez de deixar o objeto preso na mão.
+        for (let i = 0; i < 20; i++) tickSlide();
+        expect(ally.astronaut.thirdPersonItemGroup.visible).toBe(false);
+        expect(ally.astronaut.thirdPersonWeaponGroup.visible).toBe(true);
+        // Pacote antigo não ressuscita uma ação encerrada.
+        const lastItemTs = ally.lastItemPoseTs;
+        (coordinator as any).handleRemotePose({ ...slidePose, id: 'guest-chat-t', name: 'ENGENHEIRO', ts: lastItemTs - 1, quickItemAction: { kind: 'knife', progress: 0.1 } });
+        expect(ally.quickItemAction).toBeNull();
+        // Pacotes de versões antigas apagam a arma/ação; a teia comum permite a animação de corte.
+        guestClient.broadcastPlayerPose({ ...legacyPose, ensnared: true, quickItemAction: { kind: 'knife', progress: 0.2, mode: 'use' } });
+        await new Promise((r) => setTimeout(r, 35));
+        tickSlide();
+        expect(ally.astronaut.thirdPersonItemGroup.visible).toBe(true);
+        guestClient.broadcastPlayerPose({ ...legacyPose, cocoonLocked: true, ensnared: true, quickItemAction: { kind: 'knife', progress: 0.2 } });
+        await new Promise((r) => setTimeout(r, 35));
+        tickSlide();
+        expect(ally.astronaut.thirdPersonItemGroup.visible).toBe(false);
+        guestClient.broadcastPlayerPose(legacyPose);
+        await new Promise((r) => setTimeout(r, 35));
+        expect(ally.quickItemAction).toBeNull();
+        expect(ally.heldWeapon).toBeNull();
 
         guestClient.broadcastPlayerPose({
           x: allyWorldPos.x,

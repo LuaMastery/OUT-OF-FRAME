@@ -35,7 +35,8 @@ import {
 import { DoomDanceMenu } from './DoomDanceMenu';
 import { DoomFlashlight } from './DoomFlashlight';
 import { DoomShotgunViewmodel, SHOTGUN_ITEM_ID, SHOTGUN_AMMO_ITEM_ID, SHOTGUN_PART_IDS, shotgunImpactDistance, computeShotgunBlastDamage } from './DoomShotgun';
-import { DoomInventory } from './DoomInventory';
+import { DoomInventory, ITEM_CATALOG } from './DoomInventory';
+import { QUICK_ITEM_DURATIONS, QuickHandheldKind } from './DoomItemAction';
 import { DoomTaserViewmodel, TASER_ITEM_ID, TASER_RECHARGE_SECONDS, TASER_STUN_SECONDS, taserImpactDistance, advanceTaserRecharge } from './DoomTaser';
 import {
   buildDoomLabyrinth,
@@ -1105,6 +1106,8 @@ export class DoomGameApp {
       this.viewportEl,
       this.sound,
       {
+        createQuickItemProps: () => this.flashlight.createThirdPersonQuickProps(),
+        createWeaponProps: () => ({ shotgun: this.shotgun.createThirdPersonWeapon(), taser: this.taser.createThirdPersonWeapon() }),
         onShotgunShot: (origin, direction) => { this.applyShotgunHit(origin, direction); },
         onTaserShot: (origin, direction) => { this.applyTaserHit(origin, direction); },
         onReceiveFlare: (pos, yaw) => {
@@ -3702,6 +3705,12 @@ export class DoomGameApp {
       this.inventory,
       (pickedItemId) => {
         pickedUpAnyItem = true;
+        const pickedKind = pickedItemId === TASER_ITEM_ID ? 'taser'
+          : Object.hasOwn(QUICK_ITEM_DURATIONS, pickedItemId) ? pickedItemId
+          : ITEM_CATALOG[pickedItemId]?.kind;
+        if (pickedKind && Object.hasOwn(QUICK_ITEM_DURATIONS, pickedKind) && pickedKind !== 'radar' && pickedKind !== 'walkie') {
+          this.flashlight.triggerQuickItemAction(pickedKind as QuickHandheldKind, 'pickup');
+        }
         if (pickedItemId === TASER_ITEM_ID) {
           this.inventory.wakeShortcutsHub(6000, 'TASER ENCONTRADO · [J] EQUIPAR · CLIQUE PARA DISPARAR');
         } else if (SHOTGUN_PART_IDS.some(id => id === pickedItemId)) {
@@ -3856,6 +3865,8 @@ export class DoomGameApp {
         bobPhase: this.bobPhase,
         crouch: this.crouchAmount,
         slide: this.slideState.slideAmount,
+        quickItemAction: this.flashlight.quickItemAction,
+        heldWeapon: this.taser.isEquipped ? 'taser' : this.shotgun.isEquipped ? 'shotgun' : null,
         flashlightOn: fl.beamIntensity > 0.05,
         flashDir: this.sharedUniforms.uFlashlightDir.value,
         health: this.playerHealth,

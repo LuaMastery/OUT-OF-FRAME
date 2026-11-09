@@ -67,6 +67,7 @@ export class DoomTaserViewmodel {
     const grip = addBox(0.065, 0.16, 0.07, black, 0, -0.095, -0.025);
     grip.rotation.x = -0.23;
     const hand = addBox(0.085, 0.085, 0.09, glove, 0, -0.12, 0.005);
+    hand.name = 'TaserViewmodelHand';
     hand.rotation.x = -0.2;
     addBox(0.08, 0.015, 0.02, black, 0, 0.05, -0.17);
     addBox(0.012, 0.018, 0.045, metal, -0.032, 0.01, -0.262);
@@ -85,6 +86,18 @@ export class DoomTaserViewmodel {
     this.viewScene.add(this.root);
   }
 
+  createThirdPersonWeapon(): THREE.Object3D {
+    const gun = this.root.clone(true);
+    const hand = gun.getObjectByName('TaserViewmodelHand');
+    hand?.removeFromParent();
+    gun.position.set(0, 0.11, 0);
+    gun.rotation.set(0, 0, 0);
+    gun.scale.set(1, 1, 1);
+    gun.visible = true;
+    const arc = gun.children.find(child => child instanceof THREE.Line);
+    if (arc) arc.visible = false;
+    return gun;
+  }
   get isEquipped(): boolean { return this.equipped; }
   get isVisibleInView(): boolean { return this.root.visible; }
   equip(): void { this.equipped = true; }

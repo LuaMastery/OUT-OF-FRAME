@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { HeldWeapon, QuickHandheldKind, QuickItemAction } from './DoomItemAction';
 import { AstronautRagdoll, RAGDOLL_IDX } from './DoomRagdoll';
 import { createDoomPropMaterial, DoomSharedUniforms } from './DoomShader';
 import {
@@ -966,6 +967,10 @@ export class DoomAstronaut {
   readonly rightArm: AstronautArmRig;
   readonly thirdPersonFlashlightGroup = new THREE.Group();
   readonly thirdPersonWebCocoonGroup = new THREE.Group();
+  readonly thirdPersonItemGroup = new THREE.Group();
+  readonly thirdPersonWeaponGroup = new THREE.Group();
+  private thirdPersonWeapons: Partial<Record<HeldWeapon, THREE.Object3D>> = {};
+  private thirdPersonItems: Partial<Record<QuickHandheldKind, THREE.Object3D>> = {};
   private readonly thirdPersonFlashlightMuzzle = new THREE.Object3D();
   private readonly leftLeg: AstronautLegRig;
   private readonly rightLeg: AstronautLegRig;
@@ -1233,6 +1238,15 @@ export class DoomAstronaut {
     this.thirdPersonFlashlightGroup.visible = false;
     this.rightArm.gripSocket.add(this.thirdPersonFlashlightGroup);
 
+    this.thirdPersonItemGroup.name = 'AstronautThirdPersonItemAdapter';
+    this.thirdPersonItemGroup.rotation.x = -Math.PI * 0.5;
+    this.thirdPersonItemGroup.visible = false;
+    this.leftArm.gripSocket.add(this.thirdPersonItemGroup);
+    this.thirdPersonWeaponGroup.name = 'AstronautThirdPersonWeaponAdapter';
+    this.thirdPersonWeaponGroup.rotation.x = -1.80;
+    this.thirdPersonWeaponGroup.visible = false;
+    this.leftArm.gripSocket.add(this.thirdPersonWeaponGroup);
+
     // 6. CASULO / FIOS 3D DE SEDA DIMENSIONADOS AO REDOR DO TRAJE BIOLÓGICO INFLADO (ZERO CLIPPING)
     this.thirdPersonWebCocoonGroup.name = 'AstronautThirdPersonWebCocoon';
     const silkBandMat = new THREE.MeshBasicMaterial({
@@ -1293,6 +1307,8 @@ export class DoomAstronaut {
       this.leftArm.root.visible = false;
       this.rightArm.root.visible = false;
       this.thirdPersonFlashlightGroup.visible = false;
+      this.thirdPersonItemGroup.visible = false;
+      this.thirdPersonWeaponGroup.visible = false;
       this.thirdPersonWebCocoonGroup.visible = false;
     }
   }
@@ -1530,6 +1546,8 @@ export class DoomAstronaut {
   ): void {
     this.root.visible = true;
     this.setFirstPersonMode(false);
+    this.thirdPersonItemGroup.visible = false;
+    this.thirdPersonWeaponGroup.visible = false;
 
     if (draggedBySpider) {
       if (spiderWorldPos) {
@@ -1643,6 +1661,7 @@ export class DoomAstronaut {
     );
     this.leftArm.elbowPivot.rotation.set(0.28 + stride * 0.14 + slide * 0.45, 0, 0);
     this.leftArm.setGripPose(slide > 0.35 ? 'open' : 'relaxed');
+    this.leftArm.wristPivot.rotation.set(0, 0, 0);
 
     this.rightArm.shoulderPivot.rotation.order = 'YXZ';
     if (flashlightOn) {
@@ -1693,6 +1712,62 @@ export class DoomAstronaut {
     return true;
   }
 
+  /** Use copies of the real viewmodel objects attached to the ally's grip socket. */
+  setThirdPersonItemProps(props: Record<QuickHandheldKind, THREE.Object3D>): void {
+    this.thirdPersonItemGroup.clear();
+    this.thirdPersonItems = props;
+    for (const [kind, prop] of Object.entries(props)) {
+      prop.name = `AstronautThirdPersonItem-${kind}`;
+      prop.visible = false;
+      this.thirdPersonItemGroup.add(prop);
+    }
+  }
+
+  setThirdPersonWeaponProps(props: Record<HeldWeapon, THREE.Object3D>): void {
+    this.thirdPersonWeaponGroup.clear();
+    this.thirdPersonWeapons = props;
+    for (const [kind, prop] of Object.entries(props)) {
+      prop.name = `AstronautThirdPersonWeapon-${kind}`;
+      prop.visible = false;
+      this.thirdPersonWeaponGroup.add(prop);
+    }
+  }
+
+  applyThirdPersonHeldWeapon(kind: HeldWeapon): void {
+    const prop = this.thirdPersonWeapons[kind];
+    if (!prop) return;
+    for (const weapon of Object.values(this.thirdPersonWeapons)) weapon.visible = false;
+    prop.visible = true;
+    this.thirdPersonWeaponGroup.visible = true;
+    this.leftArm.shoulderPivot.rotation.set(1.05, -0.12, -0.12);
+    this.leftArm.elbowPivot.rotation.set(0.70, -0.12, 0.10);
+    this.leftArm.wristPivot.rotation.set(0.05, 0, 0);
+    this.leftArm.setGripPose('cylindrical');
+  }
+
+  /** Overlay only the left arm; locomotion, flashlight and the actual gameplay remain independent. */
+  applyThirdPersonItemAction(action: QuickItemAction): void {
+    const prop = this.thirdPersonItems[action.kind];
+    if (!prop) return;
+    for (const item of Object.values(this.thirdPersonItems)) item.visible = false;
+    prop.visible = true;
+    this.thirdPersonWeaponGroup.visible = false;
+    this.thirdPersonItemGroup.visible = true;
+    const u = THREE.MathUtils.clamp(action.progress, 0, 1);
+    const raise = Math.sin(Math.PI * u);
+    const slash = action.kind === 'knife' && action.mode !== 'pickup' ? Math.sin(Math.PI * THREE.MathUtils.clamp((u - 0.24) / 0.48, 0, 1)) : 0;
+    const turn = action.kind === 'key' && action.mode !== 'pickup' ? Math.sin(Math.PI * THREE.MathUtils.clamp((u - 0.3) / 0.5, 0, 1)) : 0;
+    this.leftArm.shoulderPivot.rotation.order = 'YXZ';
+    this.leftArm.shoulderPivot.rotation.set(0.40 + raise * 0.65, -0.10 - slash * 0.50, -0.12 + slash * 0.40);
+    this.leftArm.elbowPivot.rotation.set(0.30 + raise * 0.25 - slash * 0.16, -0.08 - slash * 0.18, 0.08);
+    this.leftArm.wristPivot.rotation.set(-slash * 0.3, turn * 0.85 - slash * 0.45, -slash * 0.3);
+    this.leftArm.setGripPose(action.kind === 'knife' || action.kind === 'flare' ? 'knife'
+      : action.kind === 'battery' || action.kind === 'radar' ? 'box'
+      : action.kind === 'key' ? 'key' : 'cylindrical');
+    const blade = prop.getObjectByName('AstronautPocketKnifeBladePivot');
+    if (blade) blade.rotation.x = action.mode === 'pickup' ? -2.05 : u < 0.24 ? -2.05 * (1 - Math.pow(u / 0.24, 2.2)) : 0;
+  }
+
   /**
    * Aplica uma pose de DANCE procedural (gerada por `computeDoomDancePose`) ao
    * traje 3D completo em 3ª pessoa.
@@ -1711,6 +1786,8 @@ export class DoomAstronaut {
     this.root.visible = true;
     this.setFirstPersonMode(false);
     this.thirdPersonFlashlightGroup.visible = false;
+    this.thirdPersonItemGroup.visible = false;
+    this.thirdPersonWeaponGroup.visible = false;
     this.thirdPersonWebCocoonGroup.visible = false;
 
     this.root.position.set(worldPos.x, worldPos.y, worldPos.z);
