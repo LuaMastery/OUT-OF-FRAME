@@ -428,18 +428,34 @@ export function createSpiderChitinMaterial(
       void main() {
         vec3 nrm = normalize(vWorldNormal);
         if (!gl_FrontFacing) nrm = -nrm;
+        vec3 viewDir = normalize(vViewDir);
 
-        float sectorLight = 0.22;
+        float sectorLight = 0.20;
+        vec3 dominantLightDir = vec3(0.0, 1.0, 0.0);
+        float dominantWeight = 0.25;
         for (int i = 0; i < MAX_LIGHTS; i++) {
           if (i >= uLightCount) break;
-          float d = distance(vWorldPos, uLightPositions[i]);
-          float atten = clamp(1.0 - d / 9.2, 0.0, 1.0);
-          sectorLight += atten * atten * uLightIntensities[i] * 1.1;
+          vec3 toL = uLightPositions[i] - vWorldPos;
+          float d = length(toL);
+          float atten = clamp(1.0 - d / 9.6, 0.0, 1.0);
+          float w = atten * atten * uLightIntensities[i];
+          sectorLight += w * 1.12;
+          if (d > 0.001) {
+            dominantLightDir += (toL / d) * w;
+            dominantWeight += w;
+          }
         }
         sectorLight = clamp(sectorLight, 0.08, 1.0);
+        dominantLightDir = normalize(dominantLightDir / max(0.001, dominantWeight));
 
-        float distFalloff = clamp(1.08 - vViewDist * 0.044, 0.0, 1.0);
-        float rim = pow(1.0 - clamp(abs(dot(nrm, normalize(vViewDir))), 0.0, 1.0), 2.4);
+        // Relevo volumétrico entre placas de quitina, espinhos, músculos e articulações
+        float hemiRelief = 0.66 + 0.34 * clamp(dot(nrm, dominantLightDir) * 0.5 + 0.5, 0.0, 1.0);
+        float viewRelief = 0.80 + 0.20 * clamp(dot(nrm, viewDir), 0.0, 1.0);
+        float formFactor = hemiRelief * viewRelief;
+
+        float distFalloff = clamp(1.08 - vViewDist * 0.043, 0.0, 1.0);
+        float ndv = clamp(abs(dot(nrm, viewDir)), 0.0, 1.0);
+        float rim = pow(1.0 - ndv, 2.6);
 
         float flashContribution = 0.0;
         float chitinSpec = 0.0;
@@ -449,33 +465,110 @@ export function createSpiderChitinMaterial(
           vec3 fragDir = toFrag / max(0.0001, flashDist);
           float cosCone = dot(fragDir, normalize(uFlashlightDir));
 
-          float coreSpot = smoothstep(0.92, 0.985, cosCone);
-          float outerHalo = smoothstep(0.75, 0.93, cosCone) * 0.48;
-          float distAtten = clamp(1.0 - flashDist / 23.0, 0.0, 1.0);
+          float coreSpot = smoothstep(0.915, 0.985, cosCone);
+          float outerHalo = smoothstep(0.74, 0.93, cosCone) * 0.50;
+          float distAtten = clamp(1.0 - flashDist / 23.5, 0.0, 1.0);
+          float lambertFlash = 0.45 + 0.55 * clamp(dot(nrm, -fragDir), 0.0, 1.0);
 
-          flashContribution = (coreSpot + outerHalo) * distAtten * uFlashlightIntensity;
+          flashContribution = (coreSpot + outerHalo) * distAtten * uFlashlightIntensity * lambertFlash;
 
-          vec3 halfVec = normalize(-fragDir + normalize(vViewDir));
-          float spec = pow(max(dot(nrm, halfVec), 0.0), 14.0);
-          chitinSpec = spec * flashContribution * 0.26 + rim * flashContribution * 0.16;
+          vec3 halfVec = normalize(-fragDir + viewDir);
+          float specSharp = pow(max(dot(nrm, halfVec), 0.0), 22.0);
+          float specBroad = pow(max(dot(nrm, halfVec), 0.0), 6.0) * 0.25;
+          chitinSpec = (specSharp * 0.30 + specBroad * 0.14 + rim * 0.18) * flashContribution;
         } else {
-          chitinSpec = rim * sectorLight * distFalloff * 0.08;
+          vec3 halfSector = normalize(dominantLightDir + viewDir);
+          float lampSpec = pow(max(dot(nrm, halfSector), 0.0), 16.0) * 0.07;
+          chitinSpec = (rim * 0.09 + lampSpec) * sectorLight * distFalloff;
         }
 
         float rawShade = clamp(
-          sectorLight * distFalloff + flashContribution * 1.05,
-          0.06,
-          1.15
+          (sectorLight * distFalloff + flashContribution * 1.12) * formFactor,
+          0.05,
+          1.22
         );
         float band = floor(rawShade * 32.0) / 32.0;
 
-        vec3 baseCol = vColor * band + vec3(0.82, 0.85, 0.90) * floor(chitinSpec * 20.0) / 20.0;
+        vec3 baseCol = vColor * band + vec3(0.78, 0.82, 0.88) * (floor(chitinSpec * 24.0) / 24.0);
 
         if (uRageGlow > 0.01) {
-          baseCol += vec3(0.14, 0.015, 0.01) * uRageGlow * rim;
+          baseCol += vec3(0.16, 0.018, 0.012) * uRageGlow * rim * distFalloff;
         }
 
         gl_FragColor = vec4(clamp(baseCol, 0.0, 1.0), 1.0);
+      }
+    `,
+  });
+}
+
+/**
+ * Material ocular dedicado aos 8 ocelos aracnídeos (Tapetum Lucidum + brilho predatório):
+ * - Escurece naturalmente à distância na escuridão (sem flutuar como adesivo a 30m!)
+ * - Reflete brilho vítreo intenso ao cruzar o feixe da lanterna e pulsa carmesim em fúria!
+ */
+export function createSpiderEyeMaterial(
+  shared: DoomSharedUniforms
+): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    vertexColors: true,
+    uniforms: {
+      uRageGlow: { value: 0.0 },
+      uFlashlightPos: shared.uFlashlightPos,
+      uFlashlightDir: shared.uFlashlightDir,
+      uFlashlightIntensity: shared.uFlashlightIntensity,
+    },
+    vertexShader: /* glsl */ `
+      varying vec3 vColor;
+      varying vec3 vWorldPos;
+      varying vec3 vWorldNormal;
+      varying vec3 vViewDir;
+      varying float vViewDist;
+
+      void main() {
+        vColor = color;
+        vec4 worldPos = modelMatrix * vec4(position, 1.0);
+        vWorldPos = worldPos.xyz;
+        vWorldNormal = normalize(mat3(modelMatrix) * normal);
+        vec4 viewPos = viewMatrix * worldPos;
+        vViewDist = abs(viewPos.z);
+        vViewDir = normalize(cameraPosition - worldPos.xyz);
+        gl_Position = projectionMatrix * viewPos;
+      }
+    `,
+    fragmentShader: /* glsl */ `
+      uniform float uRageGlow;
+      uniform vec3 uFlashlightPos;
+      uniform vec3 uFlashlightDir;
+      uniform float uFlashlightIntensity;
+
+      varying vec3 vColor;
+      varying vec3 vWorldPos;
+      varying vec3 vWorldNormal;
+      varying vec3 vViewDir;
+      varying float vViewDist;
+
+      void main() {
+        vec3 nrm = normalize(vWorldNormal);
+        vec3 viewDir = normalize(vViewDir);
+        float distAtten = clamp(1.12 - vViewDist * 0.052, 0.0, 1.0);
+        float centerGlint = pow(clamp(dot(nrm, viewDir), 0.0, 1.0), 2.2);
+
+        float tapetum = 0.0;
+        if (uFlashlightIntensity > 0.01) {
+          vec3 toFrag = vWorldPos - uFlashlightPos;
+          float d = length(toFrag);
+          vec3 dir = toFrag / max(0.0001, d);
+          float cone = smoothstep(0.76, 0.97, dot(dir, normalize(uFlashlightDir)));
+          float fAtten = clamp(1.0 - d / 22.0, 0.0, 1.0);
+          tapetum = cone * fAtten * uFlashlightIntensity;
+        }
+
+        vec3 calmTone = vColor * (0.18 + 0.42 * centerGlint) * distAtten;
+        vec3 rageTone = vec3(0.92, 0.16, 0.09) * (0.35 + 0.65 * centerGlint) * uRageGlow * distAtten;
+        vec3 flashGlint = vec3(1.0, 0.88, 0.68) * tapetum * (0.45 + 0.75 * pow(centerGlint, 3.0));
+
+        vec3 finalCol = max(calmTone, rageTone) + flashGlint;
+        gl_FragColor = vec4(clamp(finalCol, 0.0, 1.0), 1.0);
       }
     `,
   });

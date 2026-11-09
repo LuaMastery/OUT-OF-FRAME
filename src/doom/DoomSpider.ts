@@ -16,7 +16,11 @@ import {
   WALL_HEIGHT,
   worldToGridCell,
 } from './DoomMazeBuilder';
-import { createSpiderChitinMaterial, DoomSharedUniforms } from './DoomShader';
+import {
+  createSpiderChitinMaterial,
+  createSpiderEyeMaterial,
+  DoomSharedUniforms,
+} from './DoomShader';
 import { DoomSpiderWebManager } from './DoomSpiderWebs';
 import { ActiveMagnesiumFlare } from './DoomWorldItems';
 
@@ -51,12 +55,20 @@ export interface SpiderPlayerCandidate {
   isLocal: boolean;
 }
 
-const RING_SIDES = 8;
-const CURVE_SAMPLES = 20;
-const IK_ITERATIONS = 3;
+const RING_SIDES = 10;
+const CURVE_SAMPLES = 34;
+const IK_ITERATIONS = 4;
+
+/** Ângulos anatômicos canônicos (graus) das 8 coxas ao redor do cefalotórax */
+const CANONICAL_LIMB_ANGLES_DEG = [
+  -27, 27, -62, 62, -104, 104, -144, 144,
+] as const;
 
 interface SpiderLimbSpec {
   index: number;
+  /** Âncora do pivô da Coxa no espaço local do `bodyGroup` */
+  hipSocketLocal: THREE.Vector3;
+  /** Ponto exato de saída do Fêmur a partir do Trocânter no espaço local do `bodyGroup` */
   rootLocal: THREE.Vector3;
   angleRad: number;
   spread: number;
@@ -106,35 +118,180 @@ function smoothStep01(t: number): number {
   return c * c * (3 - 2 * c);
 }
 
-function catmullRomVec3(
-  p0: THREE.Vector3,
-  p1: THREE.Vector3,
-  p2: THREE.Vector3,
-  p3: THREE.Vector3,
-  t: number,
+/**
+ * Interpola a cadeia IK de podômeros rígidos (Coxa-Fêmur, Patela-Tíbia, Metatarso, Tarso)
+ * com articulação de dobradiça controlada nos joelhos — elimina 100% os laços/overshoots
+ * de borracha que o Catmull-Rom uniforme causava entre segmentos de comprimentos diferentes!
+ */
+function sampleArticulatedPodomereChain(
+  ik: readonly THREE.Vector3[],
+  uNorm: number,
   out: THREE.Vector3
 ): THREE.Vector3 {
-  const t2 = t * t;
-  const t3 = t2 * t;
-  out.x =
-    0.5 *
-    (2 * p1.x +
-      (-p0.x + p2.x) * t +
-      (2 * p0.x - 5 * p1.x + 4 * p2.x - p3.x) * t2 +
-      (-p0.x + 3 * p1.x - 3 * p2.x + p3.x) * t3);
-  out.y =
-    0.5 *
-    (2 * p1.y +
-      (-p0.y + p2.y) * t +
-      (2 * p0.y - 5 * p1.y + 4 * p2.y - p3.y) * t2 +
-      (-p0.y + 3 * p1.y - 3 * p2.y + p3.y) * t3);
-  out.z =
-    0.5 *
-    (2 * p1.z +
-      (-p0.z + p2.z) * t +
-      (2 * p0.z - 5 * p1.z + 4 * p2.z - p3.z) * t2 +
-      (-p0.z + 3 * p1.z - 3 * p2.z + p3.z) * t3);
+  const nSegs = ik.length - 1;
+  const clampedU = Math.max(0, Math.min(1, uNorm));
+  const scaled = clampedU * nSegs;
+  const seg = Math.min(Math.floor(scaled), nSegs - 1);
+  const localT = scaled - seg;
+
+  const pA = ik[seg];
+  const pB = ik[seg + 1];
+  out.lerpVectors(pA, pB, localT);
+
+  // Chanfro anatômico curvo apenas na zona imediata de cada junta articular (dobradiça de quitina)
+  const cornerZone = 0.2;
+  if (localT < cornerZone && seg > 0) {
+    const pPrev = ik[seg - 1];
+    const blend = 1 - localT / cornerZone;
+    const w = 0.22 * blend * blend;
+    const midPrevX = 0.5 * (pPrev.x + pA.x);
+    const midPrevY = 0.5 * (pPrev.y + pA.y);
+    const midPrevZ = 0.5 * (pPrev.z + pA.z);
+    const midNextX = 0.5 * (pA.x + pB.x);
+    const midNextY = 0.5 * (pA.y + pB.y);
+    const midNextZ = 0.5 * (pA.z + pB.z);
+    out.x += (0.5 * (midPrevX + midNextX) - pA.x) * w;
+    out.y += (0.5 * (midPrevY + midNextY) - pA.y) * w;
+    out.z += (0.5 * (midPrevZ + midNextZ) - pA.z) * w;
+  } else if (localT > 1 - cornerZone && seg < nSegs - 1) {
+    const pNext = ik[seg + 2];
+    const blend = (localT - (1 - cornerZone)) / cornerZone;
+    const w = 0.22 * blend * blend;
+    const midCurX = 0.5 * (pA.x + pB.x);
+    const midCurY = 0.5 * (pA.y + pB.y);
+    const midCurZ = 0.5 * (pA.z + pB.z);
+    const midNextX = 0.5 * (pB.x + pNext.x);
+    const midNextY = 0.5 * (pB.y + pNext.y);
+    const midNextZ = 0.5 * (pB.z + pNext.z);
+    out.x += (0.5 * (midCurX + midNextX) - pB.x) * w;
+    out.y += (0.5 * (midCurY + midNextY) - pB.y) * w;
+    out.z += (0.5 * (midCurZ + midNextZ) - pB.z) * w;
+  }
+
   return out;
+}
+
+/**
+ * Constrói a carapaça esculpida do Cefalotórax (Prossoma) com fóvea torácica central,
+ * sulcos radiais musculares entre os 4 pares de patas e domo cefálico elevado (Caput).
+ */
+function buildSculptedProsomaGeometry(): THREE.BufferGeometry {
+  const geo = new THREE.SphereGeometry(1, 22, 16);
+  const pos = geo.attributes.position;
+  const count = pos.count;
+  const cols = new Float32Array(count * 3);
+
+  for (let i = 0; i < count; i++) {
+    const ux = pos.getX(i);
+    const uy = pos.getY(i);
+    const uz = pos.getZ(i);
+
+    // Base ovalada alongada em Z (-Z = frente da cabeça, +Z = cintura do pedicelo)
+    const foreFactor = Math.max(0, -uz);
+    const aftFactor = Math.max(0, uz);
+    const widthScale = 0.37 * (1.0 - foreFactor * 0.24 - aftFactor * 0.16);
+    let x = ux * widthScale;
+    let z = uz * 0.53;
+
+    // Achatamento ventral + domo cefálico anterior (caput) + aba marginal blindada
+    let y = uy * (uy > 0 ? 0.25 : 0.17);
+    if (uy > 0.1) {
+      // Caput elevado na metade frontal onde se alojam as glândulas de veneno
+      const caputLift =
+        Math.exp(-Math.pow((uz + 0.45) / 0.42, 2)) *
+        Math.exp(-Math.pow(ux / 0.62, 2)) *
+        0.095;
+      // Fóvea torácica profunda (depressão dorsal central real das aranhas gigantes!)
+      const foveaPit =
+        Math.exp(-Math.pow((uz - 0.12) / 0.18, 2)) *
+        Math.exp(-Math.pow(ux / 0.19, 2)) *
+        0.065;
+      // 4 sulcos radiais de cada lado marcando os feixes musculares das 8 patas
+      const radialAngle = Math.atan2(Math.abs(ux), -uz + 0.08);
+      const furrow =
+        uy > 0.22 && Math.abs(ux) > 0.16
+          ? Math.sin(radialAngle * 9.5) * 0.016
+          : 0;
+      y += caputLift - foveaPit + furrow;
+    }
+
+    // Borda marginal lateral afiada (carina) sobre a inserção das coxas
+    const rimFactor = Math.exp(-Math.pow(uy / 0.24, 2));
+    x *= 1.0 + rimFactor * 0.08;
+
+    pos.setXYZ(i, x, y, z);
+
+    // Paleta quitinosa de alto contraste para leitura 3D nítida sob lanterna e lâmpadas
+    const dorsal = Math.max(0, uy);
+    const crestHighlight =
+      Math.max(0, Math.abs(ux) - 0.55) * 0.35 +
+      (uz < -0.35 && uy > 0.25 ? 0.18 : 0);
+    const shade = 0.062 + dorsal * 0.068 + crestHighlight * 0.16;
+    cols[i * 3] = shade * 1.04;
+    cols[i * 3 + 1] = shade * 0.98;
+    cols[i * 3 + 2] = shade * 1.08;
+  }
+
+  geo.setAttribute('color', new THREE.BufferAttribute(cols, 3));
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/**
+ * Constrói o Abdômen (Opistossoma) inteiriço com 6 placas tergitas sobrepostas,
+ * marca cardíaca dorsal e opérculos pulmonares ventrais — substitui os antigos Torus
+ * abertos que flutuavam soltos para fora do corpo!
+ */
+function buildSculptedOpisthosomaGeometry(): THREE.BufferGeometry {
+  const geo = new THREE.SphereGeometry(1, 24, 18);
+  const pos = geo.attributes.position;
+  const count = pos.count;
+  const cols = new Float32Array(count * 3);
+
+  for (let i = 0; i < count; i++) {
+    const ux = pos.getX(i);
+    const uy = pos.getY(i);
+    const uz = pos.getZ(i);
+
+    // Formato de gota predatória: estreito no pedicelo (uz = -1), bojo médio, afilado nas fiandeiras (uz = +1)
+    const u01 = (uz + 1) * 0.5; // 0 na cintura, 1 nas fiandeiras
+    const profile =
+      0.32 + Math.sin(Math.pow(u01, 0.78) * Math.PI) * 0.74 * (1 - u01 * 0.18);
+
+    // 6 placas tergitas transversais esculpidas diretamente na malha dorsal/lateral
+    const tergiteWave = Math.sin(u01 * Math.PI * 12.0);
+    const dorsalMask = Math.max(0, uy * 0.75 + 0.25);
+    const plateRidge = tergiteWave * 0.026 * dorsalMask;
+
+    // Crista cardíaca longitudinal no centro do dorso
+    const cardiacCrest =
+      uy > 0.25 && u01 > 0.1 && u01 < 0.72
+        ? Math.exp(-Math.pow(ux / 0.22, 2)) * 0.028 * (1 - u01)
+        : 0;
+
+    const x = ux * (0.34 * profile + plateRidge * 0.7);
+    const y =
+      uy * (0.31 * profile) +
+      plateRidge +
+      cardiacCrest -
+      (uy < 0 ? 0.02 : 0);
+    const z = u01 * 1.06; // Origem exata (0,0,0) no pedicelo estendendo até z = +1.06!
+
+    pos.setXYZ(i, x, y, z);
+
+    // Sulcos entre tergitos escuros/avermelhados e cristas quitinosas cinza-ósseas sutis
+    const ridgeBright = Math.max(0, tergiteWave) * dorsalMask;
+    const grooveIchor = Math.max(0, -tergiteWave) * dorsalMask;
+    const cardiacTone = cardiacCrest > 0.01 ? 0.09 : 0;
+
+    cols[i * 3] = 0.055 + ridgeBright * 0.095 + grooveIchor * 0.045 + cardiacTone;
+    cols[i * 3 + 1] = 0.052 + ridgeBright * 0.085 + cardiacTone * 0.7;
+    cols[i * 3 + 2] = 0.062 + ridgeBright * 0.082 + cardiacTone * 0.55;
+  }
+
+  geo.setAttribute('color', new THREE.BufferAttribute(cols, 3));
+  geo.computeVertexNormals();
+  return geo;
 }
 
 function solveFabrikChain(
@@ -223,9 +380,16 @@ function createDynamicTubeGeometry(): {
 export class DoomSpider {
   private readonly rootGroup = new THREE.Group();
   private readonly bodyGroup = new THREE.Group();
-  private readonly mandibleGroup = new THREE.Group();
-  private readonly pedipalpGroup = new THREE.Group();
+  private readonly leftCheliceraPivot = new THREE.Group();
+  private readonly rightCheliceraPivot = new THREE.Group();
+  private readonly leftPalpPivot = new THREE.Group();
+  private readonly rightPalpPivot = new THREE.Group();
+  private readonly abdomenPivot = new THREE.Group();
+  private readonly leftSpinneretPivot = new THREE.Group();
+  private readonly rightSpinneretPivot = new THREE.Group();
+  private readonly coxaPivots: THREE.Group[] = [];
   private readonly chitinMat: THREE.ShaderMaterial;
+  private readonly eyeMat: THREE.ShaderMaterial;
 
   private readonly limbSpecs: SpiderLimbSpec[] = [];
   private readonly limbs: SpiderLimbRuntime[] = [];
@@ -272,6 +436,9 @@ export class DoomSpider {
   private readonly tmpB = new THREE.Vector3();
   private readonly tmpC = new THREE.Vector3();
   private readonly tmpRight = new THREE.Vector3();
+  private readonly tmpInvBodyQuat = new THREE.Quaternion();
+  private readonly tmpCoxaDir = new THREE.Vector3();
+  private readonly tmpUnitZ = new THREE.Vector3(0, 0, 1);
 
   constructor(
     scene: THREE.Scene,
@@ -284,9 +451,11 @@ export class DoomSpider {
     scene.add(this.rootGroup);
 
     this.chitinMat = createSpiderChitinMaterial(sharedUniforms);
+    this.eyeMat = createSpiderEyeMaterial(sharedUniforms);
 
+    this.buildProceduralLimbSpecs();
     this.buildBodyCore();
-    this.buildProceduralLimbs();
+    this.buildProceduralLimbMeshes();
 
     this.respawnFarFromPlayer();
   }
@@ -872,14 +1041,93 @@ export class DoomSpider {
     }
 
     this.chitinMat.uniforms.uRageGlow.value = 1.0;
+    this.eyeMat.uniforms.uRageGlow.value = 1.0;
 
     this.updateBodyAndLimbsIK(dt, elapsed, victimHookPos, 0, 1.4);
   }
 
   /**
-   * Constrói a anatomia aracnídea esculpida da Aranha Gigante (carapaça quitinosa segmentada,
-   * 8 coxas/trocânteres articulares, pedicelo, abdômen com placas tergitas, espinhos dorsais e fiandeiras,
-   * quelíceras musculosas com presas curvas, pedipalpos frontais articulados e 8 olhos reluzentes).
+   * Define primeiro as especificações anatômicas exatas das 8 patas para que as
+   * 8 cápsulas articulares Coxa-Trocânter no corpo e as 8 cadeias IK compartilhem
+   * exatamente a mesma posição e ângulo — sem desvios, buracos nem dobras quebradas!
+   */
+  private buildProceduralLimbSpecs(): void {
+    const rand = mulberry32(38187712);
+
+    for (let i = 0; i < 8; i++) {
+      const deg = CANONICAL_LIMB_ANGLES_DEG[i] + (rand() - 0.5) * 4.5;
+      const angleRad = (deg * Math.PI) / 180;
+      const segments = 4;
+      // Patas anteriores (par I) e posteriores (par IV) ligeiramente mais longas como em aranhas caçadoras reais
+      const pairIdx = Math.floor(i / 2);
+      const pairLenBias =
+        pairIdx === 0 ? 0.14 : pairIdx === 3 ? 0.18 : pairIdx === 1 ? 0.04 : -0.04;
+      const totalLength = 3.68 + pairLenBias + rand() * 0.36;
+
+      // Proporções aracnídeas reais: Fêmur robusto, Patela+Tíbia longa, Metatarso esguio, Tarso em garra
+      const rawSegs = [1.18, 1.24, 0.98, 0.68].map(
+        (w) => w * (0.94 + rand() * 0.12)
+      );
+      const sum = rawSegs.reduce((a, b) => a + b, 0);
+      const lengths = rawSegs.map((w) => (w / sum) * totalLength);
+
+      const sinA = Math.sin(angleRad);
+      const cosA = Math.cos(angleRad);
+      // Borda elíptica real do cefalotórax (-Z = frente da cabeça, +X = direita)
+      const hipSocketLocal = new THREE.Vector3(
+        sinA * 0.255,
+        -0.048,
+        -cosA * 0.305
+      );
+      // A cadeia IK parte de dentro do anel do Trocânter (0.14m adiante da coxa)
+      const rootLocal = new THREE.Vector3(
+        hipSocketLocal.x + sinA * 0.135,
+        hipSocketLocal.y - 0.005,
+        hipSocketLocal.z - cosA * 0.135
+      );
+
+      this.limbSpecs.push({
+        index: i,
+        hipSocketLocal,
+        rootLocal,
+        angleRad,
+        spread: 0.49 + rand() * 0.08,
+        segments,
+        lengths,
+        totalLength,
+        baseWidth: 0.088 + rand() * 0.016,
+        stepDistance: 0.82 + rand() * 0.24,
+        stepTime: 0.26 + rand() * 0.07,
+        stepHeight: 0.48 + rand() * 0.16,
+        phase: rand() * 100,
+        freq: 0.85 + rand() * 1.3,
+        shade: 0.88 + rand() * 0.24,
+        neighbourIndices: [],
+      });
+    }
+
+    for (let i = 0; i < this.limbSpecs.length; i++) {
+      for (let j = 0; j < this.limbSpecs.length; j++) {
+        if (i === j) continue;
+        let diff = Math.abs(
+          this.limbSpecs[i].angleRad - this.limbSpecs[j].angleRad
+        );
+        if (diff > Math.PI) diff = Math.PI * 2 - diff;
+        if (diff < 0.85) {
+          this.limbSpecs[i].neighbourIndices.push(j);
+        }
+      }
+    }
+  }
+
+  /**
+   * Constrói a anatomia aracnídea esculpida da Aranha Gigante:
+   * - Cefalotórax (Prossoma) com fóvea torácica, sulcos musculares radiais, crista marginal e esterno;
+   * - 8 cápsulas articulares Coxa + Trocânter motorizadas (`coxaPivots`) orientadas para cada fêmur;
+   * - Pedicelo articulado + Opistossoma (Abdômen) inteiriço com placas tergitas, espinhos dorso-laterais e fiandeiras móveis;
+   * - Par de Quelíceras independentes em tesoura (`leftCheliceraPivot`/`rightCheliceraPivot`) com presas curvas em 3 estágios;
+   * - Par de Pedipalpos táteis articulados independentes (`leftPalpPivot`/`rightPalpPivot`) sem vãos entre juntas;
+   * - Torre ocular blindada com 8 ocelos engastados e brilho Tapetum Lucidum (`eyeMat`).
    */
   private buildBodyCore(): void {
     const paintBody = (
@@ -899,278 +1147,377 @@ export class DoomSpider {
       return geo;
     };
 
-    // 1. CEFALOTÓRAX (PROSSOMA) BLINDADO EM CAMADAS + PLACA ESTERNAL INFERIOR
-    const thoraxGeo = paintBody(
-      new THREE.IcosahedronGeometry(0.38, 1),
-      0.028,
-      0.028,
-      0.035
+    // 1. CEFALOTÓRAX ESCULPIDO (PROSSOMA COM FÓVEA E SULCOS RADIAIS) + ESTERNO VENTRAL
+    const prosomaMesh = new THREE.Mesh(
+      buildSculptedProsomaGeometry(),
+      this.chitinMat
     );
-    thoraxGeo.scale(0.96, 0.72, 1.38);
-    this.bodyGroup.add(new THREE.Mesh(thoraxGeo, this.chitinMat));
+    prosomaMesh.position.set(0, 0.04, -0.02);
+    this.bodyGroup.add(prosomaMesh);
 
-    // Escudo cefálico superior arqueado (caput elevado na frente)
-    const caputGeo = paintBody(
-      new THREE.DodecahedronGeometry(0.26, 1),
-      0.036,
-      0.035,
-      0.044
-    );
-    caputGeo.scale(0.88, 0.72, 1.24);
-    const caput = new THREE.Mesh(caputGeo, this.chitinMat);
-    caput.position.set(0, 0.14, -0.18);
-    this.bodyGroup.add(caput);
-
-    // 3 placas dorsais sobrepostas da carapaça torácica
-    for (let p = 0; p < 3; p++) {
-      const plateGeo = paintBody(
-        new THREE.CylinderGeometry(
-          0.22 - p * 0.03,
-          0.31 - p * 0.03,
-          0.11,
-          8
-        ),
-        0.034,
-        0.033,
-        0.041
+    // Cristas quitinosas dorso-cefálicas (par de carenas que convergem do caput à fóvea)
+    for (const side of [-1, 1]) {
+      const crestGeo = paintBody(
+        new THREE.BoxGeometry(0.045, 0.042, 0.36),
+        0.18,
+        0.165,
+        0.155
       );
-      plateGeo.scale(1.15, 0.65, 1.0);
-      const plate = new THREE.Mesh(plateGeo, this.chitinMat);
-      plate.position.set(0, 0.21 - p * 0.035, -0.06 + p * 0.14);
-      plate.rotation.x = -0.22 - p * 0.08;
-      this.bodyGroup.add(plate);
+      const crest = new THREE.Mesh(crestGeo, this.chitinMat);
+      crest.position.set(side * 0.095, 0.255, -0.21);
+      crest.rotation.y = side * -0.18;
+      crest.rotation.x = 0.14;
+      this.bodyGroup.add(crest);
     }
 
-    // Esterno inferior onde convergem as coxas
+    // Placa Esternal Ventral onde convergem as 8 coxas + Lábio/Enditos bucais
     const sternumGeo = paintBody(
-      new THREE.CylinderGeometry(0.24, 0.19, 0.1, 8),
-      0.02,
-      0.02,
-      0.025
+      new THREE.CylinderGeometry(0.22, 0.17, 0.09, 8),
+      0.055,
+      0.05,
+      0.058
     );
-    sternumGeo.scale(0.95, 1.0, 1.32);
+    sternumGeo.scale(0.92, 1.0, 1.38);
     const sternum = new THREE.Mesh(sternumGeo, this.chitinMat);
-    sternum.position.set(0, -0.16, -0.02);
+    sternum.position.set(0, -0.115, -0.03);
     this.bodyGroup.add(sternum);
 
-    // 8 Cápsulas articulares Coxa + Trocânter onde cada pata colossal se encaixa no tronco
-    const socketDegs = [-28, 28, -64, 64, -106, 106, -146, 146];
-    for (const deg of socketDegs) {
-      const rad = (deg * Math.PI) / 180;
-      const side = deg < 0 ? -1 : 1;
-      const coxaGroup = new THREE.Group();
-      coxaGroup.position.set(side * 0.22, -0.03, Math.cos(rad) * -0.24);
-      coxaGroup.rotation.y = -rad;
+    // 8 Cápsulas Articulares Coxa + Trocânter sincronizadas 1:1 com `limbSpecs`!
+    // O eixo +Z local de cada `coxaPivot` aponta diretamente para `ikPoints[1]` a cada quadro!
+    this.coxaPivots.length = 0;
+    for (let i = 0; i < this.limbSpecs.length; i++) {
+      const spec = this.limbSpecs[i];
+      const coxaPivot = new THREE.Group();
+      coxaPivot.position.copy(spec.hipSocketLocal);
 
+      // Membrana artrodial esférica flexível na raiz (veda qualquer ângulo sem vão!)
+      const membrane = new THREE.Mesh(
+        paintBody(new THREE.SphereGeometry(0.088, 8, 6), 0.14, 0.055, 0.048),
+        this.chitinMat
+      );
+      membrane.position.set(0, 0, 0.015);
+
+      // Podômero da Coxa (alongado no eixo +Z local)
       const coxaPod = new THREE.Mesh(
         paintBody(
-          new THREE.CylinderGeometry(0.082, 0.105, 0.22, 7),
-          0.038,
-          0.036,
-          0.044
+          new THREE.CylinderGeometry(0.074, 0.098, 0.2, 8),
+          0.082,
+          0.076,
+          0.088
         ),
         this.chitinMat
       );
       coxaPod.rotation.x = Math.PI * 0.5;
-      coxaPod.position.z = -0.07;
+      coxaPod.position.set(0, 0, 0.095);
 
-      const trochanterRing = new THREE.Mesh(
+      // Colar condilar do Trocânter envolvendo exatamente a saída do Fêmur
+      const trochanterCollar = new THREE.Mesh(
         paintBody(
-          new THREE.TorusGeometry(0.084, 0.024, 6, 8),
-          0.11,
-          0.1,
-          0.095
+          new THREE.TorusGeometry(0.074, 0.021, 6, 10),
+          0.24,
+          0.215,
+          0.19
         ),
         this.chitinMat
       );
-      trochanterRing.position.z = -0.16;
+      trochanterCollar.position.set(0, 0, 0.185);
 
-      coxaGroup.add(coxaPod, trochanterRing);
-      this.bodyGroup.add(coxaGroup);
+      // Esporão dorsal quitinoso da coxa
+      const coxaSpur = new THREE.Mesh(
+        paintBody(new THREE.ConeGeometry(0.024, 0.095, 5), 0.42, 0.38, 0.33),
+        this.chitinMat
+      );
+      coxaSpur.position.set(0, 0.082, 0.155);
+      coxaSpur.rotation.x = 0.35;
+
+      coxaPivot.add(membrane, coxaPod, trochanterCollar, coxaSpur);
+      this.coxaPivots.push(coxaPivot);
+      this.bodyGroup.add(coxaPivot);
     }
 
-    // 2. PEDICELO (CINTURA) + ABDÔMEN SEGMENTADO (OPISTOSSOMA) COM ESPINHOS E FIANDEIRAS
+    // 2. PEDICELO ANELADO + ABDÔMEN (OPISTOSSOMA) ARTICULADO COM ESPINHOS DORSO-LATERAIS E FIANDEIRAS
     const pedicel = new THREE.Mesh(
       paintBody(
-        new THREE.CylinderGeometry(0.11, 0.13, 0.24, 7),
-        0.022,
-        0.022,
-        0.028
+        new THREE.CylinderGeometry(0.095, 0.115, 0.24, 8),
+        0.11,
+        0.048,
+        0.045
       ),
       this.chitinMat
     );
-    pedicel.rotation.x = Math.PI * 0.42;
-    pedicel.position.set(0, 0.08, 0.28);
+    pedicel.rotation.x = Math.PI * 0.46;
+    pedicel.position.set(0, 0.045, 0.31);
     this.bodyGroup.add(pedicel);
 
-    const abdomenGroup = new THREE.Group();
-    abdomenGroup.position.set(0, 0.28, 0.56);
-    abdomenGroup.rotation.x = 0.34;
+    this.abdomenPivot.position.set(0, 0.065, 0.36);
+    this.abdomenPivot.rotation.x = 0.24;
 
-    const bellyCore = new THREE.Mesh(
-      paintBody(
-        new THREE.IcosahedronGeometry(0.38, 1),
-        0.024,
-        0.023,
-        0.03
-      ),
+    const opisthosomaMesh = new THREE.Mesh(
+      buildSculptedOpisthosomaGeometry(),
       this.chitinMat
     );
-    bellyCore.scale.set(0.88, 0.86, 1.48);
-    abdomenGroup.add(bellyCore);
+    this.abdomenPivot.add(opisthosomaMesh);
 
-    // 5 anéis/tergitos quitinosos escalonados ao longo do abdômen + espinhos ósseos dorsais
-    for (let seg = 0; seg < 5; seg++) {
-      const u = seg / 4;
-      const archScale = Math.sin(u * Math.PI * 0.85 + 0.2);
-      const rRing = 0.14 + archScale * 0.23;
-      const zOff = -0.34 + u * 0.78;
-
-      const tergite = new THREE.Mesh(
-        paintBody(
-          new THREE.TorusGeometry(rRing, 0.042, 6, 9, Math.PI * 1.25),
-          0.036,
-          0.035,
-          0.044
-        ),
-        this.chitinMat
-      );
-      tergite.rotation.z = -Math.PI * 0.125;
-      tergite.position.set(0, 0.03, zOff);
-      abdomenGroup.add(tergite);
-
-      // Espinhos dorsais de ponta óssea na crista do abdômen
-      if (seg >= 1 && seg <= 4) {
-        const spine = new THREE.Mesh(
+    // 4 pares de espinhos osteodérmicos curvos dorso-laterais (perfil predatório agressivo sem atravessar arcos!)
+    const spineStations: Array<[number, number, number, number]> = [
+      [0.24, 0.16, 0.22, 0.17],
+      [0.44, 0.21, 0.26, 0.21],
+      [0.64, 0.19, 0.24, 0.19],
+      [0.81, 0.13, 0.18, 0.15],
+    ];
+    for (const [zPos, xSpread, yHeight, len] of spineStations) {
+      for (const side of [-1, 1]) {
+        const thorn = new THREE.Mesh(
           paintBody(
-            new THREE.ConeGeometry(0.032, 0.24 - seg * 0.025, 5),
-            0.48,
-            0.44,
-            0.38
+            new THREE.ConeGeometry(0.028, len, 5),
+            0.54,
+            0.49,
+            0.42
           ),
           this.chitinMat
         );
-        spine.position.set(0, rRing + 0.08, zOff + 0.03);
-        spine.rotation.x = -0.45;
-        abdomenGroup.add(spine);
+        thorn.position.set(side * xSpread, yHeight, zPos);
+        thorn.rotation.x = -0.58;
+        thorn.rotation.z = -side * 0.42;
+        this.abdomenPivot.add(thorn);
       }
     }
 
-    // Par de fiandeiras traseiras articuladas na extremidade posterior do abdômen
+    // Placas Ventrais dos Pulmões Foliáceos (Book Lungs) sob a base do abdômen
     for (const side of [-1, 1]) {
-      const spinneret = new THREE.Mesh(
+      const lungPlate = new THREE.Mesh(
+        paintBody(new THREE.BoxGeometry(0.13, 0.03, 0.16), 0.19, 0.165, 0.14),
+        this.chitinMat
+      );
+      lungPlate.position.set(side * 0.11, -0.17, 0.26);
+      lungPlate.rotation.x = -0.16;
+      this.abdomenPivot.add(lungPlate);
+    }
+
+    // Par de Fiandeiras Articuladas (2 segmentos cada) na extremidade posterior do abdômen
+    const buildSpinneret = (pivot: THREE.Group, side: number) => {
+      pivot.position.set(side * 0.075, -0.045, 1.01);
+      const basalSeg = new THREE.Mesh(
         paintBody(
-          new THREE.ConeGeometry(0.048, 0.26, 6),
-          0.16,
-          0.15,
-          0.14
+          new THREE.CylinderGeometry(0.032, 0.046, 0.13, 6),
+          0.14,
+          0.125,
+          0.12
         ),
         this.chitinMat
       );
-      spinneret.position.set(side * 0.085, -0.06, 0.58);
-      spinneret.rotation.x = Math.PI * 0.56;
-      spinneret.rotation.z = side * 0.18;
-      abdomenGroup.add(spinneret);
-    }
-    this.bodyGroup.add(abdomenGroup);
+      basalSeg.rotation.x = Math.PI * 0.54;
+      basalSeg.position.set(0, -0.01, 0.055);
 
-    // 3. QUELÍCERAS MUSCULOSAS + PRESAS VENENOSAS CURVAS + SERRILHAS BUCAIS
-    for (const side of [-1, 1]) {
-      const cheliceraBase = new THREE.Mesh(
+      const apicalCone = new THREE.Mesh(
+        paintBody(new THREE.ConeGeometry(0.028, 0.14, 6), 0.42, 0.38, 0.34),
+        this.chitinMat
+      );
+      apicalCone.rotation.x = Math.PI * 0.58;
+      apicalCone.position.set(0, -0.025, 0.165);
+
+      pivot.add(basalSeg, apicalCone);
+      pivot.rotation.y = side * 0.16;
+      this.abdomenPivot.add(pivot);
+    };
+    buildSpinneret(this.leftSpinneretPivot, -1);
+    buildSpinneret(this.rightSpinneretPivot, 1);
+    this.bodyGroup.add(this.abdomenPivot);
+
+    // 3. QUELÍCERAS INDEPENDENTES EM TESOURA + PRESAS VENENOSAS CURVAS EM 3 ESTÁGIOS
+    const buildChelicera = (pivot: THREE.Group, side: number) => {
+      pivot.position.set(side * 0.102, -0.042, -0.415);
+
+      // Paturon basal musculoso (tronco da quelícera)
+      const paturon = new THREE.Mesh(
+        paintBody(new THREE.SphereGeometry(0.098, 10, 8), 0.088, 0.078, 0.086),
+        this.chitinMat
+      );
+      paturon.scale.set(0.84, 1.32, 1.12);
+      paturon.position.set(0, -0.055, -0.055);
+
+      // Sulco articular vermelho-escuro na dobra da presa
+      const fangFold = new THREE.Mesh(
         paintBody(
-          new THREE.DodecahedronGeometry(0.115, 0),
-          0.035,
-          0.032,
-          0.038
+          new THREE.TorusGeometry(0.048, 0.014, 5, 8),
+          0.26,
+          0.065,
+          0.055
         ),
         this.chitinMat
       );
-      cheliceraBase.scale.set(0.82, 1.28, 1.05);
-      cheliceraBase.position.set(side * 0.105, -0.09, -0.44);
-      this.mandibleGroup.add(cheliceraBase);
+      fangFold.rotation.x = Math.PI * 0.45;
+      fangFold.position.set(-side * 0.008, -0.155, -0.085);
 
-      const curvedFang = new THREE.Mesh(
-        paintBody(new THREE.ConeGeometry(0.046, 0.36, 6), 0.62, 0.56, 0.48),
+      // Presa venenosa curva em 3 segmentos (curvatura real para dentro e para trás!)
+      const fangSeg1 = new THREE.Mesh(
+        paintBody(
+          new THREE.CylinderGeometry(0.028, 0.044, 0.14, 7),
+          0.34,
+          0.29,
+          0.25
+        ),
         this.chitinMat
       );
-      curvedFang.position.set(side * 0.095, -0.28, -0.49);
-      curvedFang.rotation.x = Math.PI + 0.42;
-      curvedFang.rotation.z = -side * 0.28;
-      this.mandibleGroup.add(curvedFang);
-    }
+      fangSeg1.position.set(-side * 0.014, -0.21, -0.092);
+      fangSeg1.rotation.z = side * 0.24;
+      fangSeg1.rotation.x = -0.18;
 
-    for (let i = 0; i < 4; i++) {
-      const s = i < 2 ? -1 : 1;
-      const inner = i % 2 === 0 ? 0.045 : 0.155;
-      const barb = new THREE.Mesh(
-        paintBody(new THREE.ConeGeometry(0.024, 0.22, 5), 0.28, 0.24, 0.21),
+      const fangSeg2 = new THREE.Mesh(
+        paintBody(
+          new THREE.CylinderGeometry(0.016, 0.028, 0.13, 7),
+          0.56,
+          0.5,
+          0.42
+        ),
         this.chitinMat
       );
-      barb.position.set(s * inner, -0.22, -0.38);
-      barb.rotation.x = Math.PI + 0.25;
-      this.mandibleGroup.add(barb);
-    }
-    this.bodyGroup.add(this.mandibleGroup);
+      fangSeg2.position.set(-side * 0.046, -0.305, -0.065);
+      fangSeg2.rotation.z = side * 0.56;
+      fangSeg2.rotation.x = -0.42;
 
-    // 4. PAR DE PEDIPALPOS FRONTAIS ARTICULADOS (3 segmentos cada)
-    for (const side of [-1, 1]) {
-      const palp = new THREE.Group();
-      palp.position.set(side * 0.2, -0.05, -0.38);
-      palp.rotation.y = side * -0.26;
-
-      const femur = new THREE.Mesh(
-        paintBody(new THREE.CylinderGeometry(0.032, 0.042, 0.32, 6), 0.034, 0.034, 0.04),
+      const fangTip = new THREE.Mesh(
+        paintBody(new THREE.ConeGeometry(0.016, 0.13, 6), 0.76, 0.68, 0.58),
         this.chitinMat
       );
-      femur.rotation.x = Math.PI * 0.32;
-      femur.position.set(0, 0.08, -0.13);
+      fangTip.position.set(-side * 0.092, -0.37, -0.018);
+      fangTip.rotation.x = Math.PI - 0.55;
+      fangTip.rotation.z = -side * 0.84;
 
-      const tibia = new THREE.Mesh(
-        paintBody(new THREE.CylinderGeometry(0.026, 0.034, 0.3, 6), 0.045, 0.042, 0.046),
-        this.chitinMat
-      );
-      tibia.rotation.x = Math.PI * 0.72;
-      tibia.position.set(0, 0.02, -0.34);
+      // Dentes marginais serrilhados internos para triturar presas
+      for (let d = 0; d < 3; d++) {
+        const tooth = new THREE.Mesh(
+          paintBody(new THREE.ConeGeometry(0.013, 0.065, 4), 0.48, 0.42, 0.36),
+          this.chitinMat
+        );
+        tooth.position.set(-side * 0.058, -0.11 - d * 0.038, -0.055 + d * 0.02);
+        tooth.rotation.z = side * 1.1;
+        pivot.add(tooth);
+      }
 
-      const clawTip = new THREE.Mesh(
-        paintBody(new THREE.ConeGeometry(0.028, 0.2, 5), 0.56, 0.51, 0.44),
-        this.chitinMat
-      );
-      clawTip.rotation.x = Math.PI + 0.24;
-      clawTip.position.set(0, -0.14, -0.44);
+      pivot.add(paturon, fangFold, fangSeg1, fangSeg2, fangTip);
+      this.bodyGroup.add(pivot);
+    };
+    buildChelicera(this.leftCheliceraPivot, -1);
+    buildChelicera(this.rightCheliceraPivot, 1);
 
-      palp.add(femur, tibia, clawTip);
-      this.pedipalpGroup.add(palp);
-    }
-    this.bodyGroup.add(this.pedipalpGroup);
+    // 4. PEDIPALPOS FRONTAIS ARTICULADOS INDEPENDENTES (JUNTAS CONTÍNUAS SEM VÃOS!)
+    const buildPedipalp = (pivot: THREE.Group, side: number) => {
+      pivot.position.set(side * 0.205, -0.048, -0.365);
+      pivot.rotation.y = side * -0.22;
 
-    // 5. TUBÉRCULO OCULAR + 8 OLHOS ARACNÍDEOS EM DUAS FILEIRAS CURVAS
-    const brow = new THREE.Mesh(
-      paintBody(new THREE.BoxGeometry(0.28, 0.075, 0.12), 0.042, 0.038, 0.045),
+      const p0 = new THREE.Vector3(0, 0, 0);
+      const p1 = new THREE.Vector3(side * 0.03, 0.11, -0.2);
+      const p2 = new THREE.Vector3(side * 0.01, 0.01, -0.42);
+      const p3 = new THREE.Vector3(-side * 0.02, -0.16, -0.5);
+
+      const addSegment = (
+        a: THREE.Vector3,
+        b: THREE.Vector3,
+        rTop: number,
+        rBot: number,
+        cr: number,
+        cg: number,
+        cb: number,
+        isCone = false
+      ) => {
+        const dir = new THREE.Vector3().subVectors(b, a);
+        const len = dir.length();
+        const geo = isCone
+          ? paintBody(new THREE.ConeGeometry(rBot, len, 7), cr, cg, cb)
+          : paintBody(
+              new THREE.CylinderGeometry(rTop, rBot, len, 7),
+              cr,
+              cg,
+              cb
+            );
+        const m = new THREE.Mesh(geo, this.chitinMat);
+        m.position.lerpVectors(a, b, 0.5);
+        m.quaternion.setFromUnitVectors(
+          new THREE.Vector3(0, 1, 0),
+          dir.normalize()
+        );
+        pivot.add(m);
+      };
+
+      const addJointCondyle = (pt: THREE.Vector3, r: number) => {
+        const jMesh = new THREE.Mesh(
+          paintBody(new THREE.SphereGeometry(r, 7, 6), 0.24, 0.21, 0.185),
+          this.chitinMat
+        );
+        jMesh.position.copy(pt);
+        pivot.add(jMesh);
+      };
+
+      addJointCondyle(p0, 0.042);
+      addSegment(p0, p1, 0.032, 0.04, 0.085, 0.08, 0.092);
+      addJointCondyle(p1, 0.038);
+      addSegment(p1, p2, 0.026, 0.034, 0.11, 0.1, 0.112);
+      addJointCondyle(p2, 0.03);
+      addSegment(p2, p3, 0.006, 0.026, 0.62, 0.56, 0.48, true);
+
+      this.bodyGroup.add(pivot);
+    };
+    buildPedipalp(this.leftPalpPivot, -1);
+    buildPedipalp(this.rightPalpPivot, 1);
+
+    // 5. TORRE OCULAR BLINDADA + 8 OCELOS ENGASTADOS COM BRILHO TAPETUM LUCIDUM
+    const ocularTurret = new THREE.Mesh(
+      paintBody(
+        new THREE.CylinderGeometry(0.14, 0.18, 0.095, 8),
+        0.095,
+        0.088,
+        0.1
+      ),
       this.chitinMat
     );
-    brow.position.set(0, 0.135, -0.43);
-    this.bodyGroup.add(brow);
+    ocularTurret.scale.set(1.15, 0.85, 0.72);
+    ocularTurret.position.set(0, 0.145, -0.435);
+    ocularTurret.rotation.x = 0.28;
+    this.bodyGroup.add(ocularTurret);
 
-    const eyeMainMat = new THREE.MeshBasicMaterial({ color: 0xc99c88 });
-    const eyeSecMat = new THREE.MeshBasicMaterial({ color: 0x9e7466 });
+    const browCrest = new THREE.Mesh(
+      paintBody(new THREE.BoxGeometry(0.3, 0.036, 0.09), 0.22, 0.195, 0.175),
+      this.chitinMat
+    );
+    browCrest.position.set(0, 0.182, -0.455);
+    browCrest.rotation.x = 0.18;
+    this.bodyGroup.add(browCrest);
+
     const eyeOffsets: Array<[number, number, number, number, boolean]> = [
-      // Fileira anterior (2 olhos medianos grandes + 2 laterais)
-      [-0.055, 0.085, -0.495, 0.03, true],
-      [0.055, 0.085, -0.495, 0.03, true],
-      [-0.135, 0.095, -0.465, 0.022, false],
-      [0.135, 0.095, -0.465, 0.022, false],
-      // Fileira dorsal superior (4 olhos secundários)
-      [-0.042, 0.145, -0.475, 0.018, false],
-      [0.042, 0.145, -0.475, 0.018, false],
-      [-0.175, 0.138, -0.415, 0.02, false],
-      [0.175, 0.138, -0.415, 0.02, false],
+      // Fileira anterior: 2 grandes Olhos Medianos Anteriores (AME) + 2 Laterais Anteriores (ALE)
+      [-0.052, 0.118, -0.512, 0.032, true],
+      [0.052, 0.118, -0.512, 0.032, true],
+      [-0.132, 0.124, -0.482, 0.023, false],
+      [0.132, 0.124, -0.482, 0.023, false],
+      // Fileira posterior superior: 2 Medianos Posteriores (PME) + 2 Laterais Posteriores (PLE)
+      [-0.044, 0.168, -0.486, 0.019, false],
+      [0.044, 0.168, -0.486, 0.019, false],
+      [-0.176, 0.158, -0.428, 0.022, false],
+      [0.176, 0.158, -0.428, 0.022, false],
     ];
     for (const [ex, ey, ez, er, primary] of eyeOffsets) {
-      const eye = new THREE.Mesh(
-        new THREE.OctahedronGeometry(er, 1),
-        primary ? eyeMainMat : eyeSecMat
+      // Cálice quitinoso escuro ao redor de cada olho
+      const socketRim = new THREE.Mesh(
+        paintBody(
+          new THREE.TorusGeometry(er * 0.96, er * 0.28, 5, 8),
+          0.04,
+          0.038,
+          0.045
+        ),
+        this.chitinMat
       );
+      socketRim.position.set(ex, ey, ez + er * 0.2);
+      socketRim.rotation.y = ex * -1.4;
+      this.bodyGroup.add(socketRim);
+
+      const eyeGeo = paintBody(
+        new THREE.SphereGeometry(er, 8, 6),
+        primary ? 0.78 : 0.56,
+        primary ? 0.62 : 0.44,
+        primary ? 0.48 : 0.36
+      );
+      const eye = new THREE.Mesh(eyeGeo, this.eyeMat);
       eye.position.set(ex, ey, ez);
       this.bodyGroup.add(eye);
     }
@@ -1179,64 +1526,10 @@ export class DoomSpider {
   }
 
   /**
-   * Constrói as 8 patas colossais (~3.65m a 4.18m de envergadura cada!) que alcançam
-   * simultaneamente piso, paredes e teto dos corredores!
+   * Constrói as 8 malhas tubulares articuladas dinâmicas (`spiderRoot.children[1..8]`)
+   * que alcançam piso, paredes e teto dos corredores.
    */
-  private buildProceduralLimbs(): void {
-    const rand = mulberry32(38187712);
-    const baseDegs = [-28, 28, -64, 64, -106, 106, -146, 146];
-
-    for (let i = 0; i < 8; i++) {
-      const deg = baseDegs[i] + (rand() - 0.5) * 9;
-      const angleRad = (deg * Math.PI) / 180;
-      const segments = 4;
-      const totalLength = 3.65 + rand() * 0.52;
-
-      const rawSegs = [0.74, 1.28, 1.2, 0.96].map(
-        (w) => w * (0.9 + rand() * 0.2)
-      );
-      const sum = rawSegs.reduce((a, b) => a + b, 0);
-      const lengths = rawSegs.map((w) => (w / sum) * totalLength);
-
-      const sideSign = deg < 0 ? -1 : 1;
-      const rootLocal = new THREE.Vector3(
-        sideSign * (0.19 + rand() * 0.045),
-        -0.03 + (rand() - 0.5) * 0.06,
-        Math.cos(angleRad) * -0.24
-      );
-
-      this.limbSpecs.push({
-        index: i,
-        rootLocal,
-        angleRad,
-        spread: 0.48 + rand() * 0.1,
-        segments,
-        lengths,
-        totalLength,
-        baseWidth: 0.092 + rand() * 0.02,
-        stepDistance: 0.82 + rand() * 0.26,
-        stepTime: 0.27 + rand() * 0.08,
-        stepHeight: 0.5 + rand() * 0.18,
-        phase: rand() * 100,
-        freq: 0.8 + rand() * 1.4,
-        shade: 0.85 + rand() * 0.3,
-        neighbourIndices: [],
-      });
-    }
-
-    for (let i = 0; i < this.limbSpecs.length; i++) {
-      for (let j = 0; j < this.limbSpecs.length; j++) {
-        if (i === j) continue;
-        let diff = Math.abs(
-          this.limbSpecs[i].angleRad - this.limbSpecs[j].angleRad
-        );
-        if (diff > Math.PI) diff = Math.PI * 2 - diff;
-        if (diff < 0.85) {
-          this.limbSpecs[i].neighbourIndices.push(j);
-        }
-      }
-    }
-
+  private buildProceduralLimbMeshes(): void {
     for (let i = 0; i < this.limbSpecs.length; i++) {
       const spec = this.limbSpecs[i];
       const { geometry, posAttr, normAttr, colAttr } =
@@ -1620,6 +1913,8 @@ export class DoomSpider {
     this.chitinMat.uniforms.uRageGlow.value +=
       (targetRage - this.chitinMat.uniforms.uRageGlow.value) *
       Math.min(1, dt * 6);
+    this.eyeMat.uniforms.uRageGlow.value =
+      this.chitinMat.uniforms.uRageGlow.value;
 
     this.updateBodyAndLimbsIK(
       dt,
@@ -2261,9 +2556,17 @@ export class DoomSpider {
 
     const vertLerp = 1 - Math.exp(-7.5 * dt);
     this.bodyPos.y += (desiredY - this.bodyPos.y) * vertLerp;
-    // Evita singularidade antipodal ao descer direto do teto (0,-1,0) para o piso (0,1,0)
+    // Evita singularidade antipodal ao descer do teto (0,-1,0) para o piso (0,1,0)
+    // inclinando ao longo do próprio eixo frontal da aranha (mergulho natural, sem entortar para a parede leste!)
     if (this.currentUp.dot(this.targetUp) < -0.75) {
-      this.currentUp.x += 0.45;
+      if (
+        Math.abs(this.currentForward.x) + Math.abs(this.currentForward.z) >
+        0.1
+      ) {
+        this.currentUp.addScaledVector(this.currentForward, 0.52);
+      } else {
+        this.currentUp.z -= 0.52;
+      }
       this.currentUp.normalize();
     }
     this.currentUp.lerp(this.targetUp, vertLerp).normalize();
@@ -2298,6 +2601,14 @@ export class DoomSpider {
       right.crossVectors(fwd, up).normalize();
     }
 
+    // Inclinação corporal sutil conforme aceleração/estado de ameaça (sem comprometer verticalidade no piso!)
+    const isCinematicStrike =
+      this.cinematicMode === 'STRIKE_ATTACK' ||
+      this.cinematicMode === 'FATAL_EXECUTION';
+    const isWebSpinning =
+      this.state === 'SPINNING_WEB' ||
+      this.cinematicMode === 'WEBBING_IN_LAIR';
+
     const basisMat = new THREE.Matrix4().makeBasis(
       right,
       up,
@@ -2305,16 +2616,71 @@ export class DoomSpider {
     );
     this.bodyGroup.position.copy(this.bodyPos);
     this.bodyGroup.quaternion.setFromRotationMatrix(basisMat);
+    this.tmpInvBodyQuat.copy(this.bodyGroup.quaternion).invert();
 
-    const agit = this.isChasingOrAlert ? 1.0 : 0.2;
-    this.mandibleGroup.rotation.y = Math.sin(elapsed * (6 + agit * 15)) * 0.14;
-    this.mandibleGroup.scale.setScalar(
-      1 + Math.sin(elapsed * (4 + agit * 14)) * 0.08
+    const agit = this.isChasingOrAlert ? 1.0 : 0.22;
+
+    // Animação simétrica em TESOURA real das Quelíceras + Presas Venenosas!
+    const biteSnap = isCinematicStrike
+      ? Math.sin(elapsed * 26) * 0.34 + 0.28
+      : Math.max(0, Math.sin(elapsed * (4.2 + agit * 13))) * (0.1 + agit * 0.24);
+    const threatGape =
+      this.state === 'ALERT_WINDUP' ? 0.36 : agit * 0.14;
+    const scissorAngle = threatGape + biteSnap;
+    const cheliceraLift =
+      (this.state === 'ALERT_WINDUP' ? 0.26 : agit * 0.12) +
+      Math.sin(elapsed * (5.5 + agit * 11)) * 0.06;
+
+    this.leftCheliceraPivot.rotation.set(
+      cheliceraLift,
+      scissorAngle * 0.45,
+      -scissorAngle
     );
-    this.pedipalpGroup.rotation.x =
-      -agit * 0.24 + Math.sin(elapsed * (5 + agit * 13)) * 0.11;
-    this.pedipalpGroup.rotation.y =
-      Math.cos(elapsed * (4.5 + agit * 11)) * 0.09;
+    this.rightCheliceraPivot.rotation.set(
+      cheliceraLift,
+      -scissorAngle * 0.45,
+      scissorAngle
+    );
+
+    // Pedipalpos frontais táteis batendo em fase alternada (esquerda vs direita)
+    const palpSpeed = 4.6 + agit * 11.5;
+    const leftWave = Math.sin(elapsed * palpSpeed);
+    const rightWave = Math.sin(elapsed * palpSpeed + Math.PI * 0.85);
+    this.leftPalpPivot.rotation.set(
+      -0.12 - agit * 0.22 + leftWave * (0.08 + agit * 0.14),
+      0.22 + Math.cos(elapsed * palpSpeed * 0.7) * 0.08,
+      leftWave * 0.06
+    );
+    this.rightPalpPivot.rotation.set(
+      -0.12 - agit * 0.22 + rightWave * (0.08 + agit * 0.14),
+      -0.22 - Math.cos(elapsed * palpSpeed * 0.7 + 1.1) * 0.08,
+      -rightWave * 0.06
+    );
+
+    // Respiração orgânica, elevação de ameaça e tecelagem ativa do Opistossoma + Fiandeiras!
+    const breath = Math.sin(elapsed * (2.4 + agit * 4.2)) * 0.035;
+    const abdomenRearUp =
+      this.state === 'ALERT_WINDUP'
+        ? 0.42
+        : isWebSpinning
+          ? 0.12 + Math.sin(elapsed * 9.0) * 0.08
+          : 0.24 + agit * 0.09 + breath;
+    const abdomenSwayY = isWebSpinning
+      ? Math.sin(elapsed * 7.5) * 0.22
+      : Math.sin(elapsed * 2.1) * 0.03;
+    this.abdomenPivot.rotation.set(abdomenRearUp, abdomenSwayY, 0);
+    const breathScale = 1 + breath * 0.45;
+    this.abdomenPivot.scale.set(breathScale, breathScale, 1.0);
+
+    const spinTwitch = isWebSpinning ? 0.34 : 0.07;
+    this.leftSpinneretPivot.rotation.y =
+      -0.16 + Math.sin(elapsed * 14.0) * spinTwitch;
+    this.rightSpinneretPivot.rotation.y =
+      0.16 - Math.sin(elapsed * 14.0 + 0.9) * spinTwitch;
+    this.leftSpinneretPivot.rotation.x =
+      Math.cos(elapsed * 12.0) * spinTwitch * 0.6;
+    this.rightSpinneretPivot.rotation.x =
+      Math.sin(elapsed * 12.0) * spinTwitch * 0.6;
 
     const frantic =
       this.state === 'FRENZY_CHASE' ||
@@ -2517,7 +2883,22 @@ export class DoomSpider {
       );
       this.unclipIntermediateJoints(rt.ikPoints);
 
-      this.rebuildLimbTubeMesh(spec, rt);
+      // Orienta a cápsula articular Coxa+Trocânter diretamente para o Fêmur (`ikPoints[1]`)!
+      const coxaPivot = this.coxaPivots[i];
+      if (coxaPivot) {
+        this.tmpCoxaDir
+          .subVectors(rt.ikPoints[1], rootWorld)
+          .applyQuaternion(this.tmpInvBodyQuat);
+        if (this.tmpCoxaDir.lengthSq() > 1e-6) {
+          this.tmpCoxaDir.normalize();
+          coxaPivot.quaternion.setFromUnitVectors(
+            this.tmpUnitZ,
+            this.tmpCoxaDir
+          );
+        }
+      }
+
+      this.rebuildLimbTubeMesh(spec, rt, up, ringDir);
     }
   }
 
@@ -2769,9 +3150,23 @@ export class DoomSpider {
   }
 
   private unclipIntermediateJoints(pts: THREE.Vector3[]): void {
+    const bodyRepelRadius = 0.42;
     for (let i = 1; i < pts.length - 1; i++) {
       const p = pts[i];
       p.y = Math.max(0.06, Math.min(WALL_HEIGHT - 0.06, p.y));
+
+      // Impede joelhos/fêmures de atravessarem o próprio cefalotórax ou abdômen da aranha!
+      const bx = p.x - this.bodyPos.x;
+      const by = p.y - this.bodyPos.y;
+      const bz = p.z - this.bodyPos.z;
+      const bDistSq = bx * bx + by * by + bz * bz;
+      if (bDistSq < bodyRepelRadius * bodyRepelRadius && bDistSq > 1e-6) {
+        const bDist = Math.sqrt(bDistSq);
+        const pushOut = (bodyRepelRadius - bDist) / bDist;
+        p.x += bx * pushOut;
+        p.y += by * pushOut;
+        p.z += bz * pushOut;
+      }
 
       for (let c = 0; c < this.colliders.length; c++) {
         const b = this.colliders[c].box;
@@ -2786,7 +3181,7 @@ export class DoomSpider {
           const dL = Math.abs(p.x - (b.min.x - pad));
           const dR = Math.abs(b.max.x + pad - p.x);
           const dN = Math.abs(p.z - (b.min.z - pad));
-          const dS = Math.abs(p.z - (b.max.z + pad));
+          const dS = Math.abs(b.max.z + pad - p.z);
           const m = Math.min(dL, dR, dN, dS);
           if (m === dL) p.x = b.min.x - pad;
           else if (m === dR) p.x = b.max.x + pad;
@@ -2797,32 +3192,50 @@ export class DoomSpider {
     }
   }
 
+  /**
+   * Reconstrói a malha exoesquelética de cada pata com:
+   * - Referencial anatômico no plano radial da pata (`ringDir × bodyUp`), eliminando 100%
+   *   torções súbitas de 90° e inversão de garras/espinhos no teto e nas paredes;
+   * - Podômeros rígidos (Fêmur, Patela-Tíbia, Metatarso, Tarso) com esporões patelares nos joelhos,
+   *   3 pares de espinhos raptoriais ventrais na tíbia/metatarso e garra tarsal curva selada na ponta;
+   * - Normais 3D reais calculadas pela superfície vizinha para iluminação nítida.
+   */
   private rebuildLimbTubeMesh(
     spec: SpiderLimbSpec,
-    rt: SpiderLimbRuntime
+    rt: SpiderLimbRuntime,
+    bodyUp: THREE.Vector3,
+    ringDir: THREE.Vector3
   ): void {
     const ik = rt.ikPoints;
-    const nIk = ik.length;
 
     for (let s = 0; s < CURVE_SAMPLES; s++) {
-      const u = (s / (CURVE_SAMPLES - 1)) * (nIk - 1);
-      const seg = Math.min(Math.floor(u), nIk - 2);
-      const localT = u - seg;
-      const p0 = ik[Math.max(0, seg - 1)];
-      const p1 = ik[seg];
-      const p2 = ik[seg + 1];
-      const p3 = ik[Math.min(nIk - 1, seg + 2)];
-      catmullRomVec3(p0, p1, p2, p3, localT, rt.curvePoints[s]);
+      const u = s / (CURVE_SAMPLES - 1);
+      sampleArticulatedPodomereChain(ik, u, rt.curvePoints[s]);
     }
 
     const posArr = rt.posAttr.array as Float32Array;
     const normArr = rt.normAttr.array as Float32Array;
     const colArr = rt.colAttr.array as Float32Array;
 
-    let nx = 0;
-    let ny = 0;
-    let nz = 0;
-    let hasFrame = false;
+    // Eixo lateral perpétuo ao plano anatômico da pata (`ringDir × bodyUp`):
+    // garante zero singularidade e zero giro abrupto quando a pata cruza a vertical!
+    let planeSideX = ringDir.y * bodyUp.z - ringDir.z * bodyUp.y;
+    let planeSideY = ringDir.z * bodyUp.x - ringDir.x * bodyUp.z;
+    let planeSideZ = ringDir.x * bodyUp.y - ringDir.y * bodyUp.x;
+    let psLen = Math.hypot(planeSideX, planeSideY, planeSideZ);
+    if (psLen < 1e-5) {
+      planeSideX = 1;
+      planeSideY = 0;
+      planeSideZ = 0;
+      psLen = 1;
+    }
+    planeSideX /= psLen;
+    planeSideY /= psLen;
+    planeSideZ /= psLen;
+
+    let prevBx = planeSideX;
+    let prevBy = planeSideY;
+    let prevBz = planeSideZ;
 
     for (let j = 0; j < CURVE_SAMPLES; j++) {
       const prevP = rt.curvePoints[Math.max(0, j - 1)];
@@ -2832,86 +3245,141 @@ export class DoomSpider {
       let tx = nextP.x - prevP.x;
       let ty = nextP.y - prevP.y;
       let tz = nextP.z - prevP.z;
-      let tl = Math.hypot(tx, ty, tz);
+      const tl = Math.hypot(tx, ty, tz);
       if (tl < 1e-6) {
-        tx = 0;
-        ty = -1;
-        tz = 0;
-        tl = 1;
+        tx = ringDir.x;
+        ty = ringDir.y;
+        tz = ringDir.z;
       } else {
         tx /= tl;
         ty /= tl;
         tz /= tl;
       }
 
-      if (!hasFrame) {
-        hasFrame = true;
-        if (Math.abs(ty) < 0.9) {
-          nx = 0;
-          ny = 1;
-          nz = 0;
-        } else {
-          nx = 1;
-          ny = 0;
-          nz = 0;
-        }
+      // Projeta o vetor lateral `planeSide = ringDir × bodyUp` ortogonalmente à tangente `t`
+      const dotSide = planeSideX * tx + planeSideY * ty + planeSideZ * tz;
+      let bx = planeSideX - tx * dotSide;
+      let by = planeSideY - ty * dotSide;
+      let bz = planeSideZ - tz * dotSide;
+      let bLen = Math.hypot(bx, by, bz);
+      if (bLen < 1e-4) {
+        const dotPrev = prevBx * tx + prevBy * ty + prevBz * tz;
+        bx = prevBx - tx * dotPrev;
+        by = prevBy - ty * dotPrev;
+        bz = prevBz - tz * dotPrev;
+        bLen = Math.hypot(bx, by, bz) || 1;
       }
+      bx /= bLen;
+      by /= bLen;
+      bz /= bLen;
 
-      const dot = nx * tx + ny * ty + nz * tz;
-      nx -= tx * dot;
-      ny -= ty * dot;
-      nz -= tz * dot;
-      let nl = Math.hypot(nx, ny, nz);
-      if (nl < 1e-6) {
-        nx = -ty;
-        ny = tx;
-        nz = 0;
-        nl = Math.hypot(nx, ny, nz) || 1;
+      if (bx * prevBx + by * prevBy + bz * prevBz < 0) {
+        bx = -bx;
+        by = -by;
+        bz = -bz;
       }
-      nx /= nl;
-      ny /= nl;
-      nz /= nl;
+      prevBx = bx;
+      prevBy = by;
+      prevBz = bz;
 
-      const bx = ty * nz - tz * ny;
-      const by = tz * nx - tx * nz;
-      const bz = tx * ny - ty * nx;
+      // Identidade algébrica exata: `n = b × t` com `b = ringDir × bodyUp` aponta SEMPRE
+      // para o dorso convexo externo da pata (no fêmur ascendente, no topo do joelho `+bodyUp`
+      // e na tíbia descendente `+ringDir`, curvando a garra `-n` para dentro rumo à presa/superfície)!
+      let nx = by * tz - bz * ty;
+      let ny = bz * tx - bx * tz;
+      let nz = bx * ty - by * tx;
+      const nLen = Math.hypot(nx, ny, nz) || 1;
+      nx /= nLen;
+      ny /= nLen;
+      nz /= nLen;
 
       const f = j / (CURVE_SAMPLES - 1);
 
-      // Perfil anatômico: fêmur musculoso -> côndilos articulares nas juntas -> tarso fino em garra
-      const femurSwell =
-        f < 0.34 ? Math.sin((f / 0.34) * Math.PI) * spec.baseWidth * 0.24 : 0;
+      // Perfil anatômico: Fêmur musculoso -> Patela/Tíbia -> Metatarso -> Garra Tarsal selada na ponta
+      const rootCap = j === 0 ? 0.68 : 1.0;
+      const femurMuscle =
+        f < 0.28 ? Math.sin((f / 0.28) * Math.PI) * spec.baseWidth * 0.34 : 0;
+      const tibiaMuscle =
+        f > 0.28 && f < 0.54
+          ? Math.sin(((f - 0.28) / 0.26) * Math.PI) * spec.baseWidth * 0.15
+          : 0;
+
       let radius =
-        spec.baseWidth * (1 - 0.91 * Math.pow(f, 1.28)) + femurSwell;
+        (spec.baseWidth * (1 - 0.92 * Math.pow(f, 1.24)) +
+          femurMuscle +
+          tibiaMuscle) *
+        rootCap;
+
+      // Côndilos articulares + detecção de proximidade das juntas (joelho patelar principal em k=1 e k=2)
+      let jointGlow = 0;
+      let kneeHornFactor = 0;
       for (let k = 1; k < spec.segments; k++) {
-        const d = (f - k / spec.segments) / 0.042;
-        radius += spec.baseWidth * 0.22 * Math.exp(-d * d);
+        const jf = k / spec.segments;
+        const d = (f - jf) / 0.036;
+        const bell = Math.exp(-d * d);
+        radius += spec.baseWidth * (k === 1 ? 0.26 : 0.19) * bell;
+        jointGlow = Math.max(jointGlow, bell);
+        if (k === 1 || k === 2) {
+          const hornD = (f - (jf - 0.01)) / 0.026;
+          kneeHornFactor = Math.max(
+            kneeHornFactor,
+            Math.exp(-hornD * hornD) * (k === 1 ? 1.0 : 0.72)
+          );
+        }
       }
-      radius = Math.max(0.0085, radius);
 
-      // Leve curvatura em gancho na garra óssea distal (tarso)
-      const clawHook = f > 0.86 ? Math.pow((f - 0.86) / 0.14, 2) * 0.028 : 0;
+      // 3 pares de espinhos raptoriais na face ventral da tíbia/metatarso
+      let ventralSpineFactor = 0;
+      for (const sf of [0.39, 0.53, 0.67]) {
+        const sd = (f - sf) / 0.019;
+        ventralSpineFactor = Math.max(ventralSpineFactor, Math.exp(-sd * sd));
+      }
 
-      const boneBlend = Math.pow(f, 3.0);
-      const fleshR = 0.03 * spec.shade;
-      const fleshG = 0.03 * spec.shade;
-      const fleshB = 0.036 * spec.shade;
-      const boneR = 0.66 * spec.shade;
-      const boneG = 0.61 * spec.shade;
-      const boneB = 0.54 * spec.shade;
+      // Selamento afiado na ponta distal (j = CURVE_SAMPLES - 1 -> ponta de agulha óssea sem furo!)
+      if (j === CURVE_SAMPLES - 1) {
+        radius = 0.0014;
+      } else if (f > 0.88) {
+        const tipT = (f - 0.88) / 0.12;
+        radius = Math.max(0.0025, radius * (1 - tipT * 0.82));
+      } else {
+        radius = Math.max(0.008, radius);
+      }
 
-      const cr = fleshR + (boneR - fleshR) * boneBlend;
-      const cg = fleshG + (boneG - fleshG) * boneBlend;
-      const cb = fleshB + (boneB - fleshB) * boneBlend;
+      // Garra óssea distal curvando anatomicamente para dentro (-n = direção ventral de agarrar superfície/presa!)
+      const clawHook =
+        f > 0.84 ? Math.pow((f - 0.84) / 0.16, 2.1) * 0.055 : 0;
+
+      const boneBlend = Math.pow(f, 2.75);
+      const fleshR = 0.068 * spec.shade;
+      const fleshG = 0.064 * spec.shade;
+      const fleshB = 0.074 * spec.shade;
+      const boneR = 0.72 * spec.shade;
+      const boneG = 0.66 * spec.shade;
+      const boneB = 0.56 * spec.shade;
+
+      const baseCr =
+        fleshR + (boneR - fleshR) * boneBlend + jointGlow * 0.075;
+      const baseCg =
+        fleshG + (boneG - fleshG) * boneBlend + jointGlow * 0.032;
+      const baseCb =
+        fleshB + (boneB - fleshB) * boneBlend + jointGlow * 0.026;
 
       for (let k = 0; k < RING_SIDES; k++) {
         const ang = (k / RING_SIDES) * Math.PI * 2;
-        const ca = Math.cos(ang);
-        const sa = Math.sin(ang);
+        const ca = Math.cos(ang); // +1 = dorsal (topo da pata), -1 = ventral (face interna)
+        const sa = Math.sin(ang); // ±1 = faces laterais
 
-        // Crista dorsal quitinosa pronunciada ao longo do exoesqueleto da pata
-        const ridge = ca > 0.65 ? 1.24 : Math.abs(sa) > 0.85 ? 0.88 : 1.0;
-        const rLocal = radius * ridge;
+        // Secção transversal quitinosa comprimida lateralmente + quilha dorsal + esporão no joelho + espinhos ventrais!
+        let profileScale = 1.0;
+        if (ca > 0.72) {
+          profileScale = 1.24 + kneeHornFactor * 0.78;
+        } else if (ca < -0.68) {
+          profileScale = 0.94 + ventralSpineFactor * 0.85;
+        } else if (Math.abs(sa) > 0.78) {
+          profileScale = 0.82;
+        }
+
+        const rLocal = j === CURVE_SAMPLES - 1 ? radius : radius * profileScale;
 
         const dx = nx * ca + bx * sa;
         const dy = ny * ca + by * sa;
@@ -2922,13 +3390,62 @@ export class DoomSpider {
         posArr[vIdx + 1] = curP.y + dy * rLocal - ny * clawHook;
         posArr[vIdx + 2] = curP.z + dz * rLocal - nz * clawHook;
 
-        normArr[vIdx] = dx;
-        normArr[vIdx + 1] = dy;
-        normArr[vIdx + 2] = dz;
+        // Pontas dos esporões de joelho, espinhos ventrais e quilha dorsal recebem tom ósseo pálido!
+        const spurHighlight = Math.min(
+          1,
+          (ca > 0.72 ? kneeHornFactor * 0.85 + 0.14 : 0) +
+            (ca < -0.68 ? ventralSpineFactor * 0.9 : 0)
+        );
+        colArr[vIdx] = baseCr + (0.68 - baseCr) * spurHighlight;
+        colArr[vIdx + 1] = baseCg + (0.62 - baseCg) * spurHighlight;
+        colArr[vIdx + 2] = baseCb + (0.52 - baseCb) * spurHighlight;
+      }
+    }
 
-        colArr[vIdx] = cr;
-        colArr[vIdx + 1] = cg;
-        colArr[vIdx + 2] = cb;
+    // Calcula normais geométricas 3D reais a partir dos anéis e vértices adjacentes da superfície
+    for (let j = 0; j < CURVE_SAMPLES; j++) {
+      const jPrev = Math.max(0, j - 1);
+      const jNext = Math.min(CURVE_SAMPLES - 1, j + 1);
+      for (let k = 0; k < RING_SIDES; k++) {
+        const kPrev = (k - 1 + RING_SIDES) % RING_SIDES;
+        const kNext = (k + 1) % RING_SIDES;
+
+        const iPrevU = (jPrev * RING_SIDES + k) * 3;
+        const iNextU = (jNext * RING_SIDES + k) * 3;
+        const iPrevV = (j * RING_SIDES + kPrev) * 3;
+        const iNextV = (j * RING_SIDES + kNext) * 3;
+
+        const ux = posArr[iNextU] - posArr[iPrevU];
+        const uy = posArr[iNextU + 1] - posArr[iPrevU + 1];
+        const uz = posArr[iNextU + 2] - posArr[iPrevU + 2];
+
+        const vx = posArr[iNextV] - posArr[iPrevV];
+        const vy = posArr[iNextV + 1] - posArr[iPrevV + 1];
+        const vz = posArr[iNextV + 2] - posArr[iPrevV + 2];
+
+        // Normal externa garantida: u × v alinhada ao vetor radial real do anel!
+        let snx = uy * vz - uz * vy;
+        let sny = uz * vx - ux * vz;
+        let snz = ux * vy - uy * vx;
+        const outIdx = (j * RING_SIDES + k) * 3;
+        const rx = posArr[outIdx] - rt.curvePoints[j].x;
+        const ry = posArr[outIdx + 1] - rt.curvePoints[j].y;
+        const rz = posArr[outIdx + 2] - rt.curvePoints[j].z;
+        if (snx * rx + sny * ry + snz * rz < 0) {
+          snx = -snx;
+          sny = -sny;
+          snz = -snz;
+        }
+        const snLen = Math.hypot(snx, sny, snz);
+        if (snLen > 1e-8) {
+          normArr[outIdx] = snx / snLen;
+          normArr[outIdx + 1] = sny / snLen;
+          normArr[outIdx + 2] = snz / snLen;
+        } else {
+          normArr[outIdx] = 0;
+          normArr[outIdx + 1] = 1;
+          normArr[outIdx + 2] = 0;
+        }
       }
     }
 

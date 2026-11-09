@@ -2676,4 +2676,128 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
     expect(phoneLandscapeBin.fontPx).toBeGreaterThanOrEqual(10);
     expect(phoneLandscapeBin.fontPx).toBeLessThan(16);
   });
+
+  it('valida modelagem 3D aracnídea aprimorada: coxas alinhadas ao fêmur, quelíceras em tesoura, garras seladas e normais sem torção no piso e no teto', () => {
+    const scene = new THREE.Scene();
+    const shared = createDoomSharedUniforms();
+    const textures = createDoomTextures();
+    const maze = buildDoomLabyrinth(scene, textures, shared);
+    const webs = new DoomSpiderWebManager(scene, shared);
+    const mockSound = {
+      playSpiderFootstep: () => {},
+      playSpiderScream: () => {},
+      playSpiderWebSpin: () => {},
+    } as unknown as SoundEngine;
+
+    const spider = new DoomSpider(
+      scene,
+      shared,
+      maze.colliders,
+      webs,
+      mockSound
+    );
+
+    const internal = spider as unknown as {
+      placeAtCell: (
+        wx: number,
+        wz: number,
+        mode: 'FLOOR' | 'WALL' | 'CEILING'
+      ) => void;
+      coxaPivots: THREE.Group[];
+      leftCheliceraPivot: THREE.Group;
+      rightCheliceraPivot: THREE.Group;
+      leftPalpPivot: THREE.Group;
+      rightPalpPivot: THREE.Group;
+      abdomenPivot: THREE.Group;
+      bodyGroup: THREE.Group;
+      limbs: Array<{
+        ikPoints: THREE.Vector3[];
+        curvePoints: THREE.Vector3[];
+        posAttr: THREE.BufferAttribute;
+        normAttr: THREE.BufferAttribute;
+      }>;
+    };
+
+    expect(internal.coxaPivots.length).toBe(8);
+
+    const openCell = gridCellToWorld(3, 3);
+    for (const mode of ['FLOOR', 'CEILING'] as const) {
+      internal.placeAtCell(openCell.x, openCell.z, mode);
+      spider.update(
+        0.016,
+        1.25,
+        new THREE.Vector3(maze.spawnPosition.x, 0, maze.spawnPosition.z),
+        0,
+        false,
+        false,
+        false,
+        new THREE.Vector3(0, 0, -1),
+        [],
+        () => {}
+      );
+      scene.updateMatrixWorld(true);
+
+      // 1. Quelíceras articulam simetricamente em tesoura (sinais opostos em Z e Y!)
+      expect(
+        Math.sign(internal.leftCheliceraPivot.rotation.z)
+      ).toBe(-Math.sign(internal.rightCheliceraPivot.rotation.z));
+      expect(Math.abs(internal.leftCheliceraPivot.rotation.z)).toBeGreaterThan(0.01);
+
+      // 2. Cada cápsula Coxa+Trocânter aponta diretamente para o Fêmur (`ikPoints[1]`)!
+      for (let i = 0; i < 8; i++) {
+        const coxa = internal.coxaPivots[i];
+        const limb = internal.limbs[i];
+        const coxaWorldZ = new THREE.Vector3(0, 0, 1)
+          .applyQuaternion(coxa.getWorldQuaternion(new THREE.Quaternion()))
+          .normalize();
+        const femurDir = new THREE.Vector3()
+          .subVectors(limb.ikPoints[1], limb.ikPoints[0])
+          .normalize();
+        expect(coxaWorldZ.dot(femurDir)).toBeGreaterThan(0.99);
+
+        // 3. Normais unitárias externas válidas e ponta distal da garra selada (sem buraco aberto!)
+        expect(limb.posAttr.count).toBe(34 * 10);
+        for (let v = 0; v < limb.normAttr.count; v++) {
+          const nLen = Math.hypot(
+            limb.normAttr.getX(v),
+            limb.normAttr.getY(v),
+            limb.normAttr.getZ(v)
+          );
+          expect(nLen).toBeCloseTo(1.0, 3);
+        }
+
+        // Diâmetro do último anel (ponta da garra) é selado (< 1cm)
+        const lastRingBase = (34 - 1) * 10;
+        const pTip0 = new THREE.Vector3(
+          limb.posAttr.getX(lastRingBase),
+          limb.posAttr.getY(lastRingBase),
+          limb.posAttr.getZ(lastRingBase)
+        );
+        const pTipOpposite = new THREE.Vector3(
+          limb.posAttr.getX(lastRingBase + 5),
+          limb.posAttr.getY(lastRingBase + 5),
+          limb.posAttr.getZ(lastRingBase + 5)
+        );
+        expect(pTip0.distanceTo(pTipOpposite)).toBeLessThan(0.01);
+
+        // Quilha dorsal (k = 0) aponta para o dorso anatômico da aranha tanto no PISO quanto no TETO!
+        const midRingIdx = 12 * 10; // Fêmur/Patela no arco
+        const dorsalVert = new THREE.Vector3(
+          limb.posAttr.getX(midRingIdx),
+          limb.posAttr.getY(midRingIdx),
+          limb.posAttr.getZ(midRingIdx)
+        );
+        const ventralVert = new THREE.Vector3(
+          limb.posAttr.getX(midRingIdx + 5),
+          limb.posAttr.getY(midRingIdx + 5),
+          limb.posAttr.getZ(midRingIdx + 5)
+        );
+        if (mode === 'FLOOR') {
+          expect(dorsalVert.y).toBeGreaterThan(ventralVert.y);
+        } else {
+          expect(dorsalVert.y).toBeLessThan(ventralVert.y);
+        }
+      }
+    }
+  });
 });
