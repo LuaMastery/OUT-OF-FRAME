@@ -34,6 +34,78 @@ import {
 import { DoomSpiderWebManager } from './DoomSpiderWebs';
 import { ActiveMagnesiumFlare } from './DoomWorldItems';
 
+/**
+ * Presa inteiriça, afilada e fechada, espelhada em direção ao centro da boca.
+ * A raiz fica dentro do paturon: ela acompanha a quelícera inteira sem vãos
+ * nem segmentos flutuantes, inclusive durante o bote e no teto.
+ */
+function createSpiderFangGeometry(side: -1 | 1): THREE.BufferGeometry {
+  const curve = new THREE.CatmullRomCurve3([
+    new THREE.Vector3(-side * 0.005, -0.140, -0.095),
+    new THREE.Vector3(-side * 0.014, -0.220, -0.125),
+    new THREE.Vector3(-side * 0.040, -0.310, -0.120),
+    new THREE.Vector3(-side * 0.068, -0.385, -0.075),
+    new THREE.Vector3(-side * 0.075, -0.410, -0.035),
+  ], false, 'centripetal');
+  const segments = 24;
+  const radialSegments = 12;
+  const frames = curve.computeFrenetFrames(segments, false);
+  const positions: number[] = [];
+  const colors: number[] = [];
+  const indices: number[] = [];
+  const point = new THREE.Vector3();
+  const radial = new THREE.Vector3();
+
+  const addColor = (u: number) => {
+    const tint = THREE.MathUtils.smoothstep(u, 0.08, 1);
+    colors.push(
+      THREE.MathUtils.lerp(0.28, 0.76, tint),
+      THREE.MathUtils.lerp(0.23, 0.68, tint),
+      THREE.MathUtils.lerp(0.20, 0.58, tint)
+    );
+  };
+  for (let i = 0; i < segments; i++) {
+    const u = i / segments;
+    curve.getPointAt(u, point);
+    const radius = 0.038 * Math.pow(1 - u, 1.12);
+    for (let j = 0; j < radialSegments; j++) {
+      const theta = j * Math.PI * 2 / radialSegments;
+      radial.copy(frames.normals[i]).multiplyScalar(Math.cos(theta))
+        .addScaledVector(frames.binormals[i], Math.sin(theta));
+      positions.push(point.x + radial.x * radius, point.y + radial.y * radius, point.z + radial.z * radius);
+      addColor(u);
+    }
+  }
+  const rootIndex = positions.length / 3;
+  curve.getPointAt(0, point);
+  positions.push(point.x, point.y, point.z);
+  addColor(0);
+  const tipIndex = positions.length / 3;
+  curve.getPointAt(1, point);
+  positions.push(point.x, point.y, point.z);
+  addColor(1);
+  for (let j = 0; j < radialSegments; j++) {
+    const next = (j + 1) % radialSegments;
+    indices.push(rootIndex, next, j);
+    for (let i = 0; i < segments - 1; i++) {
+      const a = i * radialSegments + j;
+      const b = i * radialSegments + next;
+      const c = (i + 1) * radialSegments + j;
+      const d = (i + 1) * radialSegments + next;
+      indices.push(a, b, c, b, d, c);
+    }
+    const last = (segments - 1) * radialSegments;
+    indices.push(last + j, last + next, tipIndex);
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  geometry.computeBoundingSphere();
+  return geometry;
+}
+
 export type SpiderSurfaceMode = 'FLOOR' | 'WALL' | 'CEILING';
 
 export type SpiderBehaviorState =
@@ -1663,8 +1735,8 @@ export class DoomSpider {
     buildSpinneret(this.rightSpinneretPivot, 1);
     this.bodyGroup.add(this.abdomenPivot);
 
-    // 3. QUELÍCERAS INDEPENDENTES EM TESOURA + PRESAS VENENOSAS CURVAS EM 3 ESTÁGIOS
-    const buildChelicera = (pivot: THREE.Group, side: number) => {
+    // 3. QUELÍCERAS INDEPENDENTES EM TESOURA + PRESAS VENENOSAS CURVAS
+    const buildChelicera = (pivot: THREE.Group, side: -1 | 1) => {
       pivot.position.set(side * 0.102, -0.042, -0.415);
 
       // Paturon basal musculoso (tronco da quelícera)
@@ -1672,6 +1744,7 @@ export class DoomSpider {
         paintBody(new THREE.SphereGeometry(0.098, 10, 8), 0.088, 0.078, 0.086),
         this.chitinMat
       );
+      paturon.name = side < 0 ? 'SpiderLeftChelicera' : 'SpiderRightChelicera';
       paturon.scale.set(0.84, 1.32, 1.12);
       paturon.position.set(0, -0.055, -0.055);
 
@@ -1688,53 +1761,27 @@ export class DoomSpider {
       fangFold.rotation.x = Math.PI * 0.45;
       fangFold.position.set(-side * 0.008, -0.155, -0.085);
 
-      // Presa venenosa curva em 3 segmentos (curvatura real para dentro e para trás!)
-      const fangSeg1 = new THREE.Mesh(
-        paintBody(
-          new THREE.CylinderGeometry(0.028, 0.044, 0.14, 7),
-          0.34,
-          0.29,
-          0.25
-        ),
+      // Uma única malha curva, com raiz embutida no paturon e ponta orientada
+      // para dentro; não há cones ou cilindros soltos entre as articulações.
+      const fang = new THREE.Mesh(
+        createSpiderFangGeometry(side),
         this.chitinMat
       );
-      fangSeg1.position.set(-side * 0.014, -0.21, -0.092);
-      fangSeg1.rotation.z = side * 0.24;
-      fangSeg1.rotation.x = -0.18;
+      fang.name = side < 0 ? 'SpiderLeftFang' : 'SpiderRightFang';
 
-      const fangSeg2 = new THREE.Mesh(
-        paintBody(
-          new THREE.CylinderGeometry(0.016, 0.028, 0.13, 7),
-          0.56,
-          0.5,
-          0.42
-        ),
-        this.chitinMat
-      );
-      fangSeg2.position.set(-side * 0.046, -0.305, -0.065);
-      fangSeg2.rotation.z = side * 0.56;
-      fangSeg2.rotation.x = -0.42;
-
-      const fangTip = new THREE.Mesh(
-        paintBody(new THREE.ConeGeometry(0.016, 0.13, 6), 0.76, 0.68, 0.58),
-        this.chitinMat
-      );
-      fangTip.position.set(-side * 0.092, -0.37, -0.018);
-      fangTip.rotation.x = Math.PI - 0.55;
-      fangTip.rotation.z = -side * 0.84;
-
-      // Dentes marginais serrilhados internos para triturar presas
+      // Dentes internos pequenos, com as bases embutidas na quelícera.
       for (let d = 0; d < 3; d++) {
         const tooth = new THREE.Mesh(
-          paintBody(new THREE.ConeGeometry(0.013, 0.065, 4), 0.48, 0.42, 0.36),
+          paintBody(new THREE.ConeGeometry(0.009, 0.045, 5), 0.48, 0.42, 0.36),
           this.chitinMat
         );
-        tooth.position.set(-side * 0.058, -0.11 - d * 0.038, -0.055 + d * 0.02);
+        tooth.name = `Spider${side < 0 ? 'Left' : 'Right'}MouthTooth${d}`;
+        tooth.position.set(-side * 0.058, -0.085 - d * 0.03, -0.07);
         tooth.rotation.z = side * 1.1;
         pivot.add(tooth);
       }
 
-      pivot.add(paturon, fangFold, fangSeg1, fangSeg2, fangTip);
+      pivot.add(paturon, fangFold, fang);
       this.bodyGroup.add(pivot);
     };
     buildChelicera(this.leftCheliceraPivot, -1);

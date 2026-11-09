@@ -7237,3 +7237,97 @@ describe('Taser de contenção da aranha', () => {
     expect(onTaserShot).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('Boca da aranha: presas íntegras e articulação', () => {
+  it('usa duas malhas únicas fechadas, afiladas e com normais finitas', () => {
+    const scene = new THREE.Scene();
+    const shared = createDoomSharedUniforms();
+    const layout = createRandomArenaLayout({ worldSeed: 517, playerSeed: 517 });
+    const webs = new DoomSpiderWebManager(scene, shared, layout);
+    const spider = new DoomSpider(scene, shared, [], webs, {} as SoundEngine, layout);
+    expect(spider).toBeDefined();
+
+    for (const side of ['Left', 'Right']) {
+      const fang = scene.getObjectByName(`Spider${side}Fang`) as THREE.Mesh;
+      const base = scene.getObjectByName(`Spider${side}Chelicera`) as THREE.Mesh;
+      expect(fang).toBeDefined();
+      expect(base).toBeDefined();
+      expect(fang.parent).toBe(base.parent);
+      const pos = fang.geometry.getAttribute('position');
+      const normal = fang.geometry.getAttribute('normal');
+      const index = fang.geometry.getIndex()!;
+      expect(pos.count).toBe(24 * 12 + 2);
+      expect(normal.count).toBe(pos.count);
+      const edges = new Map<string, number>();
+      for (let i = 0; i < index.count; i += 3) {
+        const triangle = [index.getX(i), index.getX(i + 1), index.getX(i + 2)];
+        expect(new Set(triangle).size).toBe(3);
+        for (let k = 0; k < 3; k++) {
+          const a = triangle[k], b = triangle[(k + 1) % 3];
+          const key = `${Math.min(a, b)}:${Math.max(a, b)}`;
+          edges.set(key, (edges.get(key) ?? 0) + 1);
+        }
+      }
+      expect([...edges.values()].every(count => count === 2)).toBe(true);
+      for (let i = 0; i < pos.count; i++) {
+        expect([pos.getX(i), pos.getY(i), pos.getZ(i), normal.getX(i), normal.getY(i), normal.getZ(i)].every(Number.isFinite)).toBe(true);
+        expect(Math.hypot(normal.getX(i), normal.getY(i), normal.getZ(i))).toBeCloseTo(1, 4);
+      }
+      // A ponta fecha a malha, cada anel diminui de raio e a raiz está dentro do paturon.
+      let lastRadius = Infinity;
+      for (let ring = 0; ring < 24; ring++) {
+        const center = new THREE.Vector3();
+        for (let j = 0; j < 12; j++) center.add(new THREE.Vector3().fromBufferAttribute(pos, ring * 12 + j));
+        center.multiplyScalar(1 / 12);
+        const radius = center.distanceTo(new THREE.Vector3().fromBufferAttribute(pos, ring * 12));
+        expect(radius).toBeLessThan(lastRadius);
+        lastRadius = radius;
+      }
+      const root = new THREE.Vector3().fromBufferAttribute(pos, 24 * 12)
+        .sub(base.position).divide(base.scale);
+      expect(root.length()).toBeLessThan(0.098);
+      for (let d = 0; d < 3; d++) {
+        const tooth = scene.getObjectByName(`Spider${side}MouthTooth${d}`) as THREE.Mesh;
+        const toothRoot = new THREE.Vector3(0, -0.0225, 0).applyQuaternion(tooth.quaternion)
+          .add(tooth.position).sub(base.position).divide(base.scale);
+        expect(toothRoot.length()).toBeLessThan(0.098);
+      }
+    }
+  });
+
+  it('mantém as presas separadas e simétricas ao morder, tecer e capturar', () => {
+    const scene = new THREE.Scene();
+    const shared = createDoomSharedUniforms();
+    const layout = createRandomArenaLayout({ worldSeed: 518, playerSeed: 518 });
+    const webs = new DoomSpiderWebManager(scene, shared, layout);
+    const sound = { playSpiderScream: () => {}, playSpiderFootstep: () => {}, playSpiderChitter: () => {} } as unknown as SoundEngine;
+    const spider = new DoomSpider(scene, shared, [], webs, sound, layout);
+    const left = scene.getObjectByName('SpiderLeftFang') as THREE.Mesh;
+    const right = scene.getObjectByName('SpiderRightFang') as THREE.Mesh;
+    const victim = new THREE.Vector3(0, 0, -2);
+    const position = new THREE.Vector3(0, 1.4, 0);
+    const boundsInBody = (mesh: THREE.Mesh) => {
+      const pivot = mesh.parent!;
+      pivot.updateMatrix();
+      mesh.updateMatrix();
+      const local = mesh.matrix.clone().premultiply(pivot.matrix);
+      const p = mesh.geometry.getAttribute('position');
+      let min = Infinity, max = -Infinity;
+      for (let i = 0; i < p.count; i++) {
+        const x = new THREE.Vector3().fromBufferAttribute(p, i).applyMatrix4(local).x;
+        min = Math.min(min, x); max = Math.max(max, x);
+      }
+      return { min, max };
+    };
+    for (const mode of ['STRIKE_ATTACK', 'DRAGGING_TO_WEB', 'WEBBING_IN_LAIR', 'FATAL_EXECUTION'] as const) {
+      for (let frame = 0; frame < 30; frame++) {
+        spider.updateCinematicSequence(0.016, frame * 0.037, mode, frame / 30, position, victim, victim);
+        const l = boundsInBody(left), r = boundsInBody(right);
+        expect(l.max).toBeLessThan(r.min - 0.005);
+        expect(l.min).toBeCloseTo(-r.max, 2);
+        expect(l.max).toBeCloseTo(-r.min, 2);
+        expect(spider.currentState).toBe('CINEMATIC_SEQUENCE');
+      }
+    }
+  });
+});
