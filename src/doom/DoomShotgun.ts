@@ -454,7 +454,7 @@ export class DoomShotgunViewmodel {
     return out;
   }
 
-  update(dt: number, bobPhase: number, planarSpeed: number): void {
+  update(dt: number, bobPhase: number, planarSpeed: number, slideAmount = 0): void {
     const step = Math.min(0.05, Math.max(0.0005, dt));
     const target = this.equipped ? 1 : 0;
     this.equipProgress +=
@@ -469,19 +469,20 @@ export class DoomShotgunViewmodel {
 
     // Arma Guardada -> Baixo (fora da tela) quando não está equipada
     const lowered = 1 - this.equipProgress;
-    const bobAmount = Math.min(1, planarSpeed / 5.2);
+    const slide = THREE.MathUtils.clamp(slideAmount, 0, 1);
+    const bobAmount = Math.min(1, planarSpeed / 5.2) * (1 - slide);
     const bobX = Math.sin(bobPhase) * 0.011 * bobAmount;
     const bobY = Math.abs(Math.cos(bobPhase)) * 0.009 * bobAmount;
 
     this.rootGroup.position.set(
-      0.17 * this.handSign + bobX,
-      -0.13 - lowered * 0.42 + bobY,
+      (0.17 - slide * 0.025) * this.handSign + bobX,
+      -0.13 - lowered * 0.42 + bobY - slide * 0.035,
       -0.02 + this.recoil * 0.075
     );
     this.rootGroup.rotation.set(
-      this.recoilPitch * 0.16,
+      this.recoilPitch * 0.16 + slide * 0.06,
       -this.handSign * this.swayX * 0.5,
-      lowered * 0.5 - this.recoilPitch * 0.05
+      lowered * 0.5 - this.recoilPitch * 0.05 - slide * 0.16 * this.handSign
     );
 
     // Bombeamento: a bomba recua e volta (0.62s no total)

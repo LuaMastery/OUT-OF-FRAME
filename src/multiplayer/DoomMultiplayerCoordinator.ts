@@ -54,6 +54,8 @@ interface RemoteAllyEntity {
   bobPhase: number;
   lastFootstepHalfCycle: number;
   crouch: number;
+  slide: number;
+  slideTarget: number;
   flashlightOn: boolean;
   flashDir: THREE.Vector3;
   health: number;
@@ -1093,6 +1095,7 @@ export class DoomMultiplayerCoordinator {
       speed: number;
       bobPhase: number;
       crouch: number;
+      slide?: number;
       flashlightOn: boolean;
       flashDir: THREE.Vector3;
       health: number;
@@ -1253,6 +1256,7 @@ export class DoomMultiplayerCoordinator {
         speed: nextLocalAfk ? 0 : localState.speed,
         bobPhase: localState.bobPhase,
         crouch: localState.crouch,
+        slide: nextLocalAfk ? 0 : localState.slide ?? 0,
         flashlightOn: localState.flashlightOn,
         flashDirX: localState.flashDir.x,
         flashDirY: localState.flashDir.y,
@@ -1319,6 +1323,8 @@ export class DoomMultiplayerCoordinator {
         ally.targetYaw,
         smooth
       );
+      const targetSlide = ally.afk || ally.dead || ally.ensnared || ally.cocoonLocked || ally.inSequence || ally.beingDragged || ally.danceId ? 0 : ally.slideTarget;
+      ally.slide += (targetSlide - ally.slide) * (1 - Math.exp(-16 * dt));
       const effectiveSpeed = ally.afk ? 0 : ally.speed;
       const isBeingDragged = Boolean(ally.beingDragged || (ally.inSequence && ally.abductionMode === 'DRAGGING_TO_WEB'));
       if (effectiveSpeed > 0.25 || isBeingDragged || ally.inSequence) {
@@ -1330,6 +1336,7 @@ export class DoomMultiplayerCoordinator {
           !isBeingDragged &&
           !ally.inSequence &&
           !ally.ensnared &&
+          ally.slide < 0.15 && ally.slideTarget < 0.15 &&
           effectiveSpeed > 0.35 &&
           halfCycle !== ally.lastFootstepHalfCycle &&
           Math.floor(prevBob / Math.PI) !== halfCycle
@@ -1401,7 +1408,8 @@ export class DoomMultiplayerCoordinator {
           ally.afk,
           isBeingDragged,
           isBeingDragged ? ally.abductionSpiderPos : null,
-          dt
+          dt,
+          ally.slide
         );
       }
 
@@ -1760,6 +1768,8 @@ export class DoomMultiplayerCoordinator {
         bobPhase: pkt.bobPhase,
         lastFootstepHalfCycle: Math.floor(pkt.bobPhase / Math.PI),
         crouch: pkt.crouch,
+        slide: 0,
+        slideTarget: 0,
         flashlightOn: pkt.flashlightOn,
         flashDir: new THREE.Vector3(
           pkt.flashDirX || 0,
@@ -1811,6 +1821,8 @@ export class DoomMultiplayerCoordinator {
     ent.pitch = pkt.pitch;
     ent.speed = pkt.speed;
     ent.crouch = pkt.crouch;
+    ent.slideTarget = typeof pkt.slide === 'number' && Number.isFinite(pkt.slide)
+      ? Math.max(0, Math.min(1, pkt.slide)) : 0;
     ent.flashlightOn = pkt.flashlightOn;
     ent.flashDir
       .set(pkt.flashDirX || 0, pkt.flashDirY || 0, pkt.flashDirZ || -1)

@@ -115,6 +115,8 @@ export interface NetworkPlayerPosePacket {
   speed: number;
   bobPhase: number;
   crouch: number;
+  /** Intensidade do deslize; ausente em clientes antigos. */
+  slide?: number;
   flashlightOn: boolean;
   flashDirX: number;
   flashDirY: number;

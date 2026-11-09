@@ -96,17 +96,18 @@ export class DoomTaserViewmodel {
     this.viewCamera.fov = computeAdaptiveVerticalFov(aspect, 62, 84);
     this.viewCamera.updateProjectionMatrix();
   }
-  update(dt: number, bobPhase: number, speed: number): void {
+  update(dt: number, bobPhase: number, speed: number, slideAmount = 0): void {
     const step = Math.min(0.05, Math.max(0, dt));
     this.progress += ((this.equipped ? 1 : 0) - this.progress) * (1 - Math.exp(-13 * step));
     this.flashTime = Math.max(0, this.flashTime - step);
     this.arc.visible = this.flashTime > 0;
     this.root.visible = this.progress > 0.02;
     this.root.scale.x = this.handSign;
-    const bob = Math.min(1, speed / 5);
-    this.root.position.set(0.22 * this.handSign + Math.sin(bobPhase) * 0.008 * bob,
-      -0.20 - (1 - this.progress) * 0.4 + Math.abs(Math.cos(bobPhase)) * 0.008 * bob, -0.13);
-    this.root.rotation.x = this.flashTime > 0 ? -0.09 : 0;
+    const slide = THREE.MathUtils.clamp(slideAmount, 0, 1);
+    const bob = Math.min(1, speed / 5) * (1 - slide);
+    this.root.position.set((0.22 - slide * 0.025) * this.handSign + Math.sin(bobPhase) * 0.008 * bob,
+      -0.20 - (1 - this.progress) * 0.4 + Math.abs(Math.cos(bobPhase)) * 0.008 * bob - slide * 0.035, -0.13);
+    this.root.rotation.set((this.flashTime > 0 ? -0.09 : 0) + slide * 0.06, 0, -slide * 0.16 * this.handSign);
   }
   dispose(): void {
     const materials = new Set<THREE.Material>();

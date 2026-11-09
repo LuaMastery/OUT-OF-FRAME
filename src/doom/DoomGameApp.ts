@@ -3483,8 +3483,8 @@ export class DoomGameApp {
       this.slideState.slideAmount
     );
 
-    this.shotgun.update(dt, this.bobPhase, planarSpeed);
-    this.taser.update(dt, this.bobPhase, planarSpeed);
+    this.shotgun.update(dt, this.bobPhase, planarSpeed, this.slideState.slideAmount);
+    this.taser.update(dt, this.bobPhase, planarSpeed, this.slideState.slideAmount);
 
     const spiderHearsSprint =
       sprinting || (isSliding && this.slideState.slideTimer < 0.2);
@@ -3855,6 +3855,7 @@ export class DoomGameApp {
         speed: planarSpeed,
         bobPhase: this.bobPhase,
         crouch: this.crouchAmount,
+        slide: this.slideState.slideAmount,
         flashlightOn: fl.beamIntensity > 0.05,
         flashDir: this.sharedUniforms.uFlashlightDir.value,
         health: this.playerHealth,

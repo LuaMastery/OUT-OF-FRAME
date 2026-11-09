@@ -814,6 +814,39 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
       expect(minCharY).toBeLessThanOrEqual(0.018);
     }
 
+    // Entrada e saída do slide: pose assimétrica, botas sem atravessar o piso e recuperação do agachamento.
+    for (const slide of [0, 0.25, 0.5, 0.75, 1]) {
+      astronaut.updateThirdPersonAlly(new THREE.Vector3(), 0, 0, 0, 0, 1, false, false, false, false, null, 1 / 60, slide);
+      astronaut.root.updateMatrixWorld(true);
+      let minY = Infinity;
+      const vertex = new THREE.Vector3();
+      astronaut.hipsGroup.traverse((obj) => {
+        const mesh = obj as THREE.Mesh;
+        if (!mesh.isMesh) return;
+        const positions = mesh.geometry.getAttribute('position');
+        for (let i = 0; i < positions.count; i++) {
+          vertex.fromBufferAttribute(positions, i).applyMatrix4(mesh.matrixWorld);
+          minY = Math.min(minY, vertex.y);
+        }
+      });
+      expect(minY).toBeGreaterThanOrEqual(-0.015);
+      expect(minY).toBeLessThanOrEqual(0.03);
+      if (slide === 1) {
+        expect((astronaut as any).leftLeg.kneePivot.rotation.x).toBeCloseTo(-0.30);
+        expect((astronaut as any).rightLeg.kneePivot.rotation.x).toBeCloseTo(-2.0);
+      }
+    }
+    astronaut.updateThirdPersonAlly(new THREE.Vector3(), 0, 0, 0, 0, 1, false, false);
+    expect((astronaut as any).leftLeg.kneePivot.rotation.x).toBeCloseTo(-1.88);
+
+    // Captura/arrasto têm prioridade sobre o slide recebido pela rede.
+    for (const dragged of [false, true]) {
+      astronaut.updateThirdPersonAlly(new THREE.Vector3(), 0, 0, 0, 0, 1, false, true, false, dragged, new THREE.Vector3(2, 1, 0), 1 / 60, 0);
+      const captureRotation = astronaut.torsoGroup.rotation.toArray();
+      astronaut.updateThirdPersonAlly(new THREE.Vector3(), 0, 0, 0, 0, 1, false, true, false, dragged, new THREE.Vector3(2, 1, 0), 1 / 60, 1);
+      expect(astronaut.torsoGroup.rotation.toArray()).toEqual(captureRotation);
+    }
+
     // Viewmodel em 1ª pessoa usa exatamente os braços originais marcados do Astronauta (AstronautRightArm + AstronautLeftArm)
     const flashlight = new DoomFlashlight(16 / 9);
     expect(flashlight.rightAstronautArm.root.name).toBe('AstronautRightArm');
@@ -3712,6 +3745,38 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
         camTest.position.set(10, 1.6, 10);
         const allyWorldPos = new THREE.Vector3(11.2, 0, 10);
         const spiderWorldPos = new THREE.Vector3(11.5, 1.3, 10);
+
+        // O pacote de deslize é opcional e deve ser limitado e interpolado pelo observador.
+        const slidePose = {
+          x: allyWorldPos.x, y: 0, z: allyWorldPos.z, yaw: 0, pitch: 0,
+          speed: 6, bobPhase: 0, crouch: 1, slide: 2,
+          flashlightOn: false, flashDirX: 0, flashDirY: 0, flashDirZ: -1,
+          health: 100, bleeding: false, ensnared: false, inSequence: false, dead: false,
+        };
+        guestClient.broadcastPlayerPose(slidePose);
+        await new Promise((r) => setTimeout(r, 35));
+        const ally = (coordinator as any).allies.get('guest-chat-t');
+        expect(ally.slideTarget).toBe(1);
+        const tickSlide = () => coordinator.update(0.05, 1.5, camTest, {
+          pos: new THREE.Vector3(10, 0, 10), yaw: 0, pitch: 0, speed: 0,
+          bobPhase: 0, crouch: 0, flashlightOn: false, flashDir: new THREE.Vector3(0, 0, -1),
+          health: 100, bleeding: false, ensnared: false, inSequence: false, dead: false,
+        }, {
+          x: 0, y: 1.42, z: 0, upX: 0, upY: 1, upZ: 0,
+          fwdX: 0, fwdY: 0, fwdZ: 1, state: 'PATROL_HUNT', surfaceMode: 'FLOOR',
+        }, false);
+        tickSlide();
+        expect(ally.slide).toBeGreaterThan(0);
+        expect(ally.astronaut.leftLeg.kneePivot.rotation.x).toBeGreaterThan(-1.88);
+        const { slide: _slide, ...legacyPose } = slidePose;
+        guestClient.broadcastPlayerPose(legacyPose);
+        await new Promise((r) => setTimeout(r, 35));
+        expect(ally.slideTarget).toBe(0);
+        (coordinator as any).handleRemotePose({ ...slidePose, id: 'guest-chat-t', name: 'ENGENHEIRO', ts: Date.now(), slide: NaN });
+        expect(ally.slideTarget).toBe(0);
+        const priorSlide = ally.slide;
+        tickSlide();
+        expect(ally.slide).toBeLessThan(priorSlide);
 
         guestClient.broadcastPlayerPose({
           x: allyWorldPos.x,

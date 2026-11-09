@@ -1525,7 +1525,8 @@ export class DoomAstronaut {
     afk = false,
     draggedBySpider = false,
     spiderWorldPos?: THREE.Vector3 | null,
-    dt = 1 / 60
+    dt = 1 / 60,
+    slideAmount = 0
   ): void {
     this.root.visible = true;
     this.setFirstPersonMode(false);
@@ -1585,62 +1586,63 @@ export class DoomAstronaut {
 
     this.thirdPersonWebCocoonGroup.visible = false;
 
-    const stride = Math.min(1, planarSpeed / 5.4);
+    const slide = Number.isFinite(slideAmount) ? THREE.MathUtils.clamp(slideAmount, 0, 1) : 0;
+    const crouch = THREE.MathUtils.clamp(crouchAmount, 0, 1);
+    const stride = Math.min(1, planarSpeed / 5.4) * (1 - slide);
     const legSwing = Math.sin(bobPhase * 0.5) * 0.48 * stride;
     const armSwing = Math.sin(bobPhase * 0.5) * 0.28 * stride;
     const leftLift = Math.max(0, Math.cos(bobPhase * 0.5)) * 0.42 * stride;
     const rightLift = Math.max(0, -Math.cos(bobPhase * 0.5)) * 0.42 * stride;
 
-    // Cinemática trigonométrica exata do agachamento: calcula o encurtamento vertical real da coxa (0.365m) + canela (0.345m)
-    // para que, em QUALQUER valor contínuo de crouchAmount (0.0 a 1.0), as solas fiquem 100% coladas em y = 0.000m!
-    const crouchHipBend = crouchAmount * 1.08;
-    const crouchKneeBend = crouchAmount * 1.88;
-    const crouchShortening =
-      0.365 * (1 - Math.cos(crouchHipBend)) +
-      0.345 * (1 - Math.cos(crouchHipBend - crouchKneeBend));
+    // Durante o slide, uma perna avança e a outra dobra para equilibrar o corpo.
+    // Em todas as fases do blend, a perna mais longa determina a altura do quadril.
+    const baseHip = crouch * 1.08;
+    const baseKnee = -crouch * 1.88;
+    const leftHip = THREE.MathUtils.lerp(baseHip + legSwing, 1.27, slide);
+    const leftKnee = THREE.MathUtils.lerp(baseKnee - leftLift, -0.30, slide);
+    const rightHip = THREE.MathUtils.lerp(baseHip - legSwing, 0.90, slide);
+    const rightKnee = THREE.MathUtils.lerp(baseKnee - rightLift, -2.0, slide);
+    const shortening = (hip: number, knee: number) =>
+      0.365 * (1 - Math.cos(hip)) + 0.345 * (1 - Math.cos(hip + knee));
+    const crouchShortening = shortening(baseHip, baseKnee);
+    const walkShortening = Math.min(
+      shortening(baseHip + legSwing, baseKnee - leftLift),
+      shortening(baseHip - legSwing, baseKnee - rightLift)
+    );
+    const slideShortening = Math.min(shortening(leftHip, leftKnee), shortening(rightHip, rightKnee));
     const walkBounce = Math.abs(Math.sin(bobPhase * 0.5)) * 0.018 * stride;
-
-    const torsoLeanForward = -(crouchAmount * 0.14 + stride * 0.04);
-    this.bodyPivot.position.set(0, -crouchShortening + walkBounce, 0);
+    const torsoLeanForward = -(crouch * 0.14 + stride * 0.04) + slide * 0.24;
+    this.bodyPivot.position.set(0, -(crouchShortening + slideShortening - walkShortening) + walkBounce, 0);
     this.bodyPivot.rotation.set(0, 0, 0);
     this.hipsGroup.position.set(0, 0.86, 0);
-    this.torsoGroup.rotation.set(torsoLeanForward, 0, 0);
+    this.torsoGroup.rotation.set(torsoLeanForward, 0, slide * 0.045);
 
-    // Capuz encapsulado acompanha o olhar com inclinação contida para nunca abrir fresta na gola
+    // Capuz encapsulado acompanha o olhar sem abrir fresta na gola.
     const afkHeadNod = afk ? -0.16 : 0;
     this.headGroup.rotation.set(
-      Math.max(-0.24, Math.min(0.24, pitch * 0.38)) -
-        torsoLeanForward * 0.5 +
-        afkHeadNod,
-      0,
-      afk ? 0.04 : 0
+      Math.max(-0.24, Math.min(0.24, pitch * 0.38)) - torsoLeanForward * 0.5 + afkHeadNod,
+      0, afk ? 0.04 : -slide * 0.025
     );
 
-    const baseAnkleComp = crouchKneeBend - crouchHipBend;
-    this.leftLeg.hipPivot.rotation.set(crouchHipBend + legSwing, 0, -0.03);
-    this.leftLeg.kneePivot.rotation.set(-(crouchKneeBend + leftLift), 0, 0);
+    this.leftLeg.hipPivot.rotation.set(leftHip, 0, -0.03 * (1 - slide));
+    this.leftLeg.kneePivot.rotation.set(leftKnee, 0, 0);
     this.leftLeg.anklePivot.rotation.set(
-      baseAnkleComp + leftLift * 0.45 - legSwing * 0.35,
-      0,
-      0
+      THREE.MathUtils.lerp(-baseHip - baseKnee + leftLift * 0.45 - legSwing * 0.35, -leftHip - leftKnee, slide), 0, 0
     );
-
-    this.rightLeg.hipPivot.rotation.set(crouchHipBend - legSwing, 0, 0.03);
-    this.rightLeg.kneePivot.rotation.set(-(crouchKneeBend + rightLift), 0, 0);
+    this.rightLeg.hipPivot.rotation.set(rightHip, 0, 0.03 * (1 - slide));
+    this.rightLeg.kneePivot.rotation.set(rightKnee, 0, 0);
     this.rightLeg.anklePivot.rotation.set(
-      baseAnkleComp + rightLift * 0.45 + legSwing * 0.35,
-      0,
-      0
+      THREE.MathUtils.lerp(-baseHip - baseKnee + rightLift * 0.45 + legSwing * 0.35, -rightHip - rightKnee, slide), 0, 0
     );
 
     this.leftArm.shoulderPivot.rotation.order = 'YXZ';
     this.leftArm.shoulderPivot.rotation.set(
-      0.12 - armSwing + crouchAmount * 0.16,
-      0.06,
-      -0.15
+      0.12 - armSwing + crouch * 0.16 + slide * 0.38,
+      0.06 + slide * 0.18,
+      -0.15 - slide * 0.22
     );
-    this.leftArm.elbowPivot.rotation.set(0.28 + stride * 0.14, 0, 0);
-    this.leftArm.setGripPose('relaxed');
+    this.leftArm.elbowPivot.rotation.set(0.28 + stride * 0.14 + slide * 0.45, 0, 0);
+    this.leftArm.setGripPose(slide > 0.35 ? 'open' : 'relaxed');
 
     this.rightArm.shoulderPivot.rotation.order = 'YXZ';
     if (flashlightOn) {
@@ -1660,11 +1662,11 @@ export class DoomAstronaut {
       this.thirdPersonFlashlightGroup.visible = true;
     } else {
       this.rightArm.shoulderPivot.rotation.set(
-        0.12 + armSwing + crouchAmount * 0.16,
-        -0.06,
-        0.15
+        0.12 + armSwing + crouch * 0.16 + slide * 0.28,
+        -0.06 - slide * 0.16,
+        0.15 + slide * 0.18
       );
-      this.rightArm.elbowPivot.rotation.set(0.28 + stride * 0.14, 0, 0);
+      this.rightArm.elbowPivot.rotation.set(0.28 + stride * 0.14 + slide * 0.36, 0, 0);
       this.rightArm.wristPivot.rotation.set(0, 0, 0);
       this.rightArm.setGripPose('relaxed');
       this.thirdPersonFlashlightGroup.visible = false;
