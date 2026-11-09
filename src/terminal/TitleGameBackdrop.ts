@@ -21,12 +21,14 @@ export function buildTitleBackdropWorld(): {
   return { scene, maze, textures, uniforms };
 }
 
-/** Uma câmera tranquila no átrio central do próprio mapa, sem interferir na partida. */
+export const TITLE_CAMERA_CELL = { gx: 14, gz: 15 } as const;
+
+/** Câmera no corredor real entre os setores industrial e de pedra. */
 export class TitleGameBackdrop {
   private readonly renderer: THREE.WebGLRenderer;
   private readonly camera = new THREE.PerspectiveCamera(60, 1, 0.08, 90);
   private readonly world: ReturnType<typeof buildTitleBackdropWorld>;
-  private readonly origin = gridCellToWorld(10, 11);
+  private readonly origin = gridCellToWorld(TITLE_CAMERA_CELL.gx, TITLE_CAMERA_CELL.gz);
   private frame = 0;
   private started = false;
   private lastFrame = 0;
@@ -52,7 +54,7 @@ export class TitleGameBackdrop {
     this.camera.position.set(this.origin.x, 1.55, this.origin.z);
     // O mesmo feixe usado pelo jogador revela a arquitetura sem alterar o mapa.
     this.world.uniforms.uFlashlightPos.value.copy(this.camera.position);
-    this.world.uniforms.uFlashlightIntensity.value = 0.85;
+    this.world.uniforms.uFlashlightIntensity.value = 1.2;
     syncNearestDoomLightsToUniforms(
       [...this.world.maze.lights, ...this.world.maze.annexLights].map((light) => ({
         position: light.position, intensity: light.baseIntensity,

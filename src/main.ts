@@ -1,3 +1,4 @@
+import '@fontsource/geist-pixel/400.css';
 import './style.css';
 import './terminal/terminal.css';
 import './doom/inventory.css';

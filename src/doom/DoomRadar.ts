@@ -660,7 +660,7 @@ export class DoomRadar {
         box-shadow:
           inset 0 0 0 1px #090d0b,
           0 6px 20px rgba(0, 0, 0, 0.72);
-        font-family: "Courier New", Courier, monospace;
+        font-family: 'Geist Pixel', monospace;
         user-select: none;
         pointer-events: auto;
       }

@@ -387,7 +387,7 @@ export class CursorProximityFX {
     }
 
     // 3. Atualiza e desenha faíscas binárias (0 / 1 / pixels)
-    ctx.font = 'bold 11px Consolas, "Courier New", monospace';
+    ctx.font = 'bold 11px "Geist Pixel", monospace';
     ctx.textBaseline = 'middle';
     ctx.textAlign = 'center';
 

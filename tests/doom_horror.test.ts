@@ -17,7 +17,6 @@ import {
   computeAdaptiveVerticalFov,
   computeVirtualJoystickVector,
 } from '../src/doom/DoomTouchControls';
-import { computeBinaryCanvasLayout } from '../src/terminal/TerminalBoot';
 import {
   computeShortcutsHubState,
   DoomInventory,
@@ -157,7 +156,7 @@ import {
   getNextDoomDanceId,
   isDoomDanceId,
 } from '../src/doom/DoomDance';
-import { BINARY_MENU_ITEMS } from '../src/terminal/TerminalBoot';
+import { TITLE_MENU_ITEMS } from '../src/terminal/TerminalBoot';
 
 describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', () => {
   it('mantém correspondência exata entre células da grade e coordenadas do mundo', () => {
@@ -1624,7 +1623,7 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
   });
 
   it('expõe a opção MULTIPLAYER no menu principal e suporta salas públicas, privadas com senha, salas ocultas da lista e entrada por número da sala', async () => {
-    expect(BINARY_MENU_ITEMS).toEqual(['INICIAR', 'MULTIPLAYER', 'SAIR']);
+    expect(TITLE_MENU_ITEMS).toEqual(['INICIAR', 'MULTIPLAYER', 'SAIR']);
 
     expect(normalizeRoomCode('#482-910')).toBe('482910');
     expect(normalizeRoomCode('https://out-of-frame-tan.vercel.app/?room=739-104')).toBe(
@@ -2839,18 +2838,7 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
     expect(portraitFov).toBeGreaterThan(88);
     expect(portraitFov).toBeLessThanOrEqual(98);
 
-    // 5. Escala responsiva do canvas binário out_of_frame.exe em smartphones retrato/paisagem e Desktop
-    const desktopBin = computeBinaryCanvasLayout(1920, 1080);
-    expect(desktopBin.fontPx).toBe(16);
-    expect(desktopBin.cellH).toBe(20);
 
-    const phonePortraitBin = computeBinaryCanvasLayout(360, 740);
-    expect(phonePortraitBin.fontPx).toBeGreaterThanOrEqual(10);
-    expect(phonePortraitBin.fontPx).toBeLessThan(16);
-
-    const phoneLandscapeBin = computeBinaryCanvasLayout(740, 360);
-    expect(phoneLandscapeBin.fontPx).toBeGreaterThanOrEqual(10);
-    expect(phoneLandscapeBin.fontPx).toBeLessThan(16);
   });
 
   it('valida modelagem 3D aracnídea aprimorada: coxas alinhadas ao fêmur, quelíceras em tesoura, garras seladas e normais sem torção no piso e no teto', () => {

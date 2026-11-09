@@ -7,44 +7,19 @@ import {
 import { CursorProximityFX } from './CursorProximityFX';
 import { TitleGameBackdrop } from './TitleGameBackdrop';
 
-export const BINARY_MENU_ITEMS = ['INICIAR', 'MULTIPLAYER', 'SAIR'] as const;
-
-export interface BinaryCanvasLayout {
-  fontPx: number;
-  cellH: number;
-}
-
-/**
- * Calcula tamanho de fonte e altura de linha adaptativos para que a grade binária
- * de `out_of_frame.exe` caiba 100% sem corte horizontal ou vertical em celulares
- * (tanto em retrato quanto em paisagem) e mantenha 16px/20px no Desktop!
- */
-export function computeBinaryCanvasLayout(
-  viewportWidth: number,
-  viewportHeight: number
-): BinaryCanvasLayout {
-  const w = Math.max(240, viewportWidth);
-  const h = Math.max(240, viewportHeight);
-  // Garante pelo menos ~45 colunas e ~19 linhas visíveis em qualquer tela de celular
-  const maxFontByWidth = Math.floor((w - 12) / 27.5);
-  const maxFontByHeight = Math.floor((h - 16) / 24.0);
-  const fontPx = Math.max(10, Math.min(16, maxFontByWidth, maxFontByHeight));
-  const cellH = Math.max(13, Math.round(fontPx * 1.25));
-  return { fontPx, cellH };
-}
+export const TITLE_MENU_ITEMS = ['INICIAR', 'MULTIPLAYER', 'SAIR'] as const;
 
 export type TerminalPhase =
   | 'idle'
   | 'booting'
   | 'desktop'
-  | 'program_starting'
-  | 'binary_interface'
+  | 'title_menu'
   | 'powered_off';
 
 export interface TerminalBootOptions {
   sound: SoundEngine;
   /**
-   * Acionado ao iniciar pela interface binária (Solo ou conectado a uma Sala Multiplayer),
+   * Acionado ao iniciar pela menu principal (Solo ou conectado a uma Sala Multiplayer),
    * abrindo o ambiente 3D sem modais extras.
    */
   onLaunchImmediateGesture: (multiplayerSession?: ActiveRoomSession) => void;
@@ -85,26 +60,12 @@ interface OpenWindowState {
   z: number;
 }
 
-interface BinarySlot {
-  sx: number;
-  sy: number;
-  tx: number;
-  ty: number;
-  finalChar: string;
-  isBinaryBorder: boolean;
-  isMenuSeed: boolean;
-  wakeAt: number;
-  travelSpan: number;
-  bit: '0' | '1';
-}
-
-
 /**
  * Sistema de Terminal:
  * 1. Carregamento normal de inicialização do terminal.
  * 2. Área de trabalho versão terminal interativa (ícones ASCII, janelas em modo texto,
  *    barra de tarefas com menu e relógio, linha de comando).
- * 3. Ao abrir `out_of_frame.exe`: exibe uma breve transição binária e o menu cinematográfico.
+ * 3. Ao abrir `out_of_frame.exe`: mostra diretamente o menu do jogo.
  */
 export class TerminalBootController {
   private phase: TerminalPhase = 'idle';
@@ -133,7 +94,6 @@ export class TerminalBootController {
   private startMenuOpen = false;
   private windows = new Map<'terminal' | 'notas', OpenWindowState>();
   private openingWindows = new Set<'terminal' | 'notas'>();
-  private openingProgram = false;
   private transientTaskTab: string | null = null;
   private newlyOpenedTabId: string | null = null;
   private zoomTimers: number[] = [];
@@ -148,25 +108,11 @@ export class TerminalBootController {
     offsetY: number;
   } | null = null;
 
-  // Canvas da convergência binária (out_of_frame.exe)
-  private canvasEl!: HTMLCanvasElement;
   private mainMenuEl!: HTMLElement;
   private mainMenuButtons: HTMLButtonElement[] = [];
   private titleBackdrop: TitleGameBackdrop | null = null;
   private titleBackdropStartFrame = 0;
-  private ctx!: CanvasRenderingContext2D;
   private timers: number[] = [];
-  private rafId = 0;
-
-  private coalescingStart = 0;
-  private readonly devNoticeHoldMs = 1500;
-  private readonly coalesceDurationMs = 4200;
-  private slots: BinarySlot[] = [];
-  private gridCols = 80;
-  private gridRows = 30;
-  private binaryFontPx = 16;
-  private cellW = 10;
-  private cellH = 20;
   private menuIndex = 0;
 
   private boundKeyCapture!: (e: KeyboardEvent) => void;
@@ -227,9 +173,6 @@ export class TerminalBootController {
     this.hiddenInputEl.setAttribute('autocorrect', 'off');
     this.hiddenInputEl.setAttribute('enterkeyhint', 'send');
 
-    this.canvasEl = document.createElement('canvas');
-    this.canvasEl.id = 'binary-ui-canvas';
-
     this.mainMenuEl = document.createElement('main');
     this.mainMenuEl.className = 'oof-title-screen';
     this.mainMenuEl.setAttribute('aria-label', 'Menu principal de OUT-OF-FRAME');
@@ -237,27 +180,28 @@ export class TerminalBootController {
     this.mainMenuEl.innerHTML = `
       <div class="oof-title-screen__background" aria-hidden="true"></div>
       <div class="oof-title-screen__veil" aria-hidden="true"></div>
+      <div class="oof-title-screen__topline" aria-hidden="true"><span>O.O.F. / ARQUIVO 01</span><span>SISTEMA DE CONTENÇÃO</span></div>
       <div class="oof-title-screen__content">
         <div class="oof-title-screen__heading">
-          <p class="oof-title-screen__eyebrow">UM COMPLEXO. NENHUMA SAÍDA.</p>
-          <h1>OUT<span class="oof-title-screen__hyphen">-</span>OF<span class="oof-title-screen__hyphen">-</span>FRAME</h1>
-          <p class="oof-title-screen__subtitle">A SOBREVIVÊNCIA COMEÇA NO ESCURO</p>
+          <p class="oof-title-screen__eyebrow"><span></span> SINAL ATIVO / SETOR DESCONHECIDO</p>
+          <h1 aria-label="OUT-OF-FRAME"><span>OUT-OF-</span><span>FRAME</span></h1>
+          <p class="oof-title-screen__subtitle">UM COMPLEXO. NENHUMA SAÍDA.</p>
         </div>
         <nav class="oof-title-screen__nav" aria-label="Opções do jogo">
-          <button type="button" data-title-index="0"><span>INICIAR</span><small>JOGAR SOZINHO</small></button>
-          <button type="button" data-title-index="1"><span>MULTIPLAYER</span><small>JOGAR EM EQUIPE</small></button>
-          <button type="button" data-title-index="2"><span>SAIR</span><small>VOLTAR AO TERMINAL</small></button>
+          <button type="button" data-title-index="0"><span class="oof-title-screen__number">01</span><span class="oof-title-screen__option"><strong>INICIAR</strong><small>EXPLORAR SOZINHO</small></span><span class="oof-title-screen__arrow" aria-hidden="true">↗</span></button>
+          <button type="button" data-title-index="1"><span class="oof-title-screen__number">02</span><span class="oof-title-screen__option"><strong>MULTIPLAYER</strong><small>ENTRAR EM UMA EQUIPE</small></span><span class="oof-title-screen__arrow" aria-hidden="true">↗</span></button>
+          <button type="button" data-title-index="2"><span class="oof-title-screen__number">03</span><span class="oof-title-screen__option"><strong>SAIR</strong><small>VOLTAR AO TERMINAL</small></span><span class="oof-title-screen__arrow" aria-hidden="true">↗</span></button>
         </nav>
       </div>
       <div class="oof-title-screen__footer" aria-hidden="true">
-        <span>OUT-OF-FRAME <b> / </b> EM DESENVOLVIMENTO</span>
+        <span>OUT-OF-FRAME <b> / </b> SOBREVIVA AO DESCONHECIDO</span>
         <span>SETAS PARA NAVEGAR <b> · </b> ENTER PARA SELECIONAR</span>
       </div>
     `;
     this.mainMenuButtons = Array.from(this.mainMenuEl.querySelectorAll<HTMLButtonElement>('[data-title-index]'));
     this.mainMenuButtons.forEach((button, index) => {
       button.addEventListener('pointerenter', (event) => {
-        if (this.phase !== 'binary_interface' || this.multiplayerModal?.visible || event.pointerType === 'touch') return;
+        if (this.phase !== 'title_menu' || this.multiplayerModal?.visible || event.pointerType === 'touch') return;
         if (this.menuIndex !== index) {
           this.menuIndex = index;
           this.syncMainMenuSelection();
@@ -265,12 +209,12 @@ export class TerminalBootController {
         }
       });
       button.addEventListener('focus', () => {
-        if (this.phase !== 'binary_interface' || this.multiplayerModal?.visible) return;
+        if (this.phase !== 'title_menu' || this.multiplayerModal?.visible) return;
         this.menuIndex = index;
         this.syncMainMenuSelection();
       });
       button.addEventListener('click', () => {
-        if (this.phase !== 'binary_interface' || this.multiplayerModal?.visible) return;
+        if (this.phase !== 'title_menu' || this.multiplayerModal?.visible) return;
         this.sound.unlock();
         this.menuIndex = index;
         this.executeMenuSelection();
@@ -284,17 +228,10 @@ export class TerminalBootController {
       this.bootLayerEl,
       this.desktopEl,
       this.hiddenInputEl,
-      this.canvasEl,
       this.mainMenuEl,
       this.zoomLayerEl
     );
     this.mountParent.appendChild(this.rootEl);
-
-    const context = this.canvasEl.getContext('2d');
-    if (!context) {
-      throw new Error('Contexto 2D indisponível para a interface binária.');
-    }
-    this.ctx = context;
 
     this.renderDesktopIcons();
     this.renderStartMenu();
@@ -312,7 +249,7 @@ export class TerminalBootController {
         this.options.onLaunchImmediateGesture(session);
       },
       onClose: () => {
-        if (this.phase === 'binary_interface') this.mainMenuButtons[this.menuIndex]?.focus();
+        if (this.phase === 'title_menu') this.mainMenuButtons[this.menuIndex]?.focus();
       },
     });
   }
@@ -574,8 +511,8 @@ export class TerminalBootController {
           this.sound.keyEnter();
           this.activateDesktopItem(DESKTOP_ITEMS[this.selectedIconIndex].id);
         }
-      } else if (this.phase === 'binary_interface') {
-        const count = BINARY_MENU_ITEMS.length;
+      } else if (this.phase === 'title_menu') {
+        const count = TITLE_MENU_ITEMS.length;
         if (e.key === 'ArrowUp' || e.code === 'KeyW') {
           e.preventDefault();
           this.menuIndex = (this.menuIndex - 1 + count) % count;
@@ -591,7 +528,7 @@ export class TerminalBootController {
           this.executeMenuSelection();
         } else if (e.key === 'Escape') {
           e.preventDefault();
-          this.returnToDesktopFromBinary();
+          this.returnToDesktopFromTitle();
         }
       }
     };
@@ -617,10 +554,6 @@ export class TerminalBootController {
           win.el.style.left = `${Math.max(4, Math.min(curLeft, Math.max(4, wsRect.width - desiredW - 4)))}px`;
           win.el.style.top = `${Math.max(4, Math.min(curTop, Math.max(4, wsRect.height - desiredH - 4)))}px`;
         }
-      }
-      if (this.phase === 'program_starting') {
-        this.setupCanvasMetrics();
-        this.rebuildBinaryBlueprint(false);
       }
     };
     window.addEventListener('resize', this.boundResize);
@@ -1008,7 +941,7 @@ export class TerminalBootController {
             '------------------------------------\n' +
             'Sistema operacional em modo terminal.\n\n' +
             'Aplicativo disponível:\n' +
-            '- out_of_frame.exe (em desenvolvimento)';
+            '- out_of_frame.exe';
         }
 
         this.newlyOpenedTabId = id;
@@ -1214,7 +1147,6 @@ export class TerminalBootController {
     this.clearZoomLayer();
     this.proximityFx?.destroy();
     this.proximityFx = null;
-    this.openingProgram = false;
     this.transientTaskTab = null;
     this.phase = 'powered_off';
     this.closeStartMenu();
@@ -1222,7 +1154,6 @@ export class TerminalBootController {
     if (this.clockIntervalId) window.clearInterval(this.clockIntervalId);
 
     this.desktopEl.classList.remove('active');
-    this.canvasEl.classList.remove('active');
     this.bootLayerEl.classList.remove('hidden');
     this.bootLayerEl.innerHTML = '';
     this.appendBootLine('Desligando...');
@@ -1234,142 +1165,40 @@ export class TerminalBootController {
     }, 650);
   }
 
-  /**
-   * 3. Abre o aplicativo `out_of_frame.exe`:
-   *    1º expande em quadros retrô do ícone para uma janela/aba `[ out_of_frame.exe ]` na Área de Trabalho;
-   *    2º expande em quadros retrô da janela para a tela cheia e inicia a convergência binária Superhot.
-   */
+  /** Abre diretamente o menu do jogo, sem a antiga animação de aviso. */
   private startProgramSequence(): void {
-    if (this.openingProgram || this.phase !== 'desktop') return;
-    this.openingProgram = true;
+    if (this.phase !== 'desktop') return;
     this.closeStartMenu();
     this.hiddenInputEl.blur();
-
-    const wsRect = this.workspaceEl.getBoundingClientRect();
-    const midW = Math.min(520, Math.max(280, wsRect.width - 48));
-    const midH = Math.min(280, Math.max(180, wsRect.height - 48));
-    const midLocalLeft = Math.floor((wsRect.width - midW) * 0.5);
-    const midLocalTop = Math.floor((wsRect.height - midH) * 0.5);
-
-    const iconRect = this.getIconScreenRect('out_of_frame');
-    const midScreenRect = {
-      x: wsRect.left + midLocalLeft,
-      y: wsRect.top + midLocalTop,
-      w: midW,
-      h: midH,
-    };
-
-    // Etapa 1: Quadros DOS expandindo do ícone até a janela/aba [ out_of_frame.exe ]
-    this.runSteppedFrameSequence({
-      from: iconRect,
-      to: midScreenRect,
-      steps: 4,
-      stepMs: 36,
-      title: 'out_of_frame.exe',
-      expanding: true,
-      onComplete: () => {
-        if (this.phase !== 'desktop') {
-          this.openingProgram = false;
-          return;
-        }
-
-        this.sound.windowOpen();
-        this.transientTaskTab = 'out_of_frame.exe';
-        this.renderTaskbarWindows();
-
-        // Mostra brevemente a janela/aba do aplicativo aberta antes de maximizar
-        const appWinEl = document.createElement('div');
-        appWinEl.className = 'tui-window focused opening';
-        appWinEl.style.width = `${midW}px`;
-        appWinEl.style.height = `${midH}px`;
-        appWinEl.style.left = `${midLocalLeft}px`;
-        appWinEl.style.top = `${midLocalTop}px`;
-        appWinEl.style.zIndex = String(++this.topZ);
-
-        const tb = document.createElement('div');
-        tb.className = 'tui-window-titlebar';
-        tb.innerHTML = '<span>[ out_of_frame.exe ]</span><span>[□] [X]</span>';
-
-        const body = document.createElement('div');
-        body.className = 'tui-window-body';
-        body.textContent = '> Executando out_of_frame.exe...';
-
-        appWinEl.append(tb, body);
-        this.workspaceEl.appendChild(appWinEl);
-
-        const latchId = window.setTimeout(() => {
-          appWinEl.remove();
-          if (this.phase !== 'desktop') {
-            this.openingProgram = false;
-            this.transientTaskTab = null;
-            this.renderTaskbarWindows();
-            return;
-          }
-
-          // Etapa 2: Maximiza em quadros retrô até ocupar 100% da tela!
-          const fullRect = {
-            x: 0,
-            y: 0,
-            w: window.innerWidth,
-            h: window.innerHeight,
-          };
-
-          this.runSteppedFrameSequence({
-            from: midScreenRect,
-            to: fullRect,
-            steps: 5,
-            stepMs: 38,
-            title: 'out_of_frame.exe',
-            expanding: true,
-            onComplete: () => {
-              this.openingProgram = false;
-              this.transientTaskTab = null;
-              this.renderTaskbarWindows();
-              if (this.phase !== 'desktop') return;
-
-              this.phase = 'program_starting';
-              this.menuIndex = 0;
-              try {
-                const params = new URLSearchParams(window.location.search);
-                if (normalizeRoomCode(params.get('room') || '').length >= 4) {
-                  this.menuIndex = 1; // Pré-seleciona MULTIPLAYER se abriu por link de convite!
-                }
-              } catch {
-                // Ignorar
-              }
-              this.setupCanvasMetrics();
-              this.rebuildBinaryBlueprint(false);
-              this.canvasEl.classList.add('active');
-              this.sound.startBinaryProgramSequence();
-
-              this.coalescingStart = performance.now();
-              const tick = (now: number) => {
-                if (
-                  this.phase !== 'program_starting' &&
-                  this.phase !== 'binary_interface'
-                ) {
-                  return;
-                }
-                this.renderBinaryFrame(now);
-                if (this.phase === 'program_starting') this.rafId = requestAnimationFrame(tick);
-              };
-              this.rafId = requestAnimationFrame(tick);
-            },
-          });
-        }, 160);
-
-        this.zoomTimers.push(latchId);
-      },
+    this.phase = 'title_menu';
+    this.menuIndex = 0;
+    try {
+      const params = new URLSearchParams(window.location.search);
+      if (normalizeRoomCode(params.get('room') || '').length >= 4) this.menuIndex = 1;
+    } catch {
+      // Uma URL inválida não impede abrir o menu.
+    }
+    this.mainMenuEl.hidden = false;
+    this.syncMainMenuSelection(true);
+    this.titleBackdropStartFrame = requestAnimationFrame(() => {
+      this.titleBackdropStartFrame = 0;
+      if (this.phase !== 'title_menu' || this.titleBackdrop) return;
+      const container = this.mainMenuEl.querySelector<HTMLElement>('.oof-title-screen__background');
+      if (!container) return;
+      try {
+        this.titleBackdrop = new TitleGameBackdrop(container);
+        this.titleBackdrop.start();
+      } catch (error) {
+        // Sem WebGL o menu continua utilizável, sem imagem fabricada.
+        console.warn('Não foi possível exibir o cenário do menu:', error);
+      }
     });
   }
 
-  private returnToDesktopFromBinary(): void {
-    cancelAnimationFrame(this.rafId);
+  private returnToDesktopFromTitle(): void {
     this.sound.stopCoalesceDrone();
-    this.canvasEl.classList.remove('active');
     this.mainMenuEl.hidden = true;
     this.disposeTitleBackdrop();
-    this.canvasEl.classList.remove('cursor-pointer', 'cursor-pressing');
     document.body.classList.remove('tui-dragging-window');
     this.phase = 'desktop';
     this.sound.keyBackspace();
@@ -1394,260 +1223,6 @@ export class TerminalBootController {
         }
       },
     });
-  }
-
-  private setupCanvasMetrics(): void {
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const w = window.innerWidth;
-    const h = window.innerHeight;
-
-    this.canvasEl.width = Math.floor(w * dpr);
-    this.canvasEl.height = Math.floor(h * dpr);
-    this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
-    const layout = computeBinaryCanvasLayout(w, h);
-    this.binaryFontPx = layout.fontPx;
-    this.ctx.font = `${this.binaryFontPx}px Consolas, "Courier New", monospace`;
-    const measured = this.ctx.measureText('0');
-    this.cellW = Math.max(6, Math.ceil(measured.width));
-    this.cellH = layout.cellH;
-
-    this.gridCols = Math.max(34, Math.floor(w / this.cellW));
-    this.gridRows = Math.max(16, Math.floor(h / this.cellH));
-  }
-
-  private rebuildBinaryBlueprint(alreadyLocked: boolean): void {
-    const cols = this.gridCols;
-    const rows = this.gridRows;
-
-    const boxW = Math.min(58, Math.max(30, cols - 4));
-    const boxH = Math.min(18, Math.max(15, rows - 2));
-    const left = Math.max(1, Math.floor((cols - boxW) * 0.5));
-    const top = Math.max(1, Math.floor((rows - boxH) * 0.5));
-
-    const right = left + boxW - 1;
-    const bottom = top + boxH - 1;
-    const headerDividerY = top + 3;
-
-    const map = new Map<
-      string,
-      { tx: number; ty: number; ch: string; isBorder: boolean; isMenu: boolean }
-    >();
-
-    const put = (
-      x: number,
-      y: number,
-      ch: string,
-      isBorder: boolean,
-      isMenu = false
-    ) => {
-      if (x < 0 || x >= cols || y < 0 || y >= rows) return;
-      map.set(`${x},${y}`, { tx: x, ty: y, ch, isBorder, isMenu });
-    };
-
-    const writeText = (startX: number, y: number, text: string, isMenu = false) => {
-      for (let i = 0; i < text.length; i++) {
-        if (text[i] !== ' ') {
-          put(startX + i, y, text[i], false, isMenu);
-        }
-      }
-    };
-
-    for (let x = left; x <= right; x++) {
-      put(x, top, Math.random() < 0.5 ? '0' : '1', true);
-      put(x, bottom, Math.random() < 0.5 ? '0' : '1', true);
-      put(x, headerDividerY, Math.random() < 0.5 ? '0' : '1', true);
-    }
-
-    for (let y = top; y <= bottom; y++) {
-      put(left, y, Math.random() < 0.5 ? '0' : '1', true);
-      put(left + 1, y, Math.random() < 0.5 ? '0' : '1', true);
-      put(right - 1, y, Math.random() < 0.5 ? '0' : '1', true);
-      put(right, y, Math.random() < 0.5 ? '0' : '1', true);
-    }
-
-    const title = 'OUT-OF-FRAME';
-    writeText(left + 4, top + 1, title);
-
-    const statusTag = '[ EM DESENVOLVIMENTO ]';
-    if (boxW >= title.length + statusTag.length + 10) {
-      writeText(right - 3 - statusTag.length, top + 1, statusTag);
-    }
-
-    const devLine = 'Em desenvolvimento';
-    writeText(
-      Math.floor((cols - devLine.length) * 0.5),
-      headerDividerY + 2,
-      devLine
-    );
-
-    const menuStartOffset = boxH >= 18 ? 8 : 6;
-    for (let idx = 0; idx < BINARY_MENU_ITEMS.length; idx++) {
-      const opt = BINARY_MENU_ITEMS[idx];
-      writeText(
-        Math.floor((cols - opt.length) * 0.5),
-        top + menuStartOffset + idx * 2,
-        opt,
-        true
-      );
-    }
-
-    const isCoarseTouch =
-      typeof window !== 'undefined' &&
-      (('ontouchstart' in window) ||
-        (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0));
-    const fullHint = isCoarseTouch
-      ? '[TOQUE] SELECIONAR / INICIAR'
-      : '[SETAS] MOVER   [ENTER] CONFIRMAR';
-    const hint = boxW - 6 < fullHint.length ? '[TOQUE] SELECIONAR' : fullHint;
-    writeText(Math.floor((cols - hint.length) * 0.5), bottom - 2, hint);
-
-    const entries = Array.from(map.values());
-    for (let i = entries.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      const tmp = entries[i];
-      entries[i] = entries[j];
-      entries[j] = tmp;
-    }
-
-    this.slots = entries.map((item, idx) => {
-      const u = entries.length > 1 ? idx / (entries.length - 1) : 0;
-      const wakeAt = alreadyLocked ? 0 : Math.pow(u, 1.9) * 0.64;
-      const travelSpan = 0.31 + Math.random() * 0.05;
-
-      return {
-        sx: Math.floor(Math.random() * cols),
-        sy: Math.floor(Math.random() * rows),
-        tx: item.tx,
-        ty: item.ty,
-        finalChar: item.ch,
-        isBinaryBorder: item.isBorder,
-        isMenuSeed: item.isMenu,
-        wakeAt,
-        travelSpan,
-        bit: Math.random() < 0.5 ? '0' : '1',
-      };
-    });
-  }
-
-  private renderBinaryFrame(now: number): void {
-    const w = window.innerWidth;
-    const h = window.innerHeight;
-    const ctx = this.ctx;
-
-    ctx.fillStyle = '#000000';
-    ctx.fillRect(0, 0, w, h);
-
-    ctx.font = `${this.binaryFontPx}px Consolas, "Courier New", monospace`;
-    ctx.textBaseline = 'top';
-
-    const elapsed = now - this.coalescingStart;
-
-    if (elapsed < this.devNoticeHoldMs && this.phase === 'program_starting') {
-      this.drawInitialDevNotice(1.0, 0);
-      return;
-    }
-
-    const rawT =
-      this.phase === 'binary_interface'
-        ? 1.0
-        : Math.min(
-            1.0,
-            (elapsed - this.devNoticeHoldMs) / this.coalesceDurationMs
-          );
-
-    if (rawT >= 1.0 && this.phase === 'program_starting') {
-      this.phase = 'binary_interface';
-      this.sound.interfaceLocked();
-      this.canvasEl.classList.remove('active');
-      this.mainMenuEl.hidden = false;
-      this.syncMainMenuSelection(true);
-      // Permite o menu aparecer antes da construção do cenário 3D.
-      this.titleBackdropStartFrame = requestAnimationFrame(() => {
-        this.titleBackdropStartFrame = 0;
-        if (this.phase !== 'binary_interface' || this.titleBackdrop) return;
-        const container = this.mainMenuEl.querySelector<HTMLElement>('.oof-title-screen__background');
-        if (!container) return;
-        try {
-          this.titleBackdrop = new TitleGameBackdrop(container);
-          this.titleBackdrop.start();
-        } catch (error) {
-          // Sem WebGL o menu permanece utilizável, sem substituir por uma imagem.
-          console.warn('Não foi possível exibir o cenário do menu:', error);
-        }
-      });
-      return;
-    }
-
-    if (rawT < 0.5) {
-      const fade = 1 - rawT / 0.5;
-      this.drawInitialDevNotice(fade, rawT * 1.7);
-    }
-
-    let lockedCount = 0;
-
-    for (let i = 0; i < this.slots.length; i++) {
-      const s = this.slots[i];
-      if (rawT < s.wakeAt) continue;
-
-      if (this.phase === 'binary_interface' && s.isMenuSeed) continue;
-
-      const localT =
-        this.phase === 'binary_interface'
-          ? 1.0
-          : Math.min(1.0, (rawT - s.wakeAt) / s.travelSpan);
-
-      if (localT >= 1.0) lockedCount++;
-
-      const eased =
-        localT < 0.5
-          ? 4 * localT * localT * localT
-          : 1 - Math.pow(-2 * localT + 2, 3) / 2;
-
-      const gx = Math.round(s.sx + (s.tx - s.sx) * eased);
-      const gy = Math.round(s.sy + (s.ty - s.sy) * eased);
-
-      if (localT < 1.0) {
-        if (Math.random() < 0.18) {
-          s.bit = s.bit === '0' ? '1' : '0';
-        }
-      } else if (s.isBinaryBorder && Math.random() < 0.008) {
-        s.bit = s.bit === '0' ? '1' : '0';
-      }
-
-      const ch = localT >= 1.0 && !s.isBinaryBorder ? s.finalChar : s.bit;
-      const alpha =
-        localT < 1.0 ? 0.42 + 0.58 * localT : s.isBinaryBorder ? 0.8 : 1.0;
-
-      ctx.fillStyle = `rgba(229, 229, 229, ${alpha.toFixed(2)})`;
-      ctx.fillText(ch, gx * this.cellW, gy * this.cellH);
-    }
-
-    if (this.phase === 'program_starting') {
-      const lockedFrac =
-        this.slots.length > 0 ? lockedCount / this.slots.length : 0;
-      this.sound.binaryCoalesceGrain(rawT, lockedFrac);
-    }
-
-  }
-
-  private drawInitialDevNotice(alpha: number, binaryCorruption: number): void {
-    const fullMsg = 'Este programa ainda está em desenvolvimento.';
-    const msg =
-      this.gridCols < fullMsg.length + 2
-        ? 'Programa em desenvolvimento.'
-        : fullMsg;
-    const startCol = Math.max(1, Math.floor((this.gridCols - msg.length) * 0.5));
-    const row = Math.floor(this.gridRows * 0.5);
-
-    this.ctx.fillStyle = `rgba(229, 229, 229, ${alpha.toFixed(2)})`;
-    for (let i = 0; i < msg.length; i++) {
-      let ch = msg[i];
-      if (ch !== ' ' && Math.random() < binaryCorruption) {
-        ch = Math.random() < 0.5 ? '0' : '1';
-      }
-      this.ctx.fillText(ch, (startCol + i) * this.cellW, row * this.cellH);
-    }
   }
 
   private syncMainMenuSelection(focus = false): void {
@@ -1676,7 +1251,7 @@ export class TerminalBootController {
       this.multiplayerModal?.open(urlRoom || undefined);
     } else {
       // SAIR retorna para a Área de Trabalho versão Terminal
-      this.returnToDesktopFromBinary();
+      this.returnToDesktopFromTitle();
     }
   }
 
@@ -1696,7 +1271,6 @@ export class TerminalBootController {
     this.proximityFx?.destroy();
     this.proximityFx = null;
     if (this.clockIntervalId) window.clearInterval(this.clockIntervalId);
-    cancelAnimationFrame(this.rafId);
     window.removeEventListener('keydown', this.boundKeyCapture, true);
     window.removeEventListener('pointerdown', this.boundPointerUnlock);
     window.removeEventListener('pointermove', this.boundMouseMove);

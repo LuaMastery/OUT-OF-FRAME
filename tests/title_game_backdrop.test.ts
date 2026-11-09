@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { gridCellToWorld } from '../src/doom/DoomMazeBuilder';
-import { buildTitleBackdropWorld } from '../src/terminal/TitleGameBackdrop';
+import { buildTitleBackdropWorld, TITLE_CAMERA_CELL } from '../src/terminal/TitleGameBackdrop';
 import { resetThemedRoomLocks } from '../src/doom/DoomRooms';
 
 describe('Cenário real no menu principal', () => {
@@ -15,7 +15,7 @@ describe('Cenário real no menu principal', () => {
       expect(world.maze.specialRoomDoors.doors.every(door => !door.unlocked)).toBe(true);
       expect(world.maze.lights.length).toBeGreaterThan(0);
       expect(world.maze.annexLights.length).toBe(21);
-      const origin = gridCellToWorld(10, 11);
+      const origin = gridCellToWorld(TITLE_CAMERA_CELL.gx, TITLE_CAMERA_CELL.gz);
       const cameraInSolid = world.maze.colliders.some(({box}) =>
         box.min.x < origin.x && box.max.x > origin.x &&
         box.min.z < origin.z && box.max.z > origin.z &&

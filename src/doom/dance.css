@@ -9,7 +9,7 @@
   padding: calc(16px + var(--safe-top, 0px)) 16px calc(16px + var(--safe-bottom, 0px));
   background: rgba(5, 7, 6, .76);
   backdrop-filter: blur(5px);
-  font-family: 'Courier New', Consolas, monospace;
+  font-family: 'Geist Pixel', monospace;
   box-sizing: border-box;
 }
 .doom-dance-menu.is-open { display: flex; }
@@ -95,7 +95,7 @@
   background: #232923;
   border: 1px solid rgba(206, 216, 180, .1);
   color: #b9c1ae;
-  font-family: inherit;
+  font-family: 'Geist Pixel', monospace;
   text-align: left;
   cursor: pointer;
 }
@@ -114,7 +114,7 @@
   border: 1px solid #d4dfb2;
   background: #c0cf9b;
   color: #172016;
-  font: 700 12px 'Courier New', Consolas, monospace;
+  font: 700 12px 'Geist Pixel', monospace;
   letter-spacing: .15em;
   cursor: pointer;
 }
@@ -150,7 +150,7 @@
   padding: 7px 12px;
   background: rgba(15, 19, 16, .8);
   border: 1px solid rgba(206, 216, 180, .25);
-  font-family: 'Courier New', Consolas, monospace;
+  font-family: 'Geist Pixel', monospace;
   pointer-events: none;
 }
 .doom-dance-hud.is-visible { display: flex; }
