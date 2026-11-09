@@ -721,7 +721,10 @@ export class DoomGameApp {
           }
         },
         onRemoteVictimFinishedAbduction: () => {
-          this.spider.relocateAwayAfterAbduction();
+          const observers = this.multiplayer?.getObserverWorldPositions(
+            this.position
+          );
+          this.spider.finishAbductionRetreat(observers);
         },
         onRemoteWebTrapSpawned: (x, z) => {
           this.webManager.spawnWebTrap(x, z, false);
@@ -1295,6 +1298,10 @@ export class DoomGameApp {
     this.strikeOriginPos.copy(this.position);
 
     const spiderSource = overrideSpiderPos ?? this.spider.position;
+    const rawDist = Math.hypot(
+      spiderSource.x - this.position.x,
+      spiderSource.z - this.position.z
+    );
     const toSpider = new THREE.Vector3()
       .subVectors(spiderSource, this.position)
       .setY(0);
@@ -1303,9 +1310,33 @@ export class DoomGameApp {
     } else {
       toSpider.normalize();
     }
+
+    // Garante que a posição do bote jamais jogue o corpo da Aranha para trás através de uma parede!
+    const desiredStrikeDist = Math.min(1.44, Math.max(0.96, rawDist));
+    let safeStrikeDist = 0.92;
+    for (let d = 0.72; d <= desiredStrikeDist + 0.001; d += 0.12) {
+      const px = this.position.x + toSpider.x * d;
+      const pz = this.position.z + toSpider.z * d;
+      let hitWall = false;
+      for (let i = 0; i < this.colliders.length; i++) {
+        const b = this.colliders[i].box;
+        if (b.max.y < 0.5) continue;
+        const cx = Math.max(b.min.x, Math.min(px, b.max.x));
+        const cz = Math.max(b.min.z, Math.min(pz, b.max.z));
+        const ox = px - cx;
+        const oz = pz - cz;
+        if (ox * ox + oz * oz < 0.52 * 0.52) {
+          hitWall = true;
+          break;
+        }
+      }
+      if (hitWall) break;
+      safeStrikeDist = d;
+    }
+
     this.strikeSpiderPos
       .copy(this.position)
-      .addScaledVector(toSpider, 1.48)
+      .addScaledVector(toSpider, safeStrikeDist)
       .setY(1.38);
 
     // Gira o olhar para encarar a aranha gigante no instante do bote!
@@ -1557,6 +1588,17 @@ export class DoomGameApp {
         1.38,
         this.position.z + dragDir.z * 2.15
       );
+      if (this.seqStagedDrag) {
+        this.spider.updateCinematicSequence(
+          dt,
+          this.elapsed,
+          'DRAGGING_TO_WEB',
+          0,
+          this.currentAbductionSpiderPos,
+          this.position,
+          this.position
+        );
+      }
       this.setCameraFov(68);
       this.astronaut.updateSupineAbductionPose(this.position, this.yaw, 0, false);
       this.syncCustomSequenceCamera(this.position, 0.28);
@@ -1707,8 +1749,16 @@ export class DoomGameApp {
       this.seqStagedWake = true;
       this.currentAbductionMode = null;
       this.currentAbductionProgress = 0;
-      this.spider.relocateAwayAfterAbduction();
-      this.multiplayer?.notifyLocalAbductionFinished();
+      if (this.multiplayer) {
+        const observers = this.multiplayer.getObserverWorldPositions(
+          this.position,
+          this.multiplayer.localPlayerId
+        );
+        this.spider.finishAbductionRetreat(observers);
+        this.multiplayer.notifyLocalAbductionFinished();
+      } else {
+        this.spider.relocateAwayAfterAbduction();
+      }
       this.webManager.placePlayerInWakingLairWeb();
       this.playerHealth = 22;
       this.playerBleeding = true;
@@ -1744,7 +1794,12 @@ export class DoomGameApp {
 
     if (t >= 7.35) {
       this.activeSequence = 'NONE';
-      this.spider.ensureExitedCinematic();
+      this.spider.ensureExitedCinematic(
+        this.multiplayer?.getObserverWorldPositions(
+          this.position,
+          this.multiplayer.localPlayerId
+        )
+      );
       this.roll = 0;
       this.setCameraFov(74);
       this.astronaut.updateFirstPersonBody(
@@ -1865,11 +1920,7 @@ export class DoomGameApp {
       return;
     }
 
-    if (
-      this.inventory.open ||
-      this.inventory.gameOverVisible ||
-      this.multiplayer?.isChatTyping
-    ) {
+    if (this.inventory.gameOverVisible) {
       this.interactQueued = false;
       this.struggleQueued = false;
       this.touchControls.consumeLookDelta();
@@ -1910,13 +1961,19 @@ export class DoomGameApp {
       return;
     }
 
-    const interactPressed = this.interactQueued;
-    const strugglePressed = this.struggleQueued;
+    const overlayInputLocked =
+      this.inventory.open || Boolean(this.multiplayer?.isChatTyping);
+
+    const interactPressed = overlayInputLocked ? false : this.interactQueued;
+    const strugglePressed = overlayInputLocked ? false : this.struggleQueued;
     this.interactQueued = false;
     this.struggleQueued = false;
 
     const touchLook = this.touchControls.consumeLookDelta();
-    if (touchLook.yawDelta !== 0 || touchLook.pitchDelta !== 0) {
+    if (
+      !overlayInputLocked &&
+      (touchLook.yawDelta !== 0 || touchLook.pitchDelta !== 0)
+    ) {
       this.yaw += touchLook.yawDelta;
       this.pitch = Math.max(
         -1.25,
@@ -1929,12 +1986,12 @@ export class DoomGameApp {
     }
 
     const turnSpeed = 2.35;
-    if (this.keys.has('ArrowLeft')) {
+    if (!overlayInputLocked && this.keys.has('ArrowLeft')) {
       const dYaw = turnSpeed * dt;
       this.yaw += dYaw;
       this.flashlight.addLookImpulse(dYaw * 0.35, 0);
     }
-    if (this.keys.has('ArrowRight')) {
+    if (!overlayInputLocked && this.keys.has('ArrowRight')) {
       const dYaw = -turnSpeed * dt;
       this.yaw += dYaw;
       this.flashlight.addLookImpulse(dYaw * 0.35, 0);
@@ -1952,24 +2009,26 @@ export class DoomGameApp {
     );
 
     const wish = new THREE.Vector3();
-    if (this.keys.has('KeyW') || this.keys.has('ArrowUp')) wish.add(forward);
-    if (this.keys.has('KeyS') || this.keys.has('ArrowDown')) wish.sub(forward);
-    if (this.keys.has('KeyD')) wish.add(right);
-    if (this.keys.has('KeyA')) wish.sub(right);
+    if (!overlayInputLocked) {
+      if (this.keys.has('KeyW') || this.keys.has('ArrowUp')) wish.add(forward);
+      if (this.keys.has('KeyS') || this.keys.has('ArrowDown')) wish.sub(forward);
+      if (this.keys.has('KeyD')) wish.add(right);
+      if (this.keys.has('KeyA')) wish.sub(right);
 
-    const touchMove = this.touchControls.getMoveVector();
-    if (wish.lengthSq() > 0) {
-      wish.normalize();
-    } else if (touchMove.magnitude > 0) {
-      wish
-        .addScaledVector(forward, touchMove.moveY)
-        .addScaledVector(right, touchMove.moveX);
-      if (wish.lengthSq() > 1) {
+      const touchMove = this.touchControls.getMoveVector();
+      if (wish.lengthSq() > 0) {
         wish.normalize();
+      } else if (touchMove.magnitude > 0) {
+        wish
+          .addScaledVector(forward, touchMove.moveY)
+          .addScaledVector(right, touchMove.moveX);
+        if (wish.lengthSq() > 1) {
+          wish.normalize();
+        }
       }
     }
 
-    const touchSprint = this.touchControls.isSprintRequested;
+    const touchSprint = !overlayInputLocked && this.touchControls.isSprintRequested;
     if (
       touchSprint &&
       this.touchCrouchLatched &&
@@ -1981,14 +2040,16 @@ export class DoomGameApp {
     }
 
     const holdingCtrl =
-      this.keys.has('ControlLeft') ||
-      this.keys.has('ControlRight') ||
-      this.keys.has('KeyC') ||
-      this.touchCrouchLatched;
+      !overlayInputLocked &&
+      (this.keys.has('ControlLeft') ||
+        this.keys.has('ControlRight') ||
+        this.keys.has('KeyC') ||
+        this.touchCrouchLatched);
     const holdingShift =
-      this.keys.has('ShiftLeft') ||
-      this.keys.has('ShiftRight') ||
-      touchSprint;
+      !overlayInputLocked &&
+      (this.keys.has('ShiftLeft') ||
+        this.keys.has('ShiftRight') ||
+        touchSprint);
 
     const hasKnife = this.inventory.hasItem('rusty_knife');
 
@@ -2255,8 +2316,8 @@ export class DoomGameApp {
         playerDistance: distToSpider,
       };
     } else if (this.multiplayer && !this.multiplayer.isHost) {
-      const remotePkt = this.multiplayer.consumeLatestRemoteSpiderPacket();
-      if (remotePkt && Date.now() - remotePkt.ts < 2500) {
+      const remotePkt = this.multiplayer.getFreshRemoteSpiderPacket(3500);
+      if (remotePkt) {
         spiderOut = this.spider.applyRemoteNetworkState(
           dt,
           this.elapsed,
@@ -2268,7 +2329,9 @@ export class DoomGameApp {
           }
         );
       } else {
-        this.spider.ensureExitedCinematic();
+        this.spider.ensureExitedCinematic(
+          this.multiplayer.getObserverWorldPositions(this.position)
+        );
         spiderOut = this.spider.update(
           dt,
           this.elapsed,
@@ -2286,7 +2349,9 @@ export class DoomGameApp {
         );
       }
     } else if (this.multiplayer && this.multiplayer.isHost) {
-      this.spider.ensureExitedCinematic();
+      this.spider.ensureExitedCinematic(
+        this.multiplayer.getObserverWorldPositions(this.position)
+      );
       const candidates = this.multiplayer.buildSpiderPlayerCandidates({
         pos: this.position,
         yaw: this.yaw,
@@ -2424,16 +2489,17 @@ export class DoomGameApp {
     }
 
     this.touchControls.syncState({
-      overlayBlocked: false,
+      overlayBlocked: overlayInputLocked,
       inCaptureSequence: false,
       isSprinting: sprinting,
       isCrouchedOrSliding: isCrouching || isSliding,
       canTriggerSlide:
+        !overlayInputLocked &&
         sprinting &&
         planarSpeed > 6.0 &&
         !isSliding &&
         canPlayerSlideWithStamina(this.staminaState),
-      interactContext: touchInteractContext,
+      interactContext: overlayInputLocked ? 'NONE' : touchInteractContext,
       inMultiplayer: Boolean(this.multiplayer),
       isPushToTalkActive: Boolean(this.multiplayer?.localVoiceSpeaking),
     });

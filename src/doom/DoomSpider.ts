@@ -434,10 +434,13 @@ export class DoomSpider {
   private readonly desiredMoveDir = new THREE.Vector3(0, 0, -1);
   private commandedSpeed = 0;
   private stuckTimer = 0;
+  private lastRemotePacketRef: object | null = null;
+  private remotePacketAgeSec = 0;
 
   private readonly tmpA = new THREE.Vector3();
   private readonly tmpB = new THREE.Vector3();
   private readonly tmpC = new THREE.Vector3();
+  private readonly tmpRotAxis = new THREE.Vector3();
   private readonly tmpRight = new THREE.Vector3();
   private readonly tmpInvBodyQuat = new THREE.Quaternion();
   private readonly tmpCoxaDir = new THREE.Vector3();
@@ -507,31 +510,94 @@ export class DoomSpider {
   }
 
   /**
-   * Reposiciona a aranha em um ponto aleatório distante do Ninho após ela deixar o jogador preso na teia!
+   * Reposiciona a aranha em um ponto aleatório distante do Ninho (e de quaisquer observadores vivos)
+   * durante o apagão de inconsciência!
    */
-  relocateAwayAfterAbduction(): void {
-    const retreatCell = pickRandomWalkableCellFarFrom(
+  relocateAwayAfterAbduction(
+    avoidWorldPositions?: readonly THREE.Vector3[]
+  ): void {
+    let bestCell = pickRandomWalkableCellFarFrom(
       this.webManager.lairCenter.x,
       this.webManager.lairCenter.z,
       24.0
     );
-    const farWorld = gridCellToWorld(retreatCell.gx, retreatCell.gz);
+
+    if (avoidWorldPositions && avoidWorldPositions.length > 0) {
+      let bestMinDist = -1;
+      for (let attempt = 0; attempt < 24; attempt++) {
+        const cand = pickRandomWalkableCellFarFrom(
+          this.webManager.lairCenter.x,
+          this.webManager.lairCenter.z,
+          22.0
+        );
+        const cw = gridCellToWorld(cand.gx, cand.gz);
+        let minObsDist = Infinity;
+        for (const obs of avoidWorldPositions) {
+          const d = Math.hypot(cw.x - obs.x, cw.z - obs.z);
+          if (d < minObsDist) minObsDist = d;
+        }
+        if (minObsDist > bestMinDist) {
+          bestMinDist = minObsDist;
+          bestCell = cand;
+          if (minObsDist >= 22.0) break;
+        }
+      }
+    }
+
+    const farWorld = gridCellToWorld(bestCell.gx, bestCell.gz);
+    const hasWall = this.hasWallForWebAt(farWorld.x, farWorld.z);
     this.placeAtCell(
       farWorld.x,
       farWorld.z,
-      Math.random() < 0.7 ? 'CEILING' : 'FLOOR'
+      hasWall && Math.random() < 0.65 ? 'CEILING' : 'FLOOR'
     );
     this.postAbductionGraceTimer = 7.5;
   }
 
   /**
-   * Snapshot completo do estado da Aranha Gigante (incluindo arrasto/abdução cinemática)
-   * para replicação multiplayer em tempo real.
+   * Finaliza uma abdução/sequestro em Multiplayer sem JAMAIS teletransportar a Aranha
+   * na frente de aliados vivos que estejam observando ou próximos!
+   */
+  finishAbductionRetreat(
+    observerPositions?: readonly THREE.Vector3[]
+  ): void {
+    this.cinematicMode = null;
+    this.lastCinematicMode = null;
+    this.remoteDrivenCinematic = false;
+    this.searchingAroundLastKnown = false;
+
+    const hasNearbyOrWatchingObserver = Boolean(
+      observerPositions?.some((obs) => {
+        const d = Math.hypot(obs.x - this.bodyPos.x, obs.z - this.bodyPos.z);
+        return d < 25.0 || this.hasLineOfSight(this.bodyPos, obs, false);
+      })
+    );
+
+    if (hasNearbyOrWatchingObserver) {
+      // Sai correndo fisicamente pelos corredores a partir da posição atual (ZERO teleporte!)
+      this.state = 'FLEE_RETREAT';
+      this.stateTimer = 0;
+      this.surfaceMode = 'FLOOR';
+      this.climbedWallNormal.set(0, 0, 0);
+      this.postAbductionGraceTimer = 7.5;
+      this.pickFarRetreatPath(this.webManager.lairCenter);
+      return;
+    }
+
+    this.relocateAwayAfterAbduction(observerPositions);
+  }
+
+  /**
+   * Snapshot completo do estado da Aranha Gigante (incluindo velocidade e abdução cinemática)
+   * para replicação multiplayer em tempo real sem engasgos nem saltos.
    */
   getNetworkSnapshot(victimId: string | null = null): {
     x: number;
     y: number;
     z: number;
+    vx: number;
+    vy: number;
+    vz: number;
     upX: number;
     upY: number;
     upZ: number;
@@ -551,6 +617,9 @@ export class DoomSpider {
       x: this.bodyPos.x,
       y: this.bodyPos.y,
       z: this.bodyPos.z,
+      vx: this.smoothVel.x,
+      vy: this.smoothVel.y,
+      vz: this.smoothVel.z,
       upX: this.currentUp.x,
       upY: this.currentUp.y,
       upZ: this.currentUp.z,
@@ -660,16 +729,24 @@ export class DoomSpider {
     this.searchingAroundLastKnown = false;
     this.state = 'FLEE_RETREAT';
     this.stateTimer = 0;
-    this.surfaceMode = 'CEILING';
+    // Se já estava no piso durante bote/arrasto, foge correndo pelo piso antes de escalar parede/teto
+    // (evita que as 8 patas saltem 3.3m para o teto instantaneamente num único quadro!)
+    if (this.currentUp.y > 0.25) {
+      this.surfaceMode = 'FLOOR';
+    } else if (this.hasWallForWebAt(this.bodyPos.x, this.bodyPos.z)) {
+      this.surfaceMode = 'CEILING';
+    } else {
+      this.surfaceMode = 'FLOOR';
+    }
     this.climbedWallNormal.set(0, 0, 0);
     this.postAbductionGraceTimer = 5.0;
+    this.resolveBodyMazeCollision();
     this.pickFarRetreatPath(threatPos);
-    this.snapAllFeetAroundBody();
   }
 
   /**
    * Aplica suavemente o estado da Aranha recebido pela rede nos clientes conectados,
-   * incluindo animação em 3ª pessoa quando um aliado está sendo atacado/arrastado até o ninho!
+   * incluindo extrapolação curta de velocidade sem saltos e animação em 3ª pessoa!
    */
   applyRemoteNetworkState(
     dt: number,
@@ -678,6 +755,9 @@ export class DoomSpider {
       x: number;
       y: number;
       z: number;
+      vx?: number;
+      vy?: number;
+      vz?: number;
       upX: number;
       upY: number;
       upZ: number;
@@ -697,6 +777,8 @@ export class DoomSpider {
     localPlayerYaw: number,
     onCatchLocalPlayer: () => void
   ): { cameraShakeAmount: number; playerDistance: number } {
+    const safeDt = Math.min(0.05, Math.max(0.0005, dt));
+
     // Se a própria máquina local está sofrendo a cena em 1ª pessoa, não sobrescreve
     if (this.state === 'CINEMATIC_SEQUENCE' && !this.remoteDrivenCinematic) {
       return { cameraShakeAmount: 0, playerDistance: 0 };
@@ -712,7 +794,7 @@ export class DoomSpider {
         pkt.victimZ ?? pkt.z
       );
       this.updateCinematicSequence(
-        dt,
+        safeDt,
         elapsed,
         pkt.cinematicMode,
         pkt.cinematicProgress ?? 0.5,
@@ -733,24 +815,41 @@ export class DoomSpider {
       this.cinematicMode = null;
       this.lastCinematicMode = null;
       this.state = (pkt.state as SpiderBehaviorState) || 'STALK_PATROL';
-      this.snapAllFeetAroundBody();
     }
 
-    const blend = 1 - Math.exp(-14 * dt);
-    const targetPos = this.tmpB.set(pkt.x, pkt.y, pkt.z);
-    if (this.bodyPos.distanceToSquared(targetPos) > 36) {
-      this.bodyPos.copy(targetPos);
-      this.prevBodyPos.copy(targetPos);
+    if (this.lastRemotePacketRef !== pkt) {
+      this.lastRemotePacketRef = pkt;
+      this.remotePacketAgeSec = 0;
+    } else {
+      this.remotePacketAgeSec = Math.min(0.18, this.remotePacketAgeSec + safeDt);
+    }
+
+    const blend = 1 - Math.exp(-15 * safeDt);
+    const targetPos = this.tmpB.set(
+      pkt.x + (pkt.vx ?? 0) * this.remotePacketAgeSec,
+      pkt.y + (pkt.vy ?? 0) * this.remotePacketAgeSec * 0.5,
+      pkt.z + (pkt.vz ?? 0) * this.remotePacketAgeSec
+    );
+    const distSqToTarget = this.bodyPos.distanceToSquared(targetPos);
+    if (distSqToTarget > 196) {
+      // Apenas sincroniza corte longo (>14m, ex.: reconexão ou relocação durante apagão)
+      this.bodyPos.set(pkt.x, pkt.y, pkt.z);
+      this.prevBodyPos.copy(this.bodyPos);
       this.snapAllFeetAroundBody();
     } else {
       this.bodyPos.lerp(targetPos, blend);
+      this.resolveBodyMazeCollision();
     }
 
     this.targetUp.set(pkt.upX, pkt.upY, pkt.upZ).normalize();
-    this.currentUp.lerp(this.targetUp, blend).normalize();
-    this.tmpC.set(pkt.fwdX, pkt.fwdY, pkt.fwdZ);
+    this.rotateUpToward(this.targetUp, 7.5 * safeDt);
+    this.tmpC.set(pkt.fwdX, 0, pkt.fwdZ);
     if (this.tmpC.lengthSq() > 1e-4) {
-      this.currentForward.lerp(this.tmpC.normalize(), blend).normalize();
+      this.turnHorizontalToward(
+        this.bodyPos.x + pkt.fwdX,
+        this.bodyPos.z + pkt.fwdZ,
+        9.0 * safeDt
+      );
     }
 
     const prevRemoteState = this.state;
@@ -761,8 +860,8 @@ export class DoomSpider {
 
     this.tmpA
       .subVectors(this.bodyPos, this.prevBodyPos)
-      .multiplyScalar(1 / Math.max(0.0005, dt));
-    this.smoothVel.lerp(this.tmpA, Math.min(1, dt * 16));
+      .multiplyScalar(1 / safeDt);
+    this.smoothVel.lerp(this.tmpA, Math.min(1, safeDt * 16));
     this.prevBodyPos.copy(this.bodyPos);
 
     const distToPlayer = Math.hypot(
@@ -798,7 +897,7 @@ export class DoomSpider {
       }
     }
 
-    this.chitterTimer -= dt;
+    this.chitterTimer -= safeDt;
     if (this.chitterTimer <= 0) {
       this.chitterTimer = this.isChasingOrAlert
         ? 1.8 + Math.random() * 1.4
@@ -816,10 +915,12 @@ export class DoomSpider {
     const targetRage = this.isChasingOrAlert ? 1.0 : 0.0;
     this.chitinMat.uniforms.uRageGlow.value +=
       (targetRage - this.chitinMat.uniforms.uRageGlow.value) *
-      Math.min(1, dt * 6);
+      Math.min(1, safeDt * 6);
+    this.eyeMat.uniforms.uRageGlow.value =
+      this.chitinMat.uniforms.uRageGlow.value;
 
     this.updateBodyAndLimbsIK(
-      dt,
+      safeDt,
       elapsed,
       localPlayerPos,
       stereoPan,
@@ -845,9 +946,6 @@ export class DoomSpider {
   }
 
   /**
-   * Garante que a aranha saia de qualquer estado cinemático caso ainda esteja nele.
-   */
-  /**
    * Conduz a Aranha em 3ª pessoa para representar um aliado remoto sendo atacado/arrastado,
    * marcando `remoteDrivenCinematic = true` para transição suave quando o evento terminar ou for interrompido!
    */
@@ -871,10 +969,11 @@ export class DoomSpider {
     );
   }
 
-  ensureExitedCinematic(): void {
+  ensureExitedCinematic(
+    observerPositions?: readonly THREE.Vector3[]
+  ): void {
     if (this.state === 'CINEMATIC_SEQUENCE') {
-      this.remoteDrivenCinematic = false;
-      this.relocateAwayAfterAbduction();
+      this.finishAbductionRetreat(observerPositions);
     }
   }
 
@@ -1604,12 +1703,17 @@ export class DoomSpider {
       return { cameraShakeAmount: 0, playerDistance: 0 };
     }
 
-    this.stateTimer += dt;
-    this.webCooldownTimer = Math.max(0, this.webCooldownTimer - dt);
-    this.pathRepathTimer = Math.max(0, this.pathRepathTimer - dt);
+    const safeDt = Math.min(0.05, Math.max(0.0005, dt));
+    const frameStartX = this.bodyPos.x;
+    const frameStartY = this.bodyPos.y;
+    const frameStartZ = this.bodyPos.z;
+
+    this.stateTimer += safeDt;
+    this.webCooldownTimer = Math.max(0, this.webCooldownTimer - safeDt);
+    this.pathRepathTimer = Math.max(0, this.pathRepathTimer - safeDt);
     this.postAbductionGraceTimer = Math.max(
       0,
-      this.postAbductionGraceTimer - dt
+      this.postAbductionGraceTimer - safeDt
     );
 
     const distToPlayer = Math.hypot(
@@ -1656,7 +1760,11 @@ export class DoomSpider {
           }
           this.state = 'FLEE_RETREAT';
           this.stateTimer = 0;
-          this.surfaceMode = 'CEILING';
+          if (this.hasWallForWebAt(this.bodyPos.x, this.bodyPos.z)) {
+            this.surfaceMode = 'CEILING';
+          } else {
+            this.surfaceMode = 'FLOOR';
+          }
           this.pickFarRetreatPath(fl.position);
           break;
         }
@@ -1684,7 +1792,7 @@ export class DoomSpider {
         this.pathRepathTimer = 0;
       }
     } else {
-      this.lostSightTimer += dt;
+      this.lostSightTimer += safeDt;
     }
 
     let cameraShakeAmount = 0;
@@ -1694,7 +1802,7 @@ export class DoomSpider {
 
     if (this.state === 'FLEE_RETREAT') {
       this.commandedSpeed = 7.2;
-      this.moveAlongPath(dt, 7.2);
+      this.moveAlongPath(safeDt, 7.2);
       if (this.stateTimer > 5.8) {
         this.state = 'STALK_PATROL';
         this.stateTimer = 0;
@@ -1702,7 +1810,9 @@ export class DoomSpider {
         this.pathWaypoints = [];
       }
     } else if (this.state === 'ALERT_WINDUP') {
-      this.faceHorizontalToward(playerPos.x, playerPos.z, dt * 10);
+      this.surfaceMode = 'FLOOR';
+      this.climbedWallNormal.set(0, 0, 0);
+      this.turnHorizontalToward(playerPos.x, playerPos.z, safeDt * 8.5);
       if (this.stateTimer >= 0.42) {
         this.state = 'FRENZY_CHASE';
         this.stateTimer = 0;
@@ -1710,9 +1820,13 @@ export class DoomSpider {
         this.pathRepathTimer = 0;
       }
     } else if (this.state === 'FRENZY_CHASE') {
+      // Durante toda a perseguição permanece firme no chão (ZERO flips aleatórios chão/teto no ar!)
+      this.surfaceMode = 'FLOOR';
+      this.climbedWallNormal.set(0, 0, 0);
+
       // Se ainda está vendo/ouvindo o jogador ou indo até o último ponto avistado:
       if (!this.searchingAroundLastKnown) {
-        if (this.pathRepathTimer <= 0) {
+        if (this.pathRepathTimer <= 0 || this.pathWaypoints.length === 0) {
           this.pathRepathTimer = 0.28;
           this.buildGridPathTo(
             this.lastKnownPlayerPos.x,
@@ -1737,14 +1851,6 @@ export class DoomSpider {
         this.pickSearchPathNear(this.lastKnownPlayerPos);
       }
 
-      if (canSeePlayer && distToPlayer < 6.0) {
-        this.surfaceMode = 'FLOOR';
-      } else if (Math.random() < dt * 0.45) {
-        const roll = Math.random();
-        this.surfaceMode =
-          roll < 0.55 ? 'FLOOR' : roll < 0.8 ? 'CEILING' : 'WALL';
-      }
-
       // Velocidade rápida e ameaçadora, porém um pouco reduzida para dar chance justa de fuga correndo/deslizando!
       const chaseSpeed = this.webManager.isPlayerEnsnared
         ? 8.45
@@ -1752,12 +1858,22 @@ export class DoomSpider {
           ? 7.2
           : 7.75;
       this.commandedSpeed = chaseSpeed;
-      if (canSeePlayer && distToPlayer < 5.6) {
-        this.surfaceMode = 'FLOOR';
-        this.climbedWallNormal.set(0, 0, 0);
-        this.moveDirectlyToward(playerPos.x, playerPos.z, dt, chaseSpeed);
+
+      // Só avança em linha reta para o jogador se todo o corredor varrido pelo corpo (raio 0.60m) estiver livre de quinas!
+      if (
+        canSeePlayer &&
+        distToPlayer < 5.6 &&
+        this.hasClearBodySweep(
+          this.bodyPos.x,
+          this.bodyPos.z,
+          playerPos.x,
+          playerPos.z,
+          0.6
+        )
+      ) {
+        this.moveDirectlyToward(playerPos.x, playerPos.z, safeDt, chaseSpeed);
       } else {
-        this.moveAlongPath(dt, chaseSpeed);
+        this.moveAlongPath(safeDt, chaseSpeed);
       }
 
       if (distToListener < 10.0) {
@@ -1781,14 +1897,18 @@ export class DoomSpider {
         this.state = 'STALK_PATROL';
         this.stateTimer = 0;
         this.searchingAroundLastKnown = false;
-        this.surfaceMode = Math.random() < 0.65 ? 'CEILING' : 'WALL';
+        if (this.hasWallForWebAt(this.bodyPos.x, this.bodyPos.z)) {
+          this.surfaceMode = Math.random() < 0.65 ? 'CEILING' : 'WALL';
+        } else {
+          this.surfaceMode = 'FLOOR';
+        }
         this.pathWaypoints = [];
       }
     } else if (this.state === 'SPINNING_WEB') {
       this.surfaceMode = 'FLOOR';
-      this.churnYaw += dt * 2.4;
+      this.churnYaw += safeDt * 2.4;
       if (
-        Math.floor((this.stateTimer - dt) * 3) !==
+        Math.floor((this.stateTimer - safeDt) * 3) !==
         Math.floor(this.stateTimer * 3)
       ) {
         this.sound.playSpiderWebSpin(
@@ -1801,8 +1921,11 @@ export class DoomSpider {
       if (canSeePlayer) {
         this.triggerAlertScream(stereoPan, distToListener, listenerWallCount);
       } else if (this.stateTimer >= 2.3) {
-        const { gx, gz } = worldToGridCell(this.bodyPos.x, this.bodyPos.z);
-        const cellCenter = gridCellToWorld(gx, gz);
+        const walkable = this.findNearestWalkableCell(
+          this.bodyPos.x,
+          this.bodyPos.z
+        );
+        const cellCenter = gridCellToWorld(walkable.gx, walkable.gz);
         const spawned = this.webManager.spawnWebTrap(
           cellCenter.x,
           cellCenter.z,
@@ -1814,11 +1937,15 @@ export class DoomSpider {
         this.webCooldownTimer = 15.0;
         this.state = 'STALK_PATROL';
         this.stateTimer = 0;
-        this.surfaceMode = Math.random() < 0.7 ? 'CEILING' : 'WALL';
+        if (this.hasWallForWebAt(this.bodyPos.x, this.bodyPos.z)) {
+          this.surfaceMode = Math.random() < 0.7 ? 'CEILING' : 'WALL';
+        } else {
+          this.surfaceMode = 'FLOOR';
+        }
       }
     } else if (this.state === 'CEILING_AMBUSH') {
       this.surfaceMode = 'CEILING';
-      this.churnYaw += dt * 0.25 * Math.sin(elapsed * 0.6);
+      this.churnYaw += safeDt * 0.25 * Math.sin(elapsed * 0.6);
 
       if (canSeePlayer) {
         this.triggerAlertScream(stereoPan, distToListener, listenerWallCount);
@@ -1834,15 +1961,19 @@ export class DoomSpider {
           this.pickRandomPatrolPath();
         }
         this.commandedSpeed = 1.18;
-        this.moveAlongPath(dt, 1.18);
+        this.moveAlongPath(safeDt, 1.18);
 
-        this.surfaceDecisionTimer -= dt;
+        this.surfaceDecisionTimer -= safeDt;
         if (this.surfaceDecisionTimer <= 0) {
-          this.surfaceDecisionTimer = 4.0 + Math.random() * 4.5;
+          this.surfaceDecisionTimer = 4.5 + Math.random() * 4.5;
+          const hasClimbWall = this.hasWallForWebAt(
+            this.bodyPos.x,
+            this.bodyPos.z
+          );
           const roll = Math.random();
-          if (roll < 0.36) {
+          if (hasClimbWall && roll < 0.36) {
             this.surfaceMode = 'CEILING';
-          } else if (roll < 0.68) {
+          } else if (hasClimbWall && roll < 0.68) {
             this.surfaceMode = 'WALL';
           } else {
             this.surfaceMode = 'FLOOR';
@@ -1854,7 +1985,7 @@ export class DoomSpider {
           } else if (
             this.webCooldownTimer <= 0 &&
             distToPlayer > 7.5 &&
-            this.hasWallForWebAt(this.bodyPos.x, this.bodyPos.z) &&
+            hasClimbWall &&
             !this.webManager.hasTrapNear(this.bodyPos.x, this.bodyPos.z, 3.6) &&
             Math.random() < 0.38
           ) {
@@ -1865,52 +1996,83 @@ export class DoomSpider {
       }
     }
 
-    this.updateSurfaceAttachment(dt, elapsed);
+    this.updateSurfaceAttachment(safeDt, elapsed);
+    this.resolveBodyMazeCollision();
 
-    // Guarda anti-travamento em cantos/quinas: se comandada a andar mas bloqueada, desce da parede e realinha ao corredor!
-    if (this.commandedSpeed > 0.5 && dt > 1e-4) {
+    // Guarda anti-travamento SUAVE (ZERO teletransporte de `bodyPos`!):
+    // Se comandada a andar mas presa numa quina, desce para o chão e insere o centro do corredor
+    // como próximo waypoint para contornar a quina caminhando continuamente!
+    if (this.commandedSpeed > 0.5 && safeDt > 1e-4) {
       const planarMoved = Math.hypot(
         this.bodyPos.x - prevMoveX,
         this.bodyPos.z - prevMoveZ
       );
-      if (planarMoved < this.commandedSpeed * dt * 0.22) {
-        this.stuckTimer += dt;
-        if (this.stuckTimer > 0.28) {
+      if (planarMoved < this.commandedSpeed * safeDt * 0.22) {
+        this.stuckTimer += safeDt;
+        if (this.stuckTimer > 0.32) {
           this.stuckTimer = 0;
           this.surfaceMode = 'FLOOR';
           this.climbedWallNormal.set(0, 0, 0);
-          const { gx, gz } = worldToGridCell(this.bodyPos.x, this.bodyPos.z);
-          if (!isSolidCell(LABYRINTH_MAP, gx, gz)) {
-            const cw = gridCellToWorld(gx, gz);
-            this.bodyPos.x += (cw.x - this.bodyPos.x) * 0.35;
-            this.bodyPos.z += (cw.z - this.bodyPos.z) * 0.35;
+          const walkable = this.findNearestWalkableCell(
+            this.bodyPos.x,
+            this.bodyPos.z
+          );
+          const cw = gridCellToWorld(walkable.gx, walkable.gz);
+          const distToCenter = Math.hypot(
+            cw.x - this.bodyPos.x,
+            cw.z - this.bodyPos.z
+          );
+          if (this.state === 'STALK_PATROL' && this.pathWaypoints.length <= 1) {
+            this.pickRandomPatrolPath();
+          } else if (this.state === 'FRENZY_CHASE') {
+            this.pathRepathTimer = 0;
+            this.buildGridPathTo(
+              this.lastKnownPlayerPos.x,
+              this.lastKnownPlayerPos.z
+            );
+          }
+          if (distToCenter > 0.18) {
+            const firstWp = this.pathWaypoints[0];
             if (
-              this.pathWaypoints.length > 0 &&
-              Math.hypot(cw.x - this.bodyPos.x, cw.z - this.bodyPos.z) > 0.25
+              !firstWp ||
+              Math.hypot(firstWp.x - cw.x, firstWp.z - cw.z) > 0.2
             ) {
               this.pathWaypoints.unshift({ x: cw.x, z: cw.z });
-            } else if (this.state === 'STALK_PATROL') {
-              this.pickRandomPatrolPath();
-            } else if (this.state === 'FRENZY_CHASE') {
-              this.pathRepathTimer = 0;
             }
           }
         }
       } else {
-        this.stuckTimer = Math.max(0, this.stuckTimer - dt * 3.0);
+        this.stuckTimer = Math.max(0, this.stuckTimer - safeDt * 3.0);
       }
     } else {
       this.stuckTimer = 0;
     }
 
+    // Guarda física anti-teletransporte absoluta por quadro: garante continuidade C0 estrita de posição!
+    const maxPlanarStep = Math.max(0.24, this.commandedSpeed * safeDt * 1.45);
+    const frameDx = this.bodyPos.x - frameStartX;
+    const frameDz = this.bodyPos.z - frameStartZ;
+    const framePlanar = Math.hypot(frameDx, frameDz);
+    if (framePlanar > maxPlanarStep && framePlanar > 1e-6) {
+      const clampScale = maxPlanarStep / framePlanar;
+      this.bodyPos.x = frameStartX + frameDx * clampScale;
+      this.bodyPos.z = frameStartZ + frameDz * clampScale;
+      this.resolveBodyMazeCollision();
+    }
+    const maxVertStep = Math.max(0.18, 5.2 * safeDt);
+    const frameDy = this.bodyPos.y - frameStartY;
+    if (Math.abs(frameDy) > maxVertStep) {
+      this.bodyPos.y = frameStartY + Math.sign(frameDy) * maxVertStep;
+    }
+
     this.tmpA
       .subVectors(this.bodyPos, this.prevBodyPos)
-      .multiplyScalar(1 / Math.max(0.0005, dt));
-    this.smoothVel.lerp(this.tmpA, Math.min(1, dt * 16));
+      .multiplyScalar(1 / safeDt);
+    this.smoothVel.lerp(this.tmpA, Math.min(1, safeDt * 16));
     this.prevBodyPos.copy(this.bodyPos);
 
     // Estalidos orgânicos de quelíceras/mandíbulas quando a Aranha espreita perto do ouvinte!
-    this.chitterTimer -= dt;
+    this.chitterTimer -= safeDt;
     if (this.chitterTimer <= 0) {
       this.chitterTimer = this.isChasingOrAlert
         ? 1.8 + Math.random() * 1.4
@@ -1928,12 +2090,12 @@ export class DoomSpider {
     const targetRage = this.isChasingOrAlert ? 1.0 : 0.0;
     this.chitinMat.uniforms.uRageGlow.value +=
       (targetRage - this.chitinMat.uniforms.uRageGlow.value) *
-      Math.min(1, dt * 6);
+      Math.min(1, safeDt * 6);
     this.eyeMat.uniforms.uRageGlow.value =
       this.chitinMat.uniforms.uRageGlow.value;
 
     this.updateBodyAndLimbsIK(
-      dt,
+      safeDt,
       elapsed,
       playerPos,
       stereoPan,
@@ -2091,18 +2253,122 @@ export class DoomSpider {
     return true;
   }
 
+  /**
+   * Encontra sempre a célula caminhável válida mais próxima de `(wx, wz)`,
+   * garantindo que o pathfinding jamais inicie ou termine dentro de um bloco sólido `#`.
+   */
+  private findNearestWalkableCell(
+    wx: number,
+    wz: number
+  ): { gx: number; gz: number } {
+    const rows = LABYRINTH_MAP.length;
+    const cols = LABYRINTH_MAP[0].length;
+    const raw = worldToGridCell(wx, wz);
+    const gx0 = Math.max(1, Math.min(cols - 2, raw.gx));
+    const gz0 = Math.max(1, Math.min(rows - 2, raw.gz));
+    if (!isSolidCell(LABYRINTH_MAP, gx0, gz0)) {
+      return { gx: gx0, gz: gz0 };
+    }
+
+    let bestGx = 1;
+    let bestGz = 1;
+    let bestDistSq = Infinity;
+    for (let radius = 1; radius <= 6; radius++) {
+      for (let dz = -radius; dz <= radius; dz++) {
+        for (let dx = -radius; dx <= radius; dx++) {
+          const nx = gx0 + dx;
+          const nz = gz0 + dz;
+          if (nx < 1 || nx >= cols - 1 || nz < 1 || nz >= rows - 1) continue;
+          if (isSolidCell(LABYRINTH_MAP, nx, nz)) continue;
+          const cw = gridCellToWorld(nx, nz);
+          const dSq = (cw.x - wx) * (cw.x - wx) + (cw.z - wz) * (cw.z - wz);
+          if (dSq < bestDistSq) {
+            bestDistSq = dSq;
+            bestGx = nx;
+            bestGz = nz;
+          }
+        }
+      }
+      if (bestDistSq < Infinity) {
+        return { gx: bestGx, gz: bestGz };
+      }
+    }
+
+    return { gx: bestGx, gz: bestGz };
+  }
+
+  /**
+   * Verifica se o cilindro físico do corpo da Aranha (`radius`) consegue percorrer em linha reta
+   * `(fromX, fromZ) -> (toX, toZ)` sem esbarrar em nenhuma quina ou parede sólida.
+   */
+  private hasClearBodySweep(
+    fromX: number,
+    fromZ: number,
+    toX: number,
+    toZ: number,
+    radius = 0.58
+  ): boolean {
+    const dx = toX - fromX;
+    const dz = toZ - fromZ;
+    const dist = Math.hypot(dx, dz);
+    if (dist < 1e-4) return true;
+
+    const steps = Math.max(2, Math.ceil(dist / 0.22));
+    const rSq = radius * radius;
+    for (let s = 1; s <= steps; s++) {
+      const f = s / steps;
+      const px = fromX + dx * f;
+      const pz = fromZ + dz * f;
+      for (let i = 0; i < this.colliders.length; i++) {
+        const b = this.colliders[i].box;
+        if (b.max.y < 0.5) continue;
+        const cx = Math.max(b.min.x, Math.min(px, b.max.x));
+        const cz = Math.max(b.min.z, Math.min(pz, b.max.z));
+        const ox = px - cx;
+        const oz = pz - cz;
+        if (ox * ox + oz * oz < rSq) {
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+
   private buildGridPathTo(targetX: number, targetZ: number): void {
     const rows = LABYRINTH_MAP.length;
     const cols = LABYRINTH_MAP[0].length;
-    const start = worldToGridCell(this.bodyPos.x, this.bodyPos.z);
-    const goal = worldToGridCell(targetX, targetZ);
+    const start = this.findNearestWalkableCell(this.bodyPos.x, this.bodyPos.z);
+    const goal = this.findNearestWalkableCell(targetX, targetZ);
 
-    const clampG = (v: number, max: number) =>
-      Math.max(1, Math.min(max - 2, v));
-    const sx = clampG(start.gx, cols);
-    const sz = clampG(start.gz, rows);
-    const gxGoal = clampG(goal.gx, cols);
-    const gzGoal = clampG(goal.gz, rows);
+    const sx = start.gx;
+    const sz = start.gz;
+    const gxGoal = goal.gx;
+    const gzGoal = goal.gz;
+
+    const goalCenter = gridCellToWorld(gxGoal, gzGoal);
+    const rawGoalCell = worldToGridCell(targetX, targetZ);
+    const safeTarget =
+      !isSolidCell(LABYRINTH_MAP, rawGoalCell.gx, rawGoalCell.gz) &&
+      this.hasClearBodySweep(goalCenter.x, goalCenter.z, targetX, targetZ, 0.52)
+        ? { x: targetX, z: targetZ }
+        : { x: goalCenter.x, z: goalCenter.z };
+
+    if (sx === gxGoal && sz === gzGoal) {
+      if (
+        this.hasClearBodySweep(
+          this.bodyPos.x,
+          this.bodyPos.z,
+          safeTarget.x,
+          safeTarget.z,
+          0.55
+        )
+      ) {
+        this.pathWaypoints = [safeTarget];
+      } else {
+        this.pathWaypoints = [{ x: goalCenter.x, z: goalCenter.z }, safeTarget];
+      }
+      return;
+    }
 
     const total = rows * cols;
     const visited = new Uint8Array(total);
@@ -2145,25 +2411,77 @@ export class DoomSpider {
     }
 
     if (!found) {
-      this.pathWaypoints = [{ x: targetX, z: targetZ }];
+      const startCenter = gridCellToWorld(sx, sz);
+      this.pathWaypoints = [{ x: startCenter.x, z: startCenter.z }];
       return;
     }
 
-    const rev: Array<{ x: number; z: number }> = [];
+    const cells: Array<{ x: number; z: number }> = [];
     let trace = goalIdx;
-    while (trace !== -1 && trace !== startIdx) {
+    while (trace !== -1) {
       const tx = trace % cols;
       const tz = Math.floor(trace / cols);
-      rev.push(gridCellToWorld(tx, tz));
+      cells.push(gridCellToWorld(tx, tz));
+      if (trace === startIdx) break;
       trace = parent[trace];
     }
-    rev.reverse();
-    if (rev.length > 0) {
-      rev[rev.length - 1] = { x: targetX, z: targetZ };
-    } else {
-      rev.push({ x: targetX, z: targetZ });
+    cells.reverse();
+
+    // Só descarta o centro da célula inicial se o corpo da Aranha puder ir direto para `cells[1]`
+    // sem raspar em nenhuma quina de 90°! Isso evita 100% cortar parede ao recalcular rota!
+    if (
+      cells.length >= 2 &&
+      this.hasClearBodySweep(
+        this.bodyPos.x,
+        this.bodyPos.z,
+        cells[1].x,
+        cells[1].z,
+        0.57
+      )
+    ) {
+      cells.shift();
     }
-    this.pathWaypoints = rev;
+
+    // No final do caminho, preserva o centro da última célula se ir direto cortar quina!
+    if (cells.length >= 2) {
+      const prevPt = cells[cells.length - 2];
+      if (
+        this.hasClearBodySweep(
+          prevPt.x,
+          prevPt.z,
+          safeTarget.x,
+          safeTarget.z,
+          0.56
+        )
+      ) {
+        cells[cells.length - 1] = safeTarget;
+      } else if (
+        Math.hypot(
+          safeTarget.x - cells[cells.length - 1].x,
+          safeTarget.z - cells[cells.length - 1].z
+        ) > 0.2
+      ) {
+        cells.push(safeTarget);
+      }
+    } else if (cells.length === 1) {
+      if (
+        this.hasClearBodySweep(
+          this.bodyPos.x,
+          this.bodyPos.z,
+          safeTarget.x,
+          safeTarget.z,
+          0.56
+        )
+      ) {
+        cells[0] = safeTarget;
+      } else if (
+        Math.hypot(safeTarget.x - cells[0].x, safeTarget.z - cells[0].z) > 0.2
+      ) {
+        cells.push(safeTarget);
+      }
+    }
+
+    this.pathWaypoints = cells;
   }
 
   private pickRandomPatrolPath(): void {
@@ -2461,15 +2779,25 @@ export class DoomSpider {
     const nx = dx / dist;
     const nz = dz / dist;
 
-    this.faceHorizontalToward(tx, tz, dt * (speed > 5 ? 11 : 4.5));
+    this.turnHorizontalToward(tx, tz, dt * (speed > 5 ? 9.5 : 4.2));
 
-    const step = Math.min(dist, speed * dt);
-    this.bodyPos.x += nx * step;
-    this.bodyPos.z += nz * step;
+    const totalStep = Math.min(dist, speed * dt);
+    const subSteps = Math.max(1, Math.ceil(totalStep / 0.26));
+    const stepPerSub = totalStep / subSteps;
+    for (let s = 0; s < subSteps; s++) {
+      this.bodyPos.x += nx * stepPerSub;
+      this.bodyPos.z += nz * stepPerSub;
+      this.resolveBodyMazeCollision();
+    }
+  }
 
+  /**
+   * Resolve colisão cilíndrica 2D contra todos os blocos do labirinto expulsando ESTRITAMENTE
+   * para faces abertas (caminháveis), impedindo 100% atravessar ou tunelar entre blocos adjacentes!
+   */
+  private resolveBodyMazeCollision(): void {
     const bodyRadius = 0.56;
-    // Duas passadas garantem deslizamento suave em quinas em L sem prender nem atravessar!
-    for (let pass = 0; pass < 2; pass++) {
+    for (let pass = 0; pass < 3; pass++) {
       for (let i = 0; i < this.colliders.length; i++) {
         const b = this.colliders[i].box;
         if (b.max.y < 0.5) continue;
@@ -2485,29 +2813,133 @@ export class DoomSpider {
             this.bodyPos.x += (ox / d) * push;
             this.bodyPos.z += (oz / d) * push;
           } else {
-            // Segurança caso o centro caia dentro de um bloco sólido: expulsa pela face mais rasa
-            const pLeft = this.bodyPos.x - b.min.x;
-            const pRight = b.max.x - this.bodyPos.x;
-            const pFront = this.bodyPos.z - b.min.z;
-            const pBack = b.max.z - this.bodyPos.z;
-            const minP = Math.min(pLeft, pRight, pFront, pBack);
-            if (minP === pLeft) this.bodyPos.x = b.min.x - bodyRadius;
-            else if (minP === pRight) this.bodyPos.x = b.max.x + bodyRadius;
-            else if (minP === pFront) this.bodyPos.z = b.min.z - bodyRadius;
-            else this.bodyPos.z = b.max.z + bodyRadius;
+            // Centro caiu exatamente dentro de um bloco sólido: expulsa SOMENTE por uma face vizinha ABERTA!
+            const midX = (b.min.x + b.max.x) * 0.5;
+            const midZ = (b.min.z + b.max.z) * 0.5;
+            const blockCell = worldToGridCell(midX, midZ);
+
+            let bestPen = Infinity;
+            let resolved = false;
+            let outX = this.bodyPos.x;
+            let outZ = this.bodyPos.z;
+
+            if (!isSolidCell(LABYRINTH_MAP, blockCell.gx - 1, blockCell.gz)) {
+              const p = this.bodyPos.x - b.min.x;
+              if (p < bestPen) {
+                bestPen = p;
+                outX = b.min.x - bodyRadius;
+                outZ = this.bodyPos.z;
+                resolved = true;
+              }
+            }
+            if (!isSolidCell(LABYRINTH_MAP, blockCell.gx + 1, blockCell.gz)) {
+              const p = b.max.x - this.bodyPos.x;
+              if (p < bestPen) {
+                bestPen = p;
+                outX = b.max.x + bodyRadius;
+                outZ = this.bodyPos.z;
+                resolved = true;
+              }
+            }
+            if (!isSolidCell(LABYRINTH_MAP, blockCell.gx, blockCell.gz - 1)) {
+              const p = this.bodyPos.z - b.min.z;
+              if (p < bestPen) {
+                bestPen = p;
+                outX = this.bodyPos.x;
+                outZ = b.min.z - bodyRadius;
+                resolved = true;
+              }
+            }
+            if (!isSolidCell(LABYRINTH_MAP, blockCell.gx, blockCell.gz + 1)) {
+              const p = b.max.z - this.bodyPos.z;
+              if (p < bestPen) {
+                bestPen = p;
+                outX = this.bodyPos.x;
+                outZ = b.max.z + bodyRadius;
+                resolved = true;
+              }
+            }
+
+            if (resolved) {
+              this.bodyPos.x = outX;
+              this.bodyPos.z = outZ;
+            } else {
+              const safeCell = this.findNearestWalkableCell(
+                this.bodyPos.x,
+                this.bodyPos.z
+              );
+              const safeW = gridCellToWorld(safeCell.gx, safeCell.gz);
+              this.bodyPos.x = safeW.x;
+              this.bodyPos.z = safeW.z;
+            }
           }
         }
       }
     }
   }
 
-  private faceHorizontalToward(tx: number, tz: number, rate: number): void {
+  private turnHorizontalToward(
+    tx: number,
+    tz: number,
+    maxAngleRad: number
+  ): void {
     const dx = tx - this.bodyPos.x;
     const dz = tz - this.bodyPos.z;
     const len = Math.hypot(dx, dz);
     if (len < 1e-4) return;
-    this.tmpC.set(dx / len, 0, dz / len);
-    this.currentForward.lerp(this.tmpC, Math.min(1, rate)).normalize();
+
+    const curLen = Math.hypot(this.currentForward.x, this.currentForward.z);
+    if (curLen < 1e-4) {
+      this.currentForward.set(dx / len, 0, dz / len);
+      return;
+    }
+
+    const curAng = Math.atan2(this.currentForward.x, this.currentForward.z);
+    const dstAng = Math.atan2(dx / len, dz / len);
+    let diff = ((dstAng - curAng + Math.PI) % (Math.PI * 2)) - Math.PI;
+    if (diff < -Math.PI) diff += Math.PI * 2;
+
+    const stepAng =
+      Math.abs(diff) <= maxAngleRad ? diff : Math.sign(diff) * maxAngleRad;
+    const nextAng = curAng + stepAng;
+    this.currentForward.set(Math.sin(nextAng), 0, Math.cos(nextAng)).normalize();
+  }
+
+  private rotateUpToward(
+    desiredUp: THREE.Vector3,
+    maxAngleRad: number
+  ): void {
+    const dot = Math.max(-1, Math.min(1, this.currentUp.dot(desiredUp)));
+    const angle = Math.acos(dot);
+    if (angle < 1e-4) {
+      this.currentUp.copy(desiredUp).normalize();
+      return;
+    }
+
+    this.tmpRotAxis.crossVectors(this.currentUp, desiredUp);
+    if (this.tmpRotAxis.lengthSq() < 1e-5) {
+      // Vetores antipodais (ex.: descendo do teto para o piso): gira pelo eixo lateral da própria Aranha!
+      this.tmpRotAxis.crossVectors(this.currentForward, this.currentUp);
+      if (this.tmpRotAxis.lengthSq() < 1e-5) {
+        this.tmpRotAxis.set(1, 0, 0);
+      }
+    }
+    this.tmpRotAxis.normalize();
+    this.currentUp
+      .applyAxisAngle(this.tmpRotAxis, Math.min(angle, maxAngleRad))
+      .normalize();
+  }
+
+  private faceHorizontalToward(tx: number, tz: number, rate: number): void {
+    if (rate >= 0.999) {
+      const dx = tx - this.bodyPos.x;
+      const dz = tz - this.bodyPos.z;
+      const len = Math.hypot(dx, dz);
+      if (len < 1e-4) return;
+      this.currentForward.set(dx / len, 0, dz / len);
+      return;
+    }
+    this.turnHorizontalToward(tx, tz, rate);
   }
 
   private updateSurfaceAttachment(dt: number, elapsed: number): void {
@@ -2561,20 +2993,8 @@ export class DoomSpider {
 
     const vertLerp = 1 - Math.exp(-7.5 * dt);
     this.bodyPos.y += (desiredY - this.bodyPos.y) * vertLerp;
-    // Evita singularidade antipodal ao descer do teto (0,-1,0) para o piso (0,1,0)
-    // inclinando ao longo do próprio eixo frontal da aranha (mergulho natural, sem entortar para a parede leste!)
-    if (this.currentUp.dot(this.targetUp) < -0.75) {
-      if (
-        Math.abs(this.currentForward.x) + Math.abs(this.currentForward.z) >
-        0.1
-      ) {
-        this.currentUp.addScaledVector(this.currentForward, 0.52);
-      } else {
-        this.currentUp.z -= 0.52;
-      }
-      this.currentUp.normalize();
-    }
-    this.currentUp.lerp(this.targetUp, vertLerp).normalize();
+    // Rotação angular suave e contínua sem singularidades ao transicionar entre Piso, Parede e Teto!
+    this.rotateUpToward(this.targetUp, 6.2 * dt);
   }
 
   private updateBodyAndLimbsIK(
@@ -2772,21 +3192,23 @@ export class DoomSpider {
         rt.footWorld.copy(overriddenFoot);
         activeFoot.copy(overriddenFoot);
       } else {
-        // Guarda física absoluta: impede qualquer pata de ficar esticada longe do corpo
-        if (rt.footWorld.distanceTo(rootWorld) > spec.totalLength * 1.04) {
+        // Apenas em cortes reais de cena (>1.42x alcance) faz snap; durante corrida/descida as patas dão passos rápidos reais!
+        const footDistFromRoot = rt.footWorld.distanceTo(rootWorld);
+        if (footDistFromRoot > spec.totalLength * 1.42) {
           rt.footWorld.copy(rt.targetWorld);
           rt.stepFrom.copy(rt.targetWorld);
           rt.stepping = false;
           rt.stepT = 0;
         }
-        if (rt.stepping && rt.stepFrom.distanceTo(rootWorld) > spec.totalLength * 1.08) {
+        if (rt.stepping && rt.stepFrom.distanceTo(rootWorld) > spec.totalLength * 1.48) {
           rt.stepFrom.copy(rt.targetWorld);
         }
 
         if (rt.stepping) {
+          const stepSpan = rt.stepFrom.distanceTo(rt.targetWorld);
           const longTransition =
-            rt.stepFrom.distanceTo(rt.targetWorld) > 1.45 ? 0.62 : 1.0;
-          const hurry = (frantic ? 0.38 : 1.0) * longTransition;
+            stepSpan > 2.0 ? 0.38 : stepSpan > 1.35 ? 0.56 : 1.0;
+          const hurry = (frantic ? 0.36 : 1.0) * longTransition;
           rt.stepT += dt / (spec.stepTime * hurry);
           if (rt.stepT >= 1) {
             rt.stepping = false;
@@ -2805,8 +3227,7 @@ export class DoomSpider {
           }
         } else if (rt.raiseThreat < 0.1) {
           const drift = rt.footWorld.distanceTo(rt.targetWorld);
-          const overstretched =
-            rt.footWorld.distanceTo(rootWorld) > spec.totalLength * 0.96;
+          const overstretched = footDistFromRoot > spec.totalLength * 0.89;
           const urgentSurfaceShift = drift > 1.55 && airborneCount < 4;
           const neighboursPlanted = spec.neighbourIndices.every(
             (nIdx) => !this.limbs[nIdx].stepping

@@ -58,6 +58,7 @@ interface RemoteAllyEntity {
   abductionMode: SpiderCinematicMode | null;
   abductionProgress: number;
   abductionSpiderPos: THREE.Vector3;
+  abductionCooldownUntilPerfMs: number;
   dead: boolean;
   afk: boolean;
   voiceSpeaking: boolean;
@@ -134,6 +135,8 @@ export class DoomMultiplayerCoordinator {
   }> = [];
 
   private latestSpiderPacket: NetworkSpiderPacket | null = null;
+  private latestSpiderReceivedPerfMs = -Infinity;
+  private readonly observerPositionsScratch: THREE.Vector3[] = [];
   private poseSendAccum = 0;
   private spiderSendAccum = 0;
   private hudRefreshAccum = 0;
@@ -256,6 +259,7 @@ export class DoomMultiplayerCoordinator {
       onRemotePlayerLeft: (playerId) => this.removeAlly(playerId),
       onSpiderSync: (pkt) => {
         this.latestSpiderPacket = pkt;
+        this.latestSpiderReceivedPerfMs = performance.now();
       },
       onWorldEvent: (ev) => this.handleWorldEvent(ev),
       onVoiceSignal: (sig) => {
@@ -564,6 +568,7 @@ export class DoomMultiplayerCoordinator {
         ally.inSequence = false;
         ally.beingDragged = false;
         ally.abductionMode = null;
+        ally.abductionCooldownUntilPerfMs = performance.now() + 2600;
         this.hooks.onSpiderInterruptedAndFlees(localPos);
         this.client.broadcastWorldEvent({
           kind: 'interrupt_abduction',
@@ -748,6 +753,37 @@ export class DoomMultiplayerCoordinator {
 
   consumeLatestRemoteSpiderPacket(): NetworkSpiderPacket | null {
     return this.latestSpiderPacket;
+  }
+
+  /**
+   * Retorna o pacote remoto da Aranha validado exclusivamente pelo relógio monotônico local
+   * (`performance.now()`), imune a diferenças de relógio (`Date.now()`) entre máquinas!
+   */
+  getFreshRemoteSpiderPacket(maxAgeMs = 3500): NetworkSpiderPacket | null {
+    if (!this.latestSpiderPacket) return null;
+    if (performance.now() - this.latestSpiderReceivedPerfMs > maxAgeMs) {
+      return null;
+    }
+    return this.latestSpiderPacket;
+  }
+
+  /**
+   * Lista as posições de todos os operadores vivos que poderiam ver a Aranha no mundo 3D
+   * (usado para impedir teletransporte visível após abdução de um aliado!).
+   */
+  getObserverWorldPositions(
+    localPos: THREE.Vector3,
+    excludePlayerId?: string
+  ): readonly THREE.Vector3[] {
+    this.observerPositionsScratch.length = 0;
+    if (this.session.localPlayerId !== excludePlayerId) {
+      this.observerPositionsScratch.push(localPos);
+    }
+    for (const ally of this.allies.values()) {
+      if (ally.dead || ally.id === excludePlayerId) continue;
+      this.observerPositionsScratch.push(ally.currentPos);
+    }
+    return this.observerPositionsScratch;
   }
 
   getRadarAllyBlips(): RadarAllyBlip[] {
@@ -1309,6 +1345,7 @@ export class DoomMultiplayerCoordinator {
           pkt.abductionSpiderY ?? 1.38,
           pkt.abductionSpiderZ ?? pkt.z
         ),
+        abductionCooldownUntilPerfMs: 0,
         dead: pkt.dead,
         afk: Boolean(pkt.afk),
         voiceSpeaking: Boolean(pkt.voiceSpeaking),
@@ -1340,10 +1377,19 @@ export class DoomMultiplayerCoordinator {
     ent.health = pkt.health;
     ent.bleeding = pkt.bleeding;
     ent.ensnared = pkt.ensnared;
-    ent.inSequence = pkt.inSequence;
-    ent.beingDragged = Boolean(pkt.beingDragged);
-    ent.abductionMode = pkt.abductionMode ?? null;
-    ent.abductionProgress = pkt.abductionProgress ?? 0;
+    const nowPerf = performance.now();
+    if (nowPerf < ent.abductionCooldownUntilPerfMs) {
+      // Ignora pacotes de pose atrasados em trânsito logo após o término/interrupção da abdução!
+      ent.inSequence = false;
+      ent.beingDragged = false;
+      ent.abductionMode = null;
+      ent.abductionProgress = 0;
+    } else {
+      ent.inSequence = pkt.inSequence;
+      ent.beingDragged = Boolean(pkt.beingDragged);
+      ent.abductionMode = pkt.abductionMode ?? null;
+      ent.abductionProgress = pkt.abductionProgress ?? 0;
+    }
     if (
       typeof pkt.abductionSpiderX === 'number' &&
       typeof pkt.abductionSpiderY === 'number' &&
@@ -1547,6 +1593,7 @@ export class DoomMultiplayerCoordinator {
         savedAlly.inSequence = false;
         savedAlly.beingDragged = false;
         savedAlly.abductionMode = null;
+        savedAlly.abductionCooldownUntilPerfMs = performance.now() + 2600;
       }
       this.hooks.onSpiderInterruptedAndFlees(threatPos);
       if (ev.targetPlayerId === this.session.localPlayerId) {
@@ -1577,8 +1624,10 @@ export class DoomMultiplayerCoordinator {
       if (ev.victimId !== this.session.localPlayerId) {
         const ally = this.allies.get(ev.victimId);
         if (ally) {
+          ally.inSequence = false;
           ally.beingDragged = false;
           ally.abductionMode = null;
+          ally.abductionCooldownUntilPerfMs = performance.now() + 2600;
         }
         if (this.client.isHost) {
           this.hooks.onRemoteVictimFinishedAbduction();

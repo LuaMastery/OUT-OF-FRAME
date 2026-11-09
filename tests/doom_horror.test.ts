@@ -3065,4 +3065,168 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
     expect(stam.stamina).toBe(55);
     expect(stam.exhausted).toBe(false);
   });
+
+  it('elimina 100% os teletransportes, flips aéreos e travamentos em quinas da Aranha (Solo + Multiplayer)', () => {
+    const scene = new THREE.Scene();
+    const shared = createDoomSharedUniforms();
+    const textures = createDoomTextures();
+    const built = buildDoomLabyrinth(scene, textures, shared);
+    const webs = new DoomSpiderWebManager(scene, shared);
+    const sound = {
+      playSpiderFootstep: () => {},
+      playSpiderHiss: () => {},
+      playSpiderScream: () => {},
+      playSpiderStrike: () => {},
+      playSpiderDragPull: () => {},
+      playSpiderWebSpin: () => {},
+      playWebTrapSnap: () => {},
+      playSpiderChitter: () => {},
+    } as unknown as SoundEngine;
+
+    const spider = new DoomSpider(
+      scene,
+      shared,
+      built.colliders,
+      webs,
+      sound
+    );
+    const spiderInternal = spider as unknown as {
+      placeAtCell: (wx: number, wz: number, mode: 'FLOOR' | 'CEILING') => void;
+      resolveBodyMazeCollision: () => void;
+    };
+
+    // Encontra uma esquina real em L (célula aberta (cx, cz) com vizinho aberto Leste (cx+1, cz),
+    // vizinho aberto Sul (cx, cz+1) e parede sólida diagonal (cx+1, cz+1)!)
+    let cornerCell = { gx: 3, gz: 3 };
+    let startArm = { gx: 3, gz: 4 };
+    let targetArm = { gx: 4, gz: 3 };
+    outer: for (let gz = 2; gz < LABYRINTH_MAP.length - 3; gz++) {
+      for (let gx = 2; gx < LABYRINTH_MAP[gz].length - 3; gx++) {
+        if (
+          !isSolidCell(LABYRINTH_MAP, gx, gz) &&
+          !isSolidCell(LABYRINTH_MAP, gx + 1, gz) &&
+          !isSolidCell(LABYRINTH_MAP, gx, gz + 1) &&
+          isSolidCell(LABYRINTH_MAP, gx + 1, gz + 1)
+        ) {
+          cornerCell = { gx, gz };
+          startArm = { gx, gz: gz + 1 };
+          targetArm = { gx: gx + 1, gz };
+          break outer;
+        }
+      }
+    }
+
+    // 1. Teste de Perseguição em Quina de 90° (cenário exato que causava loop de stuckTimer + teleporte!)
+    const startW = gridCellToWorld(startArm.gx, startArm.gz);
+    const targetW = gridCellToWorld(targetArm.gx, targetArm.gz);
+    // Posiciona jogador encostado atrás da quina sólida para forçar contorno real de 90°!
+    const playerBehindCorner = new THREE.Vector3(
+      targetW.x + 0.65,
+      1.6,
+      targetW.z + 0.65
+    );
+    const flashDir = new THREE.Vector3(0, 0, -1);
+
+    spiderInternal.placeAtCell(startW.x + 0.7, startW.z, 'CEILING');
+    spider.alertToWebTrap(playerBehindCorner, playerBehindCorner);
+    expect(spider.currentState).toBe('FRENZY_CHASE');
+
+    const dt = 1 / 60;
+    let elapsed = 0;
+    let caught = false;
+    const prev = spider.position.clone();
+
+    for (let f = 0; f < 420; f++) {
+      elapsed += dt;
+      spider.update(
+        dt,
+        elapsed,
+        playerBehindCorner,
+        0,
+        true,
+        false,
+        true,
+        flashDir,
+        [],
+        () => {
+          caught = true;
+        }
+      );
+
+      // ZERO teletransporte em nenhum frame (deslocamento estritamente contínuo)!
+      const planarStep = Math.hypot(
+        spider.position.x - prev.x,
+        spider.position.z - prev.z
+      );
+      const vertStep = Math.abs(spider.position.y - prev.y);
+      expect(planarStep).toBeLessThanOrEqual(0.28);
+      expect(vertStep).toBeLessThanOrEqual(0.22);
+
+      // Permanece sempre em célula caminhável (nunca entra em parede '#') e firme no FLOOR durante FRENZY_CHASE!
+      const c = worldToGridCell(spider.position.x, spider.position.z);
+      expect(isSolidCell(LABYRINTH_MAP, c.gx, c.gz)).toBe(false);
+      expect(spider.currentSurfaceMode).toBe('FLOOR');
+
+      prev.copy(spider.position);
+      if (caught) break;
+    }
+    expect(caught).toBe(true);
+
+    // 2. Teste de Travadinha de Navegador / Queda Brusca de FPS (`dt = 0.45s`): sem teleporte nem tunelamento!
+    const cornerW = gridCellToWorld(cornerCell.gx, cornerCell.gz);
+    spiderInternal.placeAtCell(cornerW.x, cornerW.z, 'FLOOR');
+    spider.alertToWebTrap(playerBehindCorner, playerBehindCorner);
+    const beforeHitch = spider.position.clone();
+    spider.update(
+      0.45,
+      elapsed + 0.45,
+      playerBehindCorner,
+      0,
+      true,
+      false,
+      true,
+      flashDir,
+      [],
+      () => {}
+    );
+    expect(
+      Math.hypot(
+        spider.position.x - beforeHitch.x,
+        spider.position.z - beforeHitch.z
+      )
+    ).toBeLessThan(0.68);
+    const afterHitchCell = worldToGridCell(
+      spider.position.x,
+      spider.position.z
+    );
+    expect(
+      isSolidCell(LABYRINTH_MAP, afterHitchCell.gx, afterHitchCell.gz)
+    ).toBe(false);
+
+    // 3. Teste de Retirada Pós-Abdução em Multiplayer com Observador Próximo: ZERO teleporte!
+    const lairPos = webs.lairCenter.clone();
+    spider.updateCinematicSequence(
+      dt,
+      elapsed + 1.0,
+      'WEBBING_IN_LAIR',
+      1.0,
+      new THREE.Vector3(lairPos.x, 1.36, lairPos.z),
+      lairPos,
+      lairPos
+    );
+    const beforeRetreat = spider.position.clone();
+    const watchingAlly = new THREE.Vector3(lairPos.x + 4.0, 1.6, lairPos.z);
+    spider.finishAbductionRetreat([watchingAlly]);
+    expect(spider.currentState).toBe('FLEE_RETREAT');
+    expect(spider.position.distanceTo(beforeRetreat)).toBeLessThan(0.65);
+
+    // 4. Expulsão segura contra paredes contíguas: nunca empurra para outro bloco sólido `#`!
+    const wallW = gridCellToWorld(startArm.gx + 1, startArm.gz);
+    spider.position.set(wallW.x, 1.42, wallW.z);
+    spiderInternal.resolveBodyMazeCollision();
+    const ejectedCell = worldToGridCell(spider.position.x, spider.position.z);
+    expect(isSolidCell(LABYRINTH_MAP, ejectedCell.gx, ejectedCell.gz)).toBe(
+      false
+    );
+  });
 });
