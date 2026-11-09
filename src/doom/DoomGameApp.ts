@@ -537,7 +537,7 @@ export class DoomGameApp {
     this.danceHudHintEl = document.createElement('div');
     this.danceHudHintEl.className = 'doom-dance-hud-hint';
     this.danceHudHintEl.textContent =
-      '[G] trocar dança • mover o personagem cancela';
+      '[G] trocar · mover para parar';
     this.danceHudEl.append(
       this.danceHudIconEl,
       this.danceHudNameEl,
@@ -2208,6 +2208,8 @@ export class DoomGameApp {
 
     this.shotgun.stow();
     this.taser.stow();
+    // A prévia não pode bloquear a cena nem permitir iniciar dança durante a captura.
+    this.danceMenu.setOpen(false);
     // A Aranha arrancando o jogador cancela qualquer coreografia em andamento
     this.stopDance('capture');
 
@@ -3997,7 +3999,8 @@ export class DoomGameApp {
   }
 
   private openDanceMenu(): void {
-    if (this.danceMenu.isOpen) return;
+    if (!this.engaged || this.disposed || this.danceMenu.isOpen || this.activeSequence !== 'NONE' ||
+        this.pauseMenu.open || this.inventory.open || this.inventory.gameOverVisible) return;
     this.danceMenu.setOpen(true);
     this.danceMenu.setActiveDance(this.danceId);
     this.suppressAutoPauseOnUnlockUntilMs = performance.now() + 600;
@@ -4021,7 +4024,7 @@ export class DoomGameApp {
 
   /** Começa (ou troca) a coreografia do jogador e entra em 3ª pessoa. */
   private startDance(id: DoomDanceId): void {
-    if (!isDoomDanceId(id)) return;
+    if (!isDoomDanceId(id) || this.activeSequence !== 'NONE' || this.inventory.gameOverVisible) return;
     const def = getDoomDanceDefinition(id);
     const wasDancing = this.danceId !== null;
     this.danceId = id;

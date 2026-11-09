@@ -6997,6 +6997,44 @@ describe('Sistema de Danças do Astronauta & Câmera em 3ª Pessoa', () => {
     }
   });
 
+  it('mantém os sinais independentes dos braços e movimentos legíveis no traje real', () => {
+    const scene = new THREE.Scene();
+    const astronaut = new DoomAstronaut(scene, createDoomSharedUniforms());
+    const position = new THREE.Vector3();
+    const pose = computeDoomDancePose('spin', 0.3);
+    astronaut.applyDancePose(pose, position, 0);
+    expect(astronaut.leftArm.shoulderPivot.rotation.z).toBeCloseTo(pose.leftArm.shoulder.z);
+    expect(astronaut.rightArm.shoulderPivot.rotation.z).toBeCloseTo(pose.rightArm.shoulder.z);
+    expect(astronaut.leftArm.shoulderPivot.rotation.z).toBeLessThan(0);
+    expect(astronaut.rightArm.shoulderPivot.rotation.z).toBeGreaterThan(0);
+
+    // Um ciclo de corrida a cada duas batidas, com passos alternados.
+    const halfCycle = 60 / getDoomDanceDefinition('jog').bpm;
+    const jogA = computeDoomDancePose('jog', halfCycle * 0.5);
+    const jogB = computeDoomDancePose('jog', halfCycle * 1.5);
+    expect(jogA.leftLeg.hip.x).toBeGreaterThan(0.5);
+    expect(jogB.leftLeg.hip.x).toBeLessThan(-0.5);
+    expect(jogA.rightLeg.hip.x).toBeLessThan(-0.5);
+
+    // Floss: ambos os braços varrem para o mesmo lado, não em espelho.
+    const floss = computeDoomDancePose('floss', 60 / getDoomDanceDefinition('floss').bpm * 0.5);
+    expect(floss.leftArm.shoulder.z).toBeGreaterThan(0);
+    expect(floss.rightArm.shoulder.z).toBeGreaterThan(0);
+  });
+
+  it('não abre o seletor nem inicia uma dança durante a captura', () => {
+    const setOpen = vi.fn();
+    const game = Object.assign(Object.create(DoomGameApp.prototype), {
+      engaged: true, disposed: false, activeSequence: 'ABDUCTION_TO_WEB', danceId: null,
+      danceMenu: { isOpen: false, setOpen }, pauseMenu: { open: false },
+      inventory: { open: false, gameOverVisible: false },
+    }) as unknown as { openDanceMenu(): void; startDance(id: DoomDanceId): void; danceId: DoomDanceId | null };
+    game.openDanceMenu();
+    game.startDance('samba');
+    expect(setOpen).not.toHaveBeenCalled();
+    expect(game.danceId).toBeNull();
+  });
+
   it('mantém as duas galochas ENCAIXADAS no piso durante todas as coreografias (sem afundar no chão)', () => {
     const scene = new THREE.Scene();
     const shared = createDoomSharedUniforms();

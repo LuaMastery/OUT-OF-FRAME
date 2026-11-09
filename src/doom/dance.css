@@ -1,154 +1,143 @@
-/* ==========================================================================
-   MENU DE DANÇAS DO ASTRONAUTA + HUD DE DANÇA EM 3ª PESSOA
-   ========================================================================== */
+/* Um seletor compacto: a coreografia é a peça central. */
 .doom-dance-menu {
   position: absolute;
   inset: 0;
   z-index: 46;
   display: none;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 14px;
-  padding: calc(22px + var(--safe-top, 0px)) 18px
-    calc(22px + var(--safe-bottom, 0px));
-  background:
-    radial-gradient(
-      ellipse at 50% 45%,
-      rgba(24, 22, 12, 0.72) 0%,
-      rgba(6, 6, 8, 0.9) 78%
-    );
-  backdrop-filter: blur(2px);
+  padding: calc(16px + var(--safe-top, 0px)) 16px calc(16px + var(--safe-bottom, 0px));
+  background: rgba(5, 7, 6, .76);
+  backdrop-filter: blur(5px);
   font-family: 'Courier New', Consolas, monospace;
+  box-sizing: border-box;
 }
-
-.doom-dance-menu.is-open {
-  display: flex;
+.doom-dance-menu.is-open { display: flex; }
+.doom-dance-panel {
+  width: min(760px, 100%);
+  max-height: 100%;
+  overflow-y: auto;
+  color: #e9e8d8;
+  background: #171b18;
+  border: 1px solid rgba(206, 216, 180, .24);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, .55);
 }
-
 .doom-dance-head {
-  text-align: center;
   display: flex;
-  flex-direction: column;
-  gap: 3px;
+  justify-content: space-between;
+  align-items: center;
+  padding: 18px 22px;
+  border-bottom: 1px solid rgba(206, 216, 180, .13);
 }
-
-.doom-dance-kicker {
-  font-size: 9px;
-  letter-spacing: 0.22em;
-  color: #8c8270;
-  text-transform: uppercase;
-}
-
 .doom-dance-title {
-  font-size: clamp(15px, 2.6vw, 21px);
+  margin: 0;
+  font-size: 17px;
+  letter-spacing: .19em;
   font-weight: 700;
-  letter-spacing: 0.16em;
-  color: #f4ead2;
-  text-shadow: 0 0 16px rgba(255, 214, 120, 0.28);
 }
-
-.doom-dance-hint {
-  font-size: 10px;
-  letter-spacing: 0.04em;
-  color: #a99c85;
+.doom-dance-close {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #c2c7b6;
+  font-size: 28px;
+  line-height: 1;
+  cursor: pointer;
 }
-
-.doom-dance-status {
-  font-size: 10px;
-  letter-spacing: 0.14em;
-  color: #8c8270;
-  border: 1px solid rgba(199, 176, 131, 0.3);
-  background: rgba(10, 10, 12, 0.7);
-  padding: 5px 14px;
-}
-
-.doom-dance-status.is-active {
-  color: #ffe4a3;
-  border-color: rgba(255, 208, 120, 0.55);
-}
-
-.doom-dance-grid {
+.doom-dance-close:hover, .doom-dance-close:focus-visible { color: #fff; outline: 1px solid #bdc9a0; }
+.doom-dance-content {
   display: grid;
-  grid-template-columns: repeat(3, minmax(150px, 1fr));
-  gap: 10px;
-  width: min(760px, 94vw);
+  grid-template-columns: minmax(220px, .95fr) minmax(280px, 1fr);
+  gap: 20px;
+  padding: 20px 22px 22px;
 }
-
-@media (max-width: 620px) {
-  .doom-dance-grid {
-    grid-template-columns: repeat(2, minmax(130px, 1fr));
-  }
+.doom-dance-preview-stage {
+  position: relative;
+  width: 100%;
+  height: 350px;
+  overflow: hidden;
+  background: radial-gradient(ellipse at 50% 60%, #3b4638 0%, #252d26 42%, #1c221d 80%);
+  border: 1px solid rgba(206, 216, 180, .12);
+  box-sizing: border-box;
 }
-
+.doom-dance-preview-stage::after {
+  content: '';
+  position: absolute;
+  left: 22%; right: 22%; bottom: 15%; height: 11px;
+  background: rgba(0, 0, 0, .36);
+  filter: blur(9px);
+  border-radius: 50%;
+  pointer-events: none;
+}
+.doom-dance-preview-stage canvas { display: block; width: 100%; height: 100%; position: relative; z-index: 1; }
+.doom-dance-preview-label, .doom-dance-preview-name {
+  position: absolute;
+  z-index: 2;
+  left: 16px;
+  pointer-events: none;
+}
+.doom-dance-preview-label { top: 14px; color: #b1bba5; font-size: 9px; letter-spacing: .18em; }
+.doom-dance-preview-name { bottom: 15px; color: #ececda; font-size: 11px; font-weight: bold; letter-spacing: .11em; }
+.doom-dance-preview-fallback { position: absolute; inset: 45% 0 auto; text-align: center; color: #bdc4b3; font-size: 11px; }
+.doom-dance-choices { display: flex; flex-direction: column; justify-content: center; min-width: 0; }
+.doom-dance-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .doom-dance-card {
+  min-width: 0;
+  min-height: 74px;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 4px;
-  padding: 10px 12px 11px;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px;
+  background: #232923;
+  border: 1px solid rgba(206, 216, 180, .1);
+  color: #b9c1ae;
+  font-family: inherit;
   text-align: left;
   cursor: pointer;
-  color: #ded3bb;
-  background: linear-gradient(
-    180deg,
-    rgba(30, 28, 20, 0.92) 0%,
-    rgba(14, 13, 11, 0.94) 100%
-  );
-  border: 1px solid rgba(199, 176, 131, 0.34);
-  border-left: 3px solid rgba(199, 176, 131, 0.55);
-  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.55);
-  font-family: inherit;
-  transition:
-    transform 0.14s ease,
-    border-color 0.14s ease,
-    box-shadow 0.14s ease;
 }
-
-.doom-dance-card:hover,
-.doom-dance-card:focus-visible {
-  transform: translateY(-2px);
-  border-color: rgba(255, 214, 120, 0.8);
-  border-left-color: #ffd678;
-  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.6);
+.doom-dance-card:hover, .doom-dance-card:focus-visible, .doom-dance-card.is-selected {
+  background: #394334;
+  border-color: #aab995;
+  color: #f2f2df;
   outline: none;
 }
-
-.doom-dance-card.is-active {
-  border-color: #ffd678;
-  border-left-color: #ffd678;
-  background: linear-gradient(
-    180deg,
-    rgba(58, 46, 22, 0.95) 0%,
-    rgba(20, 17, 12, 0.95) 100%
-  );
+.doom-dance-card.is-active .doom-dance-card-index::after { content: ' •'; color: #c8d79f; }
+.doom-dance-card-index { color: #9aaa8d; font-size: 9px; letter-spacing: .1em; }
+.doom-dance-card-name { font-size: 11px; line-height: 1.3; font-weight: 700; letter-spacing: .05em; }
+.doom-dance-play {
+  margin-top: 14px;
+  min-height: 46px;
+  border: 1px solid #d4dfb2;
+  background: #c0cf9b;
+  color: #172016;
+  font: 700 12px 'Courier New', Consolas, monospace;
+  letter-spacing: .15em;
+  cursor: pointer;
 }
-
-.doom-dance-card-icon {
-  font-size: 18px;
-  line-height: 1;
+.doom-dance-play:hover, .doom-dance-play:focus-visible { background: #e2eaca; outline: 2px solid #f0f5df; outline-offset: 2px; }
+.doom-dance-hint { margin-top: 12px; color: #99a393; font-size: 10px; line-height: 1.4; }
+@media (max-width: 620px) {
+  .doom-dance-menu { padding: calc(8px + var(--safe-top, 0px)) 8px calc(8px + var(--safe-bottom, 0px)); }
+  .doom-dance-head { padding: 10px 14px; }
+  .doom-dance-content { grid-template-columns: 1fr; gap: 10px; padding: 10px 14px 14px; }
+  .doom-dance-preview-stage { height: clamp(160px, 27vh, 220px); }
+  .doom-dance-card { min-height: 55px; padding: 8px 10px; gap: 4px; }
+  .doom-dance-play { min-height: 42px; margin-top: 10px; }
+  .doom-dance-hint { margin-top: 8px; }
 }
-
-.doom-dance-card-name {
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.1em;
-  color: #f6ecd6;
+@media (max-height: 520px) and (min-width: 621px) {
+  .doom-dance-head { padding: 8px 16px; }
+  .doom-dance-content { padding: 10px 16px; gap: 14px; }
+  .doom-dance-preview-stage { height: 230px; }
+  .doom-dance-card { min-height: 50px; padding: 7px 10px; gap: 4px; }
+  .doom-dance-play { margin-top: 8px; min-height: 38px; }
+  .doom-dance-hint { margin-top: 5px; }
 }
-
-.doom-dance-card-desc {
-  font-size: 9.5px;
-  line-height: 1.35;
-  color: #a99c85;
-}
-
-.doom-dance-card-meta {
-  font-size: 9px;
-  letter-spacing: 0.12em;
-  color: #c7b083;
-}
-
-/* ---------------------------------------------------------------- HUD 3P -- */
+/* Indicador discreto durante a dança. */
 .doom-dance-hud {
   position: absolute;
   left: 50%;
@@ -158,32 +147,14 @@
   display: none;
   align-items: center;
   gap: 10px;
-  padding: 7px 16px 8px;
-  background: rgba(10, 10, 12, 0.82);
-  border: 1px solid rgba(199, 176, 131, 0.45);
-  border-left: 3px solid #ffd678;
-  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.6);
+  padding: 7px 12px;
+  background: rgba(15, 19, 16, .8);
+  border: 1px solid rgba(206, 216, 180, .25);
   font-family: 'Courier New', Consolas, monospace;
   pointer-events: none;
 }
-
-.doom-dance-hud.is-visible {
-  display: flex;
-}
-
-.doom-dance-hud-icon {
-  font-size: 15px;
-}
-
-.doom-dance-hud-name {
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  color: #ffe4a3;
-}
-
-.doom-dance-hud-hint {
-  font-size: 9.5px;
-  letter-spacing: 0.08em;
-  color: #9c907c;
-}
+.doom-dance-hud.is-visible { display: flex; }
+.doom-dance-hud-icon { display: none; }
+.doom-dance-hud-name { color: #e8edd8; font-size: 10px; font-weight: bold; letter-spacing: .09em; white-space: nowrap; }
+.doom-dance-hud-hint { color: #aab4a0; font-size: 9px; white-space: nowrap; }
+@media (max-width: 480px) { .doom-dance-hud-hint { display: none; } }

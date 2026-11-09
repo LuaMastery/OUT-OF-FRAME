@@ -1,27 +1,19 @@
 import './dance.css';
-import {
-  DOOM_DANCES,
-  DoomDanceId,
-  getDoomDanceDefinition,
-  getDoomDanceIndex,
-} from './DoomDance';
+import { DOOM_DANCES, DoomDanceId, getDoomDanceDefinition, getDoomDanceIndex } from './DoomDance';
+import { DoomDancePreview } from './DoomDancePreview';
 
-/**
- * ============================================================================
- * MENU DE DANÇAS DO ASTRONAUTA
- * ============================================================================
- * Painel em DOM com a grade completa de coreografias disponíveis.
- * - Desktop: clique no cartão (ou teclas [1]..[6]) para começar a dança;
- * - Mobile: toque no cartão;
- * - [G] / [Esc] fecham o painel sem começar nenhuma dança.
- */
+/** Seleção e prévia são locais: só o botão Dançar inicia a coreografia. */
 export class DoomDanceMenu {
   private readonly rootEl: HTMLDivElement;
-  private readonly gridEl: HTMLDivElement;
-  private readonly statusEl: HTMLDivElement;
+  private readonly previewStage: HTMLDivElement;
+  private readonly previewName: HTMLDivElement;
+  private readonly playButton: HTMLButtonElement;
   private readonly cards = new Map<DoomDanceId, HTMLButtonElement>();
-  private open = false;
+  private preview: DoomDancePreview | null = null;
+  private previewFailed = false;
+  private selectedId: DoomDanceId = DOOM_DANCES[0].id;
   private activeId: DoomDanceId | null = null;
+  private open = false;
 
   constructor(
     parentEl: HTMLElement,
@@ -32,115 +24,139 @@ export class DoomDanceMenu {
     this.rootEl.id = 'doom-dance-menu';
     this.rootEl.className = 'doom-dance-menu';
     this.rootEl.setAttribute('role', 'dialog');
-    this.rootEl.setAttribute('aria-label', 'Menu de Danças');
+    this.rootEl.setAttribute('aria-modal', 'true');
+    this.rootEl.setAttribute('aria-labelledby', 'doom-dance-title');
 
-    const head = document.createElement('div');
+    const panel = document.createElement('div');
+    panel.className = 'doom-dance-panel';
+    const head = document.createElement('header');
     head.className = 'doom-dance-head';
-    const kicker = document.createElement('div');
-    kicker.className = 'doom-dance-kicker';
-    kicker.textContent = 'PROTOCOLO DE ENTRETENIMENTO';
-    const title = document.createElement('div');
+    const title = document.createElement('h2');
+    title.id = 'doom-dance-title';
     title.className = 'doom-dance-title';
-    title.textContent = 'DANÇAS DO TRAJE NÍVEL-A';
-    const hint = document.createElement('div');
-    hint.className = 'doom-dance-hint';
-    hint.textContent =
-      'Escolha uma coreografia • a câmera vai para 3ª pessoa • [G] fecha • mover o personagem cancela';
-    head.append(kicker, title, hint);
+    title.textContent = 'DANÇAS';
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'doom-dance-close';
+    close.setAttribute('aria-label', 'Fechar menu de danças');
+    close.textContent = '×';
+    close.addEventListener('click', () => this.close());
+    head.append(title, close);
 
-    this.statusEl = document.createElement('div');
-    this.statusEl.className = 'doom-dance-status';
+    const content = document.createElement('div');
+    content.className = 'doom-dance-content';
+    const previewPane = document.createElement('section');
+    previewPane.className = 'doom-dance-preview';
+    previewPane.setAttribute('aria-label', 'Prévia da dança selecionada');
+    this.previewStage = document.createElement('div');
+    this.previewStage.className = 'doom-dance-preview-stage';
+    const label = document.createElement('span');
+    label.className = 'doom-dance-preview-label';
+    label.textContent = 'PRÉVIA';
+    this.previewName = document.createElement('div');
+    this.previewName.className = 'doom-dance-preview-name';
+    this.previewStage.append(label, this.previewName);
+    previewPane.appendChild(this.previewStage);
 
-    this.gridEl = document.createElement('div');
-    this.gridEl.className = 'doom-dance-grid';
-
+    const choices = document.createElement('section');
+    choices.className = 'doom-dance-choices';
+    const grid = document.createElement('div');
+    grid.className = 'doom-dance-grid';
     for (const dance of DOOM_DANCES) {
       const card = document.createElement('button');
       card.type = 'button';
       card.className = 'doom-dance-card';
       card.dataset.danceId = dance.id;
-      card.setAttribute('aria-label', `Dançar ${dance.label}`);
-
-      const icon = document.createElement('span');
-      icon.className = 'doom-dance-card-icon';
-      icon.textContent = dance.icon;
-
+      card.setAttribute('aria-label', `${dance.label}, prévia`);
+      const index = document.createElement('span');
+      index.className = 'doom-dance-card-index';
+      index.textContent = String(getDoomDanceIndex(dance.id)).padStart(2, '0');
       const name = document.createElement('span');
       name.className = 'doom-dance-card-name';
       name.textContent = dance.label;
-
-      const desc = document.createElement('span');
-      desc.className = 'doom-dance-card-desc';
-      desc.textContent = dance.subtitle;
-
-      const meta = document.createElement('span');
-      meta.className = 'doom-dance-card-meta';
-      meta.textContent = `${dance.bpm} BPM • [${getDoomDanceIndex(dance.id)}]`;
-
-      card.append(icon, name, desc, meta);
-      card.addEventListener('click', (ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-        this.onSelect(dance.id);
+      card.append(index, name);
+      card.addEventListener('pointerenter', (event) => {
+        if (event.pointerType !== 'touch') this.selectPreview(dance.id);
       });
+      card.addEventListener('focus', () => this.selectPreview(dance.id));
+      card.addEventListener('click', () => this.selectPreview(dance.id));
       this.cards.set(dance.id, card);
-      this.gridEl.appendChild(card);
+      grid.appendChild(card);
     }
-
-    this.rootEl.append(head, this.statusEl, this.gridEl);
+    this.playButton = document.createElement('button');
+    this.playButton.type = 'button';
+    this.playButton.className = 'doom-dance-play';
+    this.playButton.textContent = 'DANÇAR';
+    this.playButton.addEventListener('click', () => this.onSelect(this.selectedId));
+    const hint = document.createElement('div');
+    hint.className = 'doom-dance-hint';
+    hint.textContent = '1–6 dança direto  ·  G / Esc fecha';
+    choices.append(grid, this.playButton, hint);
+    content.append(previewPane, choices);
+    panel.append(head, content);
+    this.rootEl.appendChild(panel);
     parentEl.appendChild(this.rootEl);
+    this.selectPreview(this.selectedId);
   }
 
-  get isOpen(): boolean {
-    return this.open;
+  get isOpen(): boolean { return this.open; }
+
+  private selectPreview(id: DoomDanceId): void {
+    this.selectedId = id;
+    this.previewName.textContent = getDoomDanceDefinition(id).label;
+    this.playButton.setAttribute('aria-label', `Dançar ${getDoomDanceDefinition(id).label}`);
+    for (const [danceId, card] of this.cards) {
+      card.classList.toggle('is-selected', danceId === id);
+      card.setAttribute('aria-pressed', String(danceId === id));
+    }
+    this.preview?.setDance(id);
   }
 
   setActiveDance(id: DoomDanceId | null): void {
     this.activeId = id;
-    for (const [danceId, card] of this.cards) {
-      card.classList.toggle('is-active', danceId === id);
-    }
-    this.statusEl.textContent = id
-      ? `EM CENA: ${getDoomDanceDefinition(id).label}`
-      : 'Nenhuma coreografia em cena — escolha uma para começar.';
-    this.statusEl.classList.toggle('is-active', Boolean(id));
+    for (const [danceId, card] of this.cards) card.classList.toggle('is-active', danceId === id);
   }
 
   setOpen(open: boolean): void {
+    if (this.open === open) return;
     this.open = open;
     this.rootEl.classList.toggle('is-open', open);
     if (open) {
-      this.setActiveDance(this.activeId);
+      this.selectPreview(this.activeId ?? this.selectedId);
+      if (!this.preview && !this.previewFailed) {
+        try {
+          this.preview = new DoomDancePreview(this.previewStage, this.selectedId);
+        } catch {
+          this.previewFailed = true;
+          this.previewStage.classList.add('is-unavailable');
+          const fallback = document.createElement('span');
+          fallback.className = 'doom-dance-preview-fallback';
+          fallback.textContent = 'Prévia indisponível';
+          this.previewStage.appendChild(fallback);
+        }
+      }
+      this.preview?.start();
+    } else {
+      this.preview?.stop();
     }
   }
 
-  /**
-   * Trata teclas do menu. Devolve `true` quando a tecla foi consumida.
-   */
+  /** Os atalhos numéricos continuam iniciando a dança diretamente. */
   handleKey(code: string): boolean {
     if (!this.open) return false;
-    if (code === 'Digit1' || code === 'Numpad1') return this.selectByIndex(0);
-    if (code === 'Digit2' || code === 'Numpad2') return this.selectByIndex(1);
-    if (code === 'Digit3' || code === 'Numpad3') return this.selectByIndex(2);
-    if (code === 'Digit4' || code === 'Numpad4') return this.selectByIndex(3);
-    if (code === 'Digit5' || code === 'Numpad5') return this.selectByIndex(4);
-    if (code === 'Digit6' || code === 'Numpad6') return this.selectByIndex(5);
-    return false;
-  }
-
-  private selectByIndex(index: number): boolean {
-    const dance = DOOM_DANCES[index];
+    const match = /^(?:Digit|Numpad)([1-6])$/.exec(code);
+    if (!match) return false;
+    const dance = DOOM_DANCES[Number(match[1]) - 1];
     if (!dance) return false;
     this.onSelect(dance.id);
     return true;
   }
 
-  close(): void {
-    if (!this.open) return;
-    this.onClose();
-  }
+  close(): void { if (this.open) this.onClose(); }
 
   destroy(): void {
+    this.preview?.destroy();
+    this.preview = null;
     this.cards.clear();
     this.rootEl.remove();
   }

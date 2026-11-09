@@ -1809,8 +1809,8 @@ export class DoomAstronaut {
       clampDanceValue(pose.headRoll, -0.24, 0.24)
     );
 
-    this.applyDanceArmPose(this.leftArm, pose.leftArm, -1);
-    this.applyDanceArmPose(this.rightArm, pose.rightArm, 1);
+    this.applyDanceArmPose(this.leftArm, pose.leftArm);
+    this.applyDanceArmPose(this.rightArm, pose.rightArm);
     this.applyDanceLegPose(this.leftLeg, pose.leftLeg);
     this.applyDanceLegPose(this.rightLeg, pose.rightLeg);
 
@@ -1834,17 +1834,13 @@ export class DoomAstronaut {
 
   private applyDanceArmPose(
     arm: AstronautArmRig,
-    pose: DoomDanceArmPose,
-    sideSign: number
+    pose: DoomDanceArmPose
   ): void {
+    // As poses já contêm sinais distintos para esquerda e direita.
     arm.shoulderPivot.rotation.order = 'YXZ';
-    arm.shoulderPivot.rotation.set(
-      pose.shoulder.x,
-      pose.shoulder.y * sideSign,
-      pose.shoulder.z * sideSign
-    );
+    arm.shoulderPivot.rotation.set(pose.shoulder.x, pose.shoulder.y, pose.shoulder.z);
     arm.elbowPivot.rotation.set(pose.elbow, 0, 0);
-    arm.wristPivot.rotation.set(pose.wrist, 0, pose.wristZ * sideSign);
+    arm.wristPivot.rotation.set(pose.wrist, 0, pose.wristZ);
   }
 
   private applyDanceLegPose(leg: AstronautLegRig, pose: DoomDanceLegPose): void {

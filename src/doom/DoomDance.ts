@@ -460,7 +460,7 @@ function poseSamba(timeSec: number, bpm: number): DoomDancePose {
 function poseMarch(timeSec: number, bpm: number): DoomDancePose {
   const pose = basePose();
   const beats = timeSec * (bpm / 60);
-  const p = TAU * beats;
+  const p = TAU * beats * 0.5;
   const sL = Math.sin(p);
   const sR = Math.sin(p + Math.PI);
 
@@ -502,15 +502,20 @@ function poseSpin(timeSec: number, bpm: number): DoomDancePose {
   pose.headYaw = Math.sin(spin * 2 + 0.6) * 0.22;
   pose.headPitch = Math.sin(spin * 2) * 0.08;
 
-  const armWave = Math.sin(spin * 2) * 0.07;
-  pose.leftArm = makeArm(0.08 + armWave, 0, -1.22, 0.16);
-  pose.rightArm = makeArm(0.08 - armWave, 0, 1.22, 0.16);
+  const armWave = Math.sin(spin * 2) * 0.16;
+  pose.leftArm = makeArm(0.08 + armWave, 0, -1.05 - armWave, 0.25);
+  pose.rightArm = makeArm(0.08 - armWave, 0, 1.05 + armWave, 0.25);
 
-  const knee = -(0.14 + Math.sin(spin * 2) * 0.06);
-  pose.leftLeg = makeLeg(0.04, 0, -0.05, knee);
-  pose.rightLeg = makeLeg(0.04, 0, 0.05, knee);
-  pose.leftLeg.ankle = ankleComp(0.04, knee);
-  pose.rightLeg.ankle = ankleComp(0.04, knee);
+  // Pequenos passos alternados dão intenção ao giro, em vez de deslizar em T.
+  const step = Math.sin(spin * 4);
+  const leftHip = 0.05 + step * 0.18;
+  const rightHip = 0.05 - step * 0.18;
+  const leftKnee = -(0.14 + Math.max(0, step) * 0.32);
+  const rightKnee = -(0.14 + Math.max(0, -step) * 0.32);
+  pose.leftLeg = makeLeg(leftHip, 0, -0.05, leftKnee);
+  pose.rightLeg = makeLeg(rightHip, 0, 0.05, rightKnee);
+  pose.leftLeg.ankle = ankleComp(leftHip, leftKnee);
+  pose.rightLeg.ankle = ankleComp(rightHip, rightKnee);
 
   pose.bodyLift = 0.015 + Math.abs(Math.sin(spin)) * 0.025;
   applyBounceDip(pose);
@@ -527,8 +532,11 @@ function poseFloss(timeSec: number, bpm: number): DoomDancePose {
   const p = TAU * beats * 0.5;
   const s = Math.sin(p);
 
-  pose.leftArm = makeArm(0.34, 0, -0.18 - s * 0.92, 0.42);
-  pose.rightArm = makeArm(0.34, 0, 0.18 + s * 0.92, 0.42);
+  // Os dois braços varrem para o mesmo lado, alternando frente e trás do quadril.
+  const swing = s * 0.74;
+  const cross = Math.sin(p + Math.PI * 0.5);
+  pose.leftArm = makeArm(0.14 + cross * 0.48, 0, -0.18 + swing, 0.4);
+  pose.rightArm = makeArm(0.14 - cross * 0.48, 0, 0.18 + swing, 0.4);
   pose.leftArm.wrist = -s * 0.2;
   pose.rightArm.wrist = s * 0.2;
 
@@ -556,7 +564,8 @@ function poseFloss(timeSec: number, bpm: number): DoomDancePose {
 function poseJog(timeSec: number, bpm: number): DoomDancePose {
   const pose = basePose();
   const beats = timeSec * (bpm / 60);
-  const p = TAU * beats * 2;
+  // Uma passada por batida, em vez de quatro: corrida legível sem tremulação.
+  const p = TAU * beats * 0.5;
   const sL = Math.sin(p);
   const sR = Math.sin(p + Math.PI);
 
