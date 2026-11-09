@@ -48,6 +48,7 @@ import {
   worldToGridCell,
 } from './DoomMazeBuilder';
 import { DoomPauseMenu } from './DoomPauseMenu';
+import { resolveBrowserControlRelease } from './DoomPauseInput';
 import { DoomRadar } from './DoomRadar';
 import {
   AstronautRagdoll,
@@ -362,6 +363,8 @@ export class DoomGameApp {
   private desktopAutoUnlatchAfterSlide = false;
   private desktopSprintLatched = false;
   private ignoreEscapeKeyUntilMs = 0;
+  private suppressReleasePauseUntilMs = 0;
+  private wasFullscreen = false;
   private currentBaseDesktopFov = 74;
   private readonly staminaState = createInitialStaminaState();
   private staminaChestHeaveY = 0;
@@ -808,6 +811,7 @@ export class DoomGameApp {
         ) {
           return;
         }
+        this.suppressReleasePause();
         this.inventory.setOpen(true);
         this.keys.clear();
         this.touchControls.resetTransientInputs();
@@ -874,6 +878,7 @@ export class DoomGameApp {
         if (!this.multiplayer || this.pauseMenu.open) return;
         this.keys.clear();
         this.touchControls.resetTransientInputs();
+        this.suppressReleasePause();
         this.multiplayer.openRadioChatInput();
       },
       onTaserPress: () => {
@@ -1051,6 +1056,7 @@ export class DoomGameApp {
 
   private resumeFromPause(fromPointerGesture = false): void {
     if (!this.pauseMenu.open) return;
+    this.suppressReleasePause();
     this.ignoreEscapeKeyUntilMs = performance.now() + 260;
     this.pauseMenu.setOpen(false);
     this.inventory.setPauseMenuHidden(false);
@@ -1073,6 +1079,7 @@ export class DoomGameApp {
     this.inventory.setPauseMenuHidden(false);
     this.sound.setWorldPaused(false);
     this.engaged = true;
+    this.wasFullscreen = Boolean(document.fullscreenElement);
     this.syncAudioFocusMute();
     this.onResize();
     this.sound.unlock();
@@ -1258,6 +1265,7 @@ export class DoomGameApp {
   }
 
   private closeInventoryAndLock(fromPointerGesture = false): void {
+    this.suppressReleasePause();
     this.ignoreEscapeKeyUntilMs = performance.now() + 240;
     this.inventory.setOpen(false);
     this.keys.clear();
@@ -1273,12 +1281,42 @@ export class DoomGameApp {
     ) {
       return;
     }
+    this.suppressReleasePause();
     this.ignoreEscapeKeyUntilMs = performance.now() + 260;
     this.inventory.setOpen(false, true);
     this.keys.clear();
     this.touchControls.resetTransientInputs();
     this.isDragging = false;
     this.pauseMenu.setOpen(true, 'main');
+  }
+
+  /** Ignora liberações iniciadas pelo próprio jogo ao trocar de interface. */
+  private suppressReleasePause(): void {
+    this.suppressReleasePauseUntilMs = performance.now() + 500;
+  }
+
+  private openPauseFromGameplay(): void {
+    this.ignoreEscapeKeyUntilMs = performance.now() + 260;
+    this.stopDance('pause');
+    this.pauseMenu.setOpen(true, 'main');
+  }
+
+  /** Esc pode ser consumido pelo navegador ao sair de pointer lock ou tela cheia. */
+  private handleBrowserControlRelease(): void {
+    const action = resolveBrowserControlRelease({
+      engaged: this.engaged, disposed: this.disposed, paused: this.pauseMenu.open,
+      inventoryOpen: this.inventory.open, gameOver: this.inventory.gameOverVisible,
+      chatOpen: Boolean(this.multiplayer?.isChatTyping), danceMenuOpen: this.danceMenu.isOpen,
+      inSequence: this.activeSequence !== 'NONE',
+      intentionalRelease: performance.now() <= this.suppressReleasePauseUntilMs,
+      dancing: this.danceId !== null,
+    });
+    if (action !== 'ignore') this.suppressReleasePause();
+    if (action === 'pause') this.openPauseFromGameplay();
+    if (action === 'stop-dance') {
+      this.ignoreEscapeKeyUntilMs = performance.now() + 260;
+      this.stopDance('menu');
+    }
   }
 
   private requestCanvasPointerLockOnly(): void {
@@ -1492,6 +1530,7 @@ export class DoomGameApp {
         if (e.code === 'Escape' && this.danceId && !e.repeat) {
           e.preventDefault();
           e.stopPropagation();
+          this.suppressReleasePause();
           this.stopDance('menu');
           return;
         }
@@ -1501,6 +1540,7 @@ export class DoomGameApp {
           this.keys.clear();
           this.isDragging = false;
           if (opened) {
+            this.suppressReleasePause();
             // Abrir o Inventário cancela a coreografia (volta à 1ª pessoa)
             this.stopDance('pause');
             try {
@@ -1526,13 +1566,12 @@ export class DoomGameApp {
           return;
         }
 
-        // [P] abre as configurações; Esc não pausa a exploração.
-        if (e.code === 'KeyP' && !this.inventory.open && !e.repeat) {
+        // Esc e P pausam a exploração, sem recolocar um botão na HUD.
+        if ((e.code === 'Escape' || e.code === 'KeyP') && !this.inventory.open && !e.repeat) {
           e.preventDefault();
           e.stopPropagation();
-          this.ignoreEscapeKeyUntilMs = performance.now() + 260;
-          this.stopDance('pause');
-          this.pauseMenu.setOpen(true);
+          if (e.code === 'Escape' && performance.now() <= this.ignoreEscapeKeyUntilMs) return;
+          this.openPauseFromGameplay();
           return;
         }
 
@@ -1544,6 +1583,7 @@ export class DoomGameApp {
           this.isDragging = false;
           this.inventory.setOpen(false);
           this.multiplayer.setPushToTalkHeld(false);
+          this.suppressReleasePause();
           this.multiplayer.openRadioChatInput();
           return;
         }
@@ -1800,11 +1840,22 @@ export class DoomGameApp {
       () => {
         const wasLocked = this.pointerLocked;
         this.pointerLocked = document.pointerLockElement === this.canvas;
-        // Esc pode liberar o cursor no navegador, mas não abre a pausa.
+        if (this.pointerLocked) this.suppressReleasePauseUntilMs = 0;
         if (wasLocked && !this.pointerLocked) {
           this.keys.clear();
           this.isDragging = false;
+          this.handleBrowserControlRelease();
         }
+      },
+      sig
+    );
+
+    document.addEventListener(
+      'fullscreenchange',
+      () => {
+        const wasFullscreen = this.wasFullscreen;
+        this.wasFullscreen = Boolean(document.fullscreenElement);
+        if (wasFullscreen && !this.wasFullscreen) this.handleBrowserControlRelease();
       },
       sig
     );
@@ -2141,6 +2192,7 @@ export class DoomGameApp {
   private triggerSpiderCatch(overrideSpiderPos?: THREE.Vector3): void {
     if (this.activeSequence !== 'NONE' || this.spider.isDead) return;
 
+    this.suppressReleasePause();
     this.shotgun.stow();
     this.taser.stow();
     // A prévia não pode bloquear a cena nem permitir iniciar dança durante a captura.
@@ -3935,6 +3987,7 @@ export class DoomGameApp {
   private openDanceMenu(): void {
     if (!this.engaged || this.disposed || this.danceMenu.isOpen || this.activeSequence !== 'NONE' ||
         this.pauseMenu.open || this.inventory.open || this.inventory.gameOverVisible) return;
+    this.suppressReleasePause();
     this.danceMenu.setOpen(true);
     this.danceMenu.setActiveDance(this.danceId);
     this.keys.clear();
@@ -3949,6 +4002,7 @@ export class DoomGameApp {
 
   private closeDanceMenu(): void {
     if (!this.danceMenu.isOpen) return;
+    this.suppressReleasePause();
     this.danceMenu.setOpen(false);
     this.sound.playInventoryToggle(false);
     this.tryPointerLock(false);

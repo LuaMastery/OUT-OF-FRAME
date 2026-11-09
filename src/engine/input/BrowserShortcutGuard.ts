@@ -13,6 +13,7 @@
  */
 
 export const LOCKED_KEYBOARD_CODES: string[] = [
+  'Escape',
   'KeyW',
   'KeyA',
   'KeyS',

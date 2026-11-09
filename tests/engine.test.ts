@@ -153,6 +153,7 @@ describe('SpatialSweep CCD', () => {
 
 describe('BrowserShortcutGuard (Proteção contra Ctrl+W)', () => {
   it('inclui ControlLeft/Right e KeyW na lista de Keyboard Lock e bloqueia combinações críticas do navegador', () => {
+    expect(LOCKED_KEYBOARD_CODES).toContain('Escape');
     expect(LOCKED_KEYBOARD_CODES).toContain('KeyW');
     expect(LOCKED_KEYBOARD_CODES).toContain('ControlLeft');
     expect(LOCKED_KEYBOARD_CODES).toContain('ControlRight');

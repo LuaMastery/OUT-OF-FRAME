@@ -4850,14 +4850,14 @@ describe('Botão de Pausa no HUD, Tela de Pausa Completa & 26 Configurações Re
         }
       );
 
-      // Não há botão de pausa na HUD, e voltar/Esc não abre a pausa.
+      // Não há botão de pausa na HUD; o menu fechado não trata sozinho a tecla Esc.
       expect(viewportEl.querySelector('#doom-pause-trigger-btn')).toBeNull();
       expect(pauseMenu.open).toBe(false);
       pauseMenu.handleEscapeOrBack();
       expect(pauseMenu.open).toBe(false);
       expect(pauseOpenedCount).toBe(0);
 
-      // O menu continua acessível pelo inventário e pela tecla P.
+      // O controlador do jogo abre o menu por Esc, P ou pelo inventário.
       pauseMenu.setOpen(true);
       expect(pauseMenu.open).toBe(true);
       expect(pauseOpenedCount).toBe(1);

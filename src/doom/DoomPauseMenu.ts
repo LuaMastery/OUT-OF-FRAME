@@ -215,7 +215,7 @@ export class DoomPauseMenu {
 
               <div class="pause-ctrl-card">
                 <div class="pause-ctrl-title">Sistema & Sobrevivência</div>
-                <div class="pause-ctrl-line"><span>Pausa / Configurações</span><span class="pause-ctrl-key">P · ou via Tab</span></div>
+                <div class="pause-ctrl-line"><span>Pausa / Configurações</span><span class="pause-ctrl-key">Esc / P · ou via Tab</span></div>
                 <div class="pause-ctrl-line"><span>Voz alta atrai a criatura</span><span class="pause-ctrl-key">Sussurre perto!</span></div>
                 <div class="pause-ctrl-line"><span>Cortar teia instantâneo</span><span class="pause-ctrl-key">Canivete</span></div>
                 <div class="pause-ctrl-line"><span>Espantar aranha / Resgatar</span><span class="pause-ctrl-key">Magnésio</span></div>
