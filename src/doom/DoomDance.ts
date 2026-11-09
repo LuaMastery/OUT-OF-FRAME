@@ -68,7 +68,7 @@ export const DOOM_DANCES: readonly DoomDanceDefinition[] = [
   {
     id: 'floss',
     label: 'FLOSS DO VÁCUO',
-    subtitle: 'Braços cruzando o corpo em contra-tempo',
+    subtitle: 'Balanço lateral dos braços em contra-tempo',
     bpm: 132,
     icon: '🕺',
   },
@@ -251,13 +251,12 @@ function basePose(): DoomDancePose {
  * chão, o tornozelo compensa a soma (quadril + joelho).
  */
 function ankleComp(hipPitch: number, knee: number): number {
-  return clamp(-(hipPitch + knee) * 0.86, -0.8, 0.8);
+  return clamp(-(hipPitch + knee), -1.45, 1.45);
 }
 
 /**
- * Converte um "bounce" (afundamento do quadril em metros) na flexão simétrica
- * dos DOIS joelhos — assim as galochas continuam plantadas no piso enquanto o
- * corpo desce e sobe no ritmo da coreografia.
+ * Converte o "bounce" em flexão suave dos joelhos; o rig ajusta a altura
+ * do corpo para manter a galocha de apoio no piso durante os passos.
  */
 function applyBounceDip(pose: DoomDancePose): void {
   const dip = clamp(pose.bodyLift, 0, 0.075);
@@ -266,9 +265,10 @@ function applyBounceDip(pose: DoomDancePose): void {
     pose.rightLeg.knee = Math.min(0, pose.rightLeg.knee);
     return;
   }
-  // Encurtamento vertical da perna = 0.345 * (1 - cos(θ))  →  θ = flexão
+  // Flexão sutil adicionada aos passos, sem dobrar as duas pernas em excesso.
+  // O contato do pé de apoio é corrigido pela geometria real no rig.
   const cosTheta = clamp(1 - dip / 0.345, -1, 1);
-  const theta = Math.acos(cosTheta);
+  const theta = Math.acos(cosTheta) * 0.35;
   pose.leftLeg.knee = Math.min(0, pose.leftLeg.knee) - theta;
   pose.rightLeg.knee = Math.min(0, pose.rightLeg.knee) - theta;
   pose.leftLeg.ankle = ankleComp(pose.leftLeg.hip.x, pose.leftLeg.knee);
@@ -299,27 +299,27 @@ const ROBOT_PRESETS: readonly RobotPreset[] = [
     lift: 0,
   },
   {
-    lSh: [-1.5, 0, -0.25],
+    lSh: [-1.5, 0, -0.50],
     lEl: 1.5,
-    rSh: [0.5, 0, 0.2],
+    rSh: [0.5, 0, 0.50],
     rEl: 0.5,
     head: [-0.18, 0.22, 0],
     legs: [0.05, 0.05, 0.12, 0.12],
     lift: 0.015,
   },
   {
-    lSh: [-0.6, 0, -0.55],
+    lSh: [-0.6, 0, -0.85],
     lEl: 2.2,
-    rSh: [-0.6, 0, 0.55],
+    rSh: [-0.6, 0, 0.85],
     rEl: 2.2,
     head: [0.12, 0, 0],
     legs: [0.02, 0.04, 0.06, 0.06],
     lift: 0.03,
   },
   {
-    lSh: [0.9, 0, -0.18],
+    lSh: [0.9, 0, -0.50],
     lEl: 0.2,
-    rSh: [-1.4, 0, 0.32],
+    rSh: [-1.4, 0, 0.50],
     rEl: 1.4,
     head: [0, -0.24, 0.16],
     legs: [0.08, 0.06, 0.05, 0.05],
@@ -335,18 +335,18 @@ const ROBOT_PRESETS: readonly RobotPreset[] = [
     lift: 0.045,
   },
   {
-    lSh: [0.35, 0, -0.3],
+    lSh: [0.35, 0, -0.65],
     lEl: 1.85,
-    rSh: [0.35, 0, 0.3],
+    rSh: [0.35, 0, 0.65],
     rEl: 1.85,
     head: [-0.12, 0, -0.18],
     legs: [0.04, 0.05, 0.04, 0.04],
     lift: 0.01,
   },
   {
-    lSh: [-1.45, 0, -0.12],
+    lSh: [-1.45, 0, -0.65],
     lEl: 0.35,
-    rSh: [-1.45, 0, 0.12],
+    rSh: [-1.45, 0, 0.65],
     rEl: 0.35,
     head: [0, 0, 0],
     legs: [0.06, 0.04, 0.08, 0.08],
@@ -475,8 +475,8 @@ function poseMarch(timeSec: number, bpm: number): DoomDancePose {
   pose.leftLeg.ankle = ankleComp(lHip, lKnee);
   pose.rightLeg.ankle = ankleComp(rHip, rKnee);
 
-  pose.leftArm = makeArm(-lHip * 1.15, 0, -0.22, 0.5 + Math.max(0, sL) * 0.55);
-  pose.rightArm = makeArm(-rHip * 1.15, 0, 0.22, 0.5 + Math.max(0, sR) * 0.55);
+  pose.leftArm = makeArm(-lHip * 1.15, 0, -0.55, 0.5 + Math.max(0, sL) * 0.55);
+  pose.rightArm = makeArm(-rHip * 1.15, 0, 0.55, 0.5 + Math.max(0, sR) * 0.55);
 
   pose.torsoPitch = 0.09;
   pose.torsoYaw = -sL * 0.07;
@@ -532,11 +532,11 @@ function poseFloss(timeSec: number, bpm: number): DoomDancePose {
   const p = TAU * beats * 0.5;
   const s = Math.sin(p);
 
-  // Os dois braços varrem para o mesmo lado, alternando frente e trás do quadril.
-  const swing = s * 0.74;
-  const cross = Math.sin(p + Math.PI * 0.5);
-  pose.leftArm = makeArm(0.14 + cross * 0.48, 0, -0.18 + swing, 0.4);
-  pose.rightArm = makeArm(0.14 - cross * 0.48, 0, 0.18 + swing, 0.4);
+  // O balanço atravessa a frente do traje com o cotovelo afastado,
+  // em vez de atravessar a malha do tórax inflado.
+  const cross = Math.cos(p);
+  pose.leftArm = makeArm(0.12 + cross * 0.62, -s * 0.20, -0.72 - s * 0.18, 0.55);
+  pose.rightArm = makeArm(0.12 - cross * 0.62, -s * 0.20, 0.72 - s * 0.18, 0.55);
   pose.leftArm.wrist = -s * 0.2;
   pose.rightArm.wrist = s * 0.2;
 
@@ -579,8 +579,8 @@ function poseJog(timeSec: number, bpm: number): DoomDancePose {
   pose.leftLeg.ankle = ankleComp(lHip, lKnee);
   pose.rightLeg.ankle = ankleComp(rHip, rKnee);
 
-  pose.leftArm = makeArm(-sL * 0.92, 0, -0.26, 0.95 + Math.max(0, sL) * 0.5);
-  pose.rightArm = makeArm(-sR * 0.92, 0, 0.26, 0.95 + Math.max(0, sR) * 0.5);
+  pose.leftArm = makeArm(-sL * 0.92, 0, -0.55, 0.95 + Math.max(0, sL) * 0.5);
+  pose.rightArm = makeArm(-sR * 0.92, 0, 0.55, 0.95 + Math.max(0, sR) * 0.5);
 
   pose.torsoPitch = 0.26;
   pose.torsoYaw = -sL * 0.09;

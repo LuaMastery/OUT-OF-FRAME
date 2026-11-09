@@ -1774,8 +1774,8 @@ export class DoomAstronaut {
    *
    * Garantias do rig de dança:
    * - O capacete/capuz gira em limites seguros (nunca rasga a costura da gola);
-   * - As duas galochas SEMPRE tocam o piso (o `bodyPivot` é recalculado a
-   *   partir do ponto mais baixo real das solas — nunca afunda no chão);
+   * - Nenhuma galocha afunda no piso e ao menos uma fica apoiada; o `bodyPivot`
+   *   é recalculado a partir do ponto mais baixo das solas;
    * - A lanterna 3D e a teia do casulo ficam ocultas durante a coreografia.
    */
   applyDancePose(
@@ -1823,13 +1823,13 @@ export class DoomAstronaut {
     this.leftArm.setGripPose(handPose);
     this.rightArm.setGripPose(handPose);
 
-    // Contato EXATO das solas com o piso: mede o ponto mais baixo real das
-    // galochas e desloca o corpo (rígido) para que a sola encoste em y = 0.
+    // Mede o ponto mais baixo das galochas e ajusta o corpo para apoiar a sola
+    // no plano da posição do jogador, inclusive em pisos elevados.
     // O "bounce" da coreografia é feito pela flexão dos joelhos (dentro da
     // pose), então nunca flutuamos nem afundamos no chão.
     this.root.updateMatrixWorld(true);
     const lowestBootY = this.measureLowestBootY();
-    this.bodyPivot.position.y = -lowestBootY;
+    this.bodyPivot.position.y = worldPos.y - lowestBootY;
   }
 
   private applyDanceArmPose(

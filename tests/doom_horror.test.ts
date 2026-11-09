@@ -7020,10 +7020,13 @@ describe('Sistema de Danças do Astronauta & Câmera em 3ª Pessoa', () => {
     expect(jogB.leftLeg.hip.x).toBeLessThan(-0.5);
     expect(jogA.rightLeg.hip.x).toBeLessThan(-0.5);
 
-    // Floss: ambos os braços varrem para o mesmo lado, não em espelho.
+    // Floss: balanço no mesmo sentido, mas cada manga permanece fora do tronco.
+    const neutral = computeDoomDancePose('floss', 0);
     const floss = computeDoomDancePose('floss', 60 / getDoomDanceDefinition('floss').bpm * 0.5);
-    expect(floss.leftArm.shoulder.z).toBeGreaterThan(0);
+    expect(floss.leftArm.shoulder.z).toBeLessThan(0);
     expect(floss.rightArm.shoulder.z).toBeGreaterThan(0);
+    expect(floss.leftArm.shoulder.z - neutral.leftArm.shoulder.z).toBeLessThan(0);
+    expect(floss.rightArm.shoulder.z - neutral.rightArm.shoulder.z).toBeLessThan(0);
   });
 
   it('não abre o seletor nem inicia uma dança durante a captura', () => {
