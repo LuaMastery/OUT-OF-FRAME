@@ -222,6 +222,7 @@ export class SoundEngine {
   private terminalBus: GainNode | null = null;
   private worldDryBus: GainNode | null = null;
   private reverbSend: GainNode | null = null;
+  private reverbReturn: GainNode | null = null;
 
   private noiseBuffer: AudioBuffer | null = null;
   private pinkNoiseBuffer: AudioBuffer | null = null;
@@ -237,7 +238,9 @@ export class SoundEngine {
 
   // Ambiência espacial e industrial do Labirinto DOOM
   private dungeonStarted = false;
+  private dungeonActive = false;
   private dungeonBus: GainNode | null = null;
+  private dungeonAirGain: GainNode | null = null;
   private lampBuzzGain: GainNode | null = null;
   private lampBuzzPanner: StereoPannerNode | null = null;
   private flareBurnGain: GainNode | null = null;
@@ -264,9 +267,41 @@ export class SoundEngine {
   private userMasterGain = 0.82;
   private userSfxGain = 0.94;
   private userUiGain = 0.9;
-  private userReverbSendGain = 0.46;
+  private userReverbSendGain = 0.4624;
   private mutedByFocusLoss = false;
+  private worldPaused = false;
 
+  get isWorldPaused(): boolean {
+    return this.worldPaused;
+  }
+
+  get debugGainState(): {
+    masterGain: number;
+    sfxGain: number;
+    uiGain: number;
+    reverbSendGain: number;
+    effectiveWorldDryGain: number;
+    effectiveReverbSendGain: number;
+    effectiveUiGain: number;
+    worldPaused: boolean;
+    mutedByFocusLoss: boolean;
+  } {
+    return {
+      masterGain: this.mutedByFocusLoss ? 0 : this.userMasterGain,
+      sfxGain: this.userSfxGain,
+      uiGain: this.userUiGain,
+      reverbSendGain: this.userReverbSendGain,
+      effectiveWorldDryGain: this.worldPaused ? 0 : this.userSfxGain,
+      effectiveReverbSendGain: this.worldPaused ? 0 : this.userReverbSendGain,
+      effectiveUiGain: this.userUiGain,
+      worldPaused: this.worldPaused,
+      mutedByFocusLoss: this.mutedByFocusLoss,
+    };
+  }
+
+  /**
+   * Atualiza os volumes configurados pelo jogador em porcentagem `[0..100]`.
+   */
   setUserAudioSettings(opts: {
     masterVolume: number;
     sfxVolume: number;
@@ -274,11 +309,12 @@ export class SoundEngine {
     reverbAmount: number;
     mutedByFocus?: boolean;
   }): void {
-    this.userMasterGain = Math.max(0, Math.min(1, opts.masterVolume / 100));
-    this.userSfxGain = Math.max(0, Math.min(1, opts.sfxVolume / 100));
-    this.userUiGain = Math.max(0, Math.min(1, opts.uiVolume / 100));
-    this.userReverbSendGain =
-      Math.max(0, Math.min(1, opts.reverbAmount / 100)) * 0.68;
+    const clampPct01 = (v: number): number =>
+      Number.isFinite(v) ? Math.max(0, Math.min(1, v / 100)) : 0.8;
+    this.userMasterGain = clampPct01(opts.masterVolume);
+    this.userSfxGain = clampPct01(opts.sfxVolume);
+    this.userUiGain = clampPct01(opts.uiVolume);
+    this.userReverbSendGain = clampPct01(opts.reverbAmount) * 0.68;
     if (typeof opts.mutedByFocus === 'boolean') {
       this.mutedByFocusLoss = opts.mutedByFocus;
     }
@@ -291,21 +327,81 @@ export class SoundEngine {
     this.applyUserGainsToGraph();
   }
 
-  private applyUserGainsToGraph(): void {
-    if (this.masterGain) {
-      this.masterGain.gain.value = this.mutedByFocusLoss
-        ? 0
-        : this.userMasterGain;
+  /**
+   * Congela/silencia suavemente todos os barramentos do mundo 3D (`worldDryBus`, `reverbSend`,
+   * zumbido de lâmpadas, sinalizadores e vento subterrâneo) enquanto o Menu de Pausa Solo está aberto,
+   * preservando 100% de nitidez nos sons táteis de interface (`terminalBus`)!
+   */
+  setWorldPaused(paused: boolean): void {
+    if (this.worldPaused === paused) return;
+    this.worldPaused = paused;
+    this.applyUserGainsToGraph();
+    if (this.ctx) {
+      const now = this.ctx.currentTime;
+      if (paused) {
+        this.rampGainParam(this.lampBuzzGain?.gain ?? null, 0, now, 0.012);
+        this.rampGainParam(this.flareBurnGain?.gain ?? null, 0, now, 0.012);
+        this.rampGainParam(this.dungeonAirGain?.gain ?? null, 0, now, 0.015);
+      } else if (this.dungeonActive) {
+        this.rampGainParam(
+          this.dungeonAirGain?.gain ?? null,
+          0.0085,
+          now,
+          0.04
+        );
+      }
     }
-    if (this.worldDryBus) {
-      this.worldDryBus.gain.value = this.userSfxGain;
+  }
+
+  private rampGainParam(
+    param: AudioParam | null,
+    target: number,
+    now: number,
+    timeConstantSec = 0.014
+  ): void {
+    if (!param) return;
+    const safeTarget = Number.isFinite(target)
+      ? Math.max(0, Math.min(2, target))
+      : 0;
+    try {
+      param.cancelScheduledValues(now);
+      const cur = Number.isFinite(param.value) ? param.value : safeTarget;
+      param.setValueAtTime(cur, now);
+      if (this.ctx && this.ctx.state === 'running' && timeConstantSec > 0.001) {
+        param.setTargetAtTime(safeTarget, now, timeConstantSec);
+      } else {
+        param.value = safeTarget;
+      }
+    } catch {
+      param.value = safeTarget;
     }
-    if (this.terminalBus) {
-      this.terminalBus.gain.value = this.userUiGain;
-    }
-    if (this.reverbSend) {
-      this.reverbSend.gain.value = this.userReverbSendGain;
-    }
+  }
+
+  private applyUserGainsToGraph(immediate = false): void {
+    const now = this.ctx ? this.ctx.currentTime : 0;
+    const tc = immediate ? 0 : 0.014;
+
+    const targetMaster = this.mutedByFocusLoss ? 0 : this.userMasterGain;
+    const targetWorldDry = this.worldPaused ? 0 : this.userSfxGain;
+    const targetUi = this.userUiGain;
+    const targetReverb = this.worldPaused ? 0 : this.userReverbSendGain;
+    const targetReverbReturn = this.worldPaused ? 0 : 0.68;
+
+    this.rampGainParam(this.masterGain?.gain ?? null, targetMaster, now, tc);
+    this.rampGainParam(
+      this.worldDryBus?.gain ?? null,
+      targetWorldDry,
+      now,
+      tc
+    );
+    this.rampGainParam(this.terminalBus?.gain ?? null, targetUi, now, tc);
+    this.rampGainParam(this.reverbSend?.gain ?? null, targetReverb, now, tc);
+    this.rampGainParam(
+      this.reverbReturn?.gain ?? null,
+      targetReverbReturn,
+      now,
+      tc
+    );
   }
 
   unlock(): void {
@@ -382,7 +478,8 @@ export class SoundEngine {
     reverbHpf.connect(reverbReturn);
     reverbReturn.connect(shaper);
     this.reverbSend = reverbSend;
-    this.applyUserGainsToGraph();
+    this.reverbReturn = reverbReturn;
+    this.applyUserGainsToGraph(true);
 
     // Quatro buffers procedurais com texturas físicas distintas (1.4s cada, zero alocação em runtime)
     this.noiseBuffer = this.buildWhiteNoiseBuffer(ctx, 1.4);
@@ -538,7 +635,13 @@ export class SoundEngine {
     pan: number,
     acoustics: LabyrinthSoundAcoustics
   ): AudioNode | null {
-    if (!this.ctx || !this.worldDryBus || !this.reverbSend || !acoustics.audible) {
+    if (
+      this.worldPaused ||
+      !this.ctx ||
+      !this.worldDryBus ||
+      !this.reverbSend ||
+      !acoustics.audible
+    ) {
       return null;
     }
 
@@ -1066,15 +1169,16 @@ export class SoundEngine {
 
   enterDoomLabyrinth(): void {
     this.stopCoalesceDrone();
+    this.worldPaused = false;
+    this.dungeonActive = true;
     if (!this.isRunning() || !this.ctx || !this.worldDryBus || !this.reverbSend) {
+      this.applyUserGainsToGraph(true);
       return;
     }
     const ctx = this.ctx;
     const now = ctx.currentTime;
 
-    if (this.masterGain) {
-      this.masterGain.gain.setTargetAtTime(0.82, now, 0.04);
-    }
+    this.applyUserGainsToGraph();
 
     // Comporta hidráulica pesada de airlock/elevador fechando atrás do jogador
     this.triggerFilteredNoise(
@@ -1123,16 +1227,31 @@ export class SoundEngine {
       this.dungeonStarted = true;
       this.startDungeonAtmosphere(ctx);
     } else if (this.dungeonBus) {
-      this.dungeonBus.gain.setTargetAtTime(1.0, now + 0.1, 0.5);
+      this.rampGainParam(this.dungeonBus.gain, 1.0, now + 0.08, 0.35);
+      this.rampGainParam(
+        this.dungeonAirGain?.gain ?? null,
+        0.0085,
+        now + 0.08,
+        0.35
+      );
+      this.ensureDungeonPulseTimer();
     }
   }
 
   stopDungeonAtmosphere(): void {
+    this.dungeonActive = false;
+    this.worldPaused = false;
+    if (this.pulseTimerId) {
+      window.clearInterval(this.pulseTimerId);
+      this.pulseTimerId = 0;
+    }
+    this.applyUserGainsToGraph();
     if (this.ctx && this.dungeonBus) {
       const now = this.ctx.currentTime;
-      this.dungeonBus.gain.setTargetAtTime(0.0001, now, 0.12);
-      this.lampBuzzGain?.gain.setTargetAtTime(0, now, 0.08);
-      this.flareBurnGain?.gain.setTargetAtTime(0, now, 0.08);
+      this.rampGainParam(this.dungeonBus.gain, 0.0001, now, 0.1);
+      this.rampGainParam(this.dungeonAirGain?.gain ?? null, 0, now, 0.08);
+      this.rampGainParam(this.lampBuzzGain?.gain ?? null, 0, now, 0.06);
+      this.rampGainParam(this.flareBurnGain?.gain ?? null, 0, now, 0.06);
     }
   }
 
@@ -1198,6 +1317,7 @@ export class SoundEngine {
 
       const airGain = ctx.createGain();
       airGain.gain.value = 0.0085;
+      this.dungeonAirGain = airGain;
 
       air.connect(airFilter);
       airFilter.connect(airGain);
@@ -1266,8 +1386,20 @@ export class SoundEngine {
     }
 
     // 5. Micro-eventos ambientais distantes nos corredores (gotas na pedra / dilatação metálica)
+    this.ensureDungeonPulseTimer();
+  }
+
+  private ensureDungeonPulseTimer(): void {
+    if (this.pulseTimerId) return;
     this.pulseTimerId = window.setInterval(() => {
-      if (!this.ctx || this.ctx.state !== 'running' || !this.reverbSend || !this.dungeonBus) {
+      if (
+        !this.ctx ||
+        this.ctx.state !== 'running' ||
+        !this.reverbSend ||
+        !this.dungeonBus ||
+        !this.dungeonActive ||
+        this.worldPaused
+      ) {
         return;
       }
       if (this.dungeonBus.gain.value < 0.2) return;
@@ -1336,6 +1468,7 @@ export class SoundEngine {
     injured = false
   ): void {
     if (
+      this.worldPaused ||
       !this.isRunning() ||
       !this.ctx ||
       !this.worldDryBus ||
@@ -1554,7 +1687,9 @@ export class SoundEngine {
     if (nowMs - this.lastSprintBreathMs < intervalMs) return;
     this.lastSprintBreathMs = nowMs;
 
-    if (!this.isRunning() || !this.ctx || !this.worldDryBus) return;
+    if (this.worldPaused || !this.isRunning() || !this.ctx || !this.worldDryBus) {
+      return;
+    }
     const now = this.ctx.currentTime;
 
     const gainMul = exhausted ? 1.38 : 1.0;
@@ -1762,6 +1897,7 @@ export class SoundEngine {
     this.lastWallThudMs = nowMs;
 
     if (
+      this.worldPaused ||
       !this.isRunning() ||
       !this.ctx ||
       !this.worldDryBus ||
@@ -1920,7 +2056,7 @@ export class SoundEngine {
     nearestDist: number,
     justFlickeredDim: boolean
   ): void {
-    if (!this.ctx || this.ctx.state !== 'running') return;
+    if (!this.ctx || this.ctx.state !== 'running' || this.worldPaused) return;
     const now = this.ctx.currentTime;
 
     if (!nearestLampPos || nearestDist > 7.8) {
@@ -1986,7 +2122,7 @@ export class SoundEngine {
     nearestFlareDist: number,
     remainingLifeSec = 10
   ): void {
-    if (!this.ctx || this.ctx.state !== 'running') return;
+    if (!this.ctx || this.ctx.state !== 'running' || this.worldPaused) return;
     const now = this.ctx.currentTime;
 
     if (!nearestFlarePos || nearestFlareDist > 14.5 || remainingLifeSec <= 0.05) {
@@ -2039,8 +2175,53 @@ export class SoundEngine {
   }
 
   // ==========================================================================
-  // 5. INVENTÁRIO TÁTICO DE SOBREVIVÊNCIA & USO DE ITENS
+  // 5. INVENTÁRIO TÁTICO DE SOBREVIVÊNCIA, MENU DE PAUSA & USO DE ITENS
   // ==========================================================================
+
+  /**
+   * Som analógico tátil dedicado para abrir/fechar o Menu de Pausa (`terminalBus` puro,
+   * sem vazamento para o reverb dos corredores nem conflito com o som da mochila!).
+   */
+  playPauseToggle(opening: boolean): void {
+    if (!this.isRunning() || !this.ctx || !this.terminalBus) return;
+    const now = this.ctx.currentTime;
+
+    // Clique seco de relé mecânico do visor
+    this.triggerFilteredNoise(
+      this.terminalBus,
+      now,
+      0.014,
+      opening ? 2_450 : 2_950,
+      2.8,
+      0.065,
+      'white'
+    );
+
+    const notes: ReadonlyArray<readonly [number, number]> = opening
+      ? [
+          [0, 392],
+          [0.036, 261.63],
+        ]
+      : [
+          [0, 293.66],
+          [0.034, 440],
+        ];
+
+    for (const [delay, freq] of notes) {
+      const t = now + delay;
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(freq, t);
+      osc.frequency.exponentialRampToValueAtTime(freq * 0.94, t + 0.055);
+      gain.gain.setValueAtTime(0.058, t);
+      gain.gain.exponentialRampToValueAtTime(0.0007, t + 0.062);
+      osc.connect(gain);
+      gain.connect(this.terminalBus);
+      osc.start(t);
+      osc.stop(t + 0.066);
+    }
+  }
 
   /** Abrir / fechar a bolsa tática (Tab): deslizar de zíper + lona pesada + fivela metálica */
   playInventoryToggle(opening: boolean): void {
@@ -3163,7 +3344,9 @@ export class SoundEngine {
     if (nowMs - this.lastHeartbeatMs < beatIntervalMs) return;
     this.lastHeartbeatMs = nowMs;
 
-    if (!this.isRunning() || !this.ctx || !this.worldDryBus) return;
+    if (this.worldPaused || !this.isRunning() || !this.ctx || !this.worldDryBus) {
+      return;
+    }
     const now = this.ctx.currentTime;
 
     const pulses: ReadonlyArray<readonly [number, number, number]> = [

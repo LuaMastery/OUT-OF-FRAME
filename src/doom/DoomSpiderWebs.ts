@@ -600,8 +600,9 @@ export class DoomSpiderWebManager {
   // Fios 3D que envolvem e prendem o corpo do jogador quando ele cai numa armadilha de corredor
   private readonly playerSnareTetherGroup = new THREE.Group();
 
-  // Quando o jogador acorda ferido no centro do Ninho de Teia, precisa caminhar ou cortar para sair
+  // Quando o jogador acorda ferido no centro do Ninho de Teia, em Solo pode sair, mas em Multiplayer fica 100% preso até os amigos o salvarem!
   private inWakingLairWeb = false;
+  private lockedInMultiplayerCocoon = false;
   private lairCocoonRing: THREE.Object3D | null = null;
 
   // Contador incrementado toda vez que fios ao redor do jogador se rompem / são cortados
@@ -904,6 +905,10 @@ export class DoomSpiderWebManager {
     return this.inWakingLairWeb;
   }
 
+  get isLockedInMultiplayerCocoon(): boolean {
+    return this.inWakingLairWeb && this.lockedInMultiplayerCocoon;
+  }
+
   /** Progresso normalizado [0..1] da prisão atual na teia para animar tensão dos fios na tela */
   get snareTensionFactor(): number {
     if (this.inWakingLairWeb) return 1.0;
@@ -919,22 +924,43 @@ export class DoomSpiderWebManager {
   }
 
   clearEnsnarement(): void {
+    const wasBound =
+      this.inWakingLairWeb ||
+      this.lockedInMultiplayerCocoon ||
+      this.ensnaredRemaining > 0;
     this.ensnaredRemaining = 0;
     this.inWakingLairWeb = false;
+    this.lockedInMultiplayerCocoon = false;
     this.activeSnareTrapGroup = null;
     this.playerSnareTetherGroup.visible = false;
     if (this.lairCocoonRing) {
       this.lairCocoonRing.visible = false;
     }
+    if (wasBound) {
+      this.webSnapBurstSeq++;
+    }
   }
 
   /**
    * Prende o jogador recém-acordado no centro do Ninho de Teia da Aranha.
+   * Quando `lockUntilAllyRescue = true` (Modo Multiplayer), o jogador fica totalmente preso no casulo
+   * e NÃO consegue sair sozinho — depende exclusivamente dos amigos para ser salvo antes de ser devorado!
    */
-  placePlayerInWakingLairWeb(): void {
+  placePlayerInWakingLairWeb(lockUntilAllyRescue = false): void {
     this.ensnaredRemaining = 0;
     this.inWakingLairWeb = true;
-    this.playerSnareTetherGroup.visible = false;
+    this.lockedInMultiplayerCocoon = lockUntilAllyRescue;
+    if (lockUntilAllyRescue) {
+      this.playerSnareTetherGroup.visible = true;
+      this.playerSnareTetherGroup.position.set(
+        this.lairCenter.x,
+        0,
+        this.lairCenter.z
+      );
+      this.playerSnareTetherGroup.scale.set(1.08, 1.05, 1.08);
+    } else {
+      this.playerSnareTetherGroup.visible = false;
+    }
     if (this.lairCocoonRing) {
       this.lairCocoonRing.visible = true;
       this.lairCocoonRing.scale.set(1, 1, 1);
@@ -943,7 +969,8 @@ export class DoomSpiderWebManager {
 
   /**
    * Golpe ativo com o Canivete Oxidado (ex.: via atalho rápido [1], [2] ou [3]):
-   * - Corta todos os fios IMEDIATAMENTE e dispara o estalo visual de rompimento!
+   * - Corta todos os fios IMEDIATAMENTE em Solo ou em armadilhas comuns;
+   * - Em Casulo do Ninho Multiplayer (`lockedInMultiplayerCocoon`), os braços estão imobilizados na seda e só um amigo pode cortar!
    */
   slashWebWithKnife(
     playerPos: THREE.Vector3,
@@ -955,6 +982,9 @@ export class DoomSpiderWebManager {
     cutTrapPos?: { x: number; z: number };
   } {
     if (this.inWakingLairWeb) {
+      if (this.lockedInMultiplayerCocoon) {
+        return { cutActiveSnare: false, cutNearbyTrap: false };
+      }
       this.inWakingLairWeb = false;
       if (this.lairCocoonRing) {
         this.lairCocoonRing.visible = false;
@@ -1051,6 +1081,7 @@ export class DoomSpiderWebManager {
    */
   getWakingLairSilkFactor(playerPos: THREE.Vector3): number {
     if (!this.inWakingLairWeb) return 0;
+    if (this.lockedInMultiplayerCocoon) return 0.88;
     const d = Math.hypot(
       playerPos.x - this.lairCenter.x,
       playerPos.z - this.lairCenter.z
@@ -1537,6 +1568,29 @@ export class DoomSpiderWebManager {
   ): { speedMultiplier: number } {
     // 1. Caso o jogador tenha acabado de acordar no centro do Ninho de Teia da Aranha:
     if (this.inWakingLairWeb) {
+      if (this.lockedInMultiplayerCocoon) {
+        // Modo Multiplayer: 100% preso dentro do casulo de seda até um amigo cortá-lo!
+        this.playerSnareTetherGroup.visible = true;
+        this.playerSnareTetherGroup.position.set(
+          this.lairCenter.x,
+          0,
+          this.lairCenter.z
+        );
+        const snapBack = Math.min(1, dt * 10.0);
+        const wobble = struggleInput ? 0.08 : 0;
+        playerPos.x += (this.lairCenter.x - playerPos.x) * snapBack;
+        playerPos.z += (this.lairCenter.z - playerPos.z) * snapBack;
+        if (this.lairCocoonRing) {
+          this.lairCocoonRing.visible = true;
+          this.lairCocoonRing.scale.set(
+            1 + wobble,
+            1 - wobble * 0.4,
+            1 + wobble
+          );
+        }
+        return { speedMultiplier: 0 };
+      }
+
       this.playerSnareTetherGroup.visible = false;
       const distFromNest = Math.hypot(
         playerPos.x - this.lairCenter.x,

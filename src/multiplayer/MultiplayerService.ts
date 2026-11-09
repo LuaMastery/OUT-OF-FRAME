@@ -136,6 +136,8 @@ export interface NetworkPlayerPosePacket {
   abductionSpiderX?: number;
   abductionSpiderY?: number;
   abductionSpiderZ?: number;
+  cocoonLocked?: boolean;
+  devourSecondsLeft?: number;
   voiceSpeaking?: boolean;
   voiceLevel?: number;
   ts: number;
@@ -228,6 +230,12 @@ export type NetworkWorldEvent =
   | {
       kind: 'abduction_finished';
       victimId: string;
+      ts: number;
+    }
+  | {
+      kind: 'player_devoured';
+      victimId: string;
+      victimName: string;
       ts: number;
     }
   | {

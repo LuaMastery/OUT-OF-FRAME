@@ -49,6 +49,7 @@ export class CursorProximityFX {
   private lastSpawnMs = 0;
   private rafId = 0;
   private lastFrameMs = performance.now();
+  private canvasDirty = true;
   private disposed = false;
 
   private readonly onMouseMoveBound: (e: PointerEvent) => void;
@@ -63,7 +64,7 @@ export class CursorProximityFX {
     private readonly getCanvasTargets: () => ProximityTargetRect[]
   ) {
     this.canvas = document.createElement('canvas');
-    this.canvas.id = 'tui-proximity-canvas';
+    this.canvas.className = 'tui-proximity-canvas';
     this.rootEl.appendChild(this.canvas);
 
     const context = this.canvas.getContext('2d');
@@ -265,8 +266,23 @@ export class CursorProximityFX {
   }
 
   private updateAndRender(nowMs: number, dt: number): void {
+    const interactive = this.isInteractivePhase();
+    if (
+      !interactive &&
+      this.bracketAlpha <= 0.005 &&
+      this.sparks.length === 0 &&
+      this.shockwaves.length === 0
+    ) {
+      if (this.canvasDirty) {
+        this.ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+        this.canvasDirty = false;
+      }
+      return;
+    }
+
     const ctx = this.ctx;
     ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+    this.canvasDirty = true;
 
     const hit = this.findNearestTarget();
     const snap2 = (v: number) => Math.round(v / 2) * 2;

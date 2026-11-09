@@ -60,6 +60,8 @@ interface RemoteAllyEntity {
   abductionProgress: number;
   abductionSpiderPos: THREE.Vector3;
   abductionCooldownUntilPerfMs: number;
+  cocoonLocked: boolean;
+  devourSecondsLeft: number;
   dead: boolean;
   afk: boolean;
   voiceSpeaking: boolean;
@@ -146,6 +148,10 @@ export class DoomMultiplayerCoordinator {
   private chatInputActive = false;
   private wasLocalEnsnared = false;
   private wasLocalDragged = false;
+  private wasLocalCocoonLocked = false;
+  private localCocoonLocked = false;
+  private localDevourSecondsLeft = 0;
+  private lastCocoonDistressMs = -Infinity;
   private localAfk = false;
   private lastCatchBroadcastMs = 0;
   private readonly candidatesScratch: SpiderPlayerCandidate[] = [];
@@ -629,6 +635,81 @@ export class DoomMultiplayerCoordinator {
     });
   }
 
+  notifyLocalPlayerDevoured(): void {
+    this.client.broadcastWorldEvent({
+      kind: 'player_devoured',
+      victimId: this.session.localPlayerId,
+      victimName: this.session.localPlayerName,
+      ts: Date.now(),
+    });
+  }
+
+  /**
+   * Permite que o jogador preso na Teia do Ninho emita pedidos de socorro (`[E]` / `[Espaço]`)
+   * com marcador 3D vermelho para guiar os amigos até o ninho antes de ser devorado!
+   */
+  emitCocoonDistressCall(pos: THREE.Vector3, secondsLeft: number): void {
+    const now = performance.now();
+    if (now - this.lastCocoonDistressMs < 2400) return;
+    this.lastCocoonDistressMs = now;
+    const secs = Math.max(1, Math.ceil(secondsLeft));
+    const { gx, gz } = worldToGridCell(pos.x, pos.z);
+    const sector = getSectorNameForCell(gx, gz);
+    this.sound.playRadarPing(true);
+    this.pushRadioFeed(
+      `🆘 Você pediu SOCORRO no rádio! (${secs}s restantes antes da Aranha devorar você!)`,
+      true
+    );
+    this.client.broadcastWorldEvent({
+      kind: 'sos_alert',
+      senderId: this.session.localPlayerId,
+      senderName: this.session.localPlayerName,
+      sectorName: `${sector} — PRESO NA TEIA DO NINHO! SALVE EM ${secs}s!`,
+      x: pos.x,
+      z: pos.z,
+      ts: Date.now(),
+    });
+  }
+
+  /**
+   * Retorna `true` se houver pelo menos um amigo conectado e vivo na sala.
+   */
+  hasLivingAllies(): boolean {
+    for (const ally of this.allies.values()) {
+      if (!ally.dead) return true;
+    }
+    return this.roster.some((r) => r.id !== this.session.localPlayerId);
+  }
+
+  /**
+   * Retorna a posição do casulo caso algum jogador (local ou aliado) preso na teia do ninho
+   * esteja nos segundos finais (`<= 14s`) para que a Aranha retorne faminta ao ninho!
+   */
+  getStarvingCocoonVictimPos(
+    localPos: THREE.Vector3,
+    localCocoonLocked: boolean,
+    localDevourSecondsLeft: number
+  ): THREE.Vector3 | null {
+    if (
+      localCocoonLocked &&
+      localDevourSecondsLeft > 0 &&
+      localDevourSecondsLeft <= 14.5
+    ) {
+      return localPos;
+    }
+    for (const ally of this.allies.values()) {
+      if (
+        !ally.dead &&
+        ally.cocoonLocked &&
+        ally.devourSecondsLeft > 0 &&
+        ally.devourSecondsLeft <= 14.5
+      ) {
+        return ally.currentPos;
+      }
+    }
+    return null;
+  }
+
   /**
    * Interrompe o ataque/arrasto da Aranha usando Sinalizador ou Faca, salvando o amigo antes do ninho!
    */
@@ -704,16 +785,19 @@ export class DoomMultiplayerCoordinator {
     }
 
     for (const ally of this.allies.values()) {
-      if (!ally.ensnared || ally.dead) continue;
+      if ((!ally.ensnared && !ally.cocoonLocked) || ally.dead) continue;
       const d = Math.hypot(
         ally.currentPos.x - localPos.x,
         ally.currentPos.z - localPos.z
       );
-      if (d <= 3.1) {
+      if (d <= 3.35) {
+        const wasCocoon = ally.cocoonLocked;
         ally.ensnared = false;
+        ally.cocoonLocked = false;
+        ally.devourSecondsLeft = 0;
         if (
           spiderPos &&
-          Math.hypot(spiderPos.x - localPos.x, spiderPos.z - localPos.z) <= 4.2
+          Math.hypot(spiderPos.x - localPos.x, spiderPos.z - localPos.z) <= 4.4
         ) {
           this.hooks.onSpiderInterruptedAndFlees(localPos);
         }
@@ -725,7 +809,9 @@ export class DoomMultiplayerCoordinator {
           ts: Date.now(),
         });
         this.pushRadioFeed(
-          `Você cortou a teia e salvou ${ally.name}!`,
+          wasCocoon
+            ? `🗡️ Você rasgou o casulo do Ninho e SALVOU ${ally.name} antes de ser devorado!`
+            : `Você cortou a teia e salvou ${ally.name}!`,
           false
         );
         this.renderSquadHud();
@@ -754,12 +840,12 @@ export class DoomMultiplayerCoordinator {
       return true;
     }
     for (const ally of this.allies.values()) {
-      if (!ally.ensnared || ally.dead) continue;
+      if ((!ally.ensnared && !ally.cocoonLocked) || ally.dead) continue;
       if (
         Math.hypot(
           ally.currentPos.x - localPos.x,
           ally.currentPos.z - localPos.z
-        ) <= 3.1
+        ) <= 3.35
       ) {
         return true;
       }
@@ -769,7 +855,7 @@ export class DoomMultiplayerCoordinator {
 
   /**
    * Retorna dados de abdução ativa caso algum aliado esteja sendo atacado/arrastado/tecido pela Aranha,
-   * permitindo que o Host e todos os observadores vejam a cena 3D sincronizada em tempo real!
+   * incluindo os pontos de ancoragem dos Tentáculos no Ragdoll 3D!
    */
   getActiveRemoteAbduction(): {
     allyId: string;
@@ -778,9 +864,16 @@ export class DoomMultiplayerCoordinator {
     progress: number;
     spiderPos: THREE.Vector3;
     victimPos: THREE.Vector3;
+    ragdollHooks:
+      | readonly [THREE.Vector3, THREE.Vector3, THREE.Vector3, THREE.Vector3]
+      | null;
   } | null {
     for (const ally of this.allies.values()) {
       if (!ally.dead && ally.inSequence && ally.abductionMode) {
+        const hooks =
+          ally.beingDragged || ally.abductionMode === 'DRAGGING_TO_WEB'
+            ? ally.astronaut.getAllyRagdollTentacleHooks()
+            : null;
         return {
           allyId: ally.id,
           allyName: ally.name,
@@ -788,6 +881,7 @@ export class DoomMultiplayerCoordinator {
           progress: ally.abductionProgress,
           spiderPos: ally.abductionSpiderPos,
           victimPos: ally.currentPos,
+          ragdollHooks: hooks,
         };
       }
     }
@@ -796,7 +890,7 @@ export class DoomMultiplayerCoordinator {
 
   /**
    * Constrói a lista completa de operadores candidatos (Host + todos os aliados vivos)
-   * com direção real de lanterna, corrida, agachamento e estado de teia para a IA da Aranha!
+   * com direção real de lanterna, corrida, agachamento, casulo do ninho e tempo p/ ser devorado!
    */
   buildSpiderPlayerCandidates(local: {
     pos: THREE.Vector3;
@@ -807,6 +901,8 @@ export class DoomMultiplayerCoordinator {
     flashlightDir: THREE.Vector3;
     voiceLevel?: number;
     ensnared: boolean;
+    cocoonLocked?: boolean;
+    devourSecondsLeft?: number;
     afk: boolean;
   }): readonly SpiderPlayerCandidate[] {
     this.candidatesScratch.length = 0;
@@ -820,6 +916,8 @@ export class DoomMultiplayerCoordinator {
       flashlightDir: local.flashlightDir,
       voiceLevel: local.voiceLevel ?? this.voiceChat.voiceLevel,
       ensnared: local.ensnared,
+      cocoonLocked: Boolean(local.cocoonLocked),
+      devourSecondsLeft: local.devourSecondsLeft,
       afk: local.afk,
       isLocal: true,
     });
@@ -836,6 +934,10 @@ export class DoomMultiplayerCoordinator {
         flashlightDir: ally.flashDir,
         voiceLevel: ally.voiceSpeaking ? ally.voiceLevel : 0,
         ensnared: ally.ensnared,
+        cocoonLocked: ally.cocoonLocked,
+        devourSecondsLeft: ally.cocoonLocked
+          ? ally.devourSecondsLeft
+          : undefined,
         afk: ally.afk,
         isLocal: false,
       });
@@ -916,6 +1018,8 @@ export class DoomMultiplayerCoordinator {
       abductionMode?: SpiderCinematicMode | null;
       abductionProgress?: number;
       abductionSpiderPos?: THREE.Vector3 | null;
+      cocoonLocked?: boolean;
+      devourSecondsLeft?: number;
       dead: boolean;
       afk?: boolean;
     },
@@ -945,8 +1049,28 @@ export class DoomMultiplayerCoordinator {
     this.hudRootEl.style.display = effectiveHideHud ? 'none' : 'flex';
     this.worldLabelsLayerEl.style.display = hideHud ? 'none' : 'block';
 
+    const nowCocoon = Boolean(localState.cocoonLocked);
+    this.localCocoonLocked = nowCocoon;
+    this.localDevourSecondsLeft = localState.devourSecondsLeft ?? 0;
+
+    if (nowCocoon && !this.wasLocalCocoonLocked) {
+      const secs = Math.max(1, Math.ceil(this.localDevourSecondsLeft || 45));
+      const { gx, gz } = worldToGridCell(localState.pos.x, localState.pos.z);
+      const sector = getSectorNameForCell(gx, gz);
+      this.client.broadcastWorldEvent({
+        kind: 'sos_alert',
+        senderId: this.session.localPlayerId,
+        senderName: this.session.localPlayerName,
+        sectorName: `${sector} — PRESO NA TEIA DO NINHO! (${secs}s P/ SER DEVORADO!)`,
+        x: localState.pos.x,
+        z: localState.pos.z,
+        ts: Date.now(),
+      });
+    }
+    this.wasLocalCocoonLocked = nowCocoon;
+
     // Alerta SOS automático quando o jogador local cai numa armadilha de teia ou começa a ser arrastado!
-    if (localState.ensnared && !this.wasLocalEnsnared) {
+    if (localState.ensnared && !this.wasLocalEnsnared && !nowCocoon) {
       const { gx, gz } = worldToGridCell(localState.pos.x, localState.pos.z);
       const sector = getSectorNameForCell(gx, gz);
       this.client.broadcastWorldEvent({
@@ -1032,6 +1156,10 @@ export class DoomMultiplayerCoordinator {
         abductionSpiderX: localState.abductionSpiderPos?.x,
         abductionSpiderY: localState.abductionSpiderPos?.y,
         abductionSpiderZ: localState.abductionSpiderPos?.z,
+        cocoonLocked: nowCocoon,
+        devourSecondsLeft: nowCocoon
+          ? Number(Math.max(0, this.localDevourSecondsLeft).toFixed(1))
+          : undefined,
         voiceSpeaking: this.voiceChat.isSpeaking,
         voiceLevel: Number(this.voiceChat.voiceLevel.toFixed(3)),
         dead: localState.dead,
@@ -1139,15 +1267,18 @@ export class DoomMultiplayerCoordinator {
         effectiveSpeed,
         ally.crouch,
         ally.flashlightOn,
-        ally.ensnared || ally.inSequence,
+        ally.ensnared || ally.cocoonLocked || ally.inSequence,
         ally.afk,
-        isBeingDragged
+        isBeingDragged,
+        isBeingDragged ? ally.abductionSpiderPos : null,
+        dt
       );
 
       // Foco sutil no bocal ancorado exatamente na frente da lente da lanterna 3D sólida do aliado
       const hasMuzzle =
         ally.flashlightOn &&
         !ally.ensnared &&
+        !ally.cocoonLocked &&
         !ally.inSequence &&
         ally.astronaut.getThirdPersonFlashlightMuzzleWorld(
           this.muzzlePosScratch,
@@ -1165,7 +1296,7 @@ export class DoomMultiplayerCoordinator {
       // Projeção na tela da etiqueta acima do capacete do aliado (com ícone de AFK ou alerta de ARRASTO/TEIA!)
       const headHeight = isBeingDragged
         ? 0.95
-        : ally.ensnared || ally.inSequence
+        : ally.ensnared || ally.cocoonLocked || ally.inSequence
           ? 1.45
           : 1.94 - ally.crouch * 0.42;
       this.projVec.set(
@@ -1184,14 +1315,14 @@ export class DoomMultiplayerCoordinator {
         ally.labelEl.style.top = `${sy.toFixed(1)}px`;
         ally.labelEl.classList.toggle(
           'trapped',
-          ally.ensnared || ally.inSequence
+          ally.ensnared || ally.cocoonLocked || ally.inSequence
         );
         ally.labelEl.classList.toggle(
           'afk',
-          ally.afk && !ally.ensnared && !ally.inSequence
+          ally.afk && !ally.ensnared && !ally.cocoonLocked && !ally.inSequence
         );
         ally.labelAfkRowEl.style.display =
-          ally.afk && !ally.ensnared && !ally.inSequence
+          ally.afk && !ally.ensnared && !ally.cocoonLocked && !ally.inSequence
             ? 'inline-flex'
             : 'none';
 
@@ -1201,9 +1332,12 @@ export class DoomMultiplayerCoordinator {
         const micTag = allyAudibleSpeak ? '🔊 ' : '';
 
         if (isBeingDragged) {
-          ally.labelTextEl.textContent = `${micTag}🕷️ ${ally.name} — SENDO ARRASTADO! [SINALIZADOR / FACA]`;
+          ally.labelTextEl.textContent = `${micTag}🕷️ ${ally.name} — RAGDOLL PUXADO PELOS TENTÁCULOS! [SINALIZADOR / FACA]`;
         } else if (ally.inSequence) {
           ally.labelTextEl.textContent = `${micTag}🕷️ ${ally.name} — NAS GARRAS DA ARANHA! [SINALIZADOR / FACA]`;
+        } else if (ally.cocoonLocked) {
+          const secs = Math.max(1, Math.ceil(ally.devourSecondsLeft || 1));
+          ally.labelTextEl.textContent = `${micTag}🕸️ ${ally.name} — PRESO NA TEIA! SALVE COM [E / FACA] (${secs}s P/ DEVORAR!)`;
         } else if (ally.ensnared) {
           ally.labelTextEl.textContent = `${micTag}🕸️ ${ally.name} — PRESO NA TEIA! [E / FACA]`;
         } else if (ally.afk) {
@@ -1434,6 +1568,8 @@ export class DoomMultiplayerCoordinator {
           pkt.abductionSpiderZ ?? pkt.z
         ),
         abductionCooldownUntilPerfMs: 0,
+        cocoonLocked: Boolean(pkt.cocoonLocked),
+        devourSecondsLeft: pkt.devourSecondsLeft ?? 0,
         dead: pkt.dead,
         afk: Boolean(pkt.afk),
         voiceSpeaking: Boolean(pkt.voiceSpeaking),
@@ -1465,6 +1601,10 @@ export class DoomMultiplayerCoordinator {
     ent.health = pkt.health;
     ent.bleeding = pkt.bleeding;
     ent.ensnared = pkt.ensnared;
+    ent.cocoonLocked = Boolean(pkt.cocoonLocked);
+    ent.devourSecondsLeft = pkt.cocoonLocked
+      ? (pkt.devourSecondsLeft ?? ent.devourSecondsLeft)
+      : 0;
     const nowPerf = performance.now();
     if (nowPerf < ent.abductionCooldownUntilPerfMs) {
       // Ignora pacotes de pose atrasados em trânsito logo após o término/interrupção da abdução!
@@ -1660,16 +1800,20 @@ export class DoomMultiplayerCoordinator {
       const targetAlly = this.allies.get(ev.targetPlayerId);
       if (targetAlly) {
         targetAlly.ensnared = false;
+        targetAlly.cocoonLocked = false;
+        targetAlly.devourSecondsLeft = 0;
       }
       if (ev.targetPlayerId === this.session.localPlayerId) {
+        this.localCocoonLocked = false;
+        this.localDevourSecondsLeft = 0;
         this.hooks.onRescuedByAlly(ev.rescuerName);
         this.pushRadioFeed(
-          `${ev.rescuerName} cortou a teia e libertou você!`,
+          `🗡️ ${ev.rescuerName} cortou a teia e SALVOU você antes da Aranha devorá-lo!`,
           false
         );
       } else {
         this.pushRadioFeed(
-          `${ev.rescuerName} libertou um aliado da teia!`,
+          `🗡️ ${ev.rescuerName} libertou ${targetAlly ? targetAlly.name : 'um aliado'} da teia!`,
           false
         );
       }
@@ -1715,12 +1859,30 @@ export class DoomMultiplayerCoordinator {
           ally.inSequence = false;
           ally.beingDragged = false;
           ally.abductionMode = null;
+          ally.cocoonLocked = true;
+          ally.devourSecondsLeft = 45;
           ally.abductionCooldownUntilPerfMs = performance.now() + 2600;
         }
         if (this.client.isHost) {
           this.hooks.onRemoteVictimFinishedAbduction();
         }
       }
+      this.renderSquadHud();
+    } else if (ev.kind === 'player_devoured') {
+      if (ev.victimId !== this.session.localPlayerId) {
+        const ally = this.allies.get(ev.victimId);
+        if (ally) {
+          ally.cocoonLocked = false;
+          ally.devourSecondsLeft = 0;
+          ally.dead = true;
+        }
+        this.sound.playRadarPing(true);
+        this.pushRadioFeed(
+          `☠ ${ev.victimName} não foi salvo a tempo e foi DEVORADO pela Aranha no Ninho!`,
+          true
+        );
+      }
+      this.renderSquadHud();
     } else if (ev.kind === 'web_trap_spawned') {
       if (!this.client.isHost) {
         this.hooks.onRemoteWebTrapSpawned(ev.x, ev.z);
@@ -1877,7 +2039,11 @@ export class DoomMultiplayerCoordinator {
     const selfSpeakPrefix = this.voiceChat.isSpeaking ? '🔊 ' : '● ';
     selfName.textContent = `${selfSpeakPrefix}${this.session.localPlayerName} (Você)`;
     const selfStatus = document.createElement('span');
-    if (this.localAfk) {
+    if (this.localCocoonLocked) {
+      selfStatus.className = 'oof-coop-ally-hp danger';
+      const secs = Math.max(1, Math.ceil(this.localDevourSecondsLeft || 1));
+      selfStatus.textContent = `NA TEIA (${secs}s)`;
+    } else if (this.localAfk) {
       selfStatus.className = 'oof-coop-ally-hp warn';
       selfStatus.appendChild(createAfkBadgeElement('AFK'));
     } else {
@@ -1906,6 +2072,10 @@ export class DoomMultiplayerCoordinator {
       } else if (ally.inSequence) {
         hpSpan.className = 'oof-coop-ally-hp danger';
         hpSpan.textContent = 'ATACADO!';
+      } else if (ally.cocoonLocked) {
+        const secs = Math.max(1, Math.ceil(ally.devourSecondsLeft || 1));
+        hpSpan.className = 'oof-coop-ally-hp danger';
+        hpSpan.textContent = `NA TEIA (${secs}s)`;
       } else if (ally.ensnared) {
         hpSpan.className = 'oof-coop-ally-hp danger';
         hpSpan.textContent = 'NA TEIA!';

@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { AstronautRagdoll, RAGDOLL_IDX } from './DoomRagdoll';
 import { createDoomPropMaterial, DoomSharedUniforms } from './DoomShader';
 
 export type AstronautArmSide = 'left' | 'right';
@@ -1322,6 +1323,10 @@ export class DoomAstronaut {
   private readonly rightLeg: AstronautLegRig;
   private readonly materials: AstronautMaterialSet;
   private readonly tpLensLitMaterial: THREE.Material;
+  private readonly allyRagdoll = new AstronautRagdoll();
+  private readonly ragSpiderScratch = new THREE.Vector3();
+  private readonly ragInvQuat = new THREE.Quaternion();
+  private readonly ragLocalVec = new THREE.Vector3();
 
   private firstPersonMode = true;
 
@@ -2092,7 +2097,7 @@ export class DoomAstronaut {
     const silkBandMat = new THREE.MeshBasicMaterial({
       color: 0xd9ddd2,
       transparent: true,
-      opacity: 0.72,
+      opacity: 0.76,
       side: THREE.DoubleSide,
     });
     const bandSpecs: Array<[number, number, number, number, number]> = [
@@ -2100,6 +2105,9 @@ export class DoomAstronaut {
       [0.25, 0.23, 0.11, 0.11, -0.22],
       [0.22, 0.21, 0.08, -0.04, 0.19],
       [0.23, 0.24, 0.07, 0.36, -0.14],
+      [0.28, 0.27, 0.08, 0.21, 0.42],
+      [0.28, 0.27, 0.08, 0.21, -0.42],
+      [0.2, 0.19, 0.1, -0.22, 0.12],
     ];
     for (const [rt, rb, h, yPos, tiltZ] of bandSpecs) {
       const band = new THREE.Mesh(
@@ -2215,6 +2223,179 @@ export class DoomAstronaut {
   }
 
   /**
+   * Articulação física 3D completa de RAGDOLL DESMAIADO (`AstronautRagdoll`):
+   * Posiciona tronco, capacete, ombros, cotovelos, quadris, joelhos e botas diretamente
+   * a partir das 11 massas Verlet simuladas em tempo real enquanto os tentáculos da Aranha o puxam!
+   */
+  applyRagdollPose(
+    ragdoll: AstronautRagdoll,
+    showSilkWraps = false
+  ): void {
+    this.root.visible = true;
+    this.setFirstPersonMode(false);
+    this.thirdPersonFlashlightGroup.visible = false;
+    this.thirdPersonWebCocoonGroup.visible = showSilkWraps;
+
+    const pelvis = ragdoll.particles[RAGDOLL_IDX.PELVIS].pos;
+    const chest = ragdoll.particles[RAGDOLL_IDX.CHEST].pos;
+    const head = ragdoll.particles[RAGDOLL_IDX.HEAD].pos;
+    const elbowL = ragdoll.particles[RAGDOLL_IDX.ELBOW_L].pos;
+    const handL = ragdoll.particles[RAGDOLL_IDX.HAND_L].pos;
+    const elbowR = ragdoll.particles[RAGDOLL_IDX.ELBOW_R].pos;
+    const handR = ragdoll.particles[RAGDOLL_IDX.HAND_R].pos;
+    const kneeL = ragdoll.particles[RAGDOLL_IDX.KNEE_L].pos;
+    const footL = ragdoll.particles[RAGDOLL_IDX.FOOT_L].pos;
+    const kneeR = ragdoll.particles[RAGDOLL_IDX.KNEE_R].pos;
+    const footR = ragdoll.particles[RAGDOLL_IDX.FOOT_R].pos;
+
+    const sx = chest.x - pelvis.x;
+    const sy = chest.y - pelvis.y;
+    const sz = chest.z - pelvis.z;
+    const sPlanar = Math.hypot(sx, sz);
+
+    // Em postura supina (de costas no piso), o eixo +Y da coluna inclina para +Z local (yaw = atan2(sx, sz))
+    const spineYaw =
+      sPlanar > 1e-3 ? Math.atan2(sx, sz) : this.root.rotation.y;
+    const tiltX = Math.max(
+      0.18,
+      Math.min(1.54, Math.atan2(sPlanar, Math.max(0.02, sy)))
+    );
+
+    this.root.position.set(pelvis.x, 0, pelvis.z);
+    this.root.rotation.set(0, spineYaw, 0);
+
+    // Mantém bodyPivot.y = -0.62 (< -0.5) e posiciona hipsGroup exatamente em (0, pelvis.y, 0) no espaço do mundo!
+    const pivotDropY = -0.62;
+    const targetRelY = Math.max(0.14, pelvis.y) - pivotDropY;
+    const cosT = Math.cos(tiltX);
+    const sinT = Math.sin(tiltX);
+    this.bodyPivot.position.set(0, pivotDropY, 0);
+    this.bodyPivot.rotation.set(tiltX, 0, 0);
+    this.hipsGroup.position.set(0, targetRelY * cosT, -targetRelY * sinT);
+    this.torsoGroup.rotation.set(-0.08, 0, 0);
+
+    this.root.updateMatrixWorld(true);
+
+    // Capacete / cabeça tombada inerte (desmaiado!)
+    this.torsoGroup.getWorldQuaternion(this.ragInvQuat).invert();
+    this.ragLocalVec
+      .subVectors(head, chest)
+      .applyQuaternion(this.ragInvQuat);
+    if (this.ragLocalVec.lengthSq() > 1e-5) {
+      this.ragLocalVec.normalize();
+      const headPitch = Math.max(
+        -0.65,
+        Math.min(0.45, Math.atan2(-this.ragLocalVec.z, Math.max(0.15, this.ragLocalVec.y)) - 0.22)
+      );
+      const headRoll = Math.max(
+        -0.42,
+        Math.min(0.42, -this.ragLocalVec.x * 0.85)
+      );
+      this.headGroup.rotation.set(headPitch, headRoll * 0.5, headRoll);
+    }
+
+    // Pernas sendo puxadas pelos tentáculos nos tornozelos!
+    this.hipsGroup.getWorldQuaternion(this.ragInvQuat).invert();
+    const solveRagdollLeg = (
+      leg: AstronautLegRig,
+      hipSideSign: number,
+      kneeWorld: THREE.Vector3,
+      footWorld: THREE.Vector3
+    ) => {
+      const hipWorld = new THREE.Vector3(hipSideSign * 0.115, -0.035, 0);
+      this.hipsGroup.localToWorld(hipWorld);
+
+      const thighLocal = this.ragLocalVec
+        .subVectors(kneeWorld, hipWorld)
+        .applyQuaternion(this.ragInvQuat);
+      if (thighLocal.lengthSq() > 1e-5) {
+        thighLocal.normalize();
+        // Em descanso a coxa aponta para -Y local; +X de rotação levanta a coxa para -Z (frente)!
+        const hipPitch = Math.atan2(-thighLocal.z, Math.max(0.08, -thighLocal.y));
+        const hipAbd = Math.max(-0.38, Math.min(0.38, thighLocal.x * 0.75));
+        leg.hipPivot.rotation.set(
+          Math.max(-0.55, Math.min(1.25, hipPitch)),
+          0,
+          hipAbd
+        );
+
+        const shinLocal = new THREE.Vector3()
+          .subVectors(footWorld, kneeWorld)
+          .applyQuaternion(this.ragInvQuat);
+        if (shinLocal.lengthSq() > 1e-5) {
+          shinLocal.normalize();
+          const shinPitch = Math.atan2(-shinLocal.z, Math.max(0.08, -shinLocal.y));
+          const kneeFlex = Math.max(
+            -1.35,
+            Math.min(0.05, shinPitch - hipPitch)
+          );
+          leg.kneePivot.rotation.set(kneeFlex, 0, 0);
+          leg.anklePivot.rotation.set(0.28, 0, 0);
+        }
+      }
+    };
+
+    solveRagdollLeg(this.leftLeg, -1, kneeL, footL);
+    solveRagdollLeg(this.rightLeg, 1, kneeR, footR);
+
+    // Braços completamente moles/desmaiados arrastando pelo chão atrás dos ombros!
+    this.torsoGroup.getWorldQuaternion(this.ragInvQuat).invert();
+    const solveRagdollArm = (
+      arm: AstronautArmRig,
+      sideSign: number,
+      elbowWorld: THREE.Vector3,
+      handWorld: THREE.Vector3
+    ) => {
+      const shoulderWorld = new THREE.Vector3(sideSign * 0.272, 0.445, 0.01);
+      this.torsoGroup.localToWorld(shoulderWorld);
+
+      const upperLocal = this.ragLocalVec
+        .subVectors(elbowWorld, shoulderWorld)
+        .applyQuaternion(this.ragInvQuat);
+      arm.shoulderPivot.rotation.order = 'YXZ';
+      if (upperLocal.lengthSq() > 1e-5) {
+        upperLocal.normalize();
+        const shPitch = Math.atan2(-upperLocal.z, -upperLocal.y);
+        const shSplay = Math.max(
+          -0.65,
+          Math.min(0.65, upperLocal.x * 0.85)
+        );
+        arm.shoulderPivot.rotation.set(
+          Math.max(-0.6, Math.min(2.65, shPitch)),
+          sideSign * -0.18,
+          shSplay
+        );
+
+        const foreLocal = new THREE.Vector3()
+          .subVectors(handWorld, elbowWorld)
+          .applyQuaternion(this.ragInvQuat);
+        if (foreLocal.lengthSq() > 1e-5) {
+          foreLocal.normalize();
+          const forePitch = Math.atan2(-foreLocal.z, -foreLocal.y);
+          const elbowBend = Math.max(
+            0.08,
+            Math.min(1.45, Math.abs(forePitch - shPitch))
+          );
+          arm.elbowPivot.rotation.set(elbowBend, 0, 0);
+        }
+      }
+      arm.wristPivot.rotation.set(0.18, 0, sideSign * 0.12);
+      arm.setGripPose('sprawled');
+    };
+
+    solveRagdollArm(this.leftArm, -1, elbowL, handL);
+    solveRagdollArm(this.rightArm, 1, elbowR, handR);
+  }
+
+  getAllyRagdollTentacleHooks():
+    | [THREE.Vector3, THREE.Vector3, THREE.Vector3, THREE.Vector3]
+    | null {
+    return this.allyRagdoll.isActive
+      ? this.allyRagdoll.getTentacleAttachmentPoints()
+      : null;
+  }
+
+  /**
    * Atualiza o Astronauta em 3ª pessoa completa (capacete + viseira dourada + mochila PLSS + braços + pernas)
    * para renderizar aliados conectados em sessões Multiplayer Co-op!
    */
@@ -2228,52 +2409,64 @@ export class DoomAstronaut {
     flashlightOn: boolean,
     trappedOrDowned: boolean,
     afk = false,
-    draggedBySpider = false
+    draggedBySpider = false,
+    spiderWorldPos?: THREE.Vector3 | null,
+    dt = 1 / 60
   ): void {
     this.root.visible = true;
     this.setFirstPersonMode(false);
 
-    this.root.position.set(position.x, position.y, position.z);
-    this.root.rotation.set(0, yaw, 0);
-
     if (draggedBySpider) {
-      // Deitado de costas no piso sendo puxado pelas patas dianteiras da Aranha Gigante!
-      this.thirdPersonFlashlightGroup.visible = false;
-      this.thirdPersonWebCocoonGroup.visible = true;
-      const struggle = Math.sin(bobPhase * 5.2) * 0.12;
-      this.bodyPivot.position.set(0, -0.68, 0);
-      this.bodyPivot.rotation.set(1.36, struggle * 0.25, struggle * 0.16);
-      this.hipsGroup.position.set(0, 0.85, 0);
-      this.torsoGroup.rotation.set(-0.18, 0, 0);
-      this.headGroup.rotation.set(-0.35 + struggle * 0.4, struggle * 0.5, 0);
-      this.leftLeg.hipPivot.rotation.set(0.18 + struggle * 0.3, 0, -0.09);
-      this.leftLeg.kneePivot.rotation.set(-0.26, 0, 0);
-      this.rightLeg.hipPivot.rotation.set(0.18 - struggle * 0.3, 0, 0.09);
-      this.rightLeg.kneePivot.rotation.set(-0.26, 0, 0);
-      this.leftArm.shoulderPivot.rotation.set(1.05 + struggle, 0.28, -0.22);
-      this.leftArm.elbowPivot.rotation.set(0.72, 0, 0);
-      this.rightArm.shoulderPivot.rotation.set(1.05 - struggle, -0.28, 0.22);
-      this.rightArm.elbowPivot.rotation.set(0.72, 0, 0);
+      // Transforma o aliado capturado em um RAGDOLL FÍSICO DESMAIADO puxado pelos tentáculos da Aranha!
+      if (spiderWorldPos) {
+        this.ragSpiderScratch.copy(spiderWorldPos);
+      } else {
+        this.ragSpiderScratch.set(
+          position.x - Math.sin(yaw) * 2.0,
+          1.35,
+          position.z - Math.cos(yaw) * 2.0
+        );
+      }
+      const pullPulse = 0.5 + 0.5 * Math.sin(bobPhase * 3.5);
+      this.allyRagdoll.stepTentacleDrag(
+        dt,
+        this.ragSpiderScratch,
+        position,
+        pullPulse,
+        []
+      );
+      this.applyRagdollPose(this.allyRagdoll, true);
       return;
     }
 
+    if (this.allyRagdoll.isActive) {
+      this.allyRagdoll.resetInactive();
+    }
+
+    this.root.position.set(position.x, position.y, position.z);
+    this.root.rotation.set(0, yaw, 0);
+
     if (trappedOrDowned) {
+      // Preso e imobilizado no casulo de teia aguardando os amigos cortarem os fios!
       this.thirdPersonFlashlightGroup.visible = false;
       this.thirdPersonWebCocoonGroup.visible = true;
-      const struggle = Math.sin(bobPhase * 3.2) * 0.09;
-      this.bodyPivot.position.set(0, -0.36, 0);
-      this.bodyPivot.rotation.set(0.28, struggle * 0.5, struggle * 0.35);
+      const subtleBreath = Math.sin(bobPhase * 2.4) * 0.04;
+      this.bodyPivot.position.set(0, -0.28, 0);
+      this.bodyPivot.rotation.set(0.22, subtleBreath * 0.35, subtleBreath * 0.25);
       this.hipsGroup.position.set(0, 0.82, 0);
-      this.torsoGroup.rotation.set(0.22, 0, 0);
-      this.headGroup.rotation.set(-0.18 + struggle, struggle, 0);
-      this.leftLeg.hipPivot.rotation.set(0.55, 0, -0.08);
-      this.leftLeg.kneePivot.rotation.set(-0.95, 0, 0);
-      this.rightLeg.hipPivot.rotation.set(0.55, 0, 0.08);
-      this.rightLeg.kneePivot.rotation.set(-0.95, 0, 0);
-      this.leftArm.shoulderPivot.rotation.set(0.85 + struggle, 0.35, -0.25);
-      this.leftArm.elbowPivot.rotation.set(0.8, 0, 0);
-      this.rightArm.shoulderPivot.rotation.set(0.85 - struggle, -0.35, 0.25);
-      this.rightArm.elbowPivot.rotation.set(0.8, 0, 0);
+      this.torsoGroup.rotation.set(0.18, 0, 0);
+      this.headGroup.rotation.set(-0.22 + subtleBreath, subtleBreath * 0.6, 0);
+      this.leftLeg.hipPivot.rotation.set(0.48, 0, -0.06);
+      this.leftLeg.kneePivot.rotation.set(-0.82, 0, 0);
+      this.rightLeg.hipPivot.rotation.set(0.48, 0, 0.06);
+      this.rightLeg.kneePivot.rotation.set(-0.82, 0, 0);
+      // Braços amarrados pela seda junto ao tronco — impossibilitado de se soltar sozinho!
+      this.leftArm.shoulderPivot.rotation.set(0.52 + subtleBreath, 0.42, 0.16);
+      this.leftArm.elbowPivot.rotation.set(1.05, 0, 0);
+      this.leftArm.setGripPose('sprawled');
+      this.rightArm.shoulderPivot.rotation.set(0.52 - subtleBreath, -0.42, -0.16);
+      this.rightArm.elbowPivot.rotation.set(1.05, 0, 0);
+      this.rightArm.setGripPose('sprawled');
       return;
     }
 

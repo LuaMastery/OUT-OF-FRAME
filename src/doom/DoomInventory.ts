@@ -62,6 +62,7 @@ export interface DoomInventoryCallbacks {
   onToggleRadar?: () => boolean;
   onOpenRequest?: () => void;
   onCloseRequest: () => void;
+  onOpenPauseRequest?: () => void;
   onPermanentDeathTerminate: () => void;
 }
 
@@ -1590,7 +1591,18 @@ export class DoomInventory {
       <div class="inv-stage" role="dialog" aria-label="Inventário">
         <header class="inv-topbar">
           <span class="inv-topbar-title">INVENTÁRIO</span>
-          <button type="button" class="inv-close-btn" data-inv-close="1">[Tab] voltar</button>
+          <div class="inv-topbar-actions">
+            <button
+              type="button"
+              class="inv-pause-btn"
+              data-inv-open-pause="1"
+              aria-label="Abrir Tela de Pausa"
+            >
+              <span class="inv-pause-bars" aria-hidden="true"><span></span><span></span></span>
+              <span>Menu de Pausa [P]</span>
+            </button>
+            <button type="button" class="inv-close-btn" data-inv-close="1">[Tab] voltar</button>
+          </div>
         </header>
 
         <div class="inv-layout">
@@ -1751,11 +1763,49 @@ export class DoomInventory {
       '[data-actions]'
     ) as HTMLElement;
 
-    this.overlayEl
-      .querySelector('[data-inv-close]')
-      ?.addEventListener('click', () => {
-        this.callbacks.onCloseRequest();
-      });
+    const openPauseBtn = this.overlayEl.querySelector(
+      '[data-inv-open-pause]'
+    ) as HTMLButtonElement | null;
+    openPauseBtn?.addEventListener('mouseenter', () => {
+      if (this.isOpen) {
+        this.sound.playInventorySelect(false);
+      }
+    });
+    openPauseBtn?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openPauseBtn.blur?.();
+      this.callbacks.onOpenPauseRequest?.();
+    });
+
+    const closeInvBtn = this.overlayEl.querySelector(
+      '[data-inv-close]'
+    ) as HTMLButtonElement | null;
+    closeInvBtn?.addEventListener('mouseenter', () => {
+      if (this.isOpen) {
+        this.sound.playInventorySelect(false);
+      }
+    });
+    closeInvBtn?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      closeInvBtn.blur?.();
+      this.callbacks.onCloseRequest();
+    });
+
+    this.overlayEl.addEventListener('pointerdown', (e) => {
+      if (this.isOpen) {
+        e.stopPropagation();
+      }
+    });
+
+    this.overlayEl.addEventListener(
+      'wheel',
+      (e) => {
+        if (this.isOpen) {
+          e.stopPropagation();
+        }
+      },
+      { passive: true }
+    );
 
     this.overlayEl.addEventListener('mousedown', (e) => {
       if (e.target === this.overlayEl) {
@@ -1860,7 +1910,7 @@ export class DoomInventory {
     if (!this.isOpen) return rects;
 
     const nodes = this.overlayEl.querySelectorAll(
-      '.inv-quick-slot, .inv-hk-btn, .inv-slot.filled, .inv-action-btn:not(:disabled), .inv-close-btn'
+      '.inv-quick-slot, .inv-hk-btn, .inv-slot.filled, .inv-action-btn:not(:disabled), .inv-pause-btn, .inv-close-btn'
     );
     nodes.forEach((node) => {
       const el = node as HTMLElement;
@@ -1886,7 +1936,7 @@ export class DoomInventory {
     return this.isOpen;
   }
 
-  setOpen(next: boolean): void {
+  setOpen(next: boolean, silent = false): void {
     if (this.isOpen === next) return;
     this.isOpen = next;
     this.hoveredIndex = null;
@@ -1903,9 +1953,16 @@ export class DoomInventory {
       this.renderInspector();
       this.startAnatomyLoop();
     } else {
+      const active =
+        typeof document !== 'undefined'
+          ? (document.activeElement as HTMLElement | null)
+          : null;
+      if (active && this.overlayEl.contains?.(active)) {
+        active.blur?.();
+      }
       this.overlayEl.classList.remove('open');
       this.stopAnatomyLoop();
-      if (this.hasConfiguredShortcuts()) {
+      if (!silent && this.hasConfiguredShortcuts()) {
         this.wakeShortcutsHub(
           3000,
           'Atalhos configurados · rolinha + clique esq. ou [1–3]'
@@ -1914,7 +1971,9 @@ export class DoomInventory {
     }
     this.renderShortcutsHub(true);
     this.syncShortcutsHubVisibility();
-    this.sound.playInventoryToggle(next);
+    if (!silent) {
+      this.sound.playInventoryToggle(next);
+    }
   }
 
   private startAnatomyLoop(): void {

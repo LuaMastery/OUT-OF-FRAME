@@ -54,6 +54,8 @@ export interface SpiderPlayerCandidate {
   flashlightDir: THREE.Vector3;
   voiceLevel?: number;
   ensnared: boolean;
+  cocoonLocked?: boolean;
+  devourSecondsLeft?: number;
   afk: boolean;
   isLocal: boolean;
 }
@@ -61,6 +63,17 @@ export interface SpiderPlayerCandidate {
 const RING_SIDES = 10;
 const CURVE_SAMPLES = 34;
 const IK_ITERATIONS = 4;
+const TENTACLE_SIDES = 8;
+const TENTACLE_SAMPLES = 26;
+
+interface SpiderTentacleRuntime {
+  index: number;
+  curvePoints: THREE.Vector3[];
+  mesh: THREE.Mesh;
+  posAttr: THREE.BufferAttribute;
+  normAttr: THREE.BufferAttribute;
+  colAttr: THREE.BufferAttribute;
+}
 
 /** Ângulos anatômicos canônicos (graus) das 8 coxas ao redor do cefalotórax */
 const CANONICAL_LIMB_ANGLES_DEG = [
@@ -374,14 +387,55 @@ function createDynamicTubeGeometry(): {
   return { geometry, posAttr, normAttr, colAttr };
 }
 
+function createTentacleTubeGeometry(): {
+  geometry: THREE.BufferGeometry;
+  posAttr: THREE.BufferAttribute;
+  normAttr: THREE.BufferAttribute;
+  colAttr: THREE.BufferAttribute;
+} {
+  const vertCount = TENTACLE_SAMPLES * TENTACLE_SIDES;
+  const positions = new Float32Array(vertCount * 3);
+  const normals = new Float32Array(vertCount * 3);
+  const colors = new Float32Array(vertCount * 3);
+  const indices: number[] = [];
+
+  for (let j = 0; j < TENTACLE_SAMPLES - 1; j++) {
+    for (let k = 0; k < TENTACLE_SIDES; k++) {
+      const k2 = (k + 1) % TENTACLE_SIDES;
+      const a = j * TENTACLE_SIDES + k;
+      const b = j * TENTACLE_SIDES + k2;
+      const c = (j + 1) * TENTACLE_SIDES + k2;
+      const d = (j + 1) * TENTACLE_SIDES + k;
+      indices.push(a, b, c, a, c, d);
+    }
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  const posAttr = new THREE.BufferAttribute(positions, 3);
+  posAttr.setUsage(THREE.DynamicDrawUsage);
+  const normAttr = new THREE.BufferAttribute(normals, 3);
+  normAttr.setUsage(THREE.DynamicDrawUsage);
+  const colAttr = new THREE.BufferAttribute(colors, 3);
+  colAttr.setUsage(THREE.DynamicDrawUsage);
+
+  geometry.setAttribute('position', posAttr);
+  geometry.setAttribute('normal', normAttr);
+  geometry.setAttribute('color', colAttr);
+  geometry.setIndex(indices);
+  geometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 160);
+
+  return { geometry, posAttr, normAttr, colAttr };
+}
+
 /**
  * Aranha Gigante Procedural de Terror ("Evil Crawling Thing" — escala imponente):
  * - Corpo volumoso elevado (~1.42m no piso) e 8 patas negras longas (~3.65m - 4.17m) arqueadas até quase o teto!
  * - Escala chão, paredes e teto livremente, tece armadilhas de teia e dispara em velocidade absurda ao avistar o jogador.
- * - Ao alcançar o jogador: desfere ataque brutal, arrasta o corpo desacordado até seu Ninho de Teias (ou executa fatalmente se já ferido)!
+ * - Ao alcançar o jogador: desfere ataque brutal, projeta seus 4 tentáculos orgânicos para puxar o Ragdoll desacordado até o Ninho de Teias!
  */
 export class DoomSpider {
   private readonly rootGroup = new THREE.Group();
+  private readonly tentaclesGroup = new THREE.Group();
   private readonly bodyGroup = new THREE.Group();
   private readonly leftCheliceraPivot = new THREE.Group();
   private readonly rightCheliceraPivot = new THREE.Group();
@@ -396,6 +450,7 @@ export class DoomSpider {
 
   private readonly limbSpecs: SpiderLimbSpec[] = [];
   private readonly limbs: SpiderLimbRuntime[] = [];
+  private readonly tentacles: SpiderTentacleRuntime[] = [];
 
   private readonly bodyPos = new THREE.Vector3();
   private readonly smoothVel = new THREE.Vector3();
@@ -418,8 +473,12 @@ export class DoomSpider {
   private cinematicMode: SpiderCinematicMode | null = null;
   private lastCinematicMode: SpiderCinematicMode | null = null;
   private readonly cinematicVictimPos = new THREE.Vector3();
+  private cinematicRagdollHooks:
+    | readonly [THREE.Vector3, THREE.Vector3, THREE.Vector3, THREE.Vector3]
+    | null = null;
   private cinematicProgress = 0;
   private remoteDrivenCinematic = false;
+  private tentacleExtension = 0;
 
   onWebTrapSpawned?: (x: number, z: number) => void;
 
@@ -457,7 +516,10 @@ export class DoomSpider {
   ) {
     this.arenaLayout = getOrCreateSceneArenaLayout(scene, explicitArenaLayout);
     this.rootGroup.name = 'EvilCrawlingSpider';
+    this.tentaclesGroup.name = 'SpiderCaptureTentacles';
+    this.tentaclesGroup.visible = false;
     scene.add(this.rootGroup);
+    scene.add(this.tentaclesGroup);
 
     this.chitinMat = createSpiderChitinMaterial(sharedUniforms);
     this.eyeMat = createSpiderEyeMaterial(sharedUniforms);
@@ -465,12 +527,17 @@ export class DoomSpider {
     this.buildProceduralLimbSpecs();
     this.buildBodyCore();
     this.buildProceduralLimbMeshes();
+    this.buildProceduralTentacleMeshes();
 
     this.respawnFarFromPlayer();
   }
 
   get currentState(): SpiderBehaviorState {
     return this.state;
+  }
+
+  get areCaptureTentaclesVisible(): boolean {
+    return this.tentaclesGroup.visible && this.tentacleExtension > 0.02;
   }
 
   get currentSurfaceMode(): SpiderSurfaceMode {
@@ -546,6 +613,7 @@ export class DoomSpider {
 
     const farWorld = gridCellToWorld(bestCell.gx, bestCell.gz);
     const hasWall = this.hasWallForWebAt(farWorld.x, farWorld.z);
+    this.hideCaptureTentacles();
     this.placeAtCell(
       farWorld.x,
       farWorld.z,
@@ -563,8 +631,10 @@ export class DoomSpider {
   ): void {
     this.cinematicMode = null;
     this.lastCinematicMode = null;
+    this.cinematicRagdollHooks = null;
     this.remoteDrivenCinematic = false;
     this.searchingAroundLastKnown = false;
+    this.hideCaptureTentacles();
 
     const hasNearbyOrWatchingObserver = Boolean(
       observerPositions?.some((obs) => {
@@ -654,6 +724,28 @@ export class DoomSpider {
         c.pos.x - this.bodyPos.x,
         c.pos.z - this.bodyPos.z
       );
+
+      // Vítima já presa no Casulo do Ninho em Multiplayer:
+      // - Enquanto ainda faltam > 14s para devorar, a Aranha prioriza caçar os amigos livres (dando chance de resgate!).
+      // - Nos últimos <= 14s do cronômetro, a fome aperta e a Aranha corre de volta ao Ninho para DEVORAR a vítima!
+      if (c.cocoonLocked) {
+        const secsLeft = c.devourSecondsLeft ?? 30;
+        let score: number;
+        if (secsLeft <= 14) {
+          score =
+            dist < 1.52 && this.hasLineOfSight(this.bodyPos, c.pos, false)
+              ? -620 + dist
+              : -260 + dist * 0.45;
+        } else {
+          score = 2600 + dist;
+        }
+        if (score < bestScore) {
+          bestScore = score;
+          best = c;
+        }
+        continue;
+      }
+
       const inCatchReach =
         dist < 1.52 && this.hasLineOfSight(this.bodyPos, c.pos, c.crouching);
       const voiceLvl = c.voiceLevel ?? 0;
@@ -695,6 +787,45 @@ export class DoomSpider {
   }
 
   /**
+   * Comanda a Aranha a correr faminta de volta ao Ninho Principal para devorar um jogador
+   * que permaneceu preso na teia sem ser salvo pelos amigos a tempo!
+   */
+  commandReturnToDevourVictim(
+    lairPos: THREE.Vector3,
+    listenerPos?: THREE.Vector3,
+    listenerYaw = 0
+  ): void {
+    if (this.state === 'CINEMATIC_SEQUENCE') return;
+    this.postAbductionGraceTimer = 0;
+    this.lastKnownPlayerPos.copy(lairPos);
+    this.searchingAroundLastKnown = false;
+    this.lostSightTimer = 0;
+    if (this.state !== 'FRENZY_CHASE' && this.state !== 'ALERT_WINDUP') {
+      const audioPos = listenerPos ?? lairPos;
+      const pan = this.computeStereoPan(audioPos, listenerYaw);
+      const dist = this.bodyPos.distanceTo(audioPos);
+      const wallCount =
+        dist < 30
+          ? countLabyrinthWallsBetween(
+              this.bodyPos.x,
+              this.bodyPos.z,
+              audioPos.x,
+              audioPos.z
+            )
+          : 3;
+      this.sound.playSpiderScream(pan, dist, wallCount);
+      this.state = 'FRENZY_CHASE';
+      this.stateTimer = 0;
+      this.pathRepathTimer = 0;
+    }
+  }
+
+  private hideCaptureTentacles(): void {
+    this.tentacleExtension = 0;
+    this.tentaclesGroup.visible = false;
+  }
+
+  /**
    * Interrompe imediatamente um ataque/arrasto cinemático quando um aliado salva a vítima
    * com Sinalizador de Magnésio ou golpe de Faca, fazendo a Aranha gritar e fugir pelo teto!
    */
@@ -703,6 +834,8 @@ export class DoomSpider {
     listenerPos?: THREE.Vector3,
     listenerYaw = 0
   ): void {
+    this.hideCaptureTentacles();
+    this.cinematicRagdollHooks = null;
     const audioPos = listenerPos ?? threatPos;
     const dist = Math.hypot(
       audioPos.x - this.bodyPos.x,
@@ -814,6 +947,8 @@ export class DoomSpider {
       this.remoteDrivenCinematic = false;
       this.cinematicMode = null;
       this.lastCinematicMode = null;
+      this.cinematicRagdollHooks = null;
+      this.hideCaptureTentacles();
       this.state = (pkt.state as SpiderBehaviorState) || 'STALK_PATROL';
     }
 
@@ -955,7 +1090,10 @@ export class DoomSpider {
     mode: SpiderCinematicMode,
     progress: number,
     spiderWorldPos: THREE.Vector3,
-    victimWorldPos: THREE.Vector3
+    victimWorldPos: THREE.Vector3,
+    ragdollHooks?:
+      | readonly [THREE.Vector3, THREE.Vector3, THREE.Vector3, THREE.Vector3]
+      | null
   ): void {
     this.remoteDrivenCinematic = true;
     this.updateCinematicSequence(
@@ -965,7 +1103,8 @@ export class DoomSpider {
       progress,
       spiderWorldPos,
       victimWorldPos,
-      victimWorldPos
+      victimWorldPos,
+      ragdollHooks
     );
   }
 
@@ -984,6 +1123,8 @@ export class DoomSpider {
   ): void {
     this.cinematicMode = null;
     this.lastCinematicMode = null;
+    this.cinematicRagdollHooks = null;
+    this.hideCaptureTentacles();
     this.surfaceMode = mode;
     this.climbedWallNormal.set(0, 0, 0);
     this.climbedWallFaceCoord = 0;
@@ -1118,7 +1259,10 @@ export class DoomSpider {
     progress: number,
     spiderWorldPos: THREE.Vector3,
     faceTargetPos: THREE.Vector3,
-    victimHookPos: THREE.Vector3
+    victimHookPos: THREE.Vector3,
+    ragdollHooks?:
+      | readonly [THREE.Vector3, THREE.Vector3, THREE.Vector3, THREE.Vector3]
+      | null
   ): void {
     const modeChanged = this.lastCinematicMode !== mode;
     const jumpedFar =
@@ -1134,6 +1278,7 @@ export class DoomSpider {
     this.lastCinematicMode = mode;
     this.cinematicProgress = progress;
     this.cinematicVictimPos.copy(victimHookPos);
+    this.cinematicRagdollHooks = ragdollHooks ?? null;
     this.churnYaw = 0;
 
     this.bodyPos.copy(spiderWorldPos);
@@ -1673,6 +1818,35 @@ export class DoomSpider {
         onMetalOrCeiling: false,
         raiseThreat: 0,
         twitch: new THREE.Vector3(),
+        mesh,
+        posAttr,
+        normAttr,
+        colAttr,
+      });
+    }
+  }
+
+  /**
+   * Constrói os 4 Tentáculos Orgânicos de Captura e Arrasto (`SpiderCaptureTentacles`)
+   * que emergem sob o esterno/quelíceras da Aranha, enrolam-se no Ragdoll desmaiado
+   * e o puxam até colocá-lo preso na Teia do Ninho!
+   */
+  private buildProceduralTentacleMeshes(): void {
+    for (let i = 0; i < 4; i++) {
+      const { geometry, posAttr, normAttr, colAttr } =
+        createTentacleTubeGeometry();
+      const mesh = new THREE.Mesh(geometry, this.chitinMat);
+      mesh.name = `SpiderTentacle_${i}`;
+      mesh.frustumCulled = false;
+      this.tentaclesGroup.add(mesh);
+
+      const curvePoints: THREE.Vector3[] = [];
+      for (let s = 0; s < TENTACLE_SAMPLES; s++) {
+        curvePoints.push(new THREE.Vector3());
+      }
+      this.tentacles.push({
+        index: i,
+        curvePoints,
         mesh,
         posAttr,
         normAttr,
@@ -3332,6 +3506,197 @@ export class DoomSpider {
       }
 
       this.rebuildLimbTubeMesh(spec, rt, up, ringDir);
+    }
+
+    this.updateCaptureTentacles(elapsed, right, up, fwd);
+  }
+
+  /**
+   * Atualiza os 4 Tentáculos Orgânicos Musculares que a Aranha estende para agarrar,
+   * puxar o Ragdoll desmaiado pelo chão e erguê-lo para prendê-lo na Teia!
+   */
+  private updateCaptureTentacles(
+    elapsed: number,
+    right: THREE.Vector3,
+    up: THREE.Vector3,
+    fwd: THREE.Vector3
+  ): void {
+    if (this.state !== 'CINEMATIC_SEQUENCE' || !this.cinematicMode) {
+      if (this.tentaclesGroup.visible || this.tentacleExtension > 0) {
+        this.hideCaptureTentacles();
+      }
+      return;
+    }
+
+    const u = this.cinematicProgress;
+    let ext = 0;
+    if (this.cinematicMode === 'STRIKE_ATTACK') {
+      ext = u < 0.28 ? 0 : smoothStep01((u - 0.28) / 0.56);
+    } else if (this.cinematicMode === 'DRAGGING_TO_WEB') {
+      ext = 1.0;
+    } else if (this.cinematicMode === 'WEBBING_IN_LAIR') {
+      ext = u < 0.78 ? 1.0 : 1.0 - smoothStep01((u - 0.78) / 0.22);
+    } else if (this.cinematicMode === 'FATAL_EXECUTION') {
+      ext = smoothStep01(Math.min(1, u * 2.6));
+    }
+
+    this.tentacleExtension = ext;
+    if (ext <= 0.01) {
+      this.tentaclesGroup.visible = false;
+      return;
+    }
+
+    this.tentaclesGroup.visible = true;
+
+    const lateralRoots = [-0.15, 0.15, -0.075, 0.075] as const;
+    const vertRoots = [-0.11, -0.11, -0.16, -0.16] as const;
+    const hooks = this.cinematicRagdollHooks;
+    const pullWave =
+      this.cinematicMode === 'DRAGGING_TO_WEB'
+        ? 0.5 + 0.5 * Math.sin(u * Math.PI * 8.0)
+        : 0.35;
+
+    for (let tIdx = 0; tIdx < this.tentacles.length; tIdx++) {
+      const tent = this.tentacles[tIdx];
+      const sideSign = tIdx % 2 === 0 ? -1 : 1;
+
+      const rootWorld = new THREE.Vector3(
+        this.bodyPos.x +
+          right.x * lateralRoots[tIdx] +
+          up.x * vertRoots[tIdx] +
+          fwd.x * 0.28,
+        this.bodyPos.y +
+          right.y * lateralRoots[tIdx] +
+          up.y * vertRoots[tIdx] +
+          fwd.y * 0.28,
+        this.bodyPos.z +
+          right.z * lateralRoots[tIdx] +
+          up.z * vertRoots[tIdx] +
+          fwd.z * 0.28
+      );
+
+      const fullTarget = new THREE.Vector3();
+      if (hooks && hooks[tIdx]) {
+        fullTarget.copy(hooks[tIdx]);
+      } else {
+        // Pontos anatômicos padrão no Ragdoll (tornozelos 0..1, cintura 2, tórax 3)
+        if (tIdx < 2) {
+          fullTarget
+            .copy(this.cinematicVictimPos)
+            .addScaledVector(fwd, -0.46)
+            .addScaledVector(right, sideSign * 0.15)
+            .setY(Math.max(0.22, this.cinematicVictimPos.y + 0.22));
+        } else if (tIdx === 2) {
+          fullTarget
+            .copy(this.cinematicVictimPos)
+            .addScaledVector(right, -0.1)
+            .setY(Math.max(0.2, this.cinematicVictimPos.y + 0.18));
+        } else {
+          fullTarget
+            .copy(this.cinematicVictimPos)
+            .addScaledVector(fwd, 0.34)
+            .addScaledVector(right, 0.1)
+            .setY(Math.max(0.24, this.cinematicVictimPos.y + 0.2));
+        }
+      }
+
+      const activeTip = new THREE.Vector3().lerpVectors(
+        rootWorld,
+        fullTarget,
+        ext
+      );
+      const coilRadius = tIdx < 2 ? 0.085 : 0.165;
+      // Quando tensionado no puxão, o arco e a ondulação diminuem (tentáculo esticado sob força!)
+      const slack = 1.0 - pullWave * 0.58;
+
+      for (let s = 0; s < TENTACLE_SAMPLES; s++) {
+        const f = s / (TENTACLE_SAMPLES - 1);
+        const pt = tent.curvePoints[s];
+        pt.lerpVectors(rootWorld, activeTip, f);
+
+        const midEnv = Math.sin(f * Math.PI);
+        const wriggleA =
+          Math.sin(f * 8.5 - elapsed * 9.5 + tIdx * 1.7) * 0.14 * slack * midEnv;
+        const wriggleB =
+          Math.cos(f * 6.2 - elapsed * 7.8 + tIdx * 2.3) * 0.09 * slack * midEnv;
+        // Curva orgânica descendo do esterno da aranha até envolver o corpo no chão
+        const sagY = -0.16 * slack * midEnv + wriggleB;
+
+        pt.addScaledVector(right, wriggleA + sideSign * 0.08 * midEnv);
+        pt.y = Math.max(0.06, pt.y + sagY);
+
+        // Espiral de apreensão na extremidade distal enrolada no membro/tronco do Ragdoll!
+        if (ext > 0.72 && f > 0.8) {
+          const coilT = (f - 0.8) / 0.2;
+          const coilAng = coilT * Math.PI * 2.4 + sideSign * 0.8;
+          const cr = coilRadius * Math.sin(coilT * Math.PI * 0.85) * ((ext - 0.72) / 0.28);
+          pt.addScaledVector(right, Math.cos(coilAng) * cr);
+          pt.y = Math.max(0.05, pt.y + Math.sin(coilAng) * cr * 0.85);
+        }
+      }
+
+      // Reconstrói anéis tubulares e normais do tentáculo
+      const posArr = tent.posAttr.array as Float32Array;
+      const normArr = tent.normAttr.array as Float32Array;
+      const colArr = tent.colAttr.array as Float32Array;
+      const tang = new THREE.Vector3();
+      const nrm = new THREE.Vector3();
+      const bin = new THREE.Vector3();
+
+      for (let s = 0; s < TENTACLE_SAMPLES; s++) {
+        const f = s / (TENTACLE_SAMPLES - 1);
+        const center = tent.curvePoints[s];
+        if (s === 0) {
+          tang.subVectors(tent.curvePoints[1], tent.curvePoints[0]);
+        } else if (s === TENTACLE_SAMPLES - 1) {
+          tang.subVectors(tent.curvePoints[s], tent.curvePoints[s - 1]);
+        } else {
+          tang.subVectors(tent.curvePoints[s + 1], tent.curvePoints[s - 1]);
+        }
+        if (tang.lengthSq() < 1e-6) tang.set(0, 0, -1);
+        else tang.normalize();
+
+        bin.crossVectors(tang, up);
+        if (bin.lengthSq() < 1e-5) bin.crossVectors(tang, right);
+        bin.normalize();
+        nrm.crossVectors(bin, tang).normalize();
+
+        const segRing = 1.0 + Math.sin(f * Math.PI * 24.0) * 0.14;
+        const baseRad =
+          s === TENTACLE_SAMPLES - 1
+            ? 0.006
+            : (0.068 * (1 - f * 0.64) + 0.014) * segRing;
+
+        const muscleBand = 0.5 + 0.5 * Math.sin(f * Math.PI * 24.0);
+
+        for (let k = 0; k < TENTACLE_SIDES; k++) {
+          const ang = (k / TENTACLE_SIDES) * Math.PI * 2;
+          const ca = Math.cos(ang);
+          const sa = Math.sin(ang);
+          const nx = bin.x * ca + nrm.x * sa;
+          const ny = bin.y * ca + nrm.y * sa;
+          const nz = bin.z * ca + nrm.z * sa;
+
+          const vIdx = (s * TENTACLE_SIDES + k) * 3;
+          posArr[vIdx] = center.x + nx * baseRad;
+          posArr[vIdx + 1] = center.y + ny * baseRad;
+          posArr[vIdx + 2] = center.z + nz * baseRad;
+
+          normArr[vIdx] = nx;
+          normArr[vIdx + 1] = ny;
+          normArr[vIdx + 2] = nz;
+
+          // Ventosas claras ventrais e anéis musculares carmesim-quitinosos!
+          const ventral = Math.max(0, -sa);
+          colArr[vIdx] = 0.24 + muscleBand * 0.16 + ventral * 0.22;
+          colArr[vIdx + 1] = 0.055 + muscleBand * 0.045 + ventral * 0.16;
+          colArr[vIdx + 2] = 0.095 + muscleBand * 0.065 + ventral * 0.14;
+        }
+      }
+
+      tent.posAttr.needsUpdate = true;
+      tent.normAttr.needsUpdate = true;
+      tent.colAttr.needsUpdate = true;
     }
   }
 

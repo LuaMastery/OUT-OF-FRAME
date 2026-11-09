@@ -158,7 +158,7 @@
   pointer-events: none;
   transition:
     opacity 0.14s ease-out,
-    visibility 0.14s linear;
+    visibility 0s linear 0.14s;
   font-family: 'Courier New', Consolas, monospace;
   color: #d6cebe;
   user-select: none;
@@ -169,6 +169,9 @@
   opacity: 1;
   visibility: visible;
   pointer-events: auto;
+  transition:
+    opacity 0.14s ease-out,
+    visibility 0s linear 0s;
 }
 
 .pause-shell {
@@ -212,6 +215,38 @@
   font-size: 11px;
   color: #887f70;
   letter-spacing: 0.05em;
+}
+
+.pause-header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pause-close-btn {
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: #121114;
+  border: 1px solid #3e382f;
+  color: #b8ae9c;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: var(--cursor-pointer);
+  transition:
+    border-color 0.08s linear,
+    color 0.08s linear,
+    background-color 0.08s linear;
+}
+
+.pause-close-btn:hover {
+  background: #1c1a1e;
+  border-color: #c7b083;
+  color: #f4ecdc;
 }
 
 .pause-mode-badge {
@@ -724,4 +759,80 @@
   margin-top: 2px;
   line-height: 1.25;
 }
+
+/* ==========================================================================
+   ALERTA VISCERAL DE CASULO MULTIPLAYER (RESGATE PELOS AMIGOS ANTES DE DEVORAR)
+   ========================================================================== */
+.doom-cocoon-devour-hud {
+  position: absolute;
+  top: calc(52px + var(--safe-top, 0px));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 36;
+  pointer-events: none;
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  padding: 10px 18px 11px;
+  width: min(500px, 88vw);
+  background: rgba(14, 7, 9, 0.88);
+  border: 1px solid rgba(210, 74, 70, 0.72);
+  border-top: 3px solid #e0524d;
+  box-shadow:
+    0 10px 30px rgba(0, 0, 0, 0.75),
+    0 0 22px rgba(185, 36, 36, 0.28);
+  font-family: 'Courier New', Consolas, monospace;
+  text-align: center;
+}
+
+.doom-cocoon-devour-hud.is-visible {
+  display: flex;
+}
+
+.doom-cocoon-devour-hud.is-critical {
+  border-color: #ff4742;
+  background: rgba(28, 7, 9, 0.93);
+  box-shadow:
+    0 10px 30px rgba(0, 0, 0, 0.85),
+    0 0 32px rgba(255, 48, 48, 0.45);
+}
+
+.doom-cocoon-title {
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: #ffd7d4;
+  text-transform: uppercase;
+}
+
+.doom-cocoon-sub {
+  font-size: 10.5px;
+  color: #d9b8b4;
+  line-height: 1.35;
+}
+
+.doom-cocoon-bar-track {
+  width: 100%;
+  height: 6px;
+  background: rgba(34, 16, 18, 0.95);
+  border: 1px solid rgba(155, 62, 60, 0.6);
+  overflow: hidden;
+  margin-top: 2px;
+}
+
+.doom-cocoon-bar-fill {
+  height: 100%;
+  width: 100%;
+  background: linear-gradient(90deg, #a82020 0%, #ff5e57 100%);
+  transition: width 0.12s linear;
+}
+
+.doom-cocoon-hint {
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: #f0c987;
+  margin-top: 1px;
+}
+
 

@@ -18,7 +18,8 @@ export type SettingsTabFilter = 'all' | SettingsCategoryId;
 
 export interface DoomPauseMenuCallbacks {
   onPauseOpened: () => void;
-  onResumeRequest: () => void;
+  onPauseClosed?: () => void;
+  onResumeRequest: (fromPointerGesture?: boolean) => void;
   onToggleFullscreen: () => void;
   onRestartSessionRequest: () => void;
   onExitToDesktopRequest: () => void;
@@ -49,6 +50,9 @@ export class DoomPauseMenu {
   private readonly restartHintEl: HTMLSpanElement;
   private readonly exitBtnEl: HTMLButtonElement;
   private readonly exitHintEl: HTMLSpanElement;
+  private readonly fullscreenHintEl: HTMLSpanElement;
+  private readonly settingsListEl: HTMLDivElement;
+  private readonly onFullscreenChangeBound: () => void;
 
   private readonly tabButtons = new Map<SettingsTabFilter, HTMLButtonElement>();
   private readonly settingRows: BoundSettingControlUpdater[] = [];
@@ -60,6 +64,7 @@ export class DoomPauseMenu {
   private activeCategory: SettingsTabFilter = 'all';
   private hudSuppressed = false;
   private hoveredButtonId: string | null = null;
+  private lastSliderTickMs = 0;
 
   private confirmRestartArmed = false;
   private confirmExitArmed = false;
@@ -137,7 +142,10 @@ export class DoomPauseMenu {
             <span class="pause-title">PAUSA // OUT-OF-FRAME</span>
             <span class="pause-subtitle" data-pause-subtitle>Subnível de Contenção · Sistemas Táticos</span>
           </div>
-          <span class="pause-mode-badge" data-pause-mode-badge>SOLO · SIMULAÇÃO CONGELADA</span>
+          <div class="pause-header-right">
+            <span class="pause-mode-badge" data-pause-mode-badge>SOLO · SIMULAÇÃO CONGELADA</span>
+            <button type="button" class="pause-close-btn" data-pause-close title="Continuar Jogo [Esc / P]">✕</button>
+          </div>
         </header>
 
         <div class="pause-body">
@@ -159,7 +167,7 @@ export class DoomPauseMenu {
                 </button>
                 <button type="button" class="pause-menu-btn" data-pause-action="fullscreen">
                   <span>⛶ Alternar Tela Cheia</span>
-                  <span class="pause-btn-hint">janela / tela</span>
+                  <span class="pause-btn-hint" data-fullscreen-hint>janela / tela</span>
                 </button>
                 <button type="button" class="pause-menu-btn danger" data-pause-action="restart">
                   <span>↺ Reiniciar Incursão</span>
@@ -244,7 +252,7 @@ export class DoomPauseMenu {
 
               <div class="pause-ctrl-card">
                 <div class="pause-ctrl-title">Sistema & Sobrevivência</div>
-                <div class="pause-ctrl-line"><span>Pausar / Menu Principal</span><span class="pause-ctrl-key">Esc / P</span></div>
+                <div class="pause-ctrl-line"><span>Pausar / Menu Principal</span><span class="pause-ctrl-key">Esc / P · ou via Tab</span></div>
                 <div class="pause-ctrl-line"><span>Voz alta atrai a criatura</span><span class="pause-ctrl-key">Sussurre perto!</span></div>
                 <div class="pause-ctrl-line"><span>Cortar teia instantâneo</span><span class="pause-ctrl-key">Canivete</span></div>
                 <div class="pause-ctrl-line"><span>Espantar aranha / Resgatar</span><span class="pause-ctrl-key">Magnésio</span></div>
@@ -300,6 +308,18 @@ export class DoomPauseMenu {
     this.exitHintEl = this.overlayEl.querySelector(
       '[data-exit-hint]'
     ) as HTMLSpanElement;
+    this.fullscreenHintEl = this.overlayEl.querySelector(
+      '[data-fullscreen-hint]'
+    ) as HTMLSpanElement;
+    this.settingsListEl = this.overlayEl.querySelector(
+      '[data-settings-list]'
+    ) as HTMLDivElement;
+
+    this.onFullscreenChangeBound = () => {
+      this.syncFullscreenHint();
+    };
+    document.addEventListener('fullscreenchange', this.onFullscreenChangeBound);
+    this.syncFullscreenHint();
 
     this.buildSettingsTabsAndRows();
     this.bindMainButtons();
@@ -367,10 +387,14 @@ export class DoomPauseMenu {
       this.sound.playInventorySelect(true);
       return;
     }
-    this.callbacks.onResumeRequest();
+    this.callbacks.onResumeRequest(false);
   }
 
-  setOpen(next: boolean, initialView: PauseSubView = 'main'): void {
+  setOpen(
+    next: boolean,
+    initialView: PauseSubView = 'main',
+    silent = false
+  ): void {
     if (this.isOpen === next) {
       if (next && this.currentView !== initialView) {
         this.switchView(initialView);
@@ -383,6 +407,7 @@ export class DoomPauseMenu {
     this.disarmConfirmations();
 
     if (next) {
+      this.syncFullscreenHint();
       this.switchView(initialView);
       this.overlayEl.classList.add('open');
       unlockSystemKeyboardKeys();
@@ -395,12 +420,33 @@ export class DoomPauseMenu {
       }
       this.callbacks.onPauseOpened();
     } else {
+      // Remove foco de qualquer botão do menu para evitar que Espaço/Enter disparem ações ocultas no jogo!
+      const active = document.activeElement as HTMLElement | null;
+      if (active && this.overlayEl.contains?.(active)) {
+        active.blur?.();
+      }
       this.overlayEl.classList.remove('open');
       this.switchView('main');
+      this.callbacks.onPauseClosed?.();
     }
 
     this.syncAuxHudVisibility();
-    this.sound.playInventoryToggle(next);
+    if (!silent) {
+      if (typeof this.sound.playPauseToggle === 'function') {
+        this.sound.playPauseToggle(next);
+      } else {
+        this.sound.playInventoryToggle(next);
+      }
+    }
+  }
+
+  private syncFullscreenHint(): void {
+    const isFs = Boolean(
+      typeof document !== 'undefined' && document.fullscreenElement
+    );
+    this.fullscreenHintEl.textContent = isFs
+      ? 'tela cheia ativa'
+      : 'modo janela';
   }
 
   private syncAuxHudVisibility(): void {
@@ -456,14 +502,31 @@ export class DoomPauseMenu {
     this.overlayEl.addEventListener('mousedown', (e) => {
       e.stopPropagation();
     });
+    this.overlayEl.addEventListener('pointerdown', (e) => {
+      e.stopPropagation();
+    });
+    this.overlayEl.addEventListener(
+      'wheel',
+      (e) => {
+        e.stopPropagation();
+      },
+      { passive: true }
+    );
+
+    const closeHeaderBtn = this.overlayEl.querySelector(
+      '[data-pause-close]'
+    ) as HTMLButtonElement;
+    this.bindHoverSound(closeHeaderBtn, 'pause-close-x');
+    closeHeaderBtn.addEventListener('click', () => {
+      this.callbacks.onResumeRequest(true);
+    });
 
     const resumeBtn = this.overlayEl.querySelector(
       '[data-pause-action="resume"]'
     ) as HTMLButtonElement;
     this.bindHoverSound(resumeBtn, 'pause-resume');
     resumeBtn.addEventListener('click', () => {
-      this.sound.playInventorySelect(true);
-      this.callbacks.onResumeRequest();
+      this.callbacks.onResumeRequest(true);
     });
 
     const openSettingsBtn = this.overlayEl.querySelector(
@@ -490,6 +553,7 @@ export class DoomPauseMenu {
     this.bindHoverSound(fullscreenBtn, 'pause-fullscreen');
     fullscreenBtn.addEventListener('click', () => {
       this.sound.playInventorySelect(true);
+      fullscreenBtn.blur?.();
       this.callbacks.onToggleFullscreen();
     });
 
@@ -506,7 +570,7 @@ export class DoomPauseMenu {
       }
       this.disarmConfirmations();
       this.sound.playInventorySelect(true);
-      this.setOpen(false);
+      this.setOpen(false, 'main', true);
       this.callbacks.onRestartSessionRequest();
     });
 
@@ -523,7 +587,7 @@ export class DoomPauseMenu {
       }
       this.disarmConfirmations();
       this.sound.playInventorySelect(true);
-      this.setOpen(false);
+      this.setOpen(false, 'main', true);
       this.callbacks.onExitToDesktopRequest();
     });
 
@@ -656,6 +720,11 @@ export class DoomPauseMenu {
           spec.key,
           num as DoomGameSettings[typeof spec.key]
         );
+        const nowMs = performance.now();
+        if (nowMs - this.lastSliderTickMs >= 72) {
+          this.lastSliderTickMs = nowMs;
+          this.sound.menuMove?.();
+        }
       });
 
       wrap.appendChild(input);
@@ -759,20 +828,48 @@ export class DoomPauseMenu {
     const rects: ProximityTargetRect[] = [];
     if (!this.isOpen) return rects;
 
+    const shellEl = this.overlayEl.querySelector(
+      '.pause-shell'
+    ) as HTMLElement | null;
+    const shellBounds = shellEl?.getBoundingClientRect() ?? null;
+    const scrollBounds =
+      this.currentView === 'settings'
+        ? this.settingsListEl.getBoundingClientRect()
+        : null;
+
     const selector =
       this.currentView === 'main'
-        ? '.pause-menu-btn'
+        ? '.pause-menu-btn, .pause-close-btn'
         : this.currentView === 'settings'
-          ? '.pause-tab-btn, .setting-toggle-btn, .setting-seg-btn, .pause-small-btn'
-          : '.pause-small-btn';
+          ? '.pause-tab-btn, .setting-toggle-btn, .setting-seg-btn, .pause-small-btn, .pause-close-btn'
+          : '.pause-small-btn, .pause-close-btn';
 
     const nodes = this.overlayEl.querySelectorAll(selector);
     nodes.forEach((node) => {
       const el = node as HTMLElement;
       const r = el.getBoundingClientRect();
-      if (r.width > 2 && r.height > 2) {
-        rects.push({ x: r.left, y: r.top, w: r.width, h: r.height });
+      if (r.width <= 2 || r.height <= 2) return;
+
+      // Impede que linhas roladas para fora da lista de configurações capturem o cursor através do cabeçalho/rodapé!
+      if (scrollBounds && this.settingsListEl.contains(el)) {
+        if (
+          r.bottom < scrollBounds.top + 4 ||
+          r.top > scrollBounds.bottom - 4
+        ) {
+          return;
+        }
       }
+      if (shellBounds) {
+        if (
+          r.bottom < shellBounds.top ||
+          r.top > shellBounds.bottom ||
+          r.right < shellBounds.left ||
+          r.left > shellBounds.right
+        ) {
+          return;
+        }
+      }
+      rects.push({ x: r.left, y: r.top, w: r.width, h: r.height });
     });
     return rects;
   }
@@ -781,6 +878,10 @@ export class DoomPauseMenu {
     if (this.confirmResetTimerId) {
       window.clearTimeout(this.confirmResetTimerId);
     }
+    document.removeEventListener(
+      'fullscreenchange',
+      this.onFullscreenChangeBound
+    );
     this.unsubscribeSettings();
     this.proximityFX.destroy();
     this.triggerBtnEl.remove();

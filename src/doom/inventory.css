@@ -153,9 +153,7 @@
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
-  transition:
-    opacity 0.14s linear,
-    visibility 0.14s linear;
+  transition: opacity 0.14s linear;
   font-family: 'Courier New', Consolas, monospace;
   color: #cbc4b6;
   user-select: none;
@@ -166,6 +164,9 @@
   opacity: 1;
   visibility: visible;
   pointer-events: auto;
+  transition:
+    opacity 0.14s linear,
+    visibility 0s linear 0s;
 }
 
 .inv-stage {
@@ -179,8 +180,10 @@
 /* Cabeçalho discreto — apenas linha fina superior */
 .inv-topbar {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px 14px;
   padding-bottom: 10px;
   border-bottom: 1px solid #292622;
 }
@@ -192,11 +195,67 @@
   color: #d8d1c3;
 }
 
+.inv-topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.inv-pause-btn {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 11px;
+  background: rgba(24, 21, 17, 0.88);
+  border: 1px solid #4a4134;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #d8cdb8;
+  cursor: var(--cursor-pointer);
+  transition:
+    color 0.12s linear,
+    border-color 0.12s linear,
+    background 0.12s linear;
+}
+
+.inv-pause-btn:hover {
+  color: #f4ece0;
+  border-color: #8f7e63;
+  background: rgba(42, 36, 28, 0.94);
+}
+
+.inv-pause-btn:active {
+  cursor: var(--cursor-pointer-active);
+  transform: translateY(1px);
+}
+
+.inv-pause-bars {
+  display: inline-flex;
+  align-items: center;
+  gap: 2.5px;
+  height: 11px;
+}
+
+.inv-pause-bars > span {
+  display: block;
+  width: 2.5px;
+  height: 10px;
+  background: #c7a96d;
+}
+
+.inv-pause-btn:hover .inv-pause-bars > span {
+  background: #f0d08a;
+}
+
 .inv-close-btn {
   appearance: none;
   background: transparent;
   border: none;
-  padding: 2px 4px;
+  padding: 4px 6px;
   font-family: inherit;
   font-size: 12px;
   color: #7d7669;
@@ -1092,6 +1151,11 @@
   .inv-action-btn,
   .inv-hk-btn {
     padding: 8px 12px;
+    font-size: 13px;
+  }
+
+  .inv-pause-btn {
+    padding: 7px 12px;
     font-size: 13px;
   }
 

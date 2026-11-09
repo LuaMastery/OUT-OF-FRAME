@@ -34,6 +34,13 @@ import {
 } from './DoomMazeBuilder';
 import { DoomPauseMenu } from './DoomPauseMenu';
 import { DoomRadar } from './DoomRadar';
+import {
+  AstronautRagdoll,
+  computeCollisionSafeRagdollCamera,
+  computeWalkableDragPolyline,
+  DragPolylinePath,
+  sampleDragPolyline,
+} from './DoomRagdoll';
 import { DoomRoomId, getThemedRoomAtCell } from './DoomRooms';
 import {
   DoomGameSettings,
@@ -339,16 +346,24 @@ export class DoomGameApp {
   private playerBleeding = false;
   private cameraShake = 0;
 
-  // Estado da animação cinemática de Ataque / Sequestro para a Teia / Morte Permanente
+  // Estado da animação cinemática de Ataque / Ragdoll Desmaiado / Tentáculos Puxando / Teia / Morte Permanente
   private activeSequence: ActiveHorrorSequence = 'NONE';
   private seqTime = 0;
-  private seqStagedDrag = false;
   private seqStagedWake = false;
   private seqGaspPlayed = false;
   private lastDragPullStep = -1;
   private lastWebSpinStep = -1;
   private readonly strikeOriginPos = new THREE.Vector3();
   private readonly strikeSpiderPos = new THREE.Vector3();
+  private readonly localRagdoll = new AstronautRagdoll();
+  private dragPath: DragPolylinePath | null = null;
+  private readonly ragdollCamPosScratch = new THREE.Vector3();
+  private readonly ragdollLookAtScratch = new THREE.Vector3();
+  private readonly ragdollPathPosScratch = new THREE.Vector3();
+  private readonly ragdollPathTanScratch = new THREE.Vector3();
+  private cocoonDevourTimerSec = 0;
+  private cocoonDevourMaxSec = 45;
+  private cocoonReturnTriggered = false;
   private currentAbductionMode: SpiderCinematicMode | null = null;
   private currentAbductionProgress = 0;
   private readonly currentAbductionSpiderPos = new THREE.Vector3();
@@ -359,6 +374,7 @@ export class DoomGameApp {
   private struggleQueued = false;
   private engaged = false;
   private pointerLocked = false;
+  private wasFullscreen = false;
   private isDragging = false;
   private lastMouseX = 0;
   private lastMouseY = 0;
@@ -370,6 +386,11 @@ export class DoomGameApp {
   private readonly roomBannerEl: HTMLDivElement;
   private readonly roomBannerTitleEl: HTMLDivElement;
   private readonly roomBannerSubEl: HTMLDivElement;
+  private readonly cocoonHudEl: HTMLDivElement;
+  private readonly cocoonTitleEl: HTMLDivElement;
+  private readonly cocoonSubEl: HTMLDivElement;
+  private readonly cocoonBarFillEl: HTMLDivElement;
+  private readonly cocoonHintEl: HTMLDivElement;
   private currentThemedRoomId: DoomRoomId | null = null;
   private roomBannerHideAtSec = 0;
   private elapsed = 0;
@@ -419,6 +440,34 @@ export class DoomGameApp {
       this.roomBannerSubEl
     );
     this.viewportEl.appendChild(this.roomBannerEl);
+
+    this.cocoonHudEl = document.createElement('div');
+    this.cocoonHudEl.id = 'doom-cocoon-devour-hud';
+    this.cocoonHudEl.className = 'doom-cocoon-devour-hud';
+    this.cocoonTitleEl = document.createElement('div');
+    this.cocoonTitleEl.className = 'doom-cocoon-title';
+    this.cocoonTitleEl.textContent =
+      '🕸️ PRESO NA TEIA DO NINHO — IMPOSSÍVEL ESCAPAR SOZINHO!';
+    this.cocoonSubEl = document.createElement('div');
+    this.cocoonSubEl.className = 'doom-cocoon-sub';
+    this.cocoonSubEl.textContent =
+      'Seus amigos precisam cortar a teia [E / Faca] antes da Aranha devorar você!';
+    const barTrack = document.createElement('div');
+    barTrack.className = 'doom-cocoon-bar-track';
+    this.cocoonBarFillEl = document.createElement('div');
+    this.cocoonBarFillEl.className = 'doom-cocoon-bar-fill';
+    barTrack.appendChild(this.cocoonBarFillEl);
+    this.cocoonHintEl = document.createElement('div');
+    this.cocoonHintEl.className = 'doom-cocoon-hint';
+    this.cocoonHintEl.textContent =
+      '[E / ESPAÇO] Pedir Socorro no Rádio  •  [B] Gritar por Voz 3D';
+    this.cocoonHudEl.append(
+      this.cocoonTitleEl,
+      this.cocoonSubEl,
+      barTrack,
+      this.cocoonHintEl
+    );
+    this.viewportEl.appendChild(this.cocoonHudEl);
 
     this.renderer = new THREE.WebGLRenderer({
       canvas: this.canvas,
@@ -547,6 +596,14 @@ export class DoomGameApp {
         return true;
       },
       onUseFlare: () => {
+        if (this.webManager.isLockedInMultiplayerCocoon) {
+          this.sound.playStruggleEffort();
+          this.multiplayer?.emitCocoonDistressCall(
+            this.position,
+            this.cocoonDevourTimerSec
+          );
+          return false;
+        }
         this.flashlight.triggerQuickItemAction('flare');
         this.worldItems.spawnLitFlare(this.position, this.yaw);
         this.multiplayer?.notifyFlareSpawned(
@@ -557,6 +614,14 @@ export class DoomGameApp {
         return true;
       },
       onUseKnife: () => {
+        if (this.webManager.isLockedInMultiplayerCocoon) {
+          this.sound.playStruggleEffort();
+          this.multiplayer?.emitCocoonDistressCall(
+            this.position,
+            this.cocoonDevourTimerSec
+          );
+          return { cutWeb: false };
+        }
         this.flashlight.triggerQuickItemAction('knife');
         this.flashlight.addLookImpulse(0.018, -0.012);
         this.sound.playItemUse('blade');
@@ -628,7 +693,10 @@ export class DoomGameApp {
         }
       },
       onCloseRequest: () => {
-        this.closeInventoryAndLock();
+        this.closeInventoryAndLock(true);
+      },
+      onOpenPauseRequest: () => {
+        this.openPauseFromInventory();
       },
       onPermanentDeathTerminate: () => {
         this.finalizePermanentDeath();
@@ -700,25 +768,39 @@ export class DoomGameApp {
           this.touchControls.resetTransientInputs();
           this.multiplayer?.setPushToTalkHeld(false);
           if (!this.multiplayer) {
-            this.sound.playTensionHeartbeat(0);
+            this.sound.setWorldPaused(true);
           }
         },
-        onResumeRequest: () => {
-          this.resumeFromPause();
+        onPauseClosed: () => {
+          this.inventory.setPauseMenuHidden(false);
+          this.sound.setWorldPaused(false);
+        },
+        onResumeRequest: (fromPointerGesture = false) => {
+          this.resumeFromPause(fromPointerGesture);
         },
         onToggleFullscreen: () => {
           try {
             if (document.fullscreenElement) {
               void document.exitFullscreen?.();
             } else {
-              acquireFullscreenAndKeyboardLock(() => {});
+              const root = document.documentElement as HTMLElement & {
+                webkitRequestFullscreen?: () => Promise<void>;
+              };
+              if (typeof root.requestFullscreen === 'function') {
+                void root
+                  .requestFullscreen({ navigationUI: 'hide' })
+                  .catch(() => {});
+              } else if (typeof root.webkitRequestFullscreen === 'function') {
+                void root.webkitRequestFullscreen()?.catch?.(() => {});
+              }
             }
           } catch {
             // Ignorar restrições do navegador
           }
         },
         onRestartSessionRequest: () => {
-          this.pauseMenu.setOpen(false);
+          this.sound.setWorldPaused(false);
+          this.pauseMenu.setOpen(false, 'main', true);
           this.inventory.setPauseMenuHidden(false);
           if (this.onRestartRequested) {
             this.onRestartRequested();
@@ -727,7 +809,8 @@ export class DoomGameApp {
           }
         },
         onExitToDesktopRequest: () => {
-          this.pauseMenu.setOpen(false);
+          this.sound.setWorldPaused(false);
+          this.pauseMenu.setOpen(false, 'main', true);
           this.inventory.setPauseMenuHidden(false);
           this.finalizePermanentDeath();
         },
@@ -766,11 +849,12 @@ export class DoomGameApp {
             : 0,
     });
 
+    // Passa porcentagens [0..100] diretamente — SoundEngine já converte internamente sem dupla divisão!
     this.sound.setUserAudioSettings({
-      masterVolume: s.masterVolume / 100,
-      sfxVolume: s.sfxVolume / 100,
-      uiVolume: s.uiVolume / 100,
-      reverbAmount: s.reverbAmount / 100,
+      masterVolume: s.masterVolume,
+      sfxVolume: s.sfxVolume,
+      uiVolume: s.uiVolume,
+      reverbAmount: s.reverbAmount,
     });
     this.syncAudioFocusMute();
 
@@ -817,14 +901,17 @@ export class DoomGameApp {
     );
   }
 
-  private resumeFromPause(): void {
+  private resumeFromPause(fromPointerGesture = false): void {
     if (!this.pauseMenu.open) return;
+    this.suppressAutoPauseOnUnlockUntilMs = performance.now() + 950;
+    this.ignoreEscapeKeyUntilMs = performance.now() + 260;
     this.pauseMenu.setOpen(false);
     this.inventory.setPauseMenuHidden(false);
+    this.sound.setWorldPaused(false);
     this.keys.clear();
     this.isDragging = false;
     this.lastRaf = performance.now();
-    this.tryPointerLock(true);
+    this.tryPointerLock(fromPointerGesture);
   }
 
   engageFromTerminal(multiplayerSession?: ActiveRoomSession): void {
@@ -832,12 +919,15 @@ export class DoomGameApp {
     this.tabHiddenSinceMs = document.hidden ? performance.now() : null;
     this.localAfk = false;
     this.localAfkBannerEl.classList.add('hidden');
+    this.suppressAutoPauseOnUnlockUntilMs = performance.now() + 950;
     this.attachMultiplayerSession(multiplayerSession);
     this.pauseMenu.setMultiplayerMode(Boolean(multiplayerSession));
-    this.pauseMenu.setOpen(false);
+    this.pauseMenu.setOpen(false, 'main', true);
     this.pauseMenu.setHudSuppressed(false);
     this.inventory.setPauseMenuHidden(false);
+    this.sound.setWorldPaused(false);
     this.engaged = true;
+    this.wasFullscreen = Boolean(document.fullscreenElement);
     this.syncAudioFocusMute();
     this.onResize();
     this.sound.unlock();
@@ -875,18 +965,13 @@ export class DoomGameApp {
           }
         },
         onRescuedByAlly: () => {
+          this.cocoonDevourTimerSec = 0;
+          this.cocoonReturnTriggered = false;
+          this.cocoonHudEl.classList.remove('is-visible', 'is-critical');
           this.webManager.clearEnsnarement();
-          const lookForward = new THREE.Vector3(
-            -Math.sin(this.yaw),
-            0,
-            -Math.cos(this.yaw)
-          );
-          this.webManager.slashWebWithKnife(
-            this.position,
-            lookForward,
-            this.sound
-          );
           this.sound.playWebCut();
+          this.sound.playWakeUpGasp();
+          boostPlayerStamina(this.staminaState, 75);
           this.inventory.setAbductionScreenFX(0, 0, 0, 0);
           this.syncInventoryVitals();
         },
@@ -1010,13 +1095,35 @@ export class DoomGameApp {
       window.clearTimeout(this.permadeathTimerId);
       this.permadeathTimerId = 0;
     }
+    this.sound.setWorldPaused(false);
+    this.cocoonHudEl.classList.remove('is-visible', 'is-critical');
     this.onPermanentDeathExit?.();
   }
 
-  private closeInventoryAndLock(): void {
+  private closeInventoryAndLock(fromPointerGesture = false): void {
+    this.suppressAutoPauseOnUnlockUntilMs = performance.now() + 950;
+    this.ignoreEscapeKeyUntilMs = performance.now() + 240;
     this.inventory.setOpen(false);
     this.keys.clear();
-    this.tryPointerLock(true);
+    this.tryPointerLock(fromPointerGesture);
+  }
+
+  private openPauseFromInventory(): void {
+    if (
+      !this.engaged ||
+      this.disposed ||
+      this.inventory.gameOverVisible ||
+      this.activeSequence !== 'NONE'
+    ) {
+      return;
+    }
+    this.suppressAutoPauseOnUnlockUntilMs = performance.now() + 950;
+    this.ignoreEscapeKeyUntilMs = performance.now() + 260;
+    this.inventory.setOpen(false, true);
+    this.keys.clear();
+    this.touchControls.resetTransientInputs();
+    this.isDragging = false;
+    this.pauseMenu.setOpen(true, 'main');
   }
 
   private requestCanvasPointerLockOnly(): void {
@@ -1045,7 +1152,7 @@ export class DoomGameApp {
     }
   }
 
-  private tryPointerLock(fromUserGesture = false): void {
+  private tryPointerLock(fromPointerGesture = false): void {
     if (
       this.pauseMenu.open ||
       this.inventory.open ||
@@ -1055,10 +1162,28 @@ export class DoomGameApp {
     ) {
       return;
     }
-    if (fromUserGesture && this.settingsStore.value.autoFullscreenOnResume) {
+    this.suppressAutoPauseOnUnlockUntilMs = Math.max(
+      this.suppressAutoPauseOnUnlockUntilMs,
+      performance.now() + 950
+    );
+    if (
+      fromPointerGesture &&
+      this.settingsStore.value.autoFullscreenOnResume &&
+      typeof document !== 'undefined' &&
+      !document.fullscreenElement
+    ) {
+      let settled = false;
       acquireFullscreenAndKeyboardLock(() => {
+        settled = true;
         this.requestCanvasPointerLockOnly();
       });
+      // Caso o navegador recuse Fullscreen (ex.: iframe/janela), trava o mouse no canvas logo em seguida sem conflito!
+      window.setTimeout(() => {
+        if (!settled && !this.disposed) {
+          this.requestCanvasPointerLockOnly();
+        }
+      }, 220);
+      return;
     }
     this.requestCanvasPointerLockOnly();
   }
@@ -1171,7 +1296,7 @@ export class DoomGameApp {
           if (e.code === 'KeyP' && !e.repeat) {
             e.preventDefault();
             e.stopPropagation();
-            this.resumeFromPause();
+            this.resumeFromPause(false);
             return;
           }
           return;
@@ -1182,20 +1307,28 @@ export class DoomGameApp {
           this.keys.clear();
           this.isDragging = false;
           if (opened) {
-            this.suppressAutoPauseOnUnlockUntilMs = performance.now() + 350;
+            this.suppressAutoPauseOnUnlockUntilMs = performance.now() + 450;
             try {
               document.exitPointerLock?.();
             } catch {
               // ignorar
             }
           } else {
-            this.tryPointerLock(true);
+            this.suppressAutoPauseOnUnlockUntilMs = performance.now() + 950;
+            this.tryPointerLock(false);
           }
           return;
         }
 
         if (e.code === 'Escape' && this.inventory.open && !e.repeat) {
-          this.closeInventoryAndLock();
+          this.closeInventoryAndLock(false);
+          return;
+        }
+
+        if (e.code === 'KeyP' && this.inventory.open && !e.repeat) {
+          e.preventDefault();
+          e.stopPropagation();
+          this.openPauseFromInventory();
           return;
         }
 
@@ -1213,6 +1346,7 @@ export class DoomGameApp {
           ) {
             return;
           }
+          this.ignoreEscapeKeyUntilMs = performance.now() + 260;
           this.pauseMenu.setOpen(true);
           return;
         }
@@ -1474,7 +1608,33 @@ export class DoomGameApp {
           this.activeSequence === 'NONE' &&
           performance.now() > this.suppressAutoPauseOnUnlockUntilMs
         ) {
-          this.ignoreEscapeKeyUntilMs = performance.now() + 180;
+          this.ignoreEscapeKeyUntilMs = performance.now() + 260;
+          this.pauseMenu.setOpen(true);
+        }
+      },
+      sig
+    );
+
+    document.addEventListener(
+      'fullscreenchange',
+      () => {
+        const prevFs = this.wasFullscreen;
+        this.wasFullscreen = Boolean(document.fullscreenElement);
+        // Caso o navegador consuma o Esc apenas saindo da Tela Cheia (sem Pointer Lock ativo),
+        // abre o Menu de Pausa de forma confiável logo no primeiro toque!
+        if (
+          prevFs &&
+          !this.wasFullscreen &&
+          this.engaged &&
+          !this.disposed &&
+          !this.pauseMenu.open &&
+          !this.inventory.open &&
+          !this.inventory.gameOverVisible &&
+          !this.multiplayer?.isChatTyping &&
+          this.activeSequence === 'NONE' &&
+          performance.now() > this.suppressAutoPauseOnUnlockUntilMs
+        ) {
+          this.ignoreEscapeKeyUntilMs = performance.now() + 260;
           this.pauseMenu.setOpen(true);
         }
       },
@@ -1682,15 +1842,22 @@ export class DoomGameApp {
 
   /**
    * Acionado quando a Aranha Gigante alcança o jogador!
-   * - Se ainda houver reserva vital (>36%): Ataque brutal -> Desmaio -> Puxado até o Ninho de Teia -> Acorda bem ferido na teia!
-   * - Se já estiver gravemente ferido (<=36%): MORTE REAL PERMANENTE!
+   * - Em Multiplayer (se ainda não estava preso no Casulo do Ninho): Derruba em Ragdoll desmaiado ->
+   *   Estende os 4 Tentáculos -> Puxa pelos corredores até prender na Teia (exigindo resgate dos amigos antes de ser devorado)!
+   * - Se já estava preso no Casulo sem ser salvo a tempo (ou <=36% vida no Modo Solo): DEVORADO / MORTE PERMANENTE!
    */
   private triggerSpiderCatch(overrideSpiderPos?: THREE.Vector3): void {
     if (this.activeSequence !== 'NONE') return;
 
-    this.suppressAutoPauseOnUnlockUntilMs = performance.now() + 500;
-    this.pauseMenu.setOpen(false);
+    const wasLockedInCocoon = this.webManager.isLockedInMultiplayerCocoon;
+
+    this.suppressAutoPauseOnUnlockUntilMs = performance.now() + 950;
+    this.pauseMenu.setOpen(false, 'main', true);
     this.inventory.setPauseMenuHidden(false);
+    this.sound.setWorldPaused(false);
+    this.cocoonHudEl.classList.remove('is-visible', 'is-critical');
+    this.cocoonDevourTimerSec = 0;
+    this.cocoonReturnTriggered = false;
     this.multiplayer?.closeRadioChatInput(false);
     this.inventory.setOpen(false);
     this.keys.clear();
@@ -1759,14 +1926,28 @@ export class DoomGameApp {
     // Gira o olhar para encarar a aranha gigante no instante do bote!
     this.yaw = Math.atan2(-toSpider.x, -toSpider.z);
 
+    // Inicializa imediatamente a física Verlet 3D de Ragdoll desmaiado + rota real pelos corredores até o Ninho!
+    this.localRagdoll.spawnFromStandingAndCollapse(
+      this.strikeOriginPos,
+      this.yaw,
+      this.strikeSpiderPos
+    );
+    this.dragPath = computeWalkableDragPolyline(
+      this.strikeOriginPos,
+      this.webManager.lairCenter
+    );
+
     this.seqTime = 0;
-    this.seqStagedDrag = false;
     this.seqStagedWake = false;
     this.seqGaspPlayed = false;
     this.lastDragPullStep = -1;
     this.lastWebSpinStep = -1;
 
-    if (this.playerHealth > 36) {
+    const shouldAbductToWeb = this.multiplayer
+      ? !wasLockedInCocoon
+      : this.playerHealth > 36;
+
+    if (shouldAbductToWeb) {
       this.activeSequence = 'ABDUCTION_TO_WEB';
       this.syncInventoryVitals();
       this.sound.playSpiderBrutalAttack();
@@ -1774,6 +1955,9 @@ export class DoomGameApp {
       this.activeSequence = 'PERMADEATH_EXECUTION';
       this.playerHealth = 0;
       this.playerBleeding = true;
+      if (wasLockedInCocoon) {
+        this.multiplayer?.notifyLocalPlayerDevoured();
+      }
       this.syncInventoryVitals();
       this.sound.playPermanentDeath();
     }
@@ -1831,6 +2015,10 @@ export class DoomGameApp {
     this.seqTime = 0;
     this.currentAbductionMode = null;
     this.currentAbductionProgress = 0;
+    this.cocoonDevourTimerSec = 0;
+    this.cocoonReturnTriggered = false;
+    this.cocoonHudEl.classList.remove('is-visible', 'is-critical');
+    this.localRagdoll.resetInactive();
     this.webManager.clearEnsnarement();
     this.spider.interruptAbductionAndFlee(this.position);
     this.inventory.setAbductionScreenFX(0, 0, 0, 0);
@@ -1838,24 +2026,58 @@ export class DoomGameApp {
     this.roll = 0;
     this.pitch = 0;
     this.cameraShake = 0.06;
-    this.setCameraFov(74);
+    this.setCameraFov(this.settingsStore.value.fov);
     this.playerHealth = Math.max(this.playerHealth, 38);
     this.playerSanity = Math.max(this.playerSanity, 40);
     boostPlayerStamina(this.staminaState, 65);
+    this.astronaut.updateFirstPersonBody(
+      this.position,
+      this.yaw,
+      this.bobPhase,
+      0,
+      this.crouchAmount,
+      this.flashlight.isEquipped,
+      this.flashlight.isLeftArmAnimating
+    );
     this.sound.playWakeUpGasp();
     this.syncInventoryVitals();
     this.syncCamera(0);
   }
 
+  private applyCollisionSafeRagdollView(
+    spiderFocusPos: THREE.Vector3,
+    rollTilt = 0
+  ): void {
+    computeCollisionSafeRagdollCamera(
+      this.localRagdoll,
+      spiderFocusPos,
+      this.colliders,
+      this.ragdollCamPosScratch,
+      this.ragdollLookAtScratch
+    );
+    const dx = this.ragdollLookAtScratch.x - this.ragdollCamPosScratch.x;
+    const dy = this.ragdollLookAtScratch.y - this.ragdollCamPosScratch.y;
+    const dz = this.ragdollLookAtScratch.z - this.ragdollCamPosScratch.z;
+    const horiz = Math.max(0.001, Math.hypot(dx, dz));
+    this.yaw = Math.atan2(-dx, -dz);
+    this.pitch = Math.max(-0.85, Math.min(0.85, Math.atan2(dy, horiz)));
+    this.roll = rollTilt;
+    this.syncCustomSequenceCamera(
+      this.ragdollCamPosScratch,
+      this.ragdollCamPosScratch.y
+    );
+  }
+
   /**
-   * Executa quadro a quadro a cena em 1ª pessoa:
-   * 1) Ataque visceral com rasgos de garras e queda no chão (lanterna cai das mãos e apaga!)
-   * 2) Desmaio com pálpebras pesadas
-   * 3) Visão entreaberta sendo arrastado pelas patas da Aranha Gigante até o Ninho de Teia
-   * 4) Aranha colocando o jogador na teia e tecendo seda sobre ele
-   * 5) Despertar bem ferido no meio da teia para escapar livremente!
+   * Executa quadro a quadro a cena física e visceral de Captura:
+   * 1) Ataque brutal -> Jogador desmaia e vira Ragdoll Verlet 3D no chão + Aranha lança seus 4 Tentáculos
+   * 2) Visão turva de desmaio enquanto os Tentáculos envolvem botas, cintura e tórax do Ragdoll
+   * 3) Aranha puxa o Ragdoll desmaiado pelos corredores reais até o Ninho de Teia usando os Tentáculos
+   * 4) Tentáculos erguem e prendem o Ragdoll dentro da Teia do Ninho enquanto a Aranha tece o casulo
+   * 5) Despertar preso na Teia (em Multiplayer fica 100% imobilizado até um amigo salvá-lo antes de ser devorado!)
    */
   private updateHorrorSequence(dt: number): void {
+    const simDt = Math.max(0.001, dt);
     this.seqTime += dt;
     const t = this.seqTime;
     const dropFl = this.flashlight.updateKnockoutDrop(dt, this.lanternBattery);
@@ -1864,8 +2086,17 @@ export class DoomGameApp {
     }
 
     if (this.activeSequence === 'PERMADEATH_EXECUTION') {
-      this.astronaut.updateSupineAbductionPose(this.position, this.yaw, 0, false);
       const u = Math.min(1, t / 1.45);
+      if (dt > 0) {
+        this.localRagdoll.stepKnockoutCollapse(
+          simDt,
+          this.strikeSpiderPos,
+          Math.min(1, u * 1.4),
+          this.colliders
+        );
+      }
+      this.astronaut.applyRagdollPose(this.localRagdoll, false);
+      const hooks = this.localRagdoll.getTentacleAttachmentPoints();
       const slash =
         t < 0.35
           ? 1.0 - t / 0.35
@@ -1873,11 +2104,11 @@ export class DoomGameApp {
             ? Math.max(0, 0.85 - (t - 0.35) * 2.4)
             : 0;
       const lid = Math.min(1, Math.pow(t / 1.15, 1.5));
-      const black = Math.max(0, Math.min(1, (t - 0.55) / 0.85));
+      const black = Math.max(0, Math.min(0.92, (t - 0.55) / 0.85));
 
       this.inventory.setAbductionScreenFX(slash, lid, black, 0);
 
-      const eyeY = 1.62 * (1 - u) + 0.18 * u;
+      const eyeY = 1.62 * (1 - u) + 0.22 * u;
       this.pitch = 0.38 * u;
       this.roll = -0.32 * u;
       this.cameraShake = 0.14 * (1 - u * 0.5);
@@ -1887,13 +2118,14 @@ export class DoomGameApp {
       this.currentAbductionProgress = u;
       this.currentAbductionSpiderPos.copy(this.strikeSpiderPos);
       this.spider.updateCinematicSequence(
-        dt,
+        simDt,
         this.elapsed,
         'FATAL_EXECUTION',
         u,
         this.strikeSpiderPos,
         this.strikeOriginPos,
-        this.strikeOriginPos
+        this.localRagdoll.pelvisPos,
+        hooks
       );
 
       this.syncCustomSequenceCamera(this.strikeOriginPos, eyeY);
@@ -1902,15 +2134,15 @@ export class DoomGameApp {
       if (t >= 1.5) {
         this.flashlight.forceStowImmediate();
         this.sharedUniforms.uFlashlightIntensity.value = 0;
+        this.localRagdoll.resetInactive();
         this.activeSequence = 'DEAD_TERMINATED';
-        this.setCameraFov(74);
+        this.setCameraFov(this.settingsStore.value.fov);
         try {
           document.exitPointerLock?.();
         } catch {
           // ignorar
         }
         this.inventory.showGameOver();
-        // Encerra o processo automaticamente após 3.8s caso o jogador não clique antes
         this.permadeathTimerId = window.setTimeout(() => {
           this.finalizePermanentDeath();
         }, 3800);
@@ -1923,30 +2155,19 @@ export class DoomGameApp {
       return;
     }
 
+    if (!this.dragPath) {
+      this.dragPath = computeWalkableDragPolyline(
+        this.strikeOriginPos,
+        this.webManager.lairCenter
+      );
+    }
+    const activeDragPath = this.dragPath;
+
     // ------------------------------------------------------------------------
-    // ESTÁGIO 1 (0.00s -> 1.25s): O BOTE BRUTAL & QUEDA NO CHÃO
+    // ESTÁGIO 1 (0.00s -> 1.25s): BOTE BRUTAL, QUEDA EM RAGDOLL & TENTÁCULOS AGARRANDO!
     // ------------------------------------------------------------------------
     if (t < 1.25) {
-      this.astronaut.updateSupineAbductionPose(this.position, this.yaw, 0, false);
       const u = t / 1.25;
-      // Duplo clarão rubro de garras rasgando a tela
-      const slashA = t < 0.28 ? 1 - t / 0.28 : 0;
-      const slashB =
-        t >= 0.18 && t < 0.55 ? 0.92 * (1 - (t - 0.18) / 0.37) : 0;
-      const slash = Math.max(slashA, slashB);
-
-      const lid = u > 0.45 ? (u - 0.45) / 0.55 : 0;
-      const black = u > 0.72 ? (u - 0.72) / 0.28 : 0;
-
-      this.inventory.setAbductionScreenFX(slash, lid * 0.92, black * 0.65, 0);
-
-      const fallEase = 1 - Math.pow(1 - u, 2.4);
-      const eyeY = 1.62 * (1 - fallEase) + 0.3 * fallEase;
-      this.pitch = 0.26 * fallEase + Math.sin(t * 28) * 0.06 * (1 - u);
-      this.roll = 0.26 * fallEase;
-      this.cameraShake = 0.13 * (1 - u * 0.65);
-      this.setCameraFov(74 + Math.sin(u * Math.PI) * 16);
-
       const lungePos = new THREE.Vector3()
         .copy(this.strikeSpiderPos)
         .lerp(
@@ -1957,21 +2178,69 @@ export class DoomGameApp {
           ),
           0.22 * Math.sin(u * Math.PI)
         );
+      const tentacleGrab = u > 0.28 ? (u - 0.28) / 0.72 : 0;
+      if (dt > 0) {
+        this.localRagdoll.stepKnockoutCollapse(
+          simDt,
+          lungePos,
+          tentacleGrab,
+          this.colliders
+        );
+      }
+      this.astronaut.applyRagdollPose(this.localRagdoll, false);
+      const hooks = this.localRagdoll.getTentacleAttachmentPoints();
+
+      const slashA = t < 0.28 ? 1 - t / 0.28 : 0;
+      const slashB =
+        t >= 0.18 && t < 0.55 ? 0.92 * (1 - (t - 0.18) / 0.37) : 0;
+      const slash = Math.max(slashA, slashB);
+
+      const lid = u > 0.45 ? (u - 0.45) / 0.55 : 0;
+      const black = u > 0.72 ? (u - 0.72) / 0.28 : 0;
+
+      this.inventory.setAbductionScreenFX(slash, lid * 0.9, black * 0.58, 0);
+
+      const fallEase = 1 - Math.pow(1 - u, 2.4);
+      this.cameraShake = 0.13 * (1 - u * 0.65);
+      this.setCameraFov(74 + Math.sin(u * Math.PI) * 14);
 
       this.currentAbductionMode = 'STRIKE_ATTACK';
       this.currentAbductionProgress = u;
       this.currentAbductionSpiderPos.copy(lungePos);
       this.spider.updateCinematicSequence(
-        dt,
+        simDt,
         this.elapsed,
         'STRIKE_ATTACK',
         u,
         lungePos,
         this.strikeOriginPos,
-        this.strikeOriginPos
+        this.localRagdoll.pelvisPos,
+        hooks
       );
 
-      this.syncCustomSequenceCamera(this.strikeOriginPos, eyeY);
+      computeCollisionSafeRagdollCamera(
+        this.localRagdoll,
+        lungePos,
+        this.colliders,
+        this.ragdollCamPosScratch,
+        this.ragdollLookAtScratch
+      );
+      const standCam = new THREE.Vector3(
+        this.strikeOriginPos.x,
+        1.62,
+        this.strikeOriginPos.z
+      );
+      standCam.lerp(this.ragdollCamPosScratch, fallEase);
+      const dx = lungePos.x - standCam.x;
+      const dy = lungePos.y * 0.78 - standCam.y;
+      const dz = lungePos.z - standCam.z;
+      this.yaw = Math.atan2(-dx, -dz);
+      this.pitch =
+        Math.atan2(dy, Math.max(0.01, Math.hypot(dx, dz))) * fallEase +
+        Math.sin(t * 26) * 0.05 * (1 - u);
+      this.roll = 0.24 * fallEase;
+
+      this.syncCustomSequenceCamera(standCam, standCam.y);
       this.syncDroppedFlashlightBeam(dropFl);
       return;
     }
@@ -1981,133 +2250,209 @@ export class DoomGameApp {
     this.sharedUniforms.uFlashlightIntensity.value = 0;
 
     // ------------------------------------------------------------------------
-    // ESTÁGIO 2 (1.25s -> 2.05s): DESMAIO PROFUNDO
+    // ESTÁGIO 2 (1.25s -> 1.95s): DESMAIO & TENTÁCULOS TENSIONANDO O RAGDOLL
     // ------------------------------------------------------------------------
-    if (t < 2.05) {
-      const u = (t - 1.25) / 0.8;
+    if (t < 1.95) {
+      const u = (t - 1.25) / 0.7;
       this.inventory.setAbductionScreenFX(
         0,
-        0.92 + 0.08 * Math.min(1, u * 2),
-        0.65 + 0.35 * Math.min(1, u * 1.8),
+        0.88 + 0.1 * Math.min(1, u * 1.8),
+        0.55 + 0.35 * Math.min(1, u * 1.6),
         0
       );
 
-      if (!this.seqStagedDrag && u > 0.65) {
-        this.seqStagedDrag = true;
-        this.position.copy(this.webManager.dragCorridorStart);
-      }
-
-      const dragDir = this.webManager.dragDirection;
-      this.currentAbductionMode = 'DRAGGING_TO_WEB';
-      this.currentAbductionProgress = 0;
-      this.currentAbductionSpiderPos.set(
-        this.position.x + dragDir.x * 2.15,
-        1.38,
-        this.position.z + dragDir.z * 2.15
+      sampleDragPolyline(
+        activeDragPath,
+        0.04 * activeDragPath.totalLength,
+        this.ragdollPathPosScratch,
+        this.ragdollPathTanScratch
       );
-      if (this.seqStagedDrag) {
-        this.spider.updateCinematicSequence(
-          dt,
-          this.elapsed,
-          'DRAGGING_TO_WEB',
-          0,
-          this.currentAbductionSpiderPos,
-          this.position,
-          this.position
+      const spiderStartPos = new THREE.Vector3(
+        this.ragdollPathPosScratch.x + this.ragdollPathTanScratch.x * 1.85,
+        1.38,
+        this.ragdollPathPosScratch.z + this.ragdollPathTanScratch.z * 1.85
+      );
+      resolveCylinderWorldCollisions(
+        spiderStartPos,
+        new THREE.Vector3(),
+        0.48,
+        1.6,
+        this.colliders
+      );
+      spiderStartPos.y = 1.38;
+
+      if (dt > 0) {
+        this.localRagdoll.stepTentacleDrag(
+          simDt,
+          spiderStartPos,
+          this.ragdollPathPosScratch,
+          0.35 * u,
+          this.colliders
         );
       }
-      this.setCameraFov(68);
-      this.astronaut.updateSupineAbductionPose(this.position, this.yaw, 0, false);
-      this.syncCustomSequenceCamera(this.position, 0.28);
+      const pelvis = this.localRagdoll.pelvisPos;
+      this.position.set(pelvis.x, 0, pelvis.z);
+      this.astronaut.applyRagdollPose(this.localRagdoll, false);
+      const hooks = this.localRagdoll.getTentacleAttachmentPoints();
+
+      this.currentAbductionMode = 'DRAGGING_TO_WEB';
+      this.currentAbductionProgress = 0;
+      this.currentAbductionSpiderPos.copy(spiderStartPos);
+      this.spider.updateCinematicSequence(
+        simDt,
+        this.elapsed,
+        'DRAGGING_TO_WEB',
+        0,
+        spiderStartPos,
+        this.position,
+        pelvis,
+        hooks
+      );
+      this.setCameraFov(69);
+      this.applyCollisionSafeRagdollView(spiderStartPos, -0.08 * u);
       return;
     }
 
     // ------------------------------------------------------------------------
-    // ESTÁGIO 3 (2.05s -> 4.65s): ARANHA GIGANTE TE PUXANDO PELO CHÃO ATÉ A TEIA!
+    // ESTÁGIO 3 (1.95s -> 5.15s): TENTÁCULOS PUXANDO O RAGDOLL PELOS CORREDORES ATÉ A TEIA!
     // ------------------------------------------------------------------------
-    if (t < 4.65) {
-      const u = (t - 2.05) / 2.6;
-      const dragDir = this.webManager.dragDirection;
-      const lookAtSpiderYaw = Math.atan2(-dragDir.x, -dragDir.z);
-      // Movimento em puxões rítmicos ("heave-and-drag") ao longo do corredor até o Ninho!
-      const pullCycles = u * 4.0;
+    if (t < 5.15) {
+      const u = (t - 1.95) / 3.2;
+      const pullCycles = u * 5.0;
       const pullStep = Math.floor(pullCycles);
       if (pullStep !== this.lastDragPullStep) {
         this.lastDragPullStep = pullStep;
         this.sound.playBodyDragPull();
       }
       const frac = pullCycles - pullStep;
+      const pullWave = 0.5 + 0.5 * Math.sin(frac * Math.PI);
       const steppedU = Math.min(
         1,
-        (pullStep + frac * frac * (3 - 2 * frac)) / 4.0
+        (pullStep + frac * frac * (3 - 2 * frac)) / 5.0
       );
 
-      this.position.lerpVectors(
-        this.webManager.dragCorridorStart,
-        this.webManager.lairCenter,
-        steppedU
+      sampleDragPolyline(
+        activeDragPath,
+        steppedU * activeDragPath.totalLength,
+        this.ragdollPathPosScratch,
+        this.ragdollPathTanScratch
       );
 
-      // Pálpebras entreabertas grogues com uma piscada pesada no meio do arrasto
-      const openFadeIn = Math.min(1, u / 0.18);
-      const midBlink = Math.exp(-Math.pow((u - 0.52) / 0.09, 2)) * 0.58;
-      const lidClosed = 1 - openFadeIn * 0.66 + midBlink;
-      const black = Math.max(0.08, (1 - openFadeIn) * 0.85 + midBlink * 0.4);
+      const lateralSway = Math.sin(t * 2.2) * 0.08;
+      const spiderLead = Math.min(1, steppedU + 0.14);
+      const spiderPathPt = new THREE.Vector3();
+      const spiderTan = new THREE.Vector3();
+      sampleDragPolyline(
+        activeDragPath,
+        spiderLead * activeDragPath.totalLength,
+        spiderPathPt,
+        spiderTan
+      );
+      const spiderDragPos = new THREE.Vector3(
+        spiderPathPt.x +
+          spiderTan.x * (1 - steppedU) * 1.15 -
+          spiderTan.z * lateralSway,
+        1.38 + pullWave * 0.04,
+        spiderPathPt.z +
+          spiderTan.z * (1 - steppedU) * 1.15 +
+          spiderTan.x * lateralSway
+      );
+      if (
+        Math.hypot(
+          spiderDragPos.x - this.ragdollPathPosScratch.x,
+          spiderDragPos.z - this.ragdollPathPosScratch.z
+        ) < 1.35
+      ) {
+        spiderDragPos.x =
+          this.ragdollPathPosScratch.x + this.ragdollPathTanScratch.x * 1.55;
+        spiderDragPos.z =
+          this.ragdollPathPosScratch.z + this.ragdollPathTanScratch.z * 1.55;
+      }
+      resolveCylinderWorldCollisions(
+        spiderDragPos,
+        new THREE.Vector3(),
+        0.46,
+        1.6,
+        this.colliders
+      );
+      spiderDragPos.y = 1.38 + pullWave * 0.04;
+
+      if (dt > 0) {
+        this.localRagdoll.stepTentacleDrag(
+          simDt,
+          spiderDragPos,
+          this.ragdollPathPosScratch,
+          pullWave,
+          this.colliders
+        );
+      }
+      const pelvis = this.localRagdoll.pelvisPos;
+      this.position.set(pelvis.x, 0, pelvis.z);
+      this.astronaut.applyRagdollPose(this.localRagdoll, u > 0.55);
+      const hooks = this.localRagdoll.getTentacleAttachmentPoints();
+
+      const openFadeIn = Math.min(1, u / 0.16);
+      const midBlink = Math.exp(-Math.pow((u - 0.54) / 0.08, 2)) * 0.48;
+      const lidClosed = 1 - openFadeIn * 0.72 + midBlink;
+      const black = Math.max(0.05, (1 - openFadeIn) * 0.78 + midBlink * 0.34);
 
       this.inventory.setAbductionScreenFX(
         0,
         Math.min(1, lidClosed),
         Math.min(1, black),
-        u > 0.78 ? ((u - 0.78) / 0.22) * 0.3 : 0
+        u > 0.76 ? ((u - 0.76) / 0.24) * 0.32 : 0
       );
 
-      // Olhando direto para a Aranha Gigante andando de costas puxando suas pernas!
-      const jolt = Math.sin(pullCycles * Math.PI * 2) * 0.035;
-      this.yaw = lookAtSpiderYaw + Math.sin(t * 2.3) * 0.05;
-      this.pitch = 0.22 + jolt * 0.9;
-      this.roll = -0.17 + Math.sin(pullCycles * Math.PI * 2) * 0.05;
       this.cameraShake = 0.022;
-      this.setCameraFov(68);
-
-      const lateralSway = Math.sin(t * 2.1) * 0.08;
-      const spiderDragPos = new THREE.Vector3(
-        this.position.x + dragDir.x * 2.15 - dragDir.z * lateralSway,
-        1.38 + Math.abs(jolt) * 0.8,
-        this.position.z + dragDir.z * 2.15 + dragDir.x * lateralSway
-      );
+      this.setCameraFov(70);
 
       this.currentAbductionMode = 'DRAGGING_TO_WEB';
       this.currentAbductionProgress = u;
       this.currentAbductionSpiderPos.copy(spiderDragPos);
       this.spider.updateCinematicSequence(
-        dt,
+        simDt,
         this.elapsed,
         'DRAGGING_TO_WEB',
         u,
         spiderDragPos,
         this.position,
-        this.position
+        pelvis,
+        hooks
       );
 
-      this.astronaut.updateSupineAbductionPose(
-        this.position,
-        this.yaw,
-        pullCycles,
-        true
+      this.applyCollisionSafeRagdollView(
+        spiderDragPos,
+        -0.1 + Math.sin(pullCycles * Math.PI * 2) * 0.045
       );
-      this.syncCustomSequenceCamera(this.position, 0.28 + Math.abs(jolt) * 0.5);
       this.sound.playTensionHeartbeat(0.75);
       return;
     }
 
     // ------------------------------------------------------------------------
-    // ESTÁGIO 4 (4.65s -> 5.85s): COLOCANDO VOCÊ NO NINHO DE TEIA & TECENDO FIOS
+    // ESTÁGIO 4 (5.15s -> 6.35s): TENTÁCULOS PRENDENDO O RAGDOLL NA TEIA & TECENDO CASULO!
     // ------------------------------------------------------------------------
-    if (t < 5.85) {
-      const u = (t - 4.65) / 1.2;
+    if (t < 6.35) {
+      const u = (t - 5.15) / 1.2;
       const dragDir = this.webManager.dragDirection;
-      const lookAtSpiderYaw = Math.atan2(-dragDir.x, -dragDir.z);
       this.position.copy(this.webManager.lairCenter);
+      const spiderOverLair = new THREE.Vector3(
+        this.position.x + dragDir.x * 1.15,
+        1.36,
+        this.position.z + dragDir.z * 1.15
+      );
+
+      if (dt > 0) {
+        this.localRagdoll.stepWebPlacementLift(
+          simDt,
+          this.webManager.lairCenter,
+          spiderOverLair,
+          u,
+          this.colliders
+        );
+      }
+      const pelvis = this.localRagdoll.pelvisPos;
+      this.astronaut.applyRagdollPose(this.localRagdoll, true);
+      const hooks = this.localRagdoll.getTentacleAttachmentPoints();
 
       const spinStep = Math.floor(u * 4);
       if (spinStep !== this.lastWebSpinStep) {
@@ -2115,57 +2460,42 @@ export class DoomGameApp {
         this.sound.playSpiderWebSpin(0, 1.0);
       }
 
-      // Fios de seda vão cobrindo as bordas enquanto as pálpebras voltam a pesar
       const closeOut = u > 0.58 ? (u - 0.58) / 0.42 : 0;
-      const lidClosed = 0.36 + closeOut * 0.64;
-      const black = 0.12 + closeOut * 0.88;
-      const cocoon = 0.3 + u * 0.58;
+      const lidClosed = 0.32 + closeOut * 0.68;
+      const black = 0.1 + closeOut * 0.88;
+      const cocoon = 0.32 + u * 0.56;
 
       this.inventory.setAbductionScreenFX(0, lidClosed, black, cocoon);
-
-      this.yaw = lookAtSpiderYaw + Math.sin(t * 4.5) * 0.04;
-      this.pitch = 0.46;
-      this.roll = -0.1 * (1 - u);
       this.cameraShake = 0.015;
-
-      const spiderOverLair = new THREE.Vector3(
-        this.position.x + dragDir.x * 1.05,
-        1.36,
-        this.position.z + dragDir.z * 1.05
-      );
 
       this.currentAbductionMode = 'WEBBING_IN_LAIR';
       this.currentAbductionProgress = u;
       this.currentAbductionSpiderPos.copy(spiderOverLair);
       this.spider.updateCinematicSequence(
-        dt,
+        simDt,
         this.elapsed,
         'WEBBING_IN_LAIR',
         u,
         spiderOverLair,
         this.position,
-        this.position
+        pelvis,
+        hooks
       );
 
-      this.astronaut.updateSupineAbductionPose(
-        this.position,
-        this.yaw,
-        u * 2,
-        true
-      );
-      this.syncCustomSequenceCamera(this.position, 0.28);
+      this.applyCollisionSafeRagdollView(spiderOverLair, -0.06 * (1 - u));
       return;
     }
 
     // ------------------------------------------------------------------------
-    // ESTÁGIO 5 (5.85s -> 7.35s): ACORDANDO BEM FERIDO NO MEIO DA TEIA!
-    // (Executado APÓS WEBBING_IN_LAIR terminar 100%, nunca sobrescrevendo o estado!)
+    // ESTÁGIO 5 (6.35s -> 7.65s): DESPERTAR PRESO NA TEIA DO NINHO!
     // ------------------------------------------------------------------------
+    this.localRagdoll.resetInactive();
     this.astronaut.updateSupineAbductionPose(this.position, this.yaw, 0, false);
     if (!this.seqStagedWake) {
       this.seqStagedWake = true;
       this.currentAbductionMode = null;
       this.currentAbductionProgress = 0;
+      const isCoop = Boolean(this.multiplayer);
       if (this.multiplayer) {
         const observers = this.multiplayer.getObserverWorldPositions(
           this.position,
@@ -2173,15 +2503,20 @@ export class DoomGameApp {
         );
         this.spider.finishAbductionRetreat(observers);
         this.multiplayer.notifyLocalAbductionFinished();
+        this.cocoonDevourMaxSec = this.multiplayer.hasLivingAllies() ? 45 : 14;
+        this.cocoonDevourTimerSec = this.cocoonDevourMaxSec;
+        this.cocoonReturnTriggered = false;
+        this.multiplayer.pushHudNotice(
+          `🕸️ VOCÊ ESTÁ PRESO NA TEIA DO NINHO! Seus amigos precisam cortá-la [E / Faca] em ${this.cocoonDevourMaxSec}s antes da Aranha devorar você!`
+        );
       } else {
         this.spider.relocateAwayAfterAbduction();
       }
-      this.webManager.placePlayerInWakingLairWeb();
+      this.webManager.placePlayerInWakingLairWeb(isCoop);
       this.playerHealth = 22;
       this.playerBleeding = true;
       this.playerSanity = 25;
       boostPlayerStamina(this.staminaState, 80);
-      // Acorda olhando para o corredor aberto de saída do ninho
       const dragDir = this.webManager.dragDirection;
       this.yaw = Math.atan2(dragDir.x, dragDir.z);
       this.syncInventoryVitals();
@@ -2192,7 +2527,7 @@ export class DoomGameApp {
       this.sound.playWakeUpGasp();
     }
 
-    const uWake = Math.min(1, (t - 5.85) / 1.5);
+    const uWake = Math.min(1, (t - 6.35) / 1.3);
     const wakeEase = uWake * uWake * (3 - 2 * uWake);
 
     const lidClosed = Math.max(0, 1 - wakeEase * 1.15);
@@ -2209,7 +2544,7 @@ export class DoomGameApp {
     this.syncCustomSequenceCamera(this.position, eyeY);
     this.sound.playTensionHeartbeat(0.85);
 
-    if (t >= 7.35) {
+    if (t >= 7.65) {
       this.activeSequence = 'NONE';
       this.spider.ensureExitedCinematic(
         this.multiplayer?.getObserverWorldPositions(
@@ -2228,7 +2563,6 @@ export class DoomGameApp {
         this.flashlight.isEquipped,
         this.flashlight.isLeftArmAnimating
       );
-      // Mantém os fios do casulo visíveis até o jogador caminhar e rasgar para fora da teia!
       this.inventory.setAbductionScreenFX(
         0,
         0,
@@ -2290,6 +2624,7 @@ export class DoomGameApp {
     this.elapsed += dt;
 
     if (this.activeSequence !== 'NONE') {
+      this.cocoonHudEl.classList.remove('is-visible', 'is-critical');
       this.interactQueued = false;
       this.struggleQueued = false;
       this.touchControls.consumeLookDelta();
@@ -2322,8 +2657,12 @@ export class DoomGameApp {
           flashDir: this.sharedUniforms.uFlashlightDir.value,
           health: this.playerHealth,
           bleeding: this.playerBleeding,
-          ensnared: this.currentAbductionMode === 'WEBBING_IN_LAIR' || this.seqTime >= 5.85,
-          inSequence: this.seqTime < 5.85,
+          ensnared:
+            this.currentAbductionMode === 'WEBBING_IN_LAIR' ||
+            this.seqTime >= 6.35,
+          cocoonLocked: Boolean(this.multiplayer) && this.seqTime >= 6.35,
+          devourSecondsLeft: this.cocoonDevourTimerSec,
+          inSequence: this.seqTime < 6.35,
           beingDragged,
           abductionMode: this.currentAbductionMode,
           abductionProgress: this.currentAbductionProgress,
@@ -2505,6 +2844,56 @@ export class DoomGameApp {
     );
     if (strugglePressed && this.webManager.isPlayerEnsnared) {
       this.sound.playStruggleEffort();
+    }
+
+    // Em Multiplayer, enquanto estiver 100% preso no Casulo de Teia do Ninho:
+    // - Não pode sair sozinho; conta regressiva até a Aranha voltar faminta para devorá-lo!
+    // - [E] ou [Espaço] emite alerta SOS no rádio para os amigos virem cortá-lo a tempo!
+    if (this.webManager.isLockedInMultiplayerCocoon) {
+      if (this.cocoonDevourTimerSec <= 0) {
+        this.cocoonDevourMaxSec = this.multiplayer?.hasLivingAllies() ? 45 : 14;
+        this.cocoonDevourTimerSec = this.cocoonDevourMaxSec;
+      }
+      this.cocoonDevourTimerSec = Math.max(0, this.cocoonDevourTimerSec - dt);
+      const ratio = Math.max(
+        0,
+        Math.min(
+          1,
+          this.cocoonDevourTimerSec / Math.max(1, this.cocoonDevourMaxSec)
+        )
+      );
+      const isCrit = this.cocoonDevourTimerSec <= 14;
+      this.cocoonHudEl.classList.add('is-visible');
+      this.cocoonHudEl.classList.toggle('is-critical', isCrit);
+      this.cocoonBarFillEl.style.width = `${(ratio * 100).toFixed(1)}%`;
+      this.cocoonSubEl.textContent = isCrit
+        ? `A ARANHA ESTÁ VOLTANDO PARA DEVORAR VOCÊ (${Math.ceil(this.cocoonDevourTimerSec)}s)! GRITE PELO RÁDIO [E / ESPAÇO]!`
+        : `CHAME UM AMIGO PARA CORTAR A TEIA [E / FACA] — DEVORAÇÃO EM ${Math.ceil(this.cocoonDevourTimerSec)}s ([ESPAÇO] RÁDIO SOS)`;
+
+      if (interactPressed || strugglePressed) {
+        this.sound.playStruggleEffort();
+        this.multiplayer?.emitCocoonDistressCall(
+          this.position,
+          this.cocoonDevourTimerSec
+        );
+      }
+
+      if (isCrit && !this.cocoonReturnTriggered) {
+        this.cocoonReturnTriggered = true;
+        this.spider.commandReturnToDevourVictim(this.position);
+      }
+
+      if (this.cocoonDevourTimerSec <= 0) {
+        const devourSpiderPos = new THREE.Vector3(
+          this.position.x + this.webManager.dragDirection.x * 1.08,
+          1.38,
+          this.position.z + this.webManager.dragDirection.z * 1.08
+        );
+        this.triggerSpiderCatch(devourSpiderPos);
+        return;
+      }
+    } else {
+      this.cocoonHudEl.classList.remove('is-visible', 'is-critical');
     }
 
     // Atualiza transparência dos fios do casulo enquanto o jogador sai caminhando do Ninho!
@@ -2736,14 +3125,15 @@ export class DoomGameApp {
       this.multiplayer?.getActiveRemoteAbduction() ?? null;
 
     if (updatedRemoteAbduction && this.multiplayer) {
-      // Todos os jogadores assistem em 3ª pessoa a Aranha atacando/arrastando/tecendo sobre o aliado!
+      // Todos os jogadores assistem em 3ª pessoa a Aranha atacando/arrastando com os 4 Tentáculos/tecendo sobre o aliado!
       this.spider.updateRemoteCinematicSequence(
         dt,
         this.elapsed,
         updatedRemoteAbduction.mode,
         updatedRemoteAbduction.progress,
         updatedRemoteAbduction.spiderPos,
-        updatedRemoteAbduction.victimPos
+        updatedRemoteAbduction.victimPos,
+        updatedRemoteAbduction.ragdollHooks
       );
       const distToSpider = Math.hypot(
         this.position.x - this.spider.position.x,
@@ -2791,6 +3181,14 @@ export class DoomGameApp {
       this.spider.ensureExitedCinematic(
         this.multiplayer.getObserverWorldPositions(this.position)
       );
+      const starvingVictimPos = this.multiplayer.getStarvingCocoonVictimPos(
+        this.position,
+        this.webManager.isLockedInMultiplayerCocoon,
+        this.cocoonDevourTimerSec
+      );
+      if (starvingVictimPos) {
+        this.spider.commandReturnToDevourVictim(starvingVictimPos);
+      }
       const candidates = this.multiplayer.buildSpiderPlayerCandidates({
         pos: this.position,
         yaw: this.yaw,
@@ -2800,6 +3198,8 @@ export class DoomGameApp {
         flashlightDir: this.sharedUniforms.uFlashlightDir.value,
         voiceLevel: localVoiceLvl,
         ensnared: this.webManager.isPlayerEnsnared,
+        cocoonLocked: this.webManager.isLockedInMultiplayerCocoon,
+        devourSecondsLeft: this.cocoonDevourTimerSec,
         afk: isLocalAfk,
       });
       const chosen = this.spider.selectBestMultiplayerCandidate(candidates);
@@ -2992,6 +3392,8 @@ export class DoomGameApp {
         health: this.playerHealth,
         bleeding: this.playerBleeding,
         ensnared: this.webManager.isPlayerEnsnared,
+        cocoonLocked: this.webManager.isLockedInMultiplayerCocoon,
+        devourSecondsLeft: this.cocoonDevourTimerSec,
         inSequence: false,
         dead: false,
         afk: isLocalAfk,
@@ -3310,10 +3712,12 @@ export class DoomGameApp {
     this.abortCtrl.abort();
     this.unsubscribeSettings?.();
     this.unsubscribeSettings = null;
+    this.sound.setWorldPaused(false);
     this.sound.setFocusMuted(false);
     unlockSystemKeyboardKeys();
     this.localAfkBannerEl.remove();
     this.roomBannerEl.remove();
+    this.cocoonHudEl.remove();
     this.pauseMenu.destroy();
     this.touchControls.destroy();
     this.multiplayer?.destroy();

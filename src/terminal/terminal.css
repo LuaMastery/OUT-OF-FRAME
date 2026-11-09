@@ -464,7 +464,8 @@
 }
 
 /* Camada do efeito magnético de proximidade do cursor */
-#tui-proximity-canvas {
+#tui-proximity-canvas,
+.tui-proximity-canvas {
   position: fixed;
   inset: 0;
   width: 100%;

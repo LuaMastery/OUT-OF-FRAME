@@ -48,6 +48,12 @@ import {
 } from '../src/doom/DoomRadar';
 import { DoomPauseMenu } from '../src/doom/DoomPauseMenu';
 import {
+  AstronautRagdoll,
+  computeCollisionSafeRagdollCamera,
+  computeWalkableDragPolyline,
+  sampleDragPolyline,
+} from '../src/doom/DoomRagdoll';
+import {
   getThemedRoomAtCell,
   THEMED_ROOMS,
 } from '../src/doom/DoomRooms';
@@ -4849,6 +4855,722 @@ describe('Salas Especiais 3D (Computadores, Lab Biológico, Quartos, Enfermaria,
     );
   });
 });
+
+describe('Correção Integral de Pausa, Áudio WebAudio & Botão de Pausa no Inventário [Tab]', () => {
+  it('preserva volumes 0..100% sem dupla divisão, silencia 100% da masmorra durante Pausa mantendo UI viva e abre a Pausa pelo botão dentro do [Tab]', () => {
+    const makeAudioParam = (initial = 1) => {
+      const param = {
+        value: initial,
+        cancelCalls: 0,
+        cancelScheduledValues() {
+          param.cancelCalls++;
+          return param;
+        },
+        setValueAtTime(v: number) {
+          param.value = v;
+          return param;
+        },
+        linearRampToValueAtTime(v: number) {
+          param.value = v;
+          return param;
+        },
+        exponentialRampToValueAtTime(v: number) {
+          param.value = v;
+          return param;
+        },
+        setTargetAtTime(v: number) {
+          param.value = v;
+          return param;
+        },
+      };
+      return param;
+    };
+
+    let createdOscCount = 0;
+    class FakeAudioContext {
+      state: AudioContextState = 'running';
+      currentTime = 1.0;
+      sampleRate = 44100;
+      destination = {};
+      resume() {
+        this.state = 'running';
+        return Promise.resolve();
+      }
+      createGain() {
+        return {
+          gain: makeAudioParam(1),
+          connect: () => {},
+          disconnect: () => {},
+        };
+      }
+      createDynamicsCompressor() {
+        return {
+          threshold: makeAudioParam(-15),
+          knee: makeAudioParam(14),
+          ratio: makeAudioParam(3.6),
+          attack: makeAudioParam(0.003),
+          release: makeAudioParam(0.16),
+          connect: () => {},
+          disconnect: () => {},
+        };
+      }
+      createWaveShaper() {
+        return {
+          curve: null as Float32Array | null,
+          oversample: 'none',
+          connect: () => {},
+          disconnect: () => {},
+        };
+      }
+      createBiquadFilter() {
+        return {
+          type: 'lowpass',
+          frequency: makeAudioParam(1000),
+          Q: makeAudioParam(1),
+          gain: makeAudioParam(0),
+          connect: () => {},
+          disconnect: () => {},
+        };
+      }
+      createConvolver() {
+        return {
+          buffer: null,
+          connect: () => {},
+          disconnect: () => {},
+        };
+      }
+      createStereoPanner() {
+        return {
+          pan: makeAudioParam(0),
+          connect: () => {},
+          disconnect: () => {},
+        };
+      }
+      createOscillator() {
+        createdOscCount++;
+        return {
+          type: 'sine',
+          frequency: makeAudioParam(440),
+          detune: makeAudioParam(0),
+          connect: () => {},
+          disconnect: () => {},
+          start: () => {},
+          stop: () => {},
+        };
+      }
+      createBuffer(_ch: number, len: number, sr: number) {
+        const arr = new Float32Array(Math.max(1, len));
+        return {
+          sampleRate: sr,
+          length: arr.length,
+          getChannelData: () => arr,
+        };
+      }
+      createBufferSource() {
+        return {
+          buffer: null,
+          loop: false,
+          playbackRate: makeAudioParam(1),
+          connect: () => {},
+          disconnect: () => {},
+          start: () => {},
+          stop: () => {},
+        };
+      }
+    }
+
+    interface UiMockEl {
+      tagName: string;
+      id: string;
+      className: string;
+      textContent: string;
+      value?: string;
+      type?: string;
+      disabled?: boolean;
+      dataset: Record<string, string>;
+      style: Record<string, string>;
+      attrs: Map<string, string>;
+      children: UiMockEl[];
+      parent: UiMockEl | null;
+      listeners: Map<string, Array<(e: unknown) => void>>;
+      classList: {
+        add: (...t: string[]) => void;
+        remove: (...t: string[]) => void;
+        toggle: (t: string, force?: boolean) => boolean;
+        contains: (t: string) => boolean;
+      };
+      appendChild: (c: UiMockEl) => UiMockEl;
+      remove: () => void;
+      contains: (other: UiMockEl | null) => boolean;
+      blur: () => void;
+      setAttribute: (k: string, v: string) => void;
+      querySelector: (sel: string) => UiMockEl | null;
+      querySelectorAll: (sel: string) => UiMockEl[];
+      addEventListener: (t: string, cb: (e: unknown) => void) => void;
+      dispatch: (t: string, extra?: Record<string, unknown>) => void;
+      getBoundingClientRect: () => {
+        x: number;
+        y: number;
+        left: number;
+        top: number;
+        right: number;
+        bottom: number;
+        width: number;
+        height: number;
+      };
+      getContext: () => Record<string, unknown>;
+      toDataURL: () => string;
+      innerHTML: string;
+    }
+
+    const ctx2d = {
+      fillStyle: '',
+      strokeStyle: '',
+      lineWidth: 1,
+      font: '',
+      clearRect: () => {},
+      fillRect: () => {},
+      strokeRect: () => {},
+      fillText: () => {},
+      beginPath: () => {},
+      moveTo: () => {},
+      lineTo: () => {},
+      stroke: () => {},
+      fill: () => {},
+      arc: () => {},
+      save: () => {},
+      restore: () => {},
+      scale: () => {},
+      translate: () => {},
+      setTransform: () => {},
+      getImageData: (_x: number, _y: number, w: number, h: number) => ({
+        width: w,
+        height: h,
+        data: new Uint8ClampedArray(w * h * 4),
+      }),
+      createImageData: (w: number, h: number) => ({
+        width: w,
+        height: h,
+        data: new Uint8ClampedArray(w * h * 4),
+      }),
+      putImageData: () => {},
+    };
+
+    const matchesSingle = (node: UiMockEl, rawSel: string): boolean => {
+      const sel = rawSel.trim().replace(/:not\(:disabled\)/g, '');
+      if (!sel) return false;
+      if (sel.startsWith('#')) return node.id === sel.slice(1);
+      const attrMatch = /^\[([a-z0-9-]+)(?:=['"]?([^'"\]]*)['"]?)?\]$/i.exec(
+        sel
+      );
+      if (attrMatch) {
+        const [, k, expected] = attrMatch;
+        if (!node.attrs.has(k)) return false;
+        return expected === undefined || node.attrs.get(k) === expected;
+      }
+      if (sel.startsWith('.')) {
+        const parts = sel.slice(1).split('.');
+        return parts.every((p) => node.classList.contains(p));
+      }
+      return node.tagName.toLowerCase() === sel.toLowerCase();
+    };
+
+    const makeEl = (tag: string): UiMockEl => {
+      const classes = new Set<string>();
+      let html = '';
+      const el: UiMockEl = {
+        tagName: tag.toUpperCase(),
+        id: '',
+        get className() {
+          return Array.from(classes).join(' ');
+        },
+        set className(v: string) {
+          classes.clear();
+          v.split(/\s+/)
+            .filter(Boolean)
+            .forEach((c) => classes.add(c));
+        },
+        textContent: '',
+        dataset: {},
+        style: {},
+        attrs: new Map(),
+        children: [],
+        parent: null,
+        listeners: new Map(),
+        classList: {
+          add: (...tokens) => tokens.forEach((t) => classes.add(t)),
+          remove: (...tokens) => tokens.forEach((t) => classes.delete(t)),
+          toggle: (token, force) => {
+            const next = force ?? !classes.has(token);
+            if (next) classes.add(token);
+            else classes.delete(token);
+            return next;
+          },
+          contains: (token) => classes.has(token),
+        },
+        appendChild(child) {
+          child.parent = el;
+          el.children.push(child);
+          return child;
+        },
+        remove() {
+          if (!el.parent) return;
+          const idx = el.parent.children.indexOf(el);
+          if (idx >= 0) el.parent.children.splice(idx, 1);
+          el.parent = null;
+        },
+        contains(other) {
+          let cur: UiMockEl | null = other;
+          while (cur) {
+            if (cur === el) return true;
+            cur = cur.parent;
+          }
+          return false;
+        },
+        blur() {},
+        setAttribute(k, v) {
+          el.attrs.set(k, v);
+          if (k.startsWith('data-')) {
+            const camel = k
+              .slice(5)
+              .replace(/-([a-z])/g, (_, c: string) => c.toUpperCase());
+            el.dataset[camel] = v;
+          }
+        },
+        querySelector(selector) {
+          return el.querySelectorAll(selector)[0] ?? null;
+        },
+        querySelectorAll(selector) {
+          const groups = selector.split(',').map((g) => g.trim());
+          const out: UiMockEl[] = [];
+          const visit = (n: UiMockEl) => {
+            for (const c of n.children) {
+              if (groups.some((g) => matchesSingle(c, g))) out.push(c);
+              visit(c);
+            }
+          };
+          visit(el);
+          return out;
+        },
+        addEventListener(type, cb) {
+          const arr = el.listeners.get(type) ?? [];
+          arr.push(cb);
+          el.listeners.set(type, arr);
+        },
+        dispatch(type, extra = {}) {
+          const ev = {
+            type,
+            preventDefault: () => {},
+            stopPropagation: () => {},
+            ...extra,
+          };
+          for (const cb of el.listeners.get(type) ?? []) cb(ev);
+        },
+        getBoundingClientRect: () => ({
+          x: 20,
+          y: 20,
+          left: 20,
+          top: 20,
+          right: 140,
+          bottom: 56,
+          width: 120,
+          height: 36,
+        }),
+        getContext: () => ctx2d,
+        toDataURL: () => 'data:image/png;base64,AA==',
+        get innerHTML() {
+          return html;
+        },
+        set innerHTML(val: string) {
+          html = val;
+          el.children.length = 0;
+          const tagRe = /<([a-z0-9]+)\b([^>]*)>/gi;
+          let m: RegExpExecArray | null;
+          while ((m = tagRe.exec(val)) !== null) {
+            const tagName = m[1];
+            const attrsRaw = m[2];
+            const clsMatch = /\bclass="([^"]*)"/i.exec(attrsRaw);
+            const idMatch = /\bid="([^"]*)"/i.exec(attrsRaw);
+            const dataRe = /\b(data-[a-z0-9-]+)(?:="([^"]*)")?/gi;
+            const foundData: Array<[string, string]> = [];
+            let dm: RegExpExecArray | null;
+            while ((dm = dataRe.exec(attrsRaw)) !== null) {
+              foundData.push([dm[1], dm[2] ?? '']);
+            }
+            if (clsMatch || idMatch || foundData.length > 0) {
+              const child = makeEl(tagName);
+              if (idMatch) child.id = idMatch[1];
+              if (clsMatch) child.className = clsMatch[1];
+              for (const [k, v] of foundData) child.setAttribute(k, v);
+              el.appendChild(child);
+            }
+          }
+        },
+      };
+      return el;
+    };
+
+    const prevWin = (globalThis as Record<string, unknown>).window;
+    const prevDoc = (globalThis as Record<string, unknown>).document;
+    const prevRaf = globalThis.requestAnimationFrame;
+    const prevCaf = globalThis.cancelAnimationFrame;
+
+    (globalThis as Record<string, unknown>).window = {
+      AudioContext: FakeAudioContext,
+      innerWidth: 1280,
+      innerHeight: 720,
+      devicePixelRatio: 1,
+      setTimeout: globalThis.setTimeout.bind(globalThis),
+      clearTimeout: globalThis.clearTimeout.bind(globalThis),
+      setInterval: globalThis.setInterval.bind(globalThis),
+      clearInterval: globalThis.clearInterval.bind(globalThis),
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    };
+    (globalThis as Record<string, unknown>).document = {
+      createElement: (tag: string) => makeEl(tag),
+      pointerLockElement: null,
+      fullscreenElement: null,
+      activeElement: null,
+      exitPointerLock: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    };
+    globalThis.requestAnimationFrame = () => 1;
+    globalThis.cancelAnimationFrame = () => {};
+
+    try {
+      const sound = new SoundEngine();
+      sound.unlock();
+      sound.setUserAudioSettings({
+        masterVolume: 85,
+        sfxVolume: 80,
+        uiVolume: 75,
+        reverbAmount: 65,
+      });
+
+      const g0 = sound.debugGainState;
+      expect(g0.masterGain).toBeCloseTo(0.85, 2);
+      expect(g0.sfxGain).toBeCloseTo(0.8, 2);
+      expect(g0.uiGain).toBeCloseTo(0.75, 2);
+      expect(g0.effectiveWorldDryGain).toBeCloseTo(0.8, 2);
+      expect(g0.effectiveUiGain).toBeCloseTo(0.75, 2);
+      expect(g0.reverbSendGain).toBeCloseTo(0.65 * 0.68, 2);
+      expect(g0.effectiveReverbSendGain).toBeCloseTo(0.65 * 0.68, 2);
+
+      // Entrar no labirinto preserva o masterVolume do usuário em vez de cravar 0.82!
+      sound.enterDoomLabyrinth();
+      expect(sound.debugGainState.masterGain).toBeCloseTo(0.85, 2);
+
+      // Pausar o mundo em Solo zera 100% do barramento da masmorra e do envio de reverb,
+      // bloqueia passos/aranha, mas mantém os sons de UI da Pausa vivos!
+      sound.setWorldPaused(true);
+      const gPaused = sound.debugGainState;
+      expect(gPaused.worldPaused).toBe(true);
+      expect(gPaused.effectiveWorldDryGain).toBeLessThanOrEqual(0.001);
+      expect(gPaused.effectiveReverbSendGain).toBeLessThanOrEqual(0.001);
+      expect(gPaused.effectiveUiGain).toBeCloseTo(0.75, 2);
+
+      const oscBeforeFootstep = createdOscCount;
+      sound.playLabyrinthFootstep(true, 'stone', true, false, false);
+      expect(createdOscCount).toBe(oscBeforeFootstep);
+
+      sound.playPauseToggle(true);
+      expect(createdOscCount).toBeGreaterThan(oscBeforeFootstep);
+
+      // Despausar restaura imediatamente os ganhos exatos do usuário!
+      sound.setWorldPaused(false);
+      const gResumed = sound.debugGainState;
+      expect(gResumed.worldPaused).toBe(false);
+      expect(gResumed.effectiveWorldDryGain).toBeCloseTo(0.8, 2);
+      expect(gResumed.effectiveReverbSendGain).toBeCloseTo(0.65 * 0.68, 2);
+
+      // Monta Inventário [Tab] + Menu de Pausa no mesmo viewport:
+      // 1) Zero IDs duplicados #tui-proximity-canvas (ambos usam classe .tui-proximity-canvas)
+      // 2) Clicar em "Menu de Pausa [P]" dentro do [Tab] fecha o inventário silenciosamente e abre a Pausa!
+      const viewportEl = makeEl('div');
+      const store = new DoomSettingsStore();
+      let pauseClosedCount = 0;
+      let lastResumePointerFlag: boolean | undefined;
+
+      const pauseMenu = new DoomPauseMenu(
+        viewportEl as unknown as HTMLElement,
+        store,
+        sound,
+        {
+          onPauseOpened: () => {
+            sound.setWorldPaused(true);
+          },
+          onPauseClosed: () => {
+            pauseClosedCount++;
+            sound.setWorldPaused(false);
+          },
+          onResumeRequest: (fromPointer) => {
+            lastResumePointerFlag = fromPointer;
+            pauseMenu.setOpen(false);
+          },
+          onToggleFullscreen: () => {},
+          onRestartSessionRequest: () => {},
+          onExitToDesktopRequest: () => {},
+        }
+      );
+
+      const inv = new DoomInventory(
+        viewportEl as unknown as HTMLElement,
+        sound,
+        {
+          onToggleFlashlightFromUI: () => {},
+          onUseHeal: () => false,
+          onUseBattery: () => false,
+          onUseFlare: () => false,
+          onUseKnife: () => ({ cutWeb: false }),
+          onCloseRequest: () => {
+            inv.setOpen(false);
+          },
+          onOpenPauseRequest: () => {
+            inv.setOpen(false, true);
+            pauseMenu.setOpen(true, 'main');
+          },
+          onPermanentDeathTerminate: () => {},
+        }
+      );
+
+      expect(viewportEl.querySelectorAll('#tui-proximity-canvas').length).toBe(
+        0
+      );
+      expect(viewportEl.querySelectorAll('.tui-proximity-canvas').length).toBe(
+        2
+      );
+
+      // Abre o inventário [Tab] e clica no novo botão "Menu de Pausa [P]"!
+      inv.setOpen(true);
+      expect(inv.open).toBe(true);
+      expect(pauseMenu.open).toBe(false);
+
+      const tabPauseBtn = viewportEl.querySelector('[data-inv-open-pause]');
+      expect(tabPauseBtn).not.toBeNull();
+      tabPauseBtn!.dispatch('click');
+
+      expect(inv.open).toBe(false);
+      expect(pauseMenu.open).toBe(true);
+      expect(sound.debugGainState.worldPaused).toBe(true);
+
+      // Clicar em Retomar pelo mouse repassa fromPointerGesture = true; Esc repassa false
+      const resumeBtn = viewportEl.querySelector(
+        '[data-pause-action="resume"]'
+      )!;
+      resumeBtn.dispatch('click');
+      expect(lastResumePointerFlag).toBe(true);
+      expect(pauseMenu.open).toBe(false);
+      expect(pauseClosedCount).toBe(1);
+      expect(sound.debugGainState.worldPaused).toBe(false);
+
+      // Botão [✕] superior da Pausa também fecha limpamente
+      pauseMenu.setOpen(true);
+      const closeXBtn = viewportEl.querySelector('[data-pause-close]');
+      expect(closeXBtn).not.toBeNull();
+      closeXBtn!.dispatch('click');
+      expect(pauseMenu.open).toBe(false);
+      expect(lastResumePointerFlag).toBe(true);
+
+      // Tecla Esc no menu principal repassa fromPointerGesture = false
+      pauseMenu.setOpen(true);
+      pauseMenu.handleEscapeOrBack();
+      expect(pauseMenu.open).toBe(false);
+      expect(lastResumePointerFlag).toBe(false);
+
+      inv.destroy();
+      pauseMenu.destroy();
+      sound.stopDungeonAtmosphere();
+    } finally {
+      (globalThis as Record<string, unknown>).window = prevWin;
+      (globalThis as Record<string, unknown>).document = prevDoc;
+      globalThis.requestAnimationFrame = prevRaf;
+      globalThis.cancelAnimationFrame = prevCaf;
+    }
+  });
+});
+
+describe('Ragdoll Verlet 3D Desmaiado, 4 Tentáculos da Aranha & Casulo de Teia Multiplayer', () => {
+  it('simula queda e arrasto físico em Ragdoll pelos corredores com 4 Tentáculos 3D da Aranha e prende o jogador na Teia em Co-op até resgate', () => {
+    const scene = new THREE.Scene();
+    const shared = createDoomSharedUniforms();
+    const tex = createDoomTextures();
+    const layout = createRandomArenaLayout({
+      worldSeed: hashArenaSeed('RAGDOLL-TENTACLES-COOP'),
+      playerSeed: 77,
+    });
+    const maze = buildDoomLabyrinth(scene, tex, shared, layout);
+    const webs = new DoomSpiderWebManager(scene, shared, layout);
+
+    const mockSound = {
+      playSpiderFootstep: () => {},
+      playSpiderChitter: () => {},
+      playSpiderScream: () => {},
+      playSpiderWebSpin: () => {},
+      playWebTrapSnap: () => {},
+      playWebCut: () => {},
+    } as unknown as SoundEngine;
+
+    const spider = new DoomSpider(
+      scene,
+      shared,
+      maze.colliders,
+      webs,
+      mockSound,
+      layout
+    );
+    const spiderRoot = scene.getObjectByName('EvilCrawlingSpider')!;
+    // Garante que os tentáculos ficam em espaço de mundo na cena (sem alterar os 9 filhos anatômicos de spiderRoot!)
+    expect(spiderRoot.children.length).toBe(9);
+    const tentaclesRoot = scene.getObjectByName('SpiderCaptureTentacles');
+    expect(tentaclesRoot).not.toBeNull();
+    expect(tentaclesRoot!.children.length).toBe(4);
+
+    const astronaut = new DoomAstronaut(scene, shared);
+
+    const startPos = layout.playerSpawnPosition.clone().setY(0);
+    const spiderStrikePos = new THREE.Vector3(startPos.x, 1.38, startPos.z - 1.15);
+
+    const ragdoll = new AstronautRagdoll();
+    ragdoll.spawnFromStandingAndCollapse(startPos, 0, spiderStrikePos);
+    expect(ragdoll.isActive).toBe(true);
+
+    // 1. Queda física de nocaute + captura pelos 4 Tentáculos da Aranha
+    for (let i = 0; i < 20; i++) {
+      const u = (i + 1) / 20;
+      ragdoll.stepKnockoutCollapse(0.05, spiderStrikePos, u, maze.colliders);
+      astronaut.applyRagdollPose(ragdoll, false);
+      spider.updateCinematicSequence(
+        0.05,
+        i * 0.05,
+        'STRIKE_ATTACK',
+        u,
+        spiderStrikePos,
+        startPos,
+        ragdoll.pelvisPos,
+        ragdoll.getTentacleAttachmentPoints()
+      );
+    }
+
+    expect(astronaut.root.visible).toBe(true);
+    expect(tentaclesRoot!.visible).toBe(true);
+    for (const p of ragdoll.particles) {
+      expect(Number.isFinite(p.pos.x)).toBe(true);
+      expect(Number.isFinite(p.pos.y)).toBe(true);
+      expect(Number.isFinite(p.pos.z)).toBe(true);
+      expect(p.pos.y).toBeGreaterThan(0.02);
+    }
+
+    // 2. Arrasto pelos corredores reais até o Ninho de Teia + câmera segura contra paredes
+    const dragPath = computeWalkableDragPolyline(startPos, webs.lairCenter);
+    expect(dragPath.points.length).toBeGreaterThanOrEqual(2);
+    expect(dragPath.totalLength).toBeGreaterThan(1.0);
+
+    const pathPt = new THREE.Vector3();
+    const pathTan = new THREE.Vector3();
+    const camPos = new THREE.Vector3();
+    const lookTarget = new THREE.Vector3();
+
+    for (let step = 0; step <= 12; step++) {
+      const u = step / 12;
+      sampleDragPolyline(dragPath, u * dragPath.totalLength, pathPt, pathTan);
+      const spPos = new THREE.Vector3(
+        pathPt.x + pathTan.x * 1.65,
+        1.38,
+        pathPt.z + pathTan.z * 1.65
+      );
+      ragdoll.stepTentacleDrag(0.06, spPos, pathPt, 0.8, maze.colliders);
+      astronaut.applyRagdollPose(ragdoll, u > 0.5);
+      spider.updateCinematicSequence(
+        0.06,
+        1 + step * 0.06,
+        'DRAGGING_TO_WEB',
+        u,
+        spPos,
+        pathPt,
+        ragdoll.pelvisPos,
+        ragdoll.getTentacleAttachmentPoints()
+      );
+      computeCollisionSafeRagdollCamera(
+        ragdoll,
+        spPos,
+        maze.colliders,
+        camPos,
+        lookTarget
+      );
+      expect(Number.isFinite(camPos.x)).toBe(true);
+      expect(Number.isFinite(camPos.y)).toBe(true);
+      expect(Number.isFinite(camPos.z)).toBe(true);
+    }
+
+    // 3. Ergendo e prendendo o Ragdoll na Teia do Ninho + retração limpa dos tentáculos ao sair
+    const spiderOverLair = new THREE.Vector3(
+      webs.lairCenter.x + webs.dragDirection.x * 1.15,
+      1.36,
+      webs.lairCenter.z + webs.dragDirection.z * 1.15
+    );
+    ragdoll.stepWebPlacementLift(
+      0.08,
+      webs.lairCenter,
+      spiderOverLair,
+      0.85,
+      maze.colliders
+    );
+    spider.updateCinematicSequence(
+      0.08,
+      2.2,
+      'WEBBING_IN_LAIR',
+      0.85,
+      spiderOverLair,
+      webs.lairCenter,
+      ragdoll.pelvisPos,
+      ragdoll.getTentacleAttachmentPoints()
+    );
+    expect(tentaclesRoot!.visible).toBe(true);
+
+    spider.ensureExitedCinematic([startPos]);
+    expect(tentaclesRoot!.visible).toBe(false);
+
+    // 4. Em Multiplayer Co-op, o jogador preso na Teia do Ninho fica 100% imobilizado até um aliado salvá-lo!
+    webs.placePlayerInWakingLairWeb(true);
+    expect(webs.isPlayerEnsnared).toBe(true);
+    expect(webs.isLockedInMultiplayerCocoon).toBe(true);
+
+    const lockedStep = webs.update(
+      0.1,
+      webs.lairCenter,
+      true,
+      true,
+      mockSound,
+      () => {}
+    );
+    expect(lockedStep.speedMultiplier).toBe(0);
+    expect(
+      webs.slashWebWithKnife(
+        webs.lairCenter,
+        new THREE.Vector3(0, 0, -1),
+        mockSound
+      ).cutActiveSnare
+    ).toBe(false);
+    expect(webs.isLockedInMultiplayerCocoon).toBe(true);
+
+    // Quando um amigo corta a teia (clearEnsnarement), o jogador é libertado imediatamente!
+    webs.clearEnsnarement();
+    expect(webs.isLockedInMultiplayerCocoon).toBe(false);
+    expect(webs.isPlayerEnsnared).toBe(false);
+    const freedStep = webs.update(
+      0.1,
+      webs.lairCenter,
+      false,
+      false,
+      mockSound,
+      () => {}
+    );
+    expect(freedStep.speedMultiplier).toBeGreaterThan(0.95);
+  });
+});
+
 
 
 
