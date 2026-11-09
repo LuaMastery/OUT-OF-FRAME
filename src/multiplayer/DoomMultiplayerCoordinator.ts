@@ -1,6 +1,11 @@
 import * as THREE from 'three';
 import { DoomAstronaut } from '../doom/DoomAstronaut';
 import {
+  computeDoomDancePose,
+  DoomDanceId,
+  isDoomDanceId,
+} from '../doom/DoomDance';
+import {
   CELL_SIZE,
   isStoneSectorWorld,
   worldToGridCell,
@@ -72,6 +77,10 @@ interface RemoteAllyEntity {
   lastAfkNoticeMs: number;
   joinedAtWallMs: number;
   lastSeenMs: number;
+  /** Coreografia de dança em cena do aliado (replicada pela rede) */
+  danceId: DoomDanceId | null;
+  /** Tempo da coreografia do aliado em segundos */
+  danceTime: number;
 }
 
 interface ActiveTacticalPing {
@@ -149,6 +158,8 @@ export class DoomMultiplayerCoordinator {
   private readonly observerPositionsScratch: THREE.Vector3[] = [];
   private poseSendAccum = 0;
   private spiderSendAccum = 0;
+  /** Coreografia de dança local em cena (replicada via pacote de pose) */
+  private localDanceId: DoomDanceId | null = null;
   private hudRefreshAccum = 0;
   private maskRoomCode = false;
   private chatInputActive = false;
@@ -620,6 +631,17 @@ export class DoomMultiplayerCoordinator {
     });
   }
 
+  /**
+   * Informa o esquadrão que o jogador local começou (ou parou) uma coreografia
+   * de dança. O `danceId` viaja no próximo pacote de pose e os aliados
+   * reproduzem exatamente a mesma animação em 3ª pessoa.
+   */
+  notifyDanceChanged(danceId: DoomDanceId | null): void {
+    this.localDanceId = danceId;
+    // Envia a pose imediatamente para que o esquadrão veja a coreografia sem
+    // esperar o próximo tique do envio periódico (~16 Hz).
+    this.poseSendAccum = 1;
+  }
   notifyWebTrapCut(x: number, z: number): void {
     this.client.broadcastWorldEvent({
       kind: 'web_trap_cut',
@@ -1082,6 +1104,8 @@ export class DoomMultiplayerCoordinator {
       walkieTalkieActive?: boolean;
       dead: boolean;
       afk?: boolean;
+      danceId?: string | null;
+      danceTime?: number;
     },
     spiderSnapshot: {
       x: number;
@@ -1187,7 +1211,9 @@ export class DoomMultiplayerCoordinator {
       });
 
       const allyDist = camera.position.distanceTo(ally.currentPos);
-      const radioLink = localRadioActive || ally.radioActive;
+      // O chiado/chiada do canal VHF só é reproduzido para quem tem o RÁDIO
+      // LIGADO — desligar o rádio silencia 100% do tráfego de rádio.
+      const radioLink = localRadioActive;
       const nowRadioTalking =
         !ally.dead &&
         ally.voiceSpeaking &&
@@ -1244,6 +1270,8 @@ export class DoomMultiplayerCoordinator {
         radioActive: localRadioActive,
         dead: localState.dead,
         afk: nextLocalAfk,
+        danceId: localState.danceId ?? this.localDanceId ?? null,
+        danceTime: Number((localState.danceTime ?? 0).toFixed(3)),
       });
     }
 
@@ -1339,20 +1367,37 @@ export class DoomMultiplayerCoordinator {
         ally.labelEl.style.display = 'none';
         continue;
       }
-      ally.astronaut.updateThirdPersonAlly(
-        ally.currentPos,
-        ally.currentYaw,
-        ally.pitch,
-        ally.bobPhase,
-        effectiveSpeed,
-        ally.crouch,
-        ally.flashlightOn,
-        ally.ensnared || ally.cocoonLocked || ally.inSequence,
-        ally.afk,
-        isBeingDragged,
-        isBeingDragged ? ally.abductionSpiderPos : null,
-        dt
-      );
+      const allyDancing =
+        ally.danceId !== null &&
+        !ally.ensnared &&
+        !ally.cocoonLocked &&
+        !ally.inSequence &&
+        !isBeingDragged &&
+        !ally.dead;
+
+      if (allyDancing && ally.danceId) {
+        // O aliado executa a MESMA coreografia (determinística por danceId+tempo)
+        ally.astronaut.applyDancePose(
+          computeDoomDancePose(ally.danceId, ally.danceTime),
+          ally.currentPos,
+          ally.currentYaw
+        );
+      } else {
+        ally.astronaut.updateThirdPersonAlly(
+          ally.currentPos,
+          ally.currentYaw,
+          ally.pitch,
+          ally.bobPhase,
+          effectiveSpeed,
+          ally.crouch,
+          ally.flashlightOn,
+          ally.ensnared || ally.cocoonLocked || ally.inSequence,
+          ally.afk,
+          isBeingDragged,
+          isBeingDragged ? ally.abductionSpiderPos : null,
+          dt
+        );
+      }
 
       // Foco sutil no bocal ancorado exatamente na frente da lente da lanterna 3D sólida do aliado
       const hasMuzzle =
@@ -1360,6 +1405,7 @@ export class DoomMultiplayerCoordinator {
         !ally.ensnared &&
         !ally.cocoonLocked &&
         !ally.inSequence &&
+        !allyDancing &&
         ally.astronaut.getThirdPersonFlashlightMuzzleWorld(
           this.muzzlePosScratch,
           this.muzzleDirScratch
@@ -1740,6 +1786,8 @@ export class DoomMultiplayerCoordinator {
         lastAfkNoticeMs: 0,
         joinedAtWallMs: Date.now(),
         lastSeenMs: performance.now(),
+        danceId: isDoomDanceId(pkt.danceId) ? pkt.danceId : null,
+        danceTime: Number.isFinite(pkt.danceTime) ? (pkt.danceTime ?? 0) : 0,
       };
       this.allies.set(pkt.id, ent);
       this.voiceChat.ensurePeer(pkt.id);
@@ -1812,6 +1860,14 @@ export class DoomMultiplayerCoordinator {
     ent.dead = pkt.dead;
     ent.voiceSpeaking = Boolean(pkt.voiceSpeaking);
     ent.voiceLevel = pkt.voiceLevel ?? 0;
+
+    // Coreografia de dança: o aliado executa exatamente a mesma dança
+    if (pkt.danceId !== undefined) {
+      ent.danceId = isDoomDanceId(pkt.danceId) ? pkt.danceId : null;
+    }
+    if (typeof pkt.danceTime === 'number' && Number.isFinite(pkt.danceTime)) {
+      ent.danceTime = pkt.danceTime;
+    }
     const prevRadio = ent.radioActive;
     ent.radioActive = Boolean(pkt.radioActive);
     if (prevRadio !== ent.radioActive) {
@@ -2278,7 +2334,7 @@ export class DoomMultiplayerCoordinator {
       const nameSpan = document.createElement('span');
       nameSpan.className = 'oof-coop-ally-name';
       const allySpeakPrefix = ally.voiceSpeaking
-        ? ally.radioActive || this.localRadioActive
+        ? this.localRadioActive
           ? '📻 '
           : '🔊 '
         : ally.radioActive

@@ -109,6 +109,8 @@ export interface DoomTouchStateSync {
   interactContext: TouchInteractContext;
   inMultiplayer: boolean;
   isPushToTalkActive: boolean;
+  /** Jogador está executando uma coreografia de dança (3ª pessoa) */
+  isDancing?: boolean;
 }
 
 export interface DoomTouchCallbacks {
@@ -118,6 +120,8 @@ export interface DoomTouchCallbacks {
   onPushToTalkHoldChange: (held: boolean) => void;
   onPingPress: () => void;
   onRadioChatPress: () => void;
+  /** Abre o menu de danças / alterna a coreografia em cena */
+  onDancePress: () => void;
 }
 
 /**
@@ -138,6 +142,8 @@ export class DoomTouchControls {
   private readonly useBtnEl: HTMLButtonElement;
   private readonly useIconEl: HTMLSpanElement;
   private readonly useLabelEl: HTMLSpanElement;
+  private readonly danceBtnEl: HTMLButtonElement;
+  private readonly danceLabelEl: HTMLSpanElement;
   private readonly coopBarEl: HTMLDivElement;
   private readonly pttBtnEl: HTMLButtonElement;
 
@@ -205,6 +211,10 @@ export class DoomTouchControls {
           <span class="oof-touch-btn-icon">⌄</span>
           <span class="oof-touch-btn-label" data-touch-crouch-label>AGACHAR</span>
         </button>
+        <button type="button" class="oof-touch-btn" data-area="dance" data-touch-dance>
+          <span class="oof-touch-btn-icon">🎭</span>
+          <span class="oof-touch-btn-label" data-touch-dance-label>DANÇAR</span>
+        </button>
       </div>
     `;
     this.viewportEl.appendChild(this.rootEl);
@@ -217,6 +227,10 @@ export class DoomTouchControls {
     this.useBtnEl = this.rootEl.querySelector('[data-touch-use]') as HTMLButtonElement;
     this.useIconEl = this.rootEl.querySelector('[data-touch-use-icon]') as HTMLSpanElement;
     this.useLabelEl = this.rootEl.querySelector('[data-touch-use-label]') as HTMLSpanElement;
+    this.danceBtnEl = this.rootEl.querySelector('[data-touch-dance]') as HTMLButtonElement;
+    this.danceLabelEl = this.rootEl.querySelector(
+      '[data-touch-dance-label]'
+    ) as HTMLSpanElement;
     this.coopBarEl = this.rootEl.querySelector('[data-touch-coop-bar]') as HTMLDivElement;
     this.pttBtnEl = this.rootEl.querySelector('[data-touch-ptt]') as HTMLButtonElement;
 
@@ -327,6 +341,10 @@ export class DoomTouchControls {
 
     this.crouchBtnEl.classList.toggle('toggled', state.isCrouchedOrSliding);
     this.crouchLabelEl.textContent = state.canTriggerSlide ? 'SLIDE' : 'AGACHAR';
+
+    const dancing = Boolean(state.isDancing);
+    this.danceBtnEl.classList.toggle('dancing', dancing);
+    this.danceLabelEl.textContent = dancing ? 'TROCAR' : 'DANÇAR';
 
     this.pttBtnEl.classList.toggle('talking', state.isPushToTalkActive);
 
@@ -458,6 +476,27 @@ export class DoomTouchControls {
       passive: true,
     });
     this.useBtnEl.addEventListener('touchcancel', releaseUseBtn, {
+      passive: true,
+    });
+
+    // DANÇAR (abre o menu de coreografias / troca a dança em cena)
+    this.danceBtnEl.addEventListener(
+      'touchstart',
+      (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this.enableTouchUi();
+        this.callbacks.onActivity();
+        this.danceBtnEl.classList.add('pressed');
+        this.callbacks.onDancePress();
+      },
+      { passive: false }
+    );
+    const releaseDanceBtn = () => this.danceBtnEl.classList.remove('pressed');
+    this.danceBtnEl.addEventListener('touchend', releaseDanceBtn, {
+      passive: true,
+    });
+    this.danceBtnEl.addEventListener('touchcancel', releaseDanceBtn, {
       passive: true,
     });
 

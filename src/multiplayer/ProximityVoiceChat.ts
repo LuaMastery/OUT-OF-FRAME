@@ -321,6 +321,31 @@ export function countLabyrinthWallsBetween(
 }
 
 /**
+ * ============================================================================
+ * ROTEAMENTO DO CANAL VHF (RÁDIO COMUNICADOR DE LONGA DISTÂNCIA)
+ * ============================================================================
+ * O canal de rádio é um enlace RECEPTOR-EMITENTE:
+ * - `none`   : o ouvinte NÃO tem o rádio ligado -> a voz do aliado só chega
+ *              pelo AR (distância + oclusão de paredes). É o que garante que
+ *              DESLIGAR o rádio realmente cale a voz de rádio do esquadrão;
+ * - `simplex` : o ouvinte tem o rádio ligado e o aliado não (escuta o canal
+ *              como um monitor de frequência);
+ * - `duplex`  : os dois têm o rádio ligado (conversa VHF de verdade).
+ *
+ * BUG CORRIGIDO: antes, bastava UM aliado ter o rádio ligado (`peerRadio`) para
+ * que o canal fosse aberto para todos — inclusive para quem havia DESLIGADO o
+ * seu rádio ou sequer possuía o item. O jogador continuava ouvindo a voz dos
+ * outros "no rádio" indefinidamente, mesmo com o rádio desligado.
+ */
+export function computeRadioVoiceLinkMode(
+  localRadioActive: boolean,
+  peerRadioActive: boolean
+): RadioVoiceLinkMode {
+  if (!localRadioActive) return 'none';
+  return peerRadioActive ? 'duplex' : 'simplex';
+}
+
+/**
  * Calcula de forma pura o ganho de volume por distância + abafamento acústico (filtro passa-baixa)
  * provocado pelas paredes de concreto/metal do labirinto entre dois jogadores!
  */
@@ -1648,12 +1673,13 @@ export class ProximityVoiceChatManager {
             )
           : 4;
       const peerRadio = Boolean(rp.radioActive);
-      const radioLinkMode: RadioVoiceLinkMode =
-        localRadioActive && peerRadio
-          ? 'duplex'
-          : localRadioActive || peerRadio
-            ? 'simplex'
-            : 'none';
+      // O canal VHF SÓ é recebido por quem está com o próprio rádio LIGADO.
+      // Sem o rádio ligado, a voz do aliado só chega pelo AR (distância +
+      // oclusão de paredes) e some além do alcance normal.
+      const radioLinkMode = computeRadioVoiceLinkMode(
+        localRadioActive,
+        peerRadio
+      );
       const acoustics = computeProximityVoiceAcousticParams(
         dist,
         walls,

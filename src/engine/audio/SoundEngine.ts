@@ -3261,6 +3261,140 @@ export class SoundEngine {
   }
 
   /**
+   * Trilha percussiva rítmica das danças do Astronauta:
+   * um "tum-tum" grave do traje (impacto do capacete no colarinho) com um
+   * clique metálico curto, mantendo o timbre do laboratório (sintético 8-bit).
+   */
+  playDanceBeat(danceId: string, accent = false): void {
+    if (
+      this.worldPaused ||
+      !this.isRunning() ||
+      !this.ctx ||
+      !this.worldDryBus
+    ) {
+      return;
+    }
+    const now = this.ctx.currentTime;
+    const heavy = danceId === 'robot' || danceId === 'jog';
+    const baseHz = heavy ? 96 : 132;
+
+    const thump = this.ctx.createOscillator();
+    const thumpGain = this.ctx.createGain();
+    thump.type = 'sine';
+    thump.frequency.setValueAtTime(baseHz * (accent ? 1.22 : 1), now);
+    thump.frequency.exponentialRampToValueAtTime(baseHz * 0.55, now + 0.11);
+
+    thumpGain.gain.setValueAtTime(accent ? 0.075 : 0.05, now);
+    thumpGain.gain.exponentialRampToValueAtTime(0.0006, now + 0.13);
+
+    const thumpFilter = this.ctx.createBiquadFilter();
+    thumpFilter.type = 'lowpass';
+    thumpFilter.frequency.value = 520;
+
+    thump.connect(thumpFilter);
+    thumpFilter.connect(thumpGain);
+    thumpGain.connect(this.worldDryBus);
+    if (this.reverbSend) thumpGain.connect(this.reverbSend);
+    thump.start(now);
+    thump.stop(now + 0.14);
+
+    // Clique metálico do capacete (colarinho pressurizado) no ataque
+    this.triggerFilteredNoise(
+      this.worldDryBus,
+      now,
+      0.024,
+      accent ? 3_400 : 2_500,
+      4.2,
+      accent ? 0.036 : 0.024,
+      'white'
+    );
+  }
+
+  /**
+   * Pequena fanfarra ascendente (caixa de música do capacete) ao começar uma
+   * coreografia nova.
+   */
+  playDanceStart(danceId: string): void {
+    if (
+      this.worldPaused ||
+      !this.isRunning() ||
+      !this.ctx ||
+      !this.worldDryBus
+    ) {
+      return;
+    }
+    const now = this.ctx.currentTime;
+    const roots: Record<string, number> = {
+      robot: 392,
+      samba: 330,
+      march: 294,
+      spin: 349,
+      floss: 440,
+      jog: 370,
+    };
+    const root = roots[danceId] ?? 349;
+    const steps = [0, 4, 7, 12];
+
+    steps.forEach((semi, idx) => {
+      const t = now + idx * 0.062;
+      const osc = this.ctx!.createOscillator();
+      const gain = this.ctx!.createGain();
+      osc.type = idx % 2 === 0 ? 'square' : 'triangle';
+      const freq = root * Math.pow(2, semi / 12);
+      osc.frequency.setValueAtTime(freq, t);
+
+      gain.gain.setValueAtTime(0.001, t);
+      gain.gain.linearRampToValueAtTime(0.036, t + 0.012);
+      gain.gain.exponentialRampToValueAtTime(0.0006, t + 0.19);
+
+      const filter = this.ctx!.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.value = 2_600;
+
+      osc.connect(filter);
+      filter.connect(gain);
+      gain.connect(this.worldDryBus!);
+      if (this.reverbSend) gain.connect(this.reverbSend);
+      osc.start(t);
+      osc.stop(t + 0.2);
+    });
+  }
+
+  /** Desligamento da coreografia: dois tons descendentes (capacete desligando). */
+  playDanceStop(): void {
+    if (
+      this.worldPaused ||
+      !this.isRunning() ||
+      !this.ctx ||
+      !this.worldDryBus
+    ) {
+      return;
+    }
+    const now = this.ctx.currentTime;
+    const notes: ReadonlyArray<readonly [number, number]> = [
+      [0, 520],
+      [0.07, 330],
+    ];
+    for (const [delay, freq] of notes) {
+      const t = now + delay;
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(freq, t);
+      osc.frequency.exponentialRampToValueAtTime(freq * 0.72, t + 0.12);
+
+      gain.gain.setValueAtTime(0.03, t);
+      gain.gain.exponentialRampToValueAtTime(0.0006, t + 0.15);
+
+      osc.connect(gain);
+      gain.connect(this.worldDryBus);
+      if (this.reverbSend) gain.connect(this.reverbSend);
+      osc.start(t);
+      osc.stop(t + 0.16);
+    }
+  }
+
+  /**
    * Clique autêntico de câmbio / squelch de rádio do capacete EVA ao apertar/soltar Push-to-Talk `[B]`
    * ou ao receber transmissão de texto no esquadrão!
    */

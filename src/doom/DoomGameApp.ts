@@ -22,6 +22,15 @@ import {
   hashArenaSeed,
 } from './DoomArenaRandomizer';
 import { DoomAstronaut } from './DoomAstronaut';
+import {
+  computeDoomDancePose,
+  DoomDanceId,
+  getDoomDanceBeatIndex,
+  getDoomDanceDefinition,
+  getNextDoomDanceId,
+  isDoomDanceId,
+} from './DoomDance';
+import { DoomDanceMenu } from './DoomDanceMenu';
 import { DoomFlashlight } from './DoomFlashlight';
 import { DoomInventory } from './DoomInventory';
 import {
@@ -402,6 +411,19 @@ export class DoomGameApp {
   private readonly cocoonSubEl: HTMLDivElement;
   private readonly cocoonBarFillEl: HTMLDivElement;
   private readonly cocoonHintEl: HTMLDivElement;
+  private readonly danceMenu: DoomDanceMenu;
+  private readonly danceHudEl: HTMLDivElement;
+  private readonly danceHudIconEl: HTMLSpanElement;
+  private readonly danceHudNameEl: HTMLDivElement;
+  private readonly danceHudHintEl: HTMLDivElement;
+  private danceId: DoomDanceId | null = null;
+  private danceTime = 0;
+  private danceFacingYaw = 0;
+  private danceCameraDistance = 2.72;
+  private danceBeatIndex = -1;
+  private readonly danceCamTargetScratch = new THREE.Vector3();
+  private readonly danceCamPosScratch = new THREE.Vector3();
+  private readonly danceCamLookScratch = new THREE.Vector3();
   private currentThemedRoomId: DoomRoomId | null = null;
   private roomBannerHideAtSec = 0;
   private elapsed = 0;
@@ -489,6 +511,32 @@ export class DoomGameApp {
       this.cocoonHintEl
     );
     this.viewportEl.appendChild(this.cocoonHudEl);
+
+    // HUD de dança em 3ª pessoa (nome da coreografia + dicas de controle)
+    this.danceHudEl = document.createElement('div');
+    this.danceHudEl.id = 'doom-dance-hud';
+    this.danceHudEl.className = 'doom-dance-hud';
+    this.danceHudIconEl = document.createElement('span');
+    this.danceHudIconEl.className = 'doom-dance-hud-icon';
+    this.danceHudIconEl.textContent = '🎭';
+    this.danceHudNameEl = document.createElement('div');
+    this.danceHudNameEl.className = 'doom-dance-hud-name';
+    this.danceHudHintEl = document.createElement('div');
+    this.danceHudHintEl.className = 'doom-dance-hud-hint';
+    this.danceHudHintEl.textContent =
+      '[G] trocar dança • mover o personagem cancela';
+    this.danceHudEl.append(
+      this.danceHudIconEl,
+      this.danceHudNameEl,
+      this.danceHudHintEl
+    );
+    this.viewportEl.appendChild(this.danceHudEl);
+
+    this.danceMenu = new DoomDanceMenu(
+      this.viewportEl,
+      (id) => this.startDance(id),
+      () => this.closeDanceMenu()
+    );
 
     this.renderer = new THREE.WebGLRenderer({
       canvas: this.canvas,
@@ -803,6 +851,19 @@ export class DoomGameApp {
         this.keys.clear();
         this.touchControls.resetTransientInputs();
         this.multiplayer.openRadioChatInput();
+      },
+      onDancePress: () => {
+        // No celular: abre o menu de danças; se já estiver dançando, troca
+        // direto para a próxima coreografia do catálogo.
+        if (this.danceMenu.isOpen) {
+          this.closeDanceMenu();
+          return;
+        }
+        if (this.danceId) {
+          this.cycleDance();
+          return;
+        }
+        this.openDanceMenu();
       },
     });
 
@@ -1363,11 +1424,46 @@ export class DoomGameApp {
           return;
         }
 
+        // ==========================================================================
+        // SISTEMA DE DANÇA [G]: menu de coreografias + cancelamento por [Esc]
+        // ==========================================================================
+        if (this.danceMenu.isOpen) {
+          if (e.code === 'KeyG' || e.code === 'Escape') {
+            e.preventDefault();
+            e.stopPropagation();
+            this.closeDanceMenu();
+            return;
+          }
+          if (!e.repeat && this.danceMenu.handleKey(e.code)) {
+            e.preventDefault();
+            e.stopPropagation();
+            return;
+          }
+          return;
+        }
+
+        if (e.code === 'KeyG' && !e.repeat) {
+          e.preventDefault();
+          e.stopPropagation();
+          this.toggleDanceMenu();
+          return;
+        }
+
+        // [Esc] durante uma coreografia cancela a dança e devolve a 1ª pessoa
+        if (e.code === 'Escape' && this.danceId && !e.repeat) {
+          e.preventDefault();
+          e.stopPropagation();
+          this.stopDance('menu');
+          return;
+        }
+
         if (e.code === 'Tab' && !e.repeat) {
           const opened = this.inventory.toggle();
           this.keys.clear();
           this.isDragging = false;
           if (opened) {
+            // Abrir o Inventário cancela a coreografia (volta à 1ª pessoa)
+            this.stopDance('pause');
             this.suppressAutoPauseOnUnlockUntilMs = performance.now() + 450;
             try {
               document.exitPointerLock?.();
@@ -1408,6 +1504,7 @@ export class DoomGameApp {
             return;
           }
           this.ignoreEscapeKeyUntilMs = performance.now() + 260;
+          this.stopDance('pause');
           this.pauseMenu.setOpen(true);
           return;
         }
@@ -1439,6 +1536,10 @@ export class DoomGameApp {
             e.code === 'Digit3' ||
             e.code === 'Numpad3')
         ) {
+          // Usar um item cancela a coreografia (volta para a 1ª pessoa)
+          if (this.danceId) {
+            this.stopDance('action');
+          }
           const quickIdx =
             e.code === 'Digit1' || e.code === 'Numpad1'
               ? 0
@@ -1580,6 +1681,15 @@ export class DoomGameApp {
         if (now - this.lastWheelSelectMs < 75) return;
         this.lastWheelSelectMs = now;
         this.sound.unlock();
+        // Durante a dança a roleta aproxima/afasta a câmera de 3ª pessoa
+        if (this.danceId && !this.danceMenu.isOpen) {
+          const zoomDir = e.deltaY > 0 ? 1 : -1;
+          this.danceCameraDistance = Math.max(
+            1.55,
+            Math.min(4.2, this.danceCameraDistance + zoomDir * 0.22)
+          );
+          return;
+        }
         const wheelDir: 1 | -1 =
           (e.deltaY > 0 ? 1 : -1) *
             (this.settingsStore.value.invertWheelShortcuts ? -1 : 1) >
@@ -1892,12 +2002,14 @@ export class DoomGameApp {
         this.update(dt);
       }
 
-      // Durante o desmaio, arrasto pela aranha, casulo ou morte, nenhum modelo 3D em 1ª pessoa pode aparecer na tela!
+      // Durante o desmaio, arrasto pela aranha, casulo, morte ou DANÇA (3ª pessoa),
+      // nenhum modelo 3D em 1ª pessoa pode aparecer na tela!
       const showViewmodel =
-        this.activeSequence === 'NONE' ||
-        (this.activeSequence !== 'DEAD_TERMINATED' &&
-          this.seqTime < 0.42 &&
-          this.flashlight.isVisibleInView);
+        !this.danceId &&
+        (this.activeSequence === 'NONE' ||
+          (this.activeSequence !== 'DEAD_TERMINATED' &&
+            this.seqTime < 0.42 &&
+            this.flashlight.isVisibleInView));
       this.compositor.render(
         this.renderer,
         this.scene,
@@ -1918,6 +2030,9 @@ export class DoomGameApp {
    */
   private triggerSpiderCatch(overrideSpiderPos?: THREE.Vector3): void {
     if (this.activeSequence !== 'NONE') return;
+
+    // A Aranha arrancando o jogador cancela qualquer coreografia em andamento
+    this.stopDance('capture');
 
     const wasLockedInCocoon = this.webManager.isLockedInMultiplayerCocoon;
 
@@ -2737,6 +2852,8 @@ export class DoomGameApp {
             this.inventory.hasItem('field_walkie_talkie'),
           inSequence: this.seqTime < 7.25,
           beingDragged,
+          danceId: this.danceId,
+          danceTime: this.danceTime,
           abductionMode: this.currentAbductionMode,
           abductionProgress: this.currentAbductionProgress,
           abductionSpiderPos: this.currentAbductionSpiderPos,
@@ -2795,6 +2912,7 @@ export class DoomGameApp {
     const overlayInputLocked =
       this.pauseMenu.open ||
       this.inventory.open ||
+      this.danceMenu.isOpen ||
       Boolean(this.multiplayer?.isChatTyping);
 
     const interactPressed = overlayInputLocked ? false : this.interactQueued;
@@ -2867,6 +2985,14 @@ export class DoomGameApp {
       this.desktopSprintLatched = false;
     }
 
+    // ==========================================================================
+    // DANÇA: qualquer intenção de movimento cancela a coreografia e devolve a
+    // 1ª pessoa na hora (o movimento normal do jogo segue imediatamente).
+    // ==========================================================================
+    if (this.danceId && !this.danceMenu.isOpen && wish.lengthSq() > 0.001) {
+      this.stopDance('movement');
+    }
+
     const touchSprint = !overlayInputLocked && this.touchControls.isSprintRequested;
     if (
       touchSprint &&
@@ -2893,6 +3019,15 @@ export class DoomGameApp {
       !overlayInputLocked && (ctrlKeyActive || this.touchCrouchLatched);
     const holdingShift =
       !overlayInputLocked && (shiftKeyActive || touchSprint);
+
+    // Agachar, correr ou interagir também cancelam a coreografia
+    if (
+      this.danceId &&
+      !this.danceMenu.isOpen &&
+      (ctrlKeyActive || shiftKeyActive || interactPressed)
+    ) {
+      this.stopDance('action');
+    }
 
     const hasKnife = this.inventory.hasItem('rusty_knife');
 
@@ -3312,18 +3447,23 @@ export class DoomGameApp {
       spiderOut.cameraShakeAmount
     );
 
-    this.astronaut.updateFirstPersonBody(
-      this.position,
-      this.yaw,
-      this.bobPhase,
-      planarSpeed,
-      this.crouchAmount,
-      this.flashlight.isEquipped,
-      this.flashlight.isLeftArmAnimating,
-      this.pitch
-    );
+    if (this.danceId) {
+      // Dançando: o traje aparece em 3ª pessoa e a câmera orbita o personagem
+      this.updateDance(dt);
+    } else {
+      this.astronaut.updateFirstPersonBody(
+        this.position,
+        this.yaw,
+        this.bobPhase,
+        planarSpeed,
+        this.crouchAmount,
+        this.flashlight.isEquipped,
+        this.flashlight.isLeftArmAnimating,
+        this.pitch
+      );
 
-    this.syncCamera(bobOffset);
+      this.syncCamera(bobOffset);
+    }
 
     if (interactPressed && this.multiplayer) {
       const struckSpider = this.multiplayer.tryStrikeCapturingSpider(
@@ -3376,11 +3516,16 @@ export class DoomGameApp {
           this.sound.playRadarPing(true);
           this.syncInventoryVitals();
         } else if (pickedItemId === 'field_walkie_talkie') {
-          this.walkieTalkieActive = true;
+          // O rádio é EQUIPADO (aparece na mão), mas o canal VHF começa
+          // DESLIGADO: só entra em funcionamento após o jogador apertar [R].
+          // Isso evita que a voz dos amigos "caia" no ouvido do jogador
+          // instantaneamente ao pegar o item, sem que ele tenha pedido.
+          this.walkieTalkieActive = false;
           this.flashlight.triggerQuickItemAction('walkie');
           this.astronaut.setArmInUse('left', true);
-          this.sound.playRadioSquelch(true);
-          this.inventory.notifyEquipmentShortcutUsed('walkie', true);
+          this.sound.playRadioSquelch(false);
+          this.inventory.notifyEquipmentShortcutUsed('walkie', false);
+          this.inventory.notifyRadioEquipped();
           this.syncInventoryVitals();
         }
       }
@@ -3462,6 +3607,7 @@ export class DoomGameApp {
       interactContext: overlayInputLocked ? 'NONE' : touchInteractContext,
       inMultiplayer: Boolean(this.multiplayer),
       isPushToTalkActive: Boolean(this.multiplayer?.localVoiceSpeaking),
+      isDancing: this.danceId !== null,
     });
 
     const curGrid = worldToGridCell(this.position.x, this.position.z);
@@ -3521,6 +3667,8 @@ export class DoomGameApp {
         inSequence: false,
         dead: false,
         afk: isLocalAfk,
+        danceId: this.danceId,
+        danceTime: this.danceTime,
       },
       this.spider.getNetworkSnapshot(
         updatedRemoteAbduction?.allyId ?? null
@@ -3620,6 +3768,229 @@ export class DoomGameApp {
     this.astronaut.setArmInUse('left', true);
     this.syncInventoryVitals();
     return this.walkieTalkieActive;
+  }
+
+  /* ==========================================================================
+     SISTEMA DE DANÇA DO JOGADOR (DANÇAS MÚLTIPLAS + CÂMERA EM 3ª PESSOA)
+     ========================================================================== */
+
+  /** Abre/fecha o menu de danças ([G]). */
+  private toggleDanceMenu(): void {
+    if (this.danceMenu.isOpen) {
+      this.closeDanceMenu();
+      return;
+    }
+    this.openDanceMenu();
+  }
+
+  private openDanceMenu(): void {
+    if (this.danceMenu.isOpen) return;
+    this.danceMenu.setOpen(true);
+    this.danceMenu.setActiveDance(this.danceId);
+    this.suppressAutoPauseOnUnlockUntilMs = performance.now() + 600;
+    this.keys.clear();
+    this.isDragging = false;
+    this.sound.playInventoryToggle(true);
+    try {
+      document.exitPointerLock?.();
+    } catch {
+      // ignorar
+    }
+  }
+
+  private closeDanceMenu(): void {
+    if (!this.danceMenu.isOpen) return;
+    this.danceMenu.setOpen(false);
+    this.suppressAutoPauseOnUnlockUntilMs = performance.now() + 950;
+    this.sound.playInventoryToggle(false);
+    this.tryPointerLock(false);
+  }
+
+  /** Começa (ou troca) a coreografia do jogador e entra em 3ª pessoa. */
+  private startDance(id: DoomDanceId): void {
+    if (!isDoomDanceId(id)) return;
+    const def = getDoomDanceDefinition(id);
+    const wasDancing = this.danceId !== null;
+    this.danceId = id;
+    this.danceTime = 0;
+    this.danceBeatIndex = -1;
+    if (!wasDancing) {
+      // O personagem passa a encarar a direção em que o jogador já olhava
+      this.danceFacingYaw = this.yaw;
+    }
+    this.closeDanceMenu();
+    this.syncDanceHud();
+    this.sound.playDanceStart(def.id);
+    this.multiplayer?.notifyDanceChanged(id);
+  }
+
+  /** Encerra a coreografia e devolve o jogador para a 1ª pessoa. */
+  private stopDance(reason: 'movement' | 'menu' | 'action' | 'capture' | 'pause'): void {
+    if (!this.danceId) {
+      if (reason === 'menu') this.closeDanceMenu();
+      return;
+    }
+    this.danceId = null;
+    this.danceTime = 0;
+    this.danceBeatIndex = -1;
+    this.syncDanceHud();
+    this.astronaut.updateFirstPersonBody(
+      this.position,
+      this.yaw,
+      this.bobPhase,
+      0,
+      this.crouchAmount,
+      this.flashlight.isEquipped,
+      this.flashlight.isLeftArmAnimating,
+      this.pitch
+    );
+    this.sound.playDanceStop();
+    this.multiplayer?.notifyDanceChanged(null);
+    if (reason === 'menu') {
+      this.closeDanceMenu();
+    }
+  }
+
+  /** Alterna para a próxima dança do catálogo (botão rápido do HUD). */
+  private cycleDance(): void {
+    const next = getNextDoomDanceId(this.danceId);
+    this.startDance(next);
+  }
+
+  private syncDanceHud(): void {
+    const active = this.danceId !== null;
+    this.danceHudEl.classList.toggle('is-visible', active);
+    if (this.danceId) {
+      const def = getDoomDanceDefinition(this.danceId);
+      this.danceHudIconEl.textContent = def.icon;
+      this.danceHudNameEl.textContent = def.label;
+    } else {
+      this.danceHudNameEl.textContent = '';
+    }
+    this.danceMenu.setActiveDance(this.danceId);
+  }
+
+  /**
+   * Avança a coreografia, aplica a pose 3D no traje e posiciona a câmera de
+   * 3ª pessoa orbitando o personagem (com colisão de paredes/teto).
+   */
+  private updateDance(dt: number): void {
+    if (!this.danceId) return;
+    this.danceTime += dt;
+
+    const pose = computeDoomDancePose(this.danceId, this.danceTime);
+    this.astronaut.applyDancePose(pose, this.position, this.danceFacingYaw);
+    this.syncDanceCamera();
+
+    const beat = getDoomDanceBeatIndex(this.danceId, this.danceTime);
+    if (beat !== this.danceBeatIndex) {
+      this.danceBeatIndex = beat;
+      this.sound.playDanceBeat(this.danceId, beat % 4 === 0);
+    }
+  }
+
+  /**
+   * Câmera de 3ª pessoa orbital da dança:
+   * - O mouse (ou o toque livre) gira a câmera ao redor do personagem,
+   *   permitindo assistir a coreografia pela frente, lateral ou por trás;
+   * - A câmera NUNCA atravessa paredes, móveis ou o teto do setor;
+   * - O alvo é o peito do personagem, mantendo o traje sempre enquadrado.
+   */
+  private syncDanceCamera(): void {
+    const focusY = 1.16;
+    this.danceCamTargetScratch.set(
+      this.position.x,
+      this.position.y + focusY,
+      this.position.z
+    );
+
+    const pitch = Math.max(-0.42, Math.min(0.78, this.pitch));
+    const horizDist = this.danceCameraDistance * Math.cos(pitch);
+    const offsetX = Math.sin(this.yaw) * horizDist;
+    const offsetZ = Math.cos(this.yaw) * horizDist;
+    const camY = Math.max(
+      0.42,
+      Math.min(3.0, this.position.y + focusY + this.danceCameraDistance * Math.sin(pitch))
+    );
+
+    // Colisão: percorre o segmento alvo -> câmera e para antes de qualquer
+    // parede/móvel (com folga de 0.22m para a câmera não encostar na geometria).
+    let safeFrac = 1;
+    const steps = 12;
+    for (let s = steps; s >= 1; s--) {
+      const f = s / steps;
+      const cx = this.danceCamTargetScratch.x + offsetX * f;
+      const cz = this.danceCamTargetScratch.z + offsetZ * f;
+      const cy = this.position.y + focusY + (camY - (this.position.y + focusY)) * f;
+      if (!this.isDanceCameraBlocked(cx, cy, cz)) {
+        safeFrac = f;
+        break;
+      }
+      safeFrac = 0;
+    }
+
+    this.danceCamPosScratch.set(
+      this.danceCamTargetScratch.x + offsetX * safeFrac,
+      this.position.y + focusY + (camY - (this.position.y + focusY)) * safeFrac,
+      this.danceCamTargetScratch.z + offsetZ * safeFrac
+    );
+
+    // Garantia extra: a câmera NUNCA fica colada dentro do traje (evita
+    // lookAt degenerado e a câmera "dentro" do capacete em becos sem saída)
+    const minCamDist = 0.34;
+    const camDx = this.danceCamPosScratch.x - this.danceCamTargetScratch.x;
+    const camDy = this.danceCamPosScratch.y - this.danceCamTargetScratch.y;
+    const camDz = this.danceCamPosScratch.z - this.danceCamTargetScratch.z;
+    const camLen = Math.hypot(camDx, camDy, camDz);
+    if (camLen < minCamDist) {
+      const desiredLen = Math.hypot(offsetX, camY - (this.position.y + focusY), offsetZ);
+      const scale = desiredLen > 1e-4 ? minCamDist / desiredLen : 0;
+      this.danceCamPosScratch.set(
+        this.danceCamTargetScratch.x + offsetX * scale,
+        this.position.y + focusY + (camY - (this.position.y + focusY)) * scale,
+        this.danceCamTargetScratch.z + offsetZ * scale
+      );
+    }
+    this.danceCamPosScratch.y = Math.max(0.35, Math.min(3.0, this.danceCamPosScratch.y));
+
+    const shakeScale = this.settingsStore.value.screenShakeIntensity / 100;
+    const shakeX =
+      this.cameraShake > 0.001
+        ? (Math.random() - 0.5) * 2 * this.cameraShake * shakeScale
+        : 0;
+    const shakeY =
+      this.cameraShake > 0.001
+        ? (Math.random() - 0.5) * 2 * this.cameraShake * shakeScale
+        : 0;
+
+    this.camera.position.set(
+      this.danceCamPosScratch.x + shakeX,
+      this.danceCamPosScratch.y + shakeY,
+      this.danceCamPosScratch.z
+    );
+    this.danceCamLookScratch.copy(this.danceCamTargetScratch);
+    this.danceCamLookScratch.y -= 0.06;
+    this.camera.lookAt(this.danceCamLookScratch);
+    this.setCameraFov(this.settingsStore.value.fov);
+  }
+
+  /** Verdadeiro quando o ponto da câmera está dentro de parede/móvel do setor. */
+  private isDanceCameraBlocked(x: number, y: number, z: number): boolean {
+    for (let i = 0; i < this.colliders.length; i++) {
+      const col = this.colliders[i];
+      if (col.isCrawlUnder) continue;
+      const b = col.box;
+      if (y < b.min.y - 0.12 || y > b.max.y + 0.12) continue;
+      if (
+        x >= b.min.x - 0.22 &&
+        x <= b.max.x + 0.22 &&
+        z >= b.min.z - 0.22 &&
+        z <= b.max.z + 0.22
+      ) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private unlockSpecialRoomWithKey(
@@ -3889,6 +4260,8 @@ export class DoomGameApp {
     this.roomBannerEl.remove();
     this.doorLockPromptEl.remove();
     this.cocoonHudEl.remove();
+    this.danceHudEl.remove();
+    this.danceMenu.destroy();
     this.specialRoomDoors.dispose();
     this.pauseMenu.destroy();
     this.touchControls.destroy();

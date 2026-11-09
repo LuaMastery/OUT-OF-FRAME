@@ -141,6 +141,10 @@ export interface NetworkPlayerPosePacket {
   voiceSpeaking?: boolean;
   voiceLevel?: number;
   radioActive?: boolean;
+  /** Coreografia de dança em cena (`DoomDanceId`) — replicada para os aliados */
+  danceId?: string | null;
+  /** Tempo da coreografia em segundos (sincroniza a animação exata) */
+  danceTime?: number;
   ts: number;
 }
 

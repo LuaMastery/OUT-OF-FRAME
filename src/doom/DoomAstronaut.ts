@@ -1,6 +1,12 @@
 import * as THREE from 'three';
 import { AstronautRagdoll, RAGDOLL_IDX } from './DoomRagdoll';
 import { createDoomPropMaterial, DoomSharedUniforms } from './DoomShader';
+import {
+  clampDoomDanceValue as clampDanceValue,
+  DoomDanceArmPose,
+  DoomDanceLegPose,
+  DoomDancePose,
+} from './DoomDance';
 
 export type AstronautArmSide = 'left' | 'right';
 
@@ -11,7 +17,11 @@ export type AstronautGripPose =
   | 'cylindrical'
   | 'box'
   | 'key'
-  | 'sprawled';
+  | 'sprawled'
+  /** Mão totalmente aberta (danças) */
+  | 'open'
+  /** Mão em garra (dança rítmica do robô) */
+  | 'claw';
 
 export interface AstronautArmMetadata {
   readonly isAstronautArm: true;
@@ -760,6 +770,14 @@ export function createAstronautArmRig(
         const curl = f < 2 ? 0.95 : 1.38;
         fg.proxPivot.rotation.set(0, 0, -sign * curl);
         fg.distPivot.rotation.set(0, 0, -sign * (curl + 0.12));
+      } else if (pose === 'open') {
+        // Mão espalmada e aberta (danças): dedos esticados e bem afastados
+        fg.proxPivot.rotation.set(0, 0, -sign * (0.05 + stagger * 0.35));
+        fg.distPivot.rotation.set(0, 0, -sign * (0.07 + stagger * 0.25));
+      } else if (pose === 'claw') {
+        // Garra rítmica: dedos curvos em ângulo reto
+        fg.proxPivot.rotation.set(0, 0, -sign * (0.72 + stagger * 0.3));
+        fg.distPivot.rotation.set(0, 0, -sign * (0.62 + stagger * 0.2));
       }
     }
 
@@ -783,6 +801,12 @@ export function createAstronautArmRig(
     } else if (pose === 'key') {
       thumbPivot.rotation.set(0.68, -sign * 0.28, -sign * 0.72);
       thumbTipPivot.rotation.set(0.32, 0, -sign * 0.42);
+    } else if (pose === 'open') {
+      thumbPivot.rotation.set(0.12, sign * 0.12, -sign * 0.38);
+      thumbTipPivot.rotation.set(0.08, 0, -sign * 0.28);
+    } else if (pose === 'claw') {
+      thumbPivot.rotation.set(0.5, -sign * 0.12, -sign * 0.62);
+      thumbTipPivot.rotation.set(0.26, 0, -sign * 0.46);
     }
   };
 
@@ -819,6 +843,8 @@ interface AstronautLegRig {
   readonly hipPivot: THREE.Group;
   readonly kneePivot: THREE.Group;
   readonly anklePivot: THREE.Group;
+  /** Malhas da galocha (usadas para medir o contato exato das solas com o piso) */
+  readonly bootMeshes: THREE.Mesh[];
 }
 
 /**
@@ -912,7 +938,12 @@ function createAstronautLegRig(
 
   anklePivot.add(bootShaft, bootFoot, bootToe, bootSole, bootSoleToe);
 
-  return { hipPivot, kneePivot, anklePivot };
+  const bootMeshes = [bootShaft, bootFoot, bootToe, bootSole, bootSoleToe];
+  for (const m of bootMeshes) {
+    m.geometry.computeBoundingBox();
+  }
+
+  return { hipPivot, kneePivot, anklePivot, bootMeshes };
 }
 
 /**
@@ -929,7 +960,7 @@ export class DoomAstronaut {
   readonly torsoGroup = new THREE.Group();
   readonly headGroup = new THREE.Group();
   readonly plssBackpack = new THREE.Group();
-  private readonly upperChestGroup = new THREE.Group();
+  readonly upperChestGroup = new THREE.Group();
 
   readonly leftArm: AstronautArmRig;
   readonly rightArm: AstronautArmRig;
@@ -944,6 +975,7 @@ export class DoomAstronaut {
   private readonly ragSpiderScratch = new THREE.Vector3();
   private readonly ragInvQuat = new THREE.Quaternion();
   private readonly ragLocalVec = new THREE.Vector3();
+  private readonly danceBootCornerScratch = new THREE.Vector3();
 
   private firstPersonMode = true;
 
@@ -1657,6 +1689,117 @@ export class DoomAstronaut {
       outDir.normalize();
     }
     return true;
+  }
+
+  /**
+   * Aplica uma pose de DANCE procedural (gerada por `computeDoomDancePose`) ao
+   * traje 3D completo em 3ª pessoa.
+   *
+   * Garantias do rig de dança:
+   * - O capacete/capuz gira em limites seguros (nunca rasga a costura da gola);
+   * - As duas galochas SEMPRE tocam o piso (o `bodyPivot` é recalculado a
+   *   partir do ponto mais baixo real das solas — nunca afunda no chão);
+   * - A lanterna 3D e a teia do casulo ficam ocultas durante a coreografia.
+   */
+  applyDancePose(
+    pose: DoomDancePose,
+    worldPos: THREE.Vector3,
+    facingYaw: number
+  ): void {
+    this.root.visible = true;
+    this.setFirstPersonMode(false);
+    this.thirdPersonFlashlightGroup.visible = false;
+    this.thirdPersonWebCocoonGroup.visible = false;
+
+    this.root.position.set(worldPos.x, worldPos.y, worldPos.z);
+    this.root.rotation.set(0, facingYaw + pose.bodyYaw, 0);
+
+    // Quadril: base neutra + torção/balanço da coreografia
+    this.bodyPivot.position.set(0, 0, 0);
+    this.bodyPivot.rotation.set(0, 0, 0);
+    this.hipsGroup.position.set(0, 0.86, 0);
+    this.hipsGroup.rotation.set(0, pose.hipsYaw, pose.hipsRoll);
+
+    // Tronco: inclinação, torção e balanço lateral
+    this.torsoGroup.rotation.set(pose.torsoPitch, pose.torsoYaw, pose.torsoRoll);
+
+    // Cabeça: limites rígidos para preservar a costura da gola do capuz
+    this.headGroup.rotation.set(
+      clampDanceValue(pose.headPitch, -0.26, 0.26),
+      clampDanceValue(pose.headYaw, -0.5, 0.5),
+      clampDanceValue(pose.headRoll, -0.24, 0.24)
+    );
+
+    this.applyDanceArmPose(this.leftArm, pose.leftArm, -1);
+    this.applyDanceArmPose(this.rightArm, pose.rightArm, 1);
+    this.applyDanceLegPose(this.leftLeg, pose.leftLeg);
+    this.applyDanceLegPose(this.rightLeg, pose.rightLeg);
+
+    const handPose: AstronautGripPose =
+      pose.handPose === 'claw'
+        ? 'claw'
+        : pose.handPose === 'relaxed'
+          ? 'relaxed'
+          : 'open';
+    this.leftArm.setGripPose(handPose);
+    this.rightArm.setGripPose(handPose);
+
+    // Contato EXATO das solas com o piso: mede o ponto mais baixo real das
+    // galochas e desloca o corpo (rígido) para que a sola encoste em y = 0.
+    // O "bounce" da coreografia é feito pela flexão dos joelhos (dentro da
+    // pose), então nunca flutuamos nem afundamos no chão.
+    this.root.updateMatrixWorld(true);
+    const lowestBootY = this.measureLowestBootY();
+    this.bodyPivot.position.y = -lowestBootY;
+  }
+
+  private applyDanceArmPose(
+    arm: AstronautArmRig,
+    pose: DoomDanceArmPose,
+    sideSign: number
+  ): void {
+    arm.shoulderPivot.rotation.order = 'YXZ';
+    arm.shoulderPivot.rotation.set(
+      pose.shoulder.x,
+      pose.shoulder.y * sideSign,
+      pose.shoulder.z * sideSign
+    );
+    arm.elbowPivot.rotation.set(pose.elbow, 0, 0);
+    arm.wristPivot.rotation.set(pose.wrist, 0, pose.wristZ * sideSign);
+  }
+
+  private applyDanceLegPose(leg: AstronautLegRig, pose: DoomDanceLegPose): void {
+    leg.hipPivot.rotation.set(pose.hip.x, pose.hip.y, pose.hip.z);
+    leg.kneePivot.rotation.set(pose.knee, 0, 0);
+    leg.anklePivot.rotation.set(pose.ankle, 0, 0);
+  }
+
+  /**
+   * Mede o menor `y` mundial alcançado pelas galochas (considerando as 8
+   * quinas de cada bounding box já transformado pela matriz mundial).
+   */
+  private measureLowestBootY(): number {
+    let lowest = Infinity;
+    const legs = [this.leftLeg, this.rightLeg];
+    for (const leg of legs) {
+      for (const mesh of leg.bootMeshes) {
+        const bbox = mesh.geometry.boundingBox;
+        if (!bbox) continue;
+        for (let c = 0; c < 8; c++) {
+          this.danceBootCornerScratch
+            .set(
+              c & 1 ? bbox.max.x : bbox.min.x,
+              c & 2 ? bbox.max.y : bbox.min.y,
+              c & 4 ? bbox.max.z : bbox.min.z
+            )
+            .applyMatrix4(mesh.matrixWorld);
+          if (this.danceBootCornerScratch.y < lowest) {
+            lowest = this.danceBootCornerScratch.y;
+          }
+        }
+      }
+    }
+    return Number.isFinite(lowest) ? lowest : 0;
   }
 
   disposeFromScene(scene: THREE.Scene): void {

@@ -129,6 +129,7 @@ import {
   applyChunkMicroFade,
   buildRetro8BitQuantizerCurve,
   computeProximityVoiceAcousticParams,
+  computeRadioVoiceLinkMode,
   computeSpiderVoiceHearingAlert,
   countLabyrinthWallsBetween,
   createInitialVoiceGateState,
@@ -141,6 +142,16 @@ import {
   RelaySeqDeduplicator,
   stepVoiceGateState,
 } from '../src/multiplayer/ProximityVoiceChat';
+import {
+  computeDoomDancePose,
+  DOOM_DANCES,
+  DoomDanceId,
+  getDoomDanceBeatIndex,
+  getDoomDanceDefinition,
+  getDoomDanceIndex,
+  getNextDoomDanceId,
+  isDoomDanceId,
+} from '../src/doom/DoomDance';
 import { BINARY_MENU_ITEMS } from '../src/terminal/TerminalBoot';
 
 describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', () => {
@@ -6726,3 +6737,228 @@ describe('Salas Especiais 7x7 Isoladas c/ Chaves, Rádio VHF de Longa Distância
 
 
 
+
+describe('Sistema de Danças do Astronauta & Câmera em 3ª Pessoa', () => {
+  it('oferece múltiplas coreografias distintas com catálogo completo e navegável', () => {
+    expect(DOOM_DANCES.length).toBeGreaterThanOrEqual(5);
+    const ids = DOOM_DANCES.map((d) => d.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    for (const dance of DOOM_DANCES) {
+      expect(dance.label.length).toBeGreaterThan(2);
+      expect(dance.bpm).toBeGreaterThan(40);
+      expect(dance.bpm).toBeLessThan(220);
+      expect(isDoomDanceId(dance.id)).toBe(true);
+      expect(getDoomDanceDefinition(dance.id).id).toBe(dance.id);
+      expect(getDoomDanceIndex(dance.id)).toBeGreaterThanOrEqual(1);
+    }
+    expect(isDoomDanceId('danca_inexistente')).toBe(false);
+
+    // Navegação circular do catálogo
+    let cursor: DoomDanceId = DOOM_DANCES[0].id;
+    for (let i = 0; i < DOOM_DANCES.length; i++) {
+      cursor = getNextDoomDanceId(cursor);
+    }
+    expect(cursor).toBe(DOOM_DANCES[0].id);
+    expect(getNextDoomDanceId(null)).toBe(DOOM_DANCES[0].id);
+  });
+
+  it('gera poses articuladas finitas e determinísticas para todas as danças (sincronização Co-op)', () => {
+    for (const dance of DOOM_DANCES) {
+      const a = computeDoomDancePose(dance.id, 3.37);
+      const b = computeDoomDancePose(dance.id, 3.37);
+      expect(a).toEqual(b);
+
+      for (let t = 0; t < 6; t += 1 / 30) {
+        const pose = computeDoomDancePose(dance.id, t);
+        const values = [
+          pose.bodyYaw,
+          pose.bodyLift,
+          pose.hipsYaw,
+          pose.hipsRoll,
+          pose.torsoPitch,
+          pose.torsoYaw,
+          pose.torsoRoll,
+          pose.headPitch,
+          pose.headYaw,
+          pose.headRoll,
+          pose.leftArm.shoulder.x,
+          pose.leftArm.shoulder.y,
+          pose.leftArm.shoulder.z,
+          pose.leftArm.elbow,
+          pose.leftArm.wrist,
+          pose.rightArm.shoulder.x,
+          pose.rightArm.shoulder.y,
+          pose.rightArm.shoulder.z,
+          pose.rightArm.elbow,
+          pose.rightArm.wrist,
+          pose.leftLeg.hip.x,
+          pose.leftLeg.hip.y,
+          pose.leftLeg.hip.z,
+          pose.leftLeg.knee,
+          pose.leftLeg.ankle,
+          pose.rightLeg.hip.x,
+          pose.rightLeg.hip.y,
+          pose.rightLeg.hip.z,
+          pose.rightLeg.knee,
+          pose.rightLeg.ankle,
+        ];
+        for (const v of values) {
+          expect(Number.isFinite(v)).toBe(true);
+          expect(Math.abs(v)).toBeLessThan(6.5);
+        }
+        // Nunca levanta o corpo abaixo do piso (o "bounce" só pode ser >= 0)
+        expect(pose.bodyLift).toBeGreaterThanOrEqual(0);
+        // Limite de inclinação da cabeça: preserva a costura da gola do capuz
+        expect(Math.abs(pose.headPitch)).toBeLessThanOrEqual(0.26);
+        expect(Math.abs(pose.headRoll)).toBeLessThanOrEqual(0.24);
+      }
+    }
+  });
+
+  it('mantém as duas galochas ENCAIXADAS no piso durante todas as coreografias (sem afundar no chão)', () => {
+    const scene = new THREE.Scene();
+    const shared = createDoomSharedUniforms();
+    const astronaut = new DoomAstronaut(scene, shared);
+    const worldPos = new THREE.Vector3(3.5, 0, -6.25);
+
+    const collectBootWorldY = (): number => {
+      astronaut.root.updateMatrixWorld(true);
+      let lowest = Infinity;
+      astronaut.root.traverse((obj) => {
+        const mesh = obj as THREE.Mesh;
+        if (!mesh.isMesh) return;
+        if (!mesh.name && !mesh.parent) return;
+        const parentName = mesh.parent?.name ?? '';
+        if (!parentName.startsWith('AstronautLeftBoot') && !parentName.startsWith('AstronautRightBoot')) {
+          return;
+        }
+        const bbox = mesh.geometry.boundingBox;
+        if (!bbox) return;
+        for (let c = 0; c < 8; c++) {
+          const v = new THREE.Vector3(
+            c & 1 ? bbox.max.x : bbox.min.x,
+            c & 2 ? bbox.max.y : bbox.min.y,
+            c & 4 ? bbox.max.z : bbox.min.z
+          ).applyMatrix4(mesh.matrixWorld);
+          if (v.y < lowest) lowest = v.y;
+        }
+      });
+      return lowest;
+    };
+
+    for (const dance of DOOM_DANCES) {
+      for (let t = 0; t < 4; t += 1 / 24) {
+        const pose = computeDoomDancePose(dance.id, t);
+        astronaut.applyDancePose(pose, worldPos, 0.7);
+        const lowest = collectBootWorldY();
+        // A galocha mais baixa encosta no piso (tolerância de 1mm) e NUNCA afunda
+        expect(lowest).toBeGreaterThan(-0.0015);
+        expect(lowest).toBeLessThan(0.02);
+      }
+    }
+  });
+
+  it('aciona a pose de dança em 3ª pessoa (corpo visível, lanterna 3D e teia ocultas)', () => {
+    const scene = new THREE.Scene();
+    const shared = createDoomSharedUniforms();
+    const astronaut = new DoomAstronaut(scene, shared);
+    const worldPos = new THREE.Vector3(0, 0, 0);
+
+    astronaut.updateFirstPersonBody(worldPos, 0, 0, 0, 0, false, false);
+    expect(astronaut.root.visible).toBe(false);
+
+    const pose = computeDoomDancePose('samba', 1.25);
+    astronaut.applyDancePose(pose, worldPos, Math.PI * 0.25);
+
+    expect(astronaut.root.visible).toBe(true);
+    expect(astronaut.headGroup.visible).toBe(true);
+    expect(astronaut.plssBackpack.visible).toBe(true);
+    expect(astronaut.upperChestGroup.visible).toBe(true);
+    expect(astronaut.leftArm.root.visible).toBe(true);
+    expect(astronaut.rightArm.root.visible).toBe(true);
+    expect(astronaut.thirdPersonFlashlightGroup.visible).toBe(false);
+    expect(astronaut.thirdPersonWebCocoonGroup.visible).toBe(false);
+    expect(astronaut.isFirstPersonMode).toBe(false);
+    expect(astronaut.root.rotation.y).toBeCloseTo(Math.PI * 0.25, 4);
+  });
+
+  it('marca a batida da coreografia de forma monotônica para o som percussivo', () => {
+    for (const dance of DOOM_DANCES) {
+      let prev = -1;
+      for (let t = 0; t < 3; t += 0.05) {
+        const beat = getDoomDanceBeatIndex(dance.id, t);
+        expect(beat).toBeGreaterThanOrEqual(prev);
+        prev = beat;
+      }
+      expect(getDoomDanceBeatIndex(dance.id, 0)).toBe(0);
+    }
+  });
+});
+
+describe('Correção do Canal VHF do Rádio Comunicador (voz de rádio não vaza com o rádio desligado)', () => {
+  it('só abre o canal de rádio para quem tem o próprio rádio LIGADO', () => {
+    // Rádio do jogador DESLIGADO: nenhum enlace de rádio em nenhuma hipótese
+    expect(computeRadioVoiceLinkMode(false, false)).toBe('none');
+    expect(computeRadioVoiceLinkMode(false, true)).toBe('none');
+
+    // Rádio do jogador LIGADO: escuta o canal (simplex) ou conversa (duplex)
+    expect(computeRadioVoiceLinkMode(true, false)).toBe('simplex');
+    expect(computeRadioVoiceLinkMode(true, true)).toBe('duplex');
+  });
+
+  it('NÃO reproduz voz de rádio de longa distância quando o rádio local está desligado', () => {
+    // Aliado com o rádio LIGADO a 65m: com o meu rádio desligado a voz é
+    // inaudível (só o AR conta, e o alcance normal é ~22m)
+    const radioOff = computeProximityVoiceAcousticParams(
+      65.0,
+      6,
+      computeRadioVoiceLinkMode(false, true)
+    );
+    expect(radioOff.audible).toBe(false);
+    expect(radioOff.viaRadio).toBe(false);
+    expect(radioOff.gain).toBe(0);
+
+    // Com o meu rádio LIGADO a mesma voz chega clara pelo canal VHF
+    const radioOn = computeProximityVoiceAcousticParams(
+      65.0,
+      6,
+      computeRadioVoiceLinkMode(true, true)
+    );
+    expect(radioOn.audible).toBe(true);
+    expect(radioOn.viaRadio).toBe(true);
+    expect(radioOn.gain).toBeCloseTo(0.88, 2);
+    expect(radioOn.lowpassHz).toBe(2950);
+
+    // Rádio ligado + aliado sem rádio = escuta o canal em simplex (0.78 / 2600Hz)
+    const simplex = computeProximityVoiceAcousticParams(
+      65.0,
+      6,
+      computeRadioVoiceLinkMode(true, false)
+    );
+    expect(simplex.audible).toBe(true);
+    expect(simplex.viaRadio).toBe(true);
+    expect(simplex.gain).toBeCloseTo(0.78, 2);
+    expect(simplex.lowpassHz).toBe(2600);
+  });
+
+  it('mantém a voz de PROXIMIDADE normal quando o rádio está desligado (sem efeito de rádio)', () => {
+    const perto = computeProximityVoiceAcousticParams(
+      1.5,
+      0,
+      computeRadioVoiceLinkMode(false, false)
+    );
+    expect(perto.audible).toBe(true);
+    expect(perto.viaRadio).toBe(false);
+    expect(perto.gain).toBeGreaterThan(0.9);
+    expect(perto.lowpassHz).toBe(16_500);
+
+    // Longa distância com o rádio desligado: a voz some de vez
+    const longe = computeProximityVoiceAcousticParams(
+      65.0,
+      6,
+      computeRadioVoiceLinkMode(false, true)
+    );
+    expect(longe.audible).toBe(false);
+    expect(longe.gain).toBe(0);
+  });
+});

@@ -2537,7 +2537,7 @@ export class DoomInventory {
         2800,
         isActive
           ? '[R] Rádio VHF ligado · Voz a longa distância ativa'
-          : '[R] Rádio VHF silenciado'
+          : '[R] Rádio VHF silenciado · sem voz de rádio'
       );
     } else {
       this.pulseHubSlotTrigger('M');
@@ -2546,11 +2546,27 @@ export class DoomInventory {
   }
 
   /**
+   * Aviso exibido logo após coletar o Rádio Comunicador VHF:
+   * o item fica EQUIPADO, porém o canal de voz de longa distância começa
+   * DESLIGADO (o jogador decide quando apertar [R] para ouvir o esquadrão).
+   */
+  notifyRadioEquipped(): void {
+    this.pulseHubSlotTrigger('R');
+    this.wakeShortcutsHub(
+      3400,
+      '[R] Rádio VHF equipado · canal DESLIGADO · aperte [R] para ouvir o esquadrão'
+    );
+    if (this.feedbackEl) {
+      this.feedbackEl.textContent =
+        'Rádio Comunicador VHF equipado. O canal de voz está DESLIGADO — aperte [R] para ligar e ouvir seus amigos a longa distância.';
+    }
+  }
+
+  /**
    * Atribui (ou limpa) um item utilizável a um dos 3 atalhos rápidos [1], [2] ou [3].
    * Caso o item já estivesse em outro atalho, troca de posição de forma limpa sem duplicar.
    */
-  assignQuickSlot(quickIndex: number, itemId: string | null): boolean {
-    if (quickIndex < 0 || quickIndex >= QUICK_SLOT_COUNT) return false;
+  assignQuickSlot(quickIndex: number, itemId: string | null): boolean {    if (quickIndex < 0 || quickIndex >= QUICK_SLOT_COUNT) return false;
 
     if (itemId === null) {
       this.quickSlots[quickIndex] = null;
@@ -3323,7 +3339,7 @@ export class DoomInventory {
       if (!fromQuickShortcut) {
         this.feedbackEl.textContent = nowActive
           ? 'Rádio comunicador VHF ligado — transmissão de voz a longa distância ativa.'
-          : 'Rádio comunicador VHF silenciado.';
+          : 'Rádio comunicador VHF silenciado — nenhuma voz de rádio é recebida (só ouve quem estiver por perto).';
         this.renderGrid();
       }
       return true;

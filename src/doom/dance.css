@@ -1,0 +1,189 @@
+/* ==========================================================================
+   MENU DE DANÇAS DO ASTRONAUTA + HUD DE DANÇA EM 3ª PESSOA
+   ========================================================================== */
+.doom-dance-menu {
+  position: absolute;
+  inset: 0;
+  z-index: 46;
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: calc(22px + var(--safe-top, 0px)) 18px
+    calc(22px + var(--safe-bottom, 0px));
+  background:
+    radial-gradient(
+      ellipse at 50% 45%,
+      rgba(24, 22, 12, 0.72) 0%,
+      rgba(6, 6, 8, 0.9) 78%
+    );
+  backdrop-filter: blur(2px);
+  font-family: 'Courier New', Consolas, monospace;
+}
+
+.doom-dance-menu.is-open {
+  display: flex;
+}
+
+.doom-dance-head {
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.doom-dance-kicker {
+  font-size: 9px;
+  letter-spacing: 0.22em;
+  color: #8c8270;
+  text-transform: uppercase;
+}
+
+.doom-dance-title {
+  font-size: clamp(15px, 2.6vw, 21px);
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: #f4ead2;
+  text-shadow: 0 0 16px rgba(255, 214, 120, 0.28);
+}
+
+.doom-dance-hint {
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: #a99c85;
+}
+
+.doom-dance-status {
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: #8c8270;
+  border: 1px solid rgba(199, 176, 131, 0.3);
+  background: rgba(10, 10, 12, 0.7);
+  padding: 5px 14px;
+}
+
+.doom-dance-status.is-active {
+  color: #ffe4a3;
+  border-color: rgba(255, 208, 120, 0.55);
+}
+
+.doom-dance-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(150px, 1fr));
+  gap: 10px;
+  width: min(760px, 94vw);
+}
+
+@media (max-width: 620px) {
+  .doom-dance-grid {
+    grid-template-columns: repeat(2, minmax(130px, 1fr));
+  }
+}
+
+.doom-dance-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 10px 12px 11px;
+  text-align: left;
+  cursor: pointer;
+  color: #ded3bb;
+  background: linear-gradient(
+    180deg,
+    rgba(30, 28, 20, 0.92) 0%,
+    rgba(14, 13, 11, 0.94) 100%
+  );
+  border: 1px solid rgba(199, 176, 131, 0.34);
+  border-left: 3px solid rgba(199, 176, 131, 0.55);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.55);
+  font-family: inherit;
+  transition:
+    transform 0.14s ease,
+    border-color 0.14s ease,
+    box-shadow 0.14s ease;
+}
+
+.doom-dance-card:hover,
+.doom-dance-card:focus-visible {
+  transform: translateY(-2px);
+  border-color: rgba(255, 214, 120, 0.8);
+  border-left-color: #ffd678;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.6);
+  outline: none;
+}
+
+.doom-dance-card.is-active {
+  border-color: #ffd678;
+  border-left-color: #ffd678;
+  background: linear-gradient(
+    180deg,
+    rgba(58, 46, 22, 0.95) 0%,
+    rgba(20, 17, 12, 0.95) 100%
+  );
+}
+
+.doom-dance-card-icon {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.doom-dance-card-name {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: #f6ecd6;
+}
+
+.doom-dance-card-desc {
+  font-size: 9.5px;
+  line-height: 1.35;
+  color: #a99c85;
+}
+
+.doom-dance-card-meta {
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  color: #c7b083;
+}
+
+/* ---------------------------------------------------------------- HUD 3P -- */
+.doom-dance-hud {
+  position: absolute;
+  left: 50%;
+  top: calc(16px + var(--safe-top, 0px));
+  transform: translateX(-50%);
+  z-index: 39;
+  display: none;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 16px 8px;
+  background: rgba(10, 10, 12, 0.82);
+  border: 1px solid rgba(199, 176, 131, 0.45);
+  border-left: 3px solid #ffd678;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.6);
+  font-family: 'Courier New', Consolas, monospace;
+  pointer-events: none;
+}
+
+.doom-dance-hud.is-visible {
+  display: flex;
+}
+
+.doom-dance-hud-icon {
+  font-size: 15px;
+}
+
+.doom-dance-hud-name {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: #ffe4a3;
+}
+
+.doom-dance-hud-hint {
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  color: #9c907c;
+}

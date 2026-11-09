@@ -111,7 +111,8 @@
   grid-template-columns: repeat(2, auto);
   grid-template-areas:
     '. sprint'
-    'use crouch';
+    'use crouch'
+    'dance dance';
   gap: 10px;
   align-items: end;
   justify-items: end;
@@ -179,6 +180,18 @@
 .oof-touch-btn[data-area='use'] {
   grid-area: use;
   min-width: 74px;
+}
+
+.oof-touch-btn[data-area='dance'] {
+  grid-area: dance;
+  min-width: 104px;
+}
+
+.oof-touch-btn[data-area='dance'].dancing {
+  border-color: #ffd37a;
+  background: rgba(44, 32, 8, 0.88);
+  color: #fff0cc;
+  box-shadow: 0 0 14px rgba(255, 206, 104, 0.38);
 }
 
 /* Destaque contextual quando perto de item, aliado preso ou preso na teia! */
