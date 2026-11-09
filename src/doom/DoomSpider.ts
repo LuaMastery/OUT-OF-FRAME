@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { TASER_STUN_SECONDS } from './DoomTaser';
+import { planSpiderObstaclePath, SpiderNavigationSpace, spiderColliderBlocks } from './DoomSpiderNavigation';
 import { SoundEngine } from '../engine/audio/SoundEngine';
 import { StaticColliderBox } from '../engine/physics/SpatialSweep';
 import {
@@ -577,6 +578,7 @@ export class DoomSpider {
   private readonly desiredMoveDir = new THREE.Vector3(0, 0, -1);
   private commandedSpeed = 0;
   private stuckTimer = 0;
+  private crawlClearanceHeight: number | null = null;
   private lastRemotePacketRef: object | null = null;
   private remotePacketAgeSec = 0;
 
@@ -1108,6 +1110,7 @@ export class DoomSpider {
       this.remotePacketAgeSec = Math.min(0.18, this.remotePacketAgeSec + safeDt);
     }
 
+    this.surfaceMode = pkt.surfaceMode;
     const blend = 1 - Math.exp(-15 * safeDt);
     const targetPos = this.tmpB.set(
       pkt.x + (pkt.vx ?? 0) * this.remotePacketAgeSec,
@@ -1140,7 +1143,7 @@ export class DoomSpider {
     if (pkt.state !== 'CINEMATIC_SEQUENCE') {
       this.state = pkt.state as SpiderBehaviorState;
     }
-    this.surfaceMode = pkt.surfaceMode;
+    this.crawlClearanceHeight = this.findNearbyCrawlClearance();
 
     this.tmpA
       .subVectors(this.bodyPos, this.prevBodyPos)
@@ -1280,6 +1283,7 @@ export class DoomSpider {
     this.climbedWallFaceCoord = 0;
     this.commandedSpeed = 0;
     this.stuckTimer = 0;
+    this.crawlClearanceHeight = null;
     const initY = mode === 'CEILING' ? WALL_HEIGHT - 1.08 : 1.42;
     this.bodyPos.set(wx, initY, wz);
     this.prevBodyPos.copy(this.bodyPos);
@@ -2140,7 +2144,7 @@ export class DoomSpider {
 
       // Se ainda está vendo/ouvindo o jogador ou indo até o último ponto avistado:
       if (!this.searchingAroundLastKnown) {
-        if (this.pathRepathTimer <= 0 || this.pathWaypoints.length === 0) {
+        if (this.pathRepathTimer <= 0) {
           this.pathRepathTimer = 0.28;
           this.buildGridPathTo(
             this.lastKnownPlayerPos.x,
@@ -2345,14 +2349,9 @@ export class DoomSpider {
               this.lastKnownPlayerPos.z
             );
           }
-          if (distToCenter > 0.18) {
-            const firstWp = this.pathWaypoints[0];
-            if (
-              !firstWp ||
-              Math.hypot(firstWp.x - cw.x, firstWp.z - cw.z) > 0.2
-            ) {
-              this.pathWaypoints.unshift({ x: cw.x, z: cw.z });
-            }
+          if (this.pathWaypoints.length === 0 && distToCenter > 0.18 &&
+              this.hasClearBodySweep(this.bodyPos.x, this.bodyPos.z, cw.x, cw.z)) {
+            this.pathWaypoints.push({ x: cw.x, z: cw.z });
           }
         }
       } else {
@@ -2639,11 +2638,9 @@ export class DoomSpider {
       const pz = fromZ + dz * f;
       for (let i = 0; i < this.colliders.length; i++) {
         const col = this.colliders[i];
-        if (col.isCrawlUnder) continue;
-        if (col.isObstacle && this.surfaceMode !== 'FLOOR') continue;
+        if (!spiderColliderBlocks(col, this.surfaceMode, this.bodyPos.y)) continue;
         const b = col.box;
-        if (b.max.y < 0.5) continue;
-        const effR = col.isObstacle ? Math.min(radius, 0.38) : radius;
+        const effR = col.isObstacle ? Math.max(radius, 0.48) : Math.max(radius, 0.59);
         const cx = Math.max(b.min.x, Math.min(px, b.max.x));
         const cz = Math.max(b.min.z, Math.min(pz, b.max.z));
         const ox = px - cx;
@@ -2657,161 +2654,12 @@ export class DoomSpider {
   }
 
   private buildGridPathTo(targetX: number, targetZ: number): void {
-    const extSpan = ANNEX_MAX_GRID - ANNEX_MIN_GRID + 1;
-    const start = this.findNearestWalkableCell(this.bodyPos.x, this.bodyPos.z);
-    const goal = this.findNearestWalkableCell(targetX, targetZ);
-
-    const sx = start.gx;
-    const sz = start.gz;
-    const gxGoal = goal.gx;
-    const gzGoal = goal.gz;
-
-    const goalCenter = gridCellToWorld(gxGoal, gzGoal);
-    const rawGoalCell = worldToGridCell(targetX, targetZ);
-    const safeTarget =
-      isWalkableArenaCell(rawGoalCell.gx, rawGoalCell.gz) &&
-      this.hasClearBodySweep(goalCenter.x, goalCenter.z, targetX, targetZ, 0.52)
-        ? { x: targetX, z: targetZ }
-        : { x: goalCenter.x, z: goalCenter.z };
-
-    if (sx === gxGoal && sz === gzGoal) {
-      if (
-        this.hasClearBodySweep(
-          this.bodyPos.x,
-          this.bodyPos.z,
-          safeTarget.x,
-          safeTarget.z,
-          0.55
-        )
-      ) {
-        this.pathWaypoints = [safeTarget];
-      } else {
-        this.pathWaypoints = [{ x: goalCenter.x, z: goalCenter.z }, safeTarget];
-      }
-      return;
-    }
-
-    const total = extSpan * extSpan;
-    const visited = new Uint8Array(total);
-    const parent = new Int16Array(total).fill(-1);
-    const queue: number[] = [];
-
-    const startIdx = (sz - ANNEX_MIN_GRID) * extSpan + (sx - ANNEX_MIN_GRID);
-    const goalIdx =
-      (gzGoal - ANNEX_MIN_GRID) * extSpan + (gxGoal - ANNEX_MIN_GRID);
-    visited[startIdx] = 1;
-    queue.push(startIdx);
-
-    const dirs = [
-      [1, 0],
-      [-1, 0],
-      [0, 1],
-      [0, -1],
-    ];
-
-    let head = 0;
-    let found = false;
-    while (head < queue.length) {
-      const cur = queue[head++];
-      if (cur === goalIdx) {
-        found = true;
-        break;
-      }
-      const cx = (cur % extSpan) + ANNEX_MIN_GRID;
-      const cz = Math.floor(cur / extSpan) + ANNEX_MIN_GRID;
-
-      for (const [ox, oz] of dirs) {
-        const nx = cx + ox;
-        const nz = cz + oz;
-        if (
-          nx < ANNEX_MIN_GRID ||
-          nx > ANNEX_MAX_GRID ||
-          nz < ANNEX_MIN_GRID ||
-          nz > ANNEX_MAX_GRID
-        ) {
-          continue;
-        }
-        if (!isWalkableArenaCell(nx, nz)) continue;
-        const nIdx = (nz - ANNEX_MIN_GRID) * extSpan + (nx - ANNEX_MIN_GRID);
-        if (visited[nIdx]) continue;
-        visited[nIdx] = 1;
-        parent[nIdx] = cur;
-        queue.push(nIdx);
-      }
-    }
-
-    if (!found) {
-      const startCenter = gridCellToWorld(sx, sz);
-      this.pathWaypoints = [{ x: startCenter.x, z: startCenter.z }];
-      return;
-    }
-
-    const cells: Array<{ x: number; z: number }> = [];
-    let trace = goalIdx;
-    while (trace !== -1) {
-      const tx = (trace % extSpan) + ANNEX_MIN_GRID;
-      const tz = Math.floor(trace / extSpan) + ANNEX_MIN_GRID;
-      cells.push(gridCellToWorld(tx, tz));
-      if (trace === startIdx) break;
-      trace = parent[trace];
-    }
-    cells.reverse();
-
-    // Só descarta o centro da célula inicial se o corpo da Aranha puder ir direto para `cells[1]`
-    // sem raspar em nenhuma quina de 90°! Isso evita 100% cortar parede ao recalcular rota!
-    if (
-      cells.length >= 2 &&
-      this.hasClearBodySweep(
-        this.bodyPos.x,
-        this.bodyPos.z,
-        cells[1].x,
-        cells[1].z,
-        0.57
-      )
-    ) {
-      cells.shift();
-    }
-
-    // No final do caminho, preserva o centro da última célula se ir direto cortar quina!
-    if (cells.length >= 2) {
-      const prevPt = cells[cells.length - 2];
-      if (
-        this.hasClearBodySweep(
-          prevPt.x,
-          prevPt.z,
-          safeTarget.x,
-          safeTarget.z,
-          0.56
-        )
-      ) {
-        cells[cells.length - 1] = safeTarget;
-      } else if (
-        Math.hypot(
-          safeTarget.x - cells[cells.length - 1].x,
-          safeTarget.z - cells[cells.length - 1].z
-        ) > 0.2
-      ) {
-        cells.push(safeTarget);
-      }
-    } else if (cells.length === 1) {
-      if (
-        this.hasClearBodySweep(
-          this.bodyPos.x,
-          this.bodyPos.z,
-          safeTarget.x,
-          safeTarget.z,
-          0.56
-        )
-      ) {
-        cells[0] = safeTarget;
-      } else if (
-        Math.hypot(safeTarget.x - cells[0].x, safeTarget.z - cells[0].z) > 0.2
-      ) {
-        cells.push(safeTarget);
-      }
-    }
-
-    this.pathWaypoints = cells;
+    const space = new SpiderNavigationSpace(this.colliders, this.surfaceMode, this.bodyPos.y);
+    this.pathWaypoints = planSpiderObstaclePath(
+      space,
+      { x: this.bodyPos.x, z: this.bodyPos.z },
+      { x: targetX, z: targetZ }
+    );
   }
 
   private pickRandomPatrolPath(): void {
@@ -3030,21 +2878,15 @@ export class DoomSpider {
     x: number;
     z: number;
   } {
-    if (
-      this.surfaceMode === 'WALL' &&
-      this.climbedWallNormal.lengthSq() > 0.5
-    ) {
+    if (this.surfaceMode === 'WALL' && this.climbedWallNormal.lengthSq() > 0.5) {
       const wallStandOff = 0.62;
-      if (this.climbedWallNormal.x !== 0) {
-        return {
-          x: this.climbedWallFaceCoord + this.climbedWallNormal.x * wallStandOff,
-          z: wp.z,
-        };
-      }
-      return {
-        x: wp.x,
-        z: this.climbedWallFaceCoord + this.climbedWallNormal.z * wallStandOff,
-      };
+      const aim = this.climbedWallNormal.x !== 0
+        ? { x: this.climbedWallFaceCoord + this.climbedWallNormal.x * wallStandOff, z: wp.z }
+        : { x: wp.x, z: this.climbedWallFaceCoord + this.climbedWallNormal.z * wallStandOff };
+      // Aderir à parede não pode substituir uma rota livre por um trajeto através de móveis.
+      if (this.hasClearBodySweep(this.bodyPos.x, this.bodyPos.z, aim.x, aim.z)) return aim;
+      this.surfaceMode = 'FLOOR';
+      this.climbedWallNormal.set(0, 0, 0);
     }
     return wp;
   }
@@ -3075,7 +2917,11 @@ export class DoomSpider {
     let aim = this.computeSurfaceAdjustedAim(this.pathWaypoints[0]);
     const dist = Math.hypot(aim.x - this.bodyPos.x, aim.z - this.bodyPos.z);
 
-    if (dist < 0.56) {
+    const nextWaypoint = this.pathWaypoints[1];
+    const canSkip = nextWaypoint && dist < 0.56 && this.hasClearBodySweep(
+      this.bodyPos.x, this.bodyPos.z, nextWaypoint.x, nextWaypoint.z
+    );
+    if (dist < 0.16 || canSkip) {
       this.pathWaypoints.shift();
       if (this.pathWaypoints.length === 0) return;
 
@@ -3134,10 +2980,9 @@ export class DoomSpider {
     for (let pass = 0; pass < 3; pass++) {
       for (let i = 0; i < this.colliders.length; i++) {
         const col = this.colliders[i];
-        if (col.isCrawlUnder) continue;
-        if (col.isObstacle && this.surfaceMode !== 'FLOOR') continue;
         const b = col.box;
-        if (b.max.y < 0.5) continue;
+        const blockedCrawl = col.isCrawlUnder && this.bodyPos.y + 0.52 > b.min.y;
+        if (!blockedCrawl && !spiderColliderBlocks(col, this.surfaceMode, this.bodyPos.y)) continue;
         const curRadius = col.isObstacle ? 0.44 : bodyRadius;
         const cx = Math.max(b.min.x, Math.min(this.bodyPos.x, b.max.x));
         const cz = Math.max(b.min.z, Math.min(this.bodyPos.z, b.max.z));
@@ -3150,7 +2995,28 @@ export class DoomSpider {
             const push = curRadius - d;
             this.bodyPos.x += (ox / d) * push;
             this.bodyPos.z += (oz / d) * push;
-          } else if (!col.isObstacle) {
+          } else if (col.isObstacle) {
+            // Se o centro nascer/for empurrado para dentro de um objeto, sai pela face livre mais próxima.
+            const exits = [
+              { x: b.min.x - curRadius, z: this.bodyPos.z },
+              { x: b.max.x + curRadius, z: this.bodyPos.z },
+              { x: this.bodyPos.x, z: b.min.z - curRadius },
+              { x: this.bodyPos.x, z: b.max.z + curRadius },
+            ].sort((a, c) => Math.hypot(a.x - this.bodyPos.x, a.z - this.bodyPos.z) - Math.hypot(c.x - this.bodyPos.x, c.z - this.bodyPos.z));
+            const clear = exits.find(p => {
+              const cell = worldToGridCell(p.x, p.z);
+              if (!isWalkableArenaCell(cell.gx, cell.gz)) return false;
+              return !this.colliders.some(other => {
+                if (other === col || !spiderColliderBlocks(other, this.surfaceMode, this.bodyPos.y)) return false;
+                const box = other.box;
+                const x = Math.max(box.min.x, Math.min(p.x, box.max.x));
+                const z = Math.max(box.min.z, Math.min(p.z, box.max.z));
+                const r = other.isObstacle ? 0.44 : bodyRadius;
+                return (p.x - x) ** 2 + (p.z - z) ** 2 < r ** 2 - 1e-8;
+              });
+            });
+            if (clear) { this.bodyPos.x = clear.x; this.bodyPos.z = clear.z; }
+          } else {
             // Centro caiu exatamente dentro de um bloco sólido: expulsa SOMENTE por uma face vizinha ABERTA!
             const midX = (b.min.x + b.max.x) * 0.5;
             const midZ = (b.min.z + b.max.z) * 0.5;
@@ -3280,6 +3146,20 @@ export class DoomSpider {
     this.turnHorizontalToward(tx, tz, rate);
   }
 
+  private findNearbyCrawlClearance(): number | null {
+    let height: number | null = null;
+    for (const col of this.colliders) {
+      if (!col.isCrawlUnder) continue;
+      const b = col.box;
+      const x = Math.max(b.min.x, Math.min(this.bodyPos.x, b.max.x));
+      const z = Math.max(b.min.z, Math.min(this.bodyPos.z, b.max.z));
+      if (Math.hypot(this.bodyPos.x - x, this.bodyPos.z - z) < 2.15) {
+        height = Math.min(height ?? Infinity, Math.max(0.38, b.min.y - 0.56));
+      }
+    }
+    return height;
+  }
+
   private updateSurfaceAttachment(dt: number, elapsed: number): void {
     const { gx, gz } = worldToGridCell(this.bodyPos.x, this.bodyPos.z);
     const inArch =
@@ -3307,8 +3187,15 @@ export class DoomSpider {
       this.climbedWallNormal.set(0, 0, 0);
     }
 
+    // A aranha abaixa antes de atravessar vigas baixas; não atravessa a barra em pé.
+    this.crawlClearanceHeight = this.findNearbyCrawlClearance();
+    if (this.crawlClearanceHeight !== null) {
+      this.surfaceMode = 'FLOOR';
+      this.climbedWallNormal.set(0, 0, 0);
+    }
+
     // Corpo bem mais alto e imponente (~1.42m acima do chão!)
-    let desiredY = 1.42 + bob;
+    let desiredY = this.crawlClearanceHeight ?? 1.42 + bob;
     this.targetUp.set(0, 1, 0);
 
     if (this.surfaceMode === 'CEILING') {
@@ -3620,7 +3507,7 @@ export class DoomSpider {
 
       // Arco alto imponente das 8 patas gigantes!
       const nJoints = rt.ikPoints.length;
-      const bowHeight = spec.totalLength * (frantic ? 0.34 : 0.44);
+      const bowHeight = spec.totalLength * (this.crawlClearanceHeight !== null ? 0.12 : frantic ? 0.34 : 0.44);
       for (let j = 0; j < nJoints; j++) {
         const f = j / (nJoints - 1);
         const arch = Math.sin(f * Math.PI);
@@ -4132,11 +4019,8 @@ export class DoomSpider {
       }
 
       for (let c = 0; c < this.colliders.length; c++) {
-        if (this.colliders[c].isObstacle && this.surfaceMode !== 'FLOOR') {
-          continue;
-        }
-        if (this.colliders[c].isCrawlUnder) continue;
-        const b = this.colliders[c].box;
+        const col = this.colliders[c];
+        const b = col.box;
         const pad = 0.08;
         if (p.y < b.min.y - pad || p.y > b.max.y + pad) continue;
         if (
