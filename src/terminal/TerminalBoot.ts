@@ -5,6 +5,7 @@ import {
   normalizeRoomCode,
 } from '../multiplayer/MultiplayerService';
 import { CursorProximityFX } from './CursorProximityFX';
+import { TitleGameBackdrop } from './TitleGameBackdrop';
 
 export const BINARY_MENU_ITEMS = ['INICIAR', 'MULTIPLAYER', 'SAIR'] as const;
 
@@ -151,6 +152,8 @@ export class TerminalBootController {
   private canvasEl!: HTMLCanvasElement;
   private mainMenuEl!: HTMLElement;
   private mainMenuButtons: HTMLButtonElement[] = [];
+  private titleBackdrop: TitleGameBackdrop | null = null;
+  private titleBackdropStartFrame = 0;
   private ctx!: CanvasRenderingContext2D;
   private timers: number[] = [];
   private rafId = 0;
@@ -1365,6 +1368,7 @@ export class TerminalBootController {
     this.sound.stopCoalesceDrone();
     this.canvasEl.classList.remove('active');
     this.mainMenuEl.hidden = true;
+    this.disposeTitleBackdrop();
     this.canvasEl.classList.remove('cursor-pointer', 'cursor-pressing');
     document.body.classList.remove('tui-dragging-window');
     this.phase = 'desktop';
@@ -1558,6 +1562,20 @@ export class TerminalBootController {
       this.canvasEl.classList.remove('active');
       this.mainMenuEl.hidden = false;
       this.syncMainMenuSelection(true);
+      // Permite o menu aparecer antes da construção do cenário 3D.
+      this.titleBackdropStartFrame = requestAnimationFrame(() => {
+        this.titleBackdropStartFrame = 0;
+        if (this.phase !== 'binary_interface' || this.titleBackdrop) return;
+        const container = this.mainMenuEl.querySelector<HTMLElement>('.oof-title-screen__background');
+        if (!container) return;
+        try {
+          this.titleBackdrop = new TitleGameBackdrop(container);
+          this.titleBackdrop.start();
+        } catch (error) {
+          // Sem WebGL o menu permanece utilizável, sem substituir por uma imagem.
+          console.warn('Não foi possível exibir o cenário do menu:', error);
+        }
+      });
       return;
     }
 
@@ -1662,7 +1680,15 @@ export class TerminalBootController {
     }
   }
 
+  private disposeTitleBackdrop(): void {
+    if (this.titleBackdropStartFrame) cancelAnimationFrame(this.titleBackdropStartFrame);
+    this.titleBackdropStartFrame = 0;
+    this.titleBackdrop?.destroy();
+    this.titleBackdrop = null;
+  }
+
   destroy(disposeAudio = false): void {
+    this.disposeTitleBackdrop();
     this.clearTimers();
     this.clearZoomLayer();
     this.multiplayerModal?.destroy();

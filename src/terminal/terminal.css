@@ -566,9 +566,10 @@
   pointer-events: none;
 }
 .oof-title-screen__background {
-  background: #101614 url('/menu/abandoned-annex.jpg') center center / cover no-repeat;
-  animation: oof-menu-reveal 1.5s ease-out both, oof-menu-breathe 40s ease-in-out infinite alternate;
+  background: #101614;
+  animation: oof-menu-reveal 1.5s ease-out both;
 }
+.oof-title-screen__background canvas { display: block; width: 100%; height: 100%; }
 .oof-title-screen__veil {
   background: linear-gradient(90deg, rgba(4, 9, 8, .9) 0%, rgba(4, 9, 8, .7) 32%, rgba(4, 9, 8, .08) 70%),
     linear-gradient(0deg, rgba(3, 6, 5, .72), transparent 28%, rgba(3, 6, 5, .12) 100%);
@@ -660,9 +661,7 @@
 .oof-title-screen__footer b { color: #728677; }
 @keyframes oof-menu-reveal { from { opacity: 0; } to { opacity: 1; } }
 @keyframes oof-menu-content { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
-@keyframes oof-menu-breathe { from { transform: scale(1.01); } to { transform: scale(1.055); } }
 @media (max-width: 700px) {
-  .oof-title-screen__background { background-position: 61% center; }
   .oof-title-screen__veil { background: linear-gradient(90deg, rgba(3,8,7,.91), rgba(3,8,7,.63) 55%, rgba(3,8,7,.25)), linear-gradient(0deg, rgba(0,0,0,.75), transparent 45%); }
   .oof-title-screen__content { width: 100%; padding-left: calc(26px + var(--safe-left, 0px)); gap: clamp(27px, 7vh, 56px); }
   .oof-title-screen h1 { font-size: clamp(34px, 9vw, 58px); }
