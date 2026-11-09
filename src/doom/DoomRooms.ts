@@ -529,9 +529,9 @@ function getFurnitureDimensions(kind: RoomFurnitureKind): {
     case 'oak_bookshelf_tall':
       return { width: 1.64, depth: 0.72, maxY: 2.38 };
     case 'library_reading_table':
-      return { width: 1.54, depth: 1.16, maxY: 1.32 };
+      return { width: 1.54, depth: 1.24, maxY: 1.32 };
     case 'archive_catalog_cabinet':
-      return { width: 1.5, depth: 0.7, maxY: 1.76 };
+      return { width: 1.5, depth: 0.7, maxY: 1.98 };
     case 'reactor_capacitor_console':
       return { width: 1.58, depth: 0.8, maxY: 2.04 };
   }
@@ -788,11 +788,15 @@ interface RoomMaterials {
   annexCeiling: THREE.ShaderMaterial;
   serverRack: THREE.ShaderMaterial;
   crtScreen: THREE.ShaderMaterial;
+  computerScreen: THREE.ShaderMaterial;
+  lampShade: THREE.ShaderMaterial;
+  bankerShade: THREE.ShaderMaterial;
   bookshelf: THREE.ShaderMaterial;
   libraryRug: THREE.ShaderMaterial;
   foliage: THREE.ShaderMaterial;
   mossSoil: THREE.ShaderMaterial;
   bioFluid: THREE.ShaderMaterial;
+  specimenGlass: THREE.ShaderMaterial;
   labTile: THREE.ShaderMaterial;
   techFloor: THREE.ShaderMaterial;
   bunkFabric: THREE.ShaderMaterial;
@@ -1088,7 +1092,61 @@ function createRoomMaterials(
     }
   });
 
+  // A cúpula é opaca; somente o difusor debaixo dela emite luz.
+  const shadeTex = makeRoomPixelTex(16, 16, (px) => {
+    for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) {
+      const n = (hash2i(x, y, 810) - 0.5) * 12;
+      px(x, y, 198 + n, 177 + n, 142 + n);
+    }
+  });
+  const greenShadeTex = makeRoomPixelTex(16, 16, (px) => {
+    for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) {
+      const n = (hash2i(x, y, 811) - 0.5) * 9;
+      px(x, y, 35 + n, 112 + n, 76 + n);
+    }
+  });
+  const computerScreen = createDoomSurfaceMaterial(crtTex, sharedUniforms, {
+    fullBright: true, useLocalUv: true,
+  });
+  computerScreen.uniforms.uComputerTime = { value: 0 };
+  computerScreen.fragmentShader = computerScreen.fragmentShader
+    .replace('uniform sampler2D uMap;', 'uniform sampler2D uMap;\n      uniform float uComputerTime;')
+    .replace('vec4 texel = texture2D(uMap, uv);', `
+        vec4 texel = texture2D(uMap, uv);
+        // Texto desloca em saltos de pixel, cursor pisca e feixe percorre o vidro.
+        // As bordas permanecem fixas; não afeta luminárias que usam crtScreen.
+        if (uv.x > 0.065 && uv.x < 0.935 && uv.y > 0.53 && uv.y < 0.88) {
+          vec2 textUv = vec2(uv.x, 0.53 + mod(uv.y - 0.53 + floor(uComputerTime * 2.0) / 64.0, 0.35));
+          texel = texture2D(uMap, textUv);
+          if (uv.x > 0.16 && uv.x < 0.21 && uv.y > 0.58 && uv.y < 0.62 && mod(floor(uComputerTime * 2.0), 2.0) < 1.0)
+            texel.rgb = vec3(0.35, 1.0, 0.62);
+        }
+        if (uv.x > 0.13 && uv.x < 0.87 && uv.y > 0.12 && uv.y < 0.48) {
+          vec2 graphUv = vec2(0.13 + mod(uv.x - 0.13 + floor(uComputerTime * 3.0) / 64.0, 0.74), uv.y);
+          texel = texture2D(uMap, graphUv);
+        }
+        float sweep = 1.0 - smoothstep(0.0, 0.035, abs(uv.y - fract(uComputerTime * 0.16)));
+        texel.rgb *= 0.92 + 0.16 * sweep;
+      `);
+  // Fluido semitransparente permite ver o espécime no tanque, sem alterar os demais materiais.
+  const specimenGlass = createDoomSurfaceMaterial(bioFluidTex, sharedUniforms, { fullBright: true, useLocalUv: true });
+  specimenGlass.transparent = true;
+  specimenGlass.depthWrite = false;
+  specimenGlass.side = THREE.DoubleSide;
+  specimenGlass.fragmentShader = specimenGlass.fragmentShader.replace(
+    'vec4(clamp(max(glowRgb, passiveRgb), 0.0, 1.0), 1.0)',
+    'vec4(clamp(max(glowRgb, passiveRgb), 0.0, 1.0), 0.26)'
+  );
+  const lampShade = createDoomSurfaceMaterial(shadeTex, sharedUniforms, { useLocalUv: true, baseLight: 0.25 });
+  const bankerShade = createDoomSurfaceMaterial(greenShadeTex, sharedUniforms, { useLocalUv: true, baseLight: 0.25 });
+  lampShade.side = THREE.DoubleSide;
+  bankerShade.side = THREE.DoubleSide;
+
   return {
+    computerScreen,
+    specimenGlass,
+    lampShade,
+    bankerShade,
     annexWall: createDoomSurfaceMaterial(textures.annexWall, sharedUniforms, {
       useLocalUv: true,
       baseLight: 0.23,
@@ -1342,6 +1400,48 @@ function pushRoomCyl(
   if (xf.yaw !== 0) g.rotateY(xf.yaw);
   g.translate(xf.cx, 0, xf.cz);
   bucket.push(g);
+}
+
+/** Casca aberta: nenhuma tampa sólida atravessa o difusor do abajur. */
+function pushRoomLampShell(
+  bucket: THREE.BufferGeometry[], xf: LocalXf,
+  top: number, bottom: number, height: number,
+  x: number, y: number, z: number,
+  rotationZ = 0, arc = Math.PI * 2
+): void {
+  const geometry = new THREE.CylinderGeometry(top, bottom, height, 16, 1, true, 0, arc);
+  if (rotationZ) geometry.rotateZ(rotationZ);
+  geometry.translate(x, y, z);
+  if (xf.yaw) geometry.rotateY(xf.yaw);
+  geometry.translate(xf.cx, 0, xf.cz);
+  bucket.push(geometry);
+}
+
+function pushRoomSphere(
+  bucket: THREE.BufferGeometry[], xf: LocalXf,
+  radius: number, x: number, y: number, z: number
+): void {
+  const geometry = new THREE.SphereGeometry(radius, 16, 10);
+  geometry.translate(x, y, z);
+  if (xf.yaw) geometry.rotateY(xf.yaw);
+  geometry.translate(xf.cx, 0, xf.cz);
+  bucket.push(geometry);
+}
+
+function pushRoomRod(
+  bucket: THREE.BufferGeometry[], xf: LocalXf, radius: number,
+  start: THREE.Vector3, end: THREE.Vector3
+): void {
+  const direction = end.clone().sub(start);
+  const geometry = new THREE.CylinderGeometry(radius, radius, direction.length(), 6);
+  geometry.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(
+    new THREE.Vector3(0, 1, 0), direction.normalize()
+  ));
+  const midpoint = start.clone().add(end).multiplyScalar(0.5);
+  geometry.translate(midpoint.x, midpoint.y, midpoint.z);
+  if (xf.yaw) geometry.rotateY(xf.yaw);
+  geometry.translate(xf.cx, 0, xf.cz);
+  bucket.push(geometry);
 }
 
 function pushWorldPlaneXZ(
@@ -2362,7 +2462,7 @@ function emitRoomFurniturePiece(
         // Bobinas duplas de fita magnética + visor de diagnóstico CRT ressaltado
         pushRoomCyl(b.metalTrim, xf, 0.11, 0.11, 0.028, 12, ox - 0.14, 1.76, 0.332, Math.PI * 0.5, 0, 0);
         pushRoomCyl(b.metalTrim, xf, 0.11, 0.11, 0.028, 12, ox + 0.14, 1.76, 0.332, Math.PI * 0.5, 0, 0);
-        pushRoomBox(b.crtScreen, xf, 0.42, 0.12, 0.016, ox, 1.44, 0.324);
+        pushRoomBox(b.computerScreen, xf, 0.42, 0.12, 0.016, ox, 1.44, 0.324);
       }
       // Eletrodutos gêmeos subindo para o teto técnico
       pushRoomCyl(b.darkIron, xf, 0.05, 0.05, 0.72, 8, -0.24, 2.66, -0.18);
@@ -2393,16 +2493,30 @@ function emitRoomFurniturePiece(
         pushRoomBox(b.metalTrim, xf, 0.45, 0.38, 0.24, mx, 1.03, pivZ, 0, yawTilt, 0);
         pushRoomBox(b.darkIron, xf, 0.24, 0.22, 0.14, mx - s * 0.18, 1.01, pivZ - c * 0.18, 0, yawTilt, 0);
         pushRoomBox(b.darkIron, xf, 0.46, 0.39, 0.022, mx + s * 0.128, 1.03, pivZ + c * 0.128, 0, yawTilt, 0);
-        pushRoomBox(b.crtScreen, xf, 0.38, 0.29, 0.016, mx + s * 0.143, 1.035, pivZ + c * 0.143, 0, yawTilt, 0);
+        pushRoomBox(b.computerScreen, xf, 0.38, 0.29, 0.016, mx + s * 0.143, 1.035, pivZ + c * 0.143, 0, yawTilt, 0);
         // Teclado mecânico esculpido apoiado na superfície da mesa
         const kx = mx + s * 0.28;
         const kz = pivZ + c * 0.28;
         pushRoomBox(b.darkIron, xf, 0.38, 0.028, 0.15, kx, 0.795, kz, 0.08, yawTilt * 0.5, 0);
-        pushRoomBox(b.cleanLinen, xf, 0.34, 0.014, 0.1, kx, 0.812, kz, 0.08, yawTilt * 0.5, 0);
+        // Teclas separadas sobre o corpo escuro, com a mesma orientação do teclado.
+        const keyYaw = yawTilt * 0.5;
+        for (let row = 0; row < 3; row++) {
+          for (let col = 0; col < 9; col++) {
+            const dx = (col - 4) * 0.036;
+            const dz = (row - 1) * 0.032;
+            pushRoomBox(b.cleanLinen, xf, 0.027, 0.009, 0.023,
+              kx + Math.cos(keyYaw) * dx + Math.sin(keyYaw) * dz,
+              0.816 - dz * Math.sin(0.08),
+              kz - Math.sin(keyYaw) * dx + Math.cos(keyYaw) * dz,
+              0.08, keyYaw, 0);
+          }
+        }
       }
-      // Luminária articulada de bancada
-      pushRoomCyl(b.metalTrim, xf, 0.018, 0.018, 0.38, 6, -0.66, 0.96, -0.28, 0.2, 0, -0.18);
-      pushRoomBox(b.warmLampGlow, xf, 0.18, 0.03, 0.09, -0.58, 1.15, -0.2);
+      // Luminária presa à bancada: base, haste, cúpula e difusor separado.
+      pushRoomCyl(b.darkIron, xf, 0.055, 0.065, 0.025, 10, -0.66, 0.7925, -0.31);
+      pushRoomCyl(b.metalTrim, xf, 0.012, 0.012, 0.31, 8, -0.66, 0.96, -0.31);
+      pushRoomBox(b.darkIron, xf, 0.17, 0.055, 0.09, -0.66, 1.13, -0.31);
+      pushRoomBox(b.warmLampGlow, xf, 0.14, 0.008, 0.07, -0.66, 1.099, -0.31);
 
       // Cadeira giratória ergonômica com estrela de 5 pés contida dentro da caixa de colisão
       const chairX = -0.04;
@@ -2436,26 +2550,22 @@ function emitRoomFurniturePiece(
       pushRoomCyl(b.darkIron, xf, 0.48, 0.52, 0.22, 14, 0, 0.11, 0);
       pushRoomCyl(b.metalTrim, xf, 0.45, 0.47, 0.12, 14, 0, 0.28, 0);
       // Painel frontal de telemetria na base do tanque
-      pushRoomBox(b.crtScreen, xf, 0.26, 0.11, 0.04, 0, 0.18, 0.48, -0.2, 0, 0);
-      // Coluna iluminada de bio-fluido
-      pushRoomCyl(b.bioFluid, xf, 0.38, 0.38, 1.66, 14, 0, 1.17, 0);
-      // Espécime orgânico multi-segmentado suspenso em estase no interior
-      pushRoomCyl(b.darkIron, xf, 0.13, 0.09, 0.46, 8, 0, 1.22, 0, 0.22, 0, 0.14);
-      pushRoomCyl(b.darkIron, xf, 0.09, 0.12, 0.28, 8, 0.03, 0.92, -0.02, -0.18, 0, -0.1);
-      for (const limbAng of [-1.1, -0.4, 0.4, 1.1]) {
-        pushRoomBox(
-          b.darkIron,
-          xf,
-          0.03,
-          0.34,
-          0.03,
-          Math.cos(limbAng) * 0.14,
-          1.16,
-          Math.sin(limbAng) * 0.14,
-          0.35,
-          limbAng,
-          0.42
-        );
+      pushRoomBox(b.computerScreen, xf, 0.26, 0.11, 0.04, 0, 0.18, 0.48, -0.2, 0, 0);
+      // Coluna de vidro com espécime visível através do fluido
+      pushRoomCyl(b.specimenGlass, xf, 0.38, 0.38, 1.66, 14, 0, 1.17, 0);
+      // Corpo e oito patas visíveis, inteiramente dentro do vidro.
+      pushRoomSphere(b.darkIron, xf, 0.115, 0, 1.16, -0.10);
+      pushRoomSphere(b.darkIron, xf, 0.075, 0, 1.16, 0.075);
+      for (const side of [-1, 1]) {
+        for (const z of [-0.12, -0.05, 0.04, 0.11]) {
+          const spread = z * 0.35;
+          pushRoomRod(b.darkIron, xf, 0.012,
+            new THREE.Vector3(side * 0.055, 1.16, z),
+            new THREE.Vector3(side * 0.19, 1.20, z + spread));
+          pushRoomRod(b.darkIron, xf, 0.01,
+            new THREE.Vector3(side * 0.19, 1.20, z + spread),
+            new THREE.Vector3(side * 0.29, 1.05, z + spread * 2));
+        }
       }
       // Cúpula superior blindada + 4 tirantes estruturais + duto de exaustão até a sanca
       pushRoomCyl(b.metalTrim, xf, 0.45, 0.45, 0.1, 14, 0, 2.05, 0);
@@ -2522,10 +2632,11 @@ function emitRoomFurniturePiece(
       // Estante escalonada de tubos bioluminescentes + centrífuga digital
       pushRoomBox(b.darkIron, xf, 0.36, 0.09, 0.18, 0.2, 0.94, 0.02);
       for (const tx of [0.06, 0.13, 0.2, 0.27, 0.34]) {
-        pushRoomCyl(b.bioFluid, xf, 0.022, 0.022, 0.2, 6, tx, 1.04, 0.02);
+        pushRoomCyl(b.bioFluid, xf, 0.022, 0.022, 0.2, 8, tx, 1.04, 0.02);
+        pushRoomCyl(b.metalTrim, xf, 0.024, 0.024, 0.014, 8, tx, 1.147, 0.02);
       }
       pushRoomBox(b.cleanLinen, xf, 0.34, 0.25, 0.32, 0.56, 1.02, -0.02);
-      pushRoomBox(b.crtScreen, xf, 0.18, 0.1, 0.025, 0.56, 1.05, 0.145);
+      pushRoomBox(b.computerScreen, xf, 0.18, 0.1, 0.025, 0.56, 1.05, 0.145);
       break;
     }
 
@@ -2534,7 +2645,7 @@ function emitRoomFurniturePiece(
       pushRoomBox(b.darkIron, xf, 1.22, 0.1, 0.66, -0.08, 0.05, 0);
       pushRoomBox(b.metalTrim, xf, 1.18, 1.98, 0.62, -0.08, 1.09, 0);
       pushRoomBox(b.darkIron, xf, 1.12, 1.78, 0.04, -0.08, 1.06, 0.31);
-      pushRoomBox(b.crtScreen, xf, 0.52, 0.11, 0.03, -0.08, 1.98, 0.315);
+      pushRoomBox(b.computerScreen, xf, 0.52, 0.11, 0.03, -0.08, 1.98, 0.315);
       for (const wxOff of [-0.35, 0.19]) {
         pushRoomBox(b.bioFluid, xf, 0.38, 0.98, 0.05, wxOff, 1.22, 0.315);
         pushRoomBox(b.metalTrim, xf, 0.035, 0.26, 0.06, wxOff + (wxOff < 0 ? 0.21 : -0.21), 1.12, 0.335);
@@ -2601,6 +2712,10 @@ function emitRoomFurniturePiece(
       pushRoomBox(b.darkIron, xf, 0.06, 0.4, 0.18, -0.56, 0.2, 0.34);
       pushRoomBox(b.darkIron, xf, 0.06, 0.4, 0.18, 0.56, 0.2, 0.34);
       pushRoomBox(b.bunkFabric, xf, 0.52, 0.22, 0.38, -0.36, 2.18, -0.06, 0, 0.08, 0);
+      // Ranhuras reais nas portas dos armários, sem prolongar o banco.
+      for (const lx of [-0.47, 0, 0.47]) for (const y of [1.79, 1.77, 0.41, 0.39]) {
+        pushRoomBox(b.darkIron, xf, 0.18, 0.007, 0.006, lx, y, 0.243);
+      }
       break;
     }
 
@@ -2635,12 +2750,17 @@ function emitRoomFurniturePiece(
       // Nicho traseiro com livros pessoais + tablet + abajur quente
       pushRoomBox(b.weatheredWood, xf, 0.72, 0.28, 0.2, -0.24, 0.93, -0.24);
       pushRoomBox(b.bookshelf, xf, 0.64, 0.22, 0.16, -0.24, 0.93, -0.22);
-      pushRoomCyl(b.darkIron, xf, 0.085, 0.105, 0.04, 8, 0.42, 0.81, -0.08);
-      pushRoomCyl(b.metalTrim, xf, 0.022, 0.022, 0.26, 6, 0.42, 0.96, -0.08);
-      pushRoomCyl(b.warmLampGlow, xf, 0.11, 0.18, 0.17, 10, 0.42, 1.15, -0.08);
+      // Base sobre o tampo; haste encontra a cúpula aberta, com luz somente por baixo.
+      pushRoomCyl(b.darkIron, xf, 0.085, 0.105, 0.04, 12, 0.42, 0.8125, -0.08);
+      pushRoomCyl(b.metalTrim, xf, 0.018, 0.018, 0.29, 10, 0.42, 0.9775, -0.08);
+      pushRoomLampShell(b.lampShade, xf, 0.10, 0.17, 0.18, 0.42, 1.16, -0.08);
+      pushRoomCyl(b.warmLampGlow, xf, 0.135, 0.135, 0.012, 16, 0.42, 1.077, -0.08);
       // Cadeira encaixada na escrivaninha
       pushRoomBox(b.weatheredWood, xf, 0.42, 0.05, 0.38, -0.18, 0.44, 0.24);
       pushRoomBox(b.weatheredWood, xf, 0.42, 0.42, 0.05, -0.18, 0.66, 0.41);
+      for (const x of [-0.34, -0.02]) for (const z of [0.09, 0.35]) {
+        pushRoomBox(b.weatheredWood, xf, 0.04, 0.415, 0.04, x, 0.2075, z);
+      }
       break;
     }
 
@@ -2659,6 +2779,10 @@ function emitRoomFurniturePiece(
       pushRoomBox(b.metalTrim, xf, 0.05, 0.46, 0.78, -0.84, 0.9, 0);
       pushRoomBox(b.metalTrim, xf, 0.045, 0.34, 0.78, 0.84, 0.84, 0);
       pushRoomBox(b.cleanLinen, xf, 0.03, 0.24, 0.3, 0.87, 0.88, 0);
+      // Prancheta clínica presa à peseira, com linhas de registro.
+      for (const y of [0.82, 0.87, 0.92]) {
+        pushRoomBox(b.darkIron, xf, 0.004, 0.008, 0.19, 0.887, y, 0);
+      }
       for (const rz of [-0.4, 0.4]) {
         pushRoomBox(b.metalTrim, xf, 1.06, 0.035, 0.035, -0.06, 0.98, rz);
         pushRoomBox(b.metalTrim, xf, 0.03, 0.24, 0.03, -0.52, 0.85, rz);
@@ -2708,7 +2832,7 @@ function emitRoomFurniturePiece(
       pushRoomCyl(b.bioFluid, xf, 0.085, 0.085, 0.68, 8, 0.55, 0.48, 0);
       // Monitor ECG giratório + pás de desfibrilador no topo
       pushRoomBox(b.darkIron, xf, 0.54, 0.44, 0.4, -0.2, 1.16, -0.04, 0, 0.12, 0);
-      pushRoomBox(b.crtScreen, xf, 0.44, 0.32, 0.025, -0.18, 1.18, 0.165, 0, 0.12, 0);
+      pushRoomBox(b.computerScreen, xf, 0.44, 0.32, 0.025, -0.18, 1.18, 0.165, 0, 0.12, 0);
       pushRoomBox(b.cleanLinen, xf, 0.34, 0.16, 0.28, 0.28, 0.98, 0.02);
       pushRoomBox(b.darkIron, xf, 0.1, 0.06, 0.14, 0.22, 1.08, 0.04);
       pushRoomBox(b.darkIron, xf, 0.1, 0.06, 0.14, 0.35, 1.08, 0.04);
@@ -2800,8 +2924,8 @@ function emitRoomFurniturePiece(
       pushRoomCyl(b.darkIron, xf, 0.04, 0.04, 0.22, 8, -0.32, 1.82, -0.02);
       pushRoomCyl(b.darkIron, xf, 0.04, 0.04, 0.28, 8, 0.32, 1.72, -0.02);
       pushRoomBox(b.darkIron, xf, 0.28, 0.24, 0.26, 0.02, 0.28, 0.2);
-      pushRoomBox(b.crtScreen, xf, 0.22, 0.14, 0.03, 0.32, 1.24, 0.25);
-      pushRoomBox(b.foliage, xf, 0.24, 0.92, 0.18, 0.34, 0.98, 0.24, 0, 0, 0.12);
+      pushRoomBox(b.computerScreen, xf, 0.22, 0.14, 0.03, 0.32, 1.24, 0.25);
+      // O visor fica desobstruído; a antiga folhagem atravessava o painel.
       break;
     }
 
@@ -2848,22 +2972,24 @@ function emitRoomFurniturePiece(
       pushRoomBox(b.weatheredWood, xf, 1.24, 0.06, 0.07, 0, 0.18, 0);
 
       // Livros abertos, pilhas encadernadas e 2 abajures clássicos verdes/dourados
-      pushRoomBox(b.cleanLinen, xf, 0.36, 0.04, 0.26, -0.34, 0.83, 0.22, 0, 0.12, 0);
-      pushRoomBox(b.bookshelf, xf, 0.28, 0.14, 0.22, 0.38, 0.88, -0.22, 0, -0.18, 0);
+      pushRoomBox(b.cleanLinen, xf, 0.36, 0.04, 0.26, -0.34, 0.83, 0.27, 0, 0.12, 0);
+      pushRoomBox(b.bookshelf, xf, 0.28, 0.14, 0.22, 0.48, 0.88, -0.31, 0, -0.18, 0);
       for (const lx of [-0.36, 0.36]) {
-        pushRoomCyl(b.metalTrim, xf, 0.085, 0.105, 0.04, 8, lx, 0.83, 0);
-        pushRoomCyl(b.metalTrim, xf, 0.022, 0.022, 0.28, 6, lx, 0.98, 0);
-        pushRoomBox(b.foliage, xf, 0.26, 0.1, 0.17, lx, 1.14, 0);
-        pushRoomBox(b.warmLampGlow, xf, 0.22, 0.04, 0.13, lx, 1.09, 0);
+        pushRoomCyl(b.metalTrim, xf, 0.085, 0.105, 0.04, 12, lx, 0.83, 0);
+        pushRoomCyl(b.metalTrim, xf, 0.018, 0.018, 0.25, 10, lx, 0.975, 0);
+        // Semicilindro verde aberto para baixo, em vez de dois blocos sobrepostos.
+        pushRoomLampShell(b.bankerShade, xf, 0.095, 0.095, 0.26, lx, 1.10, 0, Math.PI * 0.5, Math.PI);
+        pushRoomBox(b.warmLampGlow, xf, 0.22, 0.008, 0.15, lx, 1.104, 0);
       }
 
       // 4 cadeiras clássicas de carvalho (2 de cada lado)
       for (const czSign of [-1, 1]) {
         for (const cxOff of [-0.36, 0.36]) {
-          pushRoomBox(b.weatheredWood, xf, 0.42, 0.05, 0.38, cxOff, 0.45, czSign * 0.46);
-          pushRoomBox(b.weatheredWood, xf, 0.42, 0.5, 0.05, cxOff, 0.7, czSign * 0.63);
-          pushRoomBox(b.weatheredWood, xf, 0.05, 0.44, 0.05, cxOff - 0.17, 0.22, czSign * 0.61);
-          pushRoomBox(b.weatheredWood, xf, 0.05, 0.44, 0.05, cxOff + 0.17, 0.22, czSign * 0.61);
+          pushRoomBox(b.weatheredWood, xf, 0.42, 0.05, 0.38, cxOff, 0.45, czSign * 0.42);
+          pushRoomBox(b.weatheredWood, xf, 0.42, 0.5, 0.05, cxOff, 0.7, czSign * 0.58);
+          for (const legX of [-0.17, 0.17]) for (const legZ of [0.28, 0.56]) {
+            pushRoomBox(b.weatheredWood, xf, 0.05, 0.425, 0.05, cxOff + legX, 0.2125, czSign * legZ);
+          }
         }
       }
       break;
@@ -2884,7 +3010,8 @@ function emitRoomFurniturePiece(
       // Caixas de pergaminhos + pequeno globo científico no topo
       pushRoomBox(b.bookshelf, xf, 0.46, 0.18, 0.34, -0.34, 1.75, -0.04, 0, 0.08, 0);
       pushRoomCyl(b.metalTrim, xf, 0.09, 0.11, 0.04, 8, 0.38, 1.68, 0);
-      pushRoomCyl(b.foliage, xf, 0.14, 0.14, 0.22, 10, 0.38, 1.84, 0, 0.35, 0, 0.2);
+      pushRoomCyl(b.metalTrim, xf, 0.018, 0.018, 0.06, 8, 0.38, 1.73, 0);
+      pushRoomSphere(b.foliage, xf, 0.14, 0.38, 1.90, 0);
       break;
     }
 
@@ -2896,8 +3023,12 @@ function emitRoomFurniturePiece(
         pushRoomBox(b.metalTrim, xf, 0.04, 0.72, 0.78, fx, 0.46, 0);
       }
       pushRoomBox(b.serverRack, xf, 1.46, 0.38, 0.4, 0, 1.1, 0.12, -0.38, 0, 0);
-      pushRoomBox(b.crtScreen, xf, 0.48, 0.24, 0.018, -0.36, 1.178, 0.314, -0.38, 0, 0);
-      pushRoomBox(b.crtScreen, xf, 0.36, 0.18, 0.018, 0.34, 1.178, 0.314, -0.38, 0, 0);
+      pushRoomBox(b.computerScreen, xf, 0.48, 0.24, 0.018, -0.36, 1.178, 0.314, -0.38, 0, 0);
+      pushRoomBox(b.computerScreen, xf, 0.36, 0.18, 0.018, 0.34, 1.178, 0.314, -0.38, 0, 0);
+      // Sinalizadores de estado na face frontal da base do reator.
+      for (const x of [-0.18, 0, 0.29]) {
+        pushRoomBox(b.warmLampGlow, xf, 0.055, 0.035, 0.012, x, 0.72, 0.377);
+      }
       // 3 Isoladores de alta tensão com discos cerâmicos empilhados + esferas corona
       for (const cx of [-0.46, 0.0, 0.46]) {
         pushRoomCyl(b.bioFluid, xf, 0.1, 0.1, 0.78, 10, cx, 1.38, -0.18);
@@ -3305,11 +3436,15 @@ export function buildDoomThemedRooms(
     annexCeiling: [],
     serverRack: [],
     crtScreen: [],
+    computerScreen: [],
+    lampShade: [],
+    bankerShade: [],
     bookshelf: [],
     libraryRug: [],
     foliage: [],
     mossSoil: [],
     bioFluid: [],
+    specimenGlass: [],
     labTile: [],
     techFloor: [],
     bunkFabric: [],
@@ -3380,6 +3515,27 @@ export function buildDoomThemedRooms(
     sharedUniforms,
     colliders
   );
+
+  // Um relógio por mundo, sem timers ou atualizações de textura por monitor.
+  const updateDoors = specialRoomDoors.update.bind(specialRoomDoors);
+  specialRoomDoors.update = (dt: number) => {
+    if (Number.isFinite(dt) && dt > 0) {
+      mats.computerScreen.uniforms.uComputerTime.value =
+        (mats.computerScreen.uniforms.uComputerTime.value + dt) % 400;
+    }
+    updateDoors(Number.isFinite(dt) ? Math.max(0, dt) : 0);
+  };
+
+  const disposeDoors = specialRoomDoors.dispose.bind(specialRoomDoors);
+  specialRoomDoors.dispose = () => {
+    disposeDoors();
+    mats.computerScreen.dispose();
+    mats.specimenGlass.dispose();
+    for (const shade of [mats.lampShade, mats.bankerShade]) {
+      (shade.uniforms.uMap.value as THREE.Texture).dispose();
+      shade.dispose();
+    }
+  };
 
   return { annexLights, specialRoomDoors };
 }

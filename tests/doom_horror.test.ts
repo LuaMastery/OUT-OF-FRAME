@@ -59,6 +59,7 @@ import {
 } from '../src/doom/DoomRagdoll';
 import {
   ANNEX_MIN_GRID,
+  buildDoomThemedRooms,
   getThemedRoomAtCell,
   getThemedRoomByKeyItemId,
   getThemedRoomMiniMapTile,
@@ -7329,5 +7330,92 @@ describe('Boca da aranha: presas íntegras e articulação', () => {
         expect(spider.currentState).toBe('CINEMATIC_SEQUENCE');
       }
     }
+  });
+});
+
+describe('Objetos das salas especiais: abajures, telas e espécime', () => {
+  function fixture(kind: 'cabin_nightstand_desk' | 'library_reading_table' | 'crt_workstation_desk' | 'bio_specimen_tank') {
+    const scene = new THREE.Group();
+    const placement = {
+      id: 'test-piece', roomId: 'crew_quarters' as const, kind,
+      gx: 0, gz: 0, worldX: 0, worldZ: 0, yaw: 0,
+      minX: -1, maxX: 1, minY: 0, maxY: 3, minZ: -1, maxZ: 1,
+    };
+    const controller = buildDoomThemedRooms(scene, [placement], createDoomTextures(), createDoomSharedUniforms(), []).specialRoomDoors;
+    return { scene, controller };
+  }
+
+  it('constrói cúpulas abertas e difusores separados e mantém as cadeiras apoiadas', () => {
+    for (const [kind, shadeName, minY, maxY] of [
+      ['cabin_nightstand_desk', 'MazeRoom_lampShade', 1.07, 1.25],
+      ['library_reading_table', 'MazeRoom_bankerShade', 1.10, 1.195],
+    ] as const) {
+      const { scene, controller } = fixture(kind);
+      const shade = scene.getObjectByName(shadeName) as THREE.Mesh;
+      const glow = scene.getObjectByName('MazeRoom_warmLampGlow') as THREE.Mesh;
+      expect(shade).toBeDefined();
+      expect(glow).toBeDefined();
+      expect((shade.material as THREE.ShaderMaterial).side).toBe(THREE.DoubleSide);
+      const bounds = new THREE.Box3().setFromBufferAttribute(shade.geometry.getAttribute('position') as THREE.BufferAttribute);
+      expect(bounds.min.y).toBeCloseTo(minY, 3);
+      expect(bounds.max.y).toBeCloseTo(maxY, 3);
+      // Casca aberta: 16 faces laterais sem as tampas que ocultavam o difusor.
+      expect(shade.geometry.index!.count).toBe(kind === 'library_reading_table' ? 16 * 6 * 2 : 16 * 6);
+      const wood = scene.getObjectByName('MazeRoom_weatheredWood') as THREE.Mesh;
+      const vertices = wood.geometry.getAttribute('position');
+      const hasVertex = (x: number, y: number, z: number) => {
+        for (let i = 0; i < vertices.count; i++) {
+          if (Math.abs(vertices.getX(i) - x) < 0.0001 &&
+              Math.abs(vertices.getY(i) - y) < 0.0001 &&
+              Math.abs(vertices.getZ(i) - z) < 0.0001) return true;
+        }
+        return false;
+      };
+      if (kind === 'cabin_nightstand_desk') {
+        for (const x of [-0.34, -0.02]) for (const z of [0.09, 0.35]) {
+          expect(hasVertex(x - 0.02, 0, z - 0.02)).toBe(true);
+          expect(hasVertex(x - 0.02, 0.415, z - 0.02)).toBe(true);
+        }
+      } else {
+        for (const chairX of [-0.36, 0.36]) for (const side of [-1, 1]) {
+          for (const dx of [-0.17, 0.17]) for (const z of [0.28, 0.56]) {
+            expect(hasVertex(chairX + dx - 0.025, 0, side * z - 0.025)).toBe(true);
+          }
+        }
+      }
+      controller.dispose();
+    }
+  });
+
+  it('anima somente os visores eletrônicos com relógio estável, sem alterar luzes ou portas', () => {
+    const { scene, controller } = fixture('crt_workstation_desk');
+    const screen = scene.getObjectByName('MazeRoom_computerScreen') as THREE.Mesh;
+    const light = scene.getObjectByName('MazeRoom_crtScreen') as THREE.Mesh;
+    const material = screen.material as THREE.ShaderMaterial;
+    expect(material).not.toBe(light.material);
+    expect(material.fragmentShader).toContain('uComputerTime');
+    expect(material.fragmentShader).toContain('graphUv');
+    expect(material.uniforms.uComputerTime.value).toBe(0);
+    controller.update(1.25);
+    expect(material.uniforms.uComputerTime.value).toBeCloseTo(1.25);
+    controller.update(-1);
+    controller.update(NaN);
+    expect(material.uniforms.uComputerTime.value).toBeCloseTo(1.25);
+    controller.update(400);
+    expect(material.uniforms.uComputerTime.value).toBeCloseTo(1.25);
+    expect((light.material as THREE.ShaderMaterial).uniforms.uComputerTime).toBeUndefined();
+    expect(controller.doors.every(door => !door.unlocked && door.openProgress === 0)).toBe(true);
+    controller.dispose();
+  });
+
+  it('usa vidro transparente sem escrita de profundidade no tanque biológico', () => {
+    const { scene, controller } = fixture('bio_specimen_tank');
+    const glass = scene.getObjectByName('MazeRoom_specimenGlass') as THREE.Mesh;
+    const material = glass.material as THREE.ShaderMaterial;
+    expect(material.transparent).toBe(true);
+    expect(material.depthWrite).toBe(false);
+    expect(material.side).toBe(THREE.DoubleSide);
+    expect(material.fragmentShader).toContain('0.26');
+    controller.dispose();
   });
 });
