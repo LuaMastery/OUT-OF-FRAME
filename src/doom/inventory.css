@@ -563,13 +563,13 @@
   pointer-events: none;
 }
 
-/* Escala nítida pixel-perfect dentro dos 20 bolsos (5x4) */
+/* Modelos 3D de alta resolução sobre fundo transparente nos 20 bolsos. */
 .inv-slot-sprite {
   width: 48px;
   height: 48px;
-  image-rendering: pixelated;
-  image-rendering: crisp-edges;
+  object-fit: contain;
   display: block;
+  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.48));
 }
 
 .inv-slot-key-tag {
@@ -695,13 +695,13 @@
   justify-content: center;
 }
 
-/* Escala inteira exata 3x (32px -> 96px) */
+/* Imagem maior e nítida para examinar o mesmo objeto. */
 .inv-examine-figure img {
   width: 96px;
   height: 96px;
-  image-rendering: pixelated;
-  image-rendering: crisp-edges;
+  object-fit: contain;
   display: block;
+  filter: drop-shadow(0 4px 5px rgba(0, 0, 0, 0.5));
 }
 
 .inv-examine-copy {
@@ -1036,12 +1036,11 @@
   color: #e5dac4;
 }
 
-/* Sprite pixel-art 1x exato (32x32) — leitura imediata sem ocupar a tela */
+/* Os mesmos objetos na HUD de atalhos. */
 .hub-slot-sprite {
   width: 32px;
   height: 32px;
-  image-rendering: pixelated;
-  image-rendering: crisp-edges;
+  object-fit: contain;
   display: block;
   pointer-events: none;
 }
@@ -1212,6 +1211,13 @@
   .inv-quick-strip {
     flex-wrap: wrap;
     gap: 6px;
+  }
+  .inv-shortcuts-bar .inv-pocket-header {
+    flex-wrap: wrap;
+    gap: 4px 12px;
+  }
+  .inv-shortcuts-bar .inv-pocket-header > span:first-child {
+    white-space: nowrap;
   }
   #doom-shortcuts-hub {
     bottom: calc(8px + var(--safe-bottom, 0px));

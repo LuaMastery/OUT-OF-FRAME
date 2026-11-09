@@ -1,4 +1,5 @@
 import { SHOTGUN_PART_IDS, SHOTGUN_ITEM_ID } from './DoomShotgun';
+import { getInventoryItemIcon } from './DoomInventoryIcons';
 import { SoundEngine } from '../engine/audio/SoundEngine';
 import {
   CursorProximityFX,
@@ -76,6 +77,11 @@ export interface DoomInventoryCallbacks {
   onCloseRequest: () => void;
   onOpenPauseRequest?: () => void;
   onPermanentDeathTerminate: () => void;
+}
+
+/** Textos do catálogo em atributos HTML, inclusive nomes com aspas (ex.: cano de 18"). */
+function escapeItemAttribute(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 const TOTAL_SLOTS = 20;
@@ -442,383 +448,6 @@ export const ITEM_CATALOG: Record<string, InventoryItemDef> = {
     droppable: false,
   },
 };
-
-/**
- * Adiciona contorno pixel-art 1px ao redor de qualquer pixel opaco para acabamento autêntico de sprite.
- */
-function applyPixelOutline(
-  ctx: CanvasRenderingContext2D,
-  w: number,
-  h: number,
-  outlineHex: [number, number, number]
-): void {
-  const img = ctx.getImageData(0, 0, w, h);
-  const src = new Uint8ClampedArray(img.data);
-  const dst = img.data;
-
-  const isSolid = (x: number, y: number): boolean => {
-    if (x < 0 || y < 0 || x >= w || y >= h) return false;
-    return src[(y * w + x) * 4 + 3] > 0;
-  };
-
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      if (isSolid(x, y)) continue;
-      if (
-        isSolid(x - 1, y) ||
-        isSolid(x + 1, y) ||
-        isSolid(x, y - 1) ||
-        isSolid(x, y + 1)
-      ) {
-        const idx = (y * w + x) * 4;
-        dst[idx] = outlineHex[0];
-        dst[idx + 1] = outlineHex[1];
-        dst[idx + 2] = outlineHex[2];
-        dst[idx + 3] = 255;
-      }
-    }
-  }
-
-  ctx.putImageData(img, 0, 0);
-}
-
-/**
- * Desenha sprites pixel-art 32x32 detalhados à mão (com sombreamento Bayer, chanfros e contorno 1px).
- */
-function buildItemIcons(): Record<InventoryItemKind, string> {
-  const kinds: InventoryItemKind[] = [
-    'lantern',
-    'bandage',
-    'morphine',
-    'battery',
-    'knife',
-    'flare',
-    'key',
-    'radar',
-    'walkie',
-    'note',
-    'shotgun_part',
-    'shotgun',
-    'shotgun_ammo',
-    'taser',
-  ];
-
-  const out = {} as Record<InventoryItemKind, string>;
-
-  for (const kind of kinds) {
-    const c = document.createElement('canvas');
-    c.width = 32;
-    c.height = 32;
-    const ctx = c.getContext('2d')!;
-    ctx.clearRect(0, 0, 32, 32);
-
-    const px = (x: number, y: number, col: string) => {
-      ctx.fillStyle = col;
-      ctx.fillRect(x, y, 1, 1);
-    };
-    const box = (x: number, y: number, w: number, h: number, col: string) => {
-      ctx.fillStyle = col;
-      ctx.fillRect(x, y, w, h);
-    };
-    const line = (
-      x0: number,
-      y0: number,
-      x1: number,
-      y1: number,
-      col: string
-    ) => {
-      let cx = x0;
-      let cy = y0;
-      const dx = Math.abs(x1 - x0);
-      const dy = Math.abs(y1 - y0);
-      const sx = x0 < x1 ? 1 : -1;
-      const sy = y0 < y1 ? 1 : -1;
-      let err = dx - dy;
-      for (;;) {
-        px(cx, cy, col);
-        if (cx === x1 && cy === y1) break;
-        const e2 = 2 * err;
-        if (e2 > -dy) {
-          err -= dy;
-          cx += sx;
-        }
-        if (e2 < dx) {
-          err += dx;
-          cy += sy;
-        }
-      }
-    };
-
-    if (kind === 'lantern') {
-      // Lanterna metálica robusta levemente inclinada + lente amarelada
-      box(4, 13, 14, 6, '#484d54');
-      box(4, 13, 14, 1, '#8b929c');
-      box(4, 18, 14, 1, '#2b2e33');
-      // Ranhuras recartilhadas do cabo
-      for (let gx = 6; gx <= 14; gx += 2) {
-        box(gx, 14, 1, 4, '#32363c');
-      }
-      // Tampa traseira + argola
-      box(3, 14, 1, 4, '#676d75');
-      px(2, 16, '#7c828b');
-      // Botão deslizante rubro-escuro
-      box(12, 11, 4, 2, '#8d2d2b');
-      px(13, 11, '#bf4945');
-      // Cabeça refletora chanfrada
-      box(18, 11, 3, 10, '#5a6069');
-      box(18, 11, 3, 2, '#9aa2ad');
-      box(18, 19, 3, 2, '#34383e');
-      box(21, 10, 4, 12, '#69707a');
-      box(21, 10, 4, 2, '#aeb6c2');
-      box(21, 20, 4, 2, '#393d44');
-      // Lente de vidro quente
-      box(25, 11, 2, 10, '#d8be7d');
-      box(25, 12, 1, 6, '#f6e7b8');
-      px(26, 13, '#fff8dc');
-    } else if (kind === 'bandage') {
-      // Rolo cilíndrico de gaze com espiral superior e ponta solta
-      box(7, 9, 14, 14, '#bfb6a4');
-      box(8, 8, 12, 2, '#ded6c6');
-      box(9, 7, 10, 1, '#d1c8b6');
-      box(8, 23, 12, 1, '#857d6e');
-      // Miolo escuro da espiral do rolo
-      box(11, 8, 6, 2, '#6e6659');
-      box(12, 8, 4, 1, '#3d3831');
-      // Sombreamento lateral direito pontilhado
-      for (let y = 10; y <= 22; y++) {
-        px(20, y, '#857d6e');
-        px(19, y, y % 2 === 0 ? '#9c9383' : '#bfb6a4');
-        px(7, y, '#d8d0c0');
-      }
-      // Linhas sutis da trama de tecido
-      box(8, 13, 12, 1, '#a69d8c');
-      box(8, 18, 12, 1, '#a69d8c');
-      // Faixa/cruz médica carmim seca
-      box(13, 12, 2, 8, '#872624');
-      box(10, 15, 8, 2, '#872624');
-      px(13, 15, '#a83432');
-      // Ponta de gaze desenrolada ao lado
-      box(21, 19, 5, 4, '#b5ac9a');
-      box(22, 20, 4, 2, '#cfc6b4');
-      px(26, 21, '#9c9383');
-    } else if (kind === 'morphine') {
-      // Frasco apotecário âmbar com rolha de cortiça e rótulo envelhecido
-      box(13, 4, 6, 3, '#947451');
-      box(14, 4, 2, 2, '#b5926b');
-      // Gargalo de vidro
-      box(12, 7, 8, 2, '#8c969e');
-      box(13, 9, 6, 2, '#6b737a');
-      // Ombros do frasco
-      box(10, 11, 12, 2, '#7d4422');
-      box(9, 13, 14, 13, '#5e3016');
-      box(10, 26, 12, 1, '#3b1d0c');
-      // Líquido interno mais denso + reflexo especular vertical
-      box(10, 16, 12, 9, '#47210d');
-      box(10, 12, 2, 12, '#a86434');
-      line(11, 12, 11, 22, '#d48d55');
-      // Rótulo de papel gasto
-      box(11, 15, 10, 7, '#c9bda6');
-      box(12, 16, 8, 5, '#dfd5c1');
-      box(13, 17, 6, 1, '#7a2522');
-      box(13, 19, 5, 1, '#595247');
-    } else if (kind === 'battery') {
-      // Bateria industrial 9V com polos de latão
-      box(10, 5, 3, 3, '#b89a5e');
-      px(10, 5, '#e0c589');
-      box(18, 6, 4, 2, '#9e824c');
-      px(19, 6, '#cfb276');
-      // Corpo metálico blindado
-      box(8, 8, 16, 18, '#2b2e33');
-      box(8, 8, 16, 5, '#9c6b2e');
-      box(8, 8, 16, 1, '#cfa05d');
-      box(8, 13, 16, 1, '#181a1d');
-      // Brilho lateral esquerdo e sombra direita
-      box(8, 9, 2, 16, '#3c4047');
-      box(9, 9, 2, 4, '#b88340');
-      box(22, 9, 2, 16, '#1f2125');
-      // Símbolo gravado + / -
-      box(11, 16, 1, 3, '#c8bfa8');
-      box(10, 17, 3, 1, '#c8bfa8');
-      box(19, 17, 3, 1, '#8c8577');
-      box(11, 22, 10, 1, '#575248');
-    } else if (kind === 'knife') {
-      // Canivete diagonal com cabo de madeira rebitado e lâmina chanfrada
-      for (let i = 0; i < 10; i++) {
-        const hx = 5 + i;
-        const hy = 24 - i;
-        box(hx, hy - 2, 4, 4, '#4f3829');
-        px(hx, hy - 2, '#73533e');
-        px(hx + 3, hy + 1, '#302118');
-      }
-      // Rebites de latão no cabo
-      px(8, 21, '#bfa269');
-      px(12, 17, '#bfa269');
-      // Guarda / virola de aço
-      box(14, 13, 4, 4, '#7d828a');
-      px(14, 13, '#b5bcc7');
-      // Lâmina de aço com fio claro e pontos de oxidação
-      for (let i = 0; i < 11; i++) {
-        const bx = 16 + i;
-        const by = 13 - i;
-        const w = i > 8 ? 2 : 3;
-        box(bx, by, w, w, '#969da6');
-        px(bx, by, '#dce3ec'); // fio iluminado
-      }
-      px(20, 10, '#783426');
-      px(21, 10, '#5e281d');
-      px(23, 7, '#783426');
-    } else if (kind === 'flare') {
-      // Bastão químico de magnésio na diagonal + faíscas
-      for (let i = 0; i < 14; i++) {
-        const fx = 5 + i;
-        const fy = 23 - Math.floor(i * 0.85);
-        box(fx, fy - 2, 4, 4, '#8f2523');
-        px(fx, fy - 2, '#c4423d');
-        px(fx + 3, fy + 1, '#571514');
-      }
-      // Anéis pretos antiderrapantes
-      line(7, 20, 9, 22, '#242222');
-      line(12, 16, 14, 18, '#242222');
-      // Cabeça cinza de fósforo + brasa viva
-      box(19, 9, 4, 4, '#5e5854');
-      box(22, 7, 3, 3, '#d97834');
-      px(23, 8, '#ffe79e');
-      px(25, 6, '#ffb85c');
-      px(26, 9, '#e0562b');
-      px(21, 5, '#ffd27d');
-    } else if (kind === 'key') {
-      // Chave antiga de latão com argola trabalhada e etiqueta pendurada
-      box(5, 11, 8, 8, '#967c46');
-      box(6, 10, 6, 10, '#967c46');
-      box(7, 12, 4, 6, '#000000');
-      ctx.clearRect(7, 12, 4, 6);
-      line(6, 10, 11, 10, '#cfb374');
-      line(5, 11, 5, 17, '#cfb374');
-      // Plaqueta metálica pendurada na argola
-      box(6, 20, 4, 6, '#595349');
-      box(7, 21, 2, 4, '#7d7567');
-      // Haste cilíndrica e segredos da chave
-      box(13, 14, 14, 2, '#ab8f54');
-      line(13, 14, 26, 14, '#d9be82');
-      box(20, 16, 2, 4, '#8c723e');
-      box(23, 16, 1, 3, '#8c723e');
-      box(25, 16, 2, 5, '#ab8f54');
-      px(25, 16, '#cfb374');
-    } else if (kind === 'radar') {
-      // Radar Topográfico Portátil: antena chicote, carcaça oliva blindada, tela CRT verde + ecos âmbar
-      box(21, 3, 2, 6, '#8d9891');
-      px(21, 2, '#d98a3b'); // ponteira da antena
-      box(20, 8, 4, 2, '#b89a58'); // conector BNC de latão
-      // Carcaça robusta com chanfros
-      box(7, 9, 18, 19, '#39463c');
-      box(8, 8, 16, 20, '#49594d');
-      line(8, 8, 23, 8, '#6e8273');
-      // Moldura do visor CRT
-      box(9, 10, 14, 12, '#1a211d');
-      box(10, 11, 12, 10, '#0a1c14');
-      // Retículo e linha de varredura fosforescente + ponto do jogador e ecos de equipamentos
-      line(10, 16, 21, 16, '#1c523b');
-      line(16, 11, 16, 20, '#1c523b');
-      line(16, 16, 20, 12, '#4ce89e');
-      px(16, 16, '#ffffff');
-      px(19, 13, '#ffd269');
-      px(12, 18, '#f0b846');
-      // Botões seletores inferiores
-      box(10, 24, 3, 3, '#ab8f54');
-      box(15, 24, 3, 2, '#252c27');
-      box(20, 24, 2, 2, '#59b889');
-    } else if (kind === 'taser') {
-      box(5, 10, 21, 9, '#d9a82d');
-      box(6, 11, 19, 7, '#f1c44c');
-      box(17, 18, 6, 10, '#283038');
-      box(19, 19, 4, 7, '#3d474b');
-      box(3, 11, 3, 2, '#b5c8cf');
-      box(3, 16, 3, 2, '#b5c8cf');
-      line(11, 13, 14, 13, '#23343c');
-      line(13, 12, 11, 16, '#23343c');
-    } else if (kind === 'shotgun_part') {
-      // Peça de shotgun em aço escovado com detalhes de encaixe (bloco do receptor)
-      box(6, 12, 20, 9, '#59606c');
-      box(7, 13, 18, 7, '#6d7583');
-      box(6, 12, 20, 2, '#878f9d');
-      box(9, 15, 5, 3, '#2f353f');
-      box(18, 14, 3, 5, '#3d444f');
-      px(11, 16, '#c8a44f');
-      px(12, 16, '#c8a44f');
-    } else if (kind === 'shotgun') {
-      // Shotgun de combate montada: cano, receptor, bomba e coronha
-      box(3, 12, 26, 3, '#6d7583'); // cano
-      px(2, 13, '#d9be82'); // ponteira
-      box(12, 13, 8, 6, '#4d5460'); // receptor
-      box(9, 14, 4, 5, '#22262d'); // bomba
-      box(19, 14, 9, 7, '#6b4324'); // coronha
-      box(27, 13, 3, 8, '#3f2a18');
-      box(14, 18, 2, 3, '#2b3038'); // gatilho
-      line(4, 15, 11, 15, '#98a1ad');
-    } else if (kind === 'shotgun_ammo') {
-      // Cartucho 12 Gauge: estojo de latão com chumbo e pó vermelho
-      box(8, 6, 16, 20, '#b08a3f');
-      box(9, 7, 14, 18, '#d0a94f');
-      box(8, 22, 16, 4, '#8e6f2f');
-      box(11, 4, 10, 3, '#a3332c'); // primer vermelho
-      box(12, 3, 8, 2, '#c4463c');
-      line(9, 12, 22, 12, '#e7c775');
-      line(9, 17, 22, 17, '#8e6f2f');
-    } else if (kind === 'walkie') {
-      // Rádio Comunicador VHF de Longa Distância (Walkie-Talkie tático com antena, grade de alto-falante, LCD e PTT laranja)
-      box(10, 2, 2, 8, '#95a19b');
-      px(10, 1, '#f0a648'); // ponteira da antena chicote
-      box(9, 9, 4, 2, '#3a423e'); // base da antena
-      box(18, 8, 4, 3, '#b89a58'); // knob seletor de frequência
-      // Corpo blindado do transceptor + tecla lateral PTT laranja
-      box(8, 10, 15, 19, '#2a3330');
-      box(9, 10, 13, 18, '#394541');
-      box(6, 13, 2, 6, '#dc6f28'); // botão PTT lateral
-      // Grade acústica do alto-falante superior
-      box(10, 12, 11, 7, '#1b2220');
-      line(11, 13, 19, 13, '#52635d');
-      line(11, 15, 19, 15, '#52635d');
-      line(11, 17, 19, 17, '#52635d');
-      // Visor LCD VHF retroiluminado + LED verde de sinal ativo
-      box(10, 20, 11, 4, '#0c241b');
-      line(11, 21, 18, 21, '#5ff5ad');
-      line(11, 22, 16, 22, '#3bc985');
-      px(20, 11, '#58ff9a');
-      // Teclado numérico inferior
-      box(11, 25, 2, 2, '#697872');
-      box(15, 25, 2, 2, '#697872');
-      box(19, 25, 2, 2, '#697872');
-    } else {
-      // Página arrancada de caderno com orelha dobrada e mancha seca de sangue
-      box(7, 4, 17, 22, '#bfb49f');
-      box(8, 5, 15, 20, '#d4c9b4');
-      // Recorte rasgado irregular na base
-      ctx.clearRect(7, 25, 3, 2);
-      ctx.clearRect(13, 25, 4, 2);
-      ctx.clearRect(21, 24, 3, 3);
-      // Canto superior direito dobrado
-      ctx.clearRect(21, 4, 3, 3);
-      box(20, 4, 1, 4, '#968c79');
-      box(20, 7, 4, 1, '#968c79');
-      box(21, 5, 2, 2, '#afa48f');
-      // Linhas manuscritas de tinta escura
-      box(10, 9, 9, 1, '#4a4339');
-      box(10, 12, 11, 1, '#4a4339');
-      box(10, 15, 10, 1, '#4a4339');
-      box(10, 18, 7, 1, '#4a4339');
-      box(10, 21, 6, 1, '#5e564a');
-      // Mancha carmim seca na borda inferior direita
-      box(17, 19, 5, 4, '#75201e');
-      box(18, 18, 3, 5, '#591615');
-      px(16, 21, '#8c2b28');
-    }
-
-    applyPixelOutline(ctx, 32, 32, [9, 8, 10]);
-    out[kind] = c.toDataURL();
-  }
-
-  return out;
-}
 
 /**
  * Desenha a radiografia / placa anatômica pixel-art (96x116 -> exibida em 192x232px):
@@ -1746,7 +1375,6 @@ export class DoomInventory {
   private readonly feedbackEl: HTMLElement;
   private readonly actionsEl: HTMLElement;
 
-  private readonly icons: Record<InventoryItemKind, string>;
   private readonly proximityFX: CursorProximityFX;
   private readonly keyNavAbort = new AbortController();
 
@@ -1817,7 +1445,6 @@ export class DoomInventory {
     private readonly sound: SoundEngine,
     private readonly callbacks: DoomInventoryCallbacks
   ) {
-    this.icons = buildItemIcons();
 
     // 1. Camada diegética em tela cheia (invisível na exploração saudável)
     this.diegeticEl = document.createElement('div');
@@ -3121,11 +2748,11 @@ export class DoomInventory {
 
       cell.className = `inv-quick-slot${entry ? ' bound' : ''}`;
       if (entry) {
-        const iconSrc = this.icons[entry.def.kind];
+        const iconSrc = getInventoryItemIcon(entry.def);
         cell.title = `[${q + 1}] ${entry.def.name} — clique para vincular item selecionado | botão direito para limpar`;
         cell.innerHTML = `
           <span class="inv-quick-key">[${q + 1}]</span>
-          <img class="inv-slot-sprite" src="${iconSrc}" alt="${entry.def.name}" />
+          <img class="inv-slot-sprite" src="${iconSrc}" alt="${escapeItemAttribute(entry.def.name)}" />
           ${
             entry.quantity > 1
               ? `<span class="inv-slot-qty">×${entry.quantity}</span>`
@@ -3236,7 +2863,7 @@ export class DoomInventory {
       }`;
 
       if (entry) {
-        const iconSrc = this.icons[entry.def.kind];
+        const iconSrc = getInventoryItemIcon(entry.def);
         slotEl.title =
           boundShortcut >= 0
             ? `${entry.def.name} (Atalho [${boundShortcut + 1}])`
@@ -3252,7 +2879,7 @@ export class DoomInventory {
               ? `<span class="inv-slot-hotkey">[${boundShortcut + 1}]</span>`
               : ''
           }
-          <img class="inv-slot-sprite" src="${iconSrc}" alt="${entry.def.name}" />
+          <img class="inv-slot-sprite" src="${iconSrc}" alt="${escapeItemAttribute(entry.def.name)}" />
           ${
             entry.def.keyBadge
               ? `<span class="inv-slot-key-tag" style="color: ${entry.def.keyColor ?? '#f2d98d'}; border-color: ${entry.def.keyColor ?? '#f2d98d'}55;">${entry.def.keyBadge}</span>`
@@ -3286,7 +2913,7 @@ export class DoomInventory {
 
     const { def } = entry;
     const boundShortcut = this.getShortcutForItem(def.id);
-    this.examineFigureEl.innerHTML = `<img src="${this.icons[def.kind]}" alt="${def.name}" />`;
+    this.examineFigureEl.innerHTML = `<img src="${getInventoryItemIcon(def)}" alt="${escapeItemAttribute(def.name)}" />`;
     const qtySuffix = entry.quantity > 1 ? `  (×${entry.quantity})` : '';
     const hkSuffix = boundShortcut >= 0 ? `  · [${boundShortcut + 1}]` : '';
     this.examineTitleEl.textContent = `${def.name}${qtySuffix}${hkSuffix}`;
@@ -3564,7 +3191,7 @@ export class DoomInventory {
     lanternCell.innerHTML = `
       <span class="hub-slot-key">[F]</span>
       <span class="hub-slot-dot${lanternOn ? ' on-amber' : ''}"></span>
-      <img class="hub-slot-sprite" src="${this.icons.lantern}" alt="Lanterna" />
+      <img class="hub-slot-sprite" src="${getInventoryItemIcon(ITEM_CATALOG.tactical_lantern)}" alt="Lanterna" />
       <div class="hub-mini-cells">${miniSegs}</div>
     `;
     lanternCell.addEventListener('mouseenter', () => {
@@ -3596,7 +3223,7 @@ export class DoomInventory {
       radarCell.innerHTML = `
         <span class="hub-slot-key">[M]</span>
         <span class="hub-slot-dot${radarOn ? ' on-green' : ''}"></span>
-        <img class="hub-slot-sprite" src="${this.icons.radar}" alt="Radar" />
+        <img class="hub-slot-sprite" src="${getInventoryItemIcon(ITEM_CATALOG.field_radar)}" alt="Radar" />
         ${radarOn ? `<span class="hub-slot-subkey">[N]</span>` : ''}
       `;
       radarCell.addEventListener('mouseenter', () => {
@@ -3628,7 +3255,7 @@ export class DoomInventory {
       walkieCell.innerHTML = `
         <span class="hub-slot-key">[R]</span>
         <span class="hub-slot-dot${walkieOn ? ' on-green' : ''}"></span>
-        <img class="hub-slot-sprite" src="${this.icons.walkie}" alt="Rádio VHF" />
+        <img class="hub-slot-sprite" src="${getInventoryItemIcon(ITEM_CATALOG.field_walkie_talkie)}" alt="Rádio VHF" />
       `;
       walkieCell.addEventListener('mouseenter', () => {
         this.wakeShortcutsHub(
@@ -3668,11 +3295,11 @@ export class DoomInventory {
       cell.dataset.hubQuick = String(q);
 
       if (entry) {
-        const iconSrc = this.icons[entry.def.kind];
+        const iconSrc = getInventoryItemIcon(entry.def);
         cell.title = `[${q + 1}] ${entry.def.name} — aperte ${q + 1} ou clique para usar`;
         cell.innerHTML = `
           <span class="hub-slot-key">[${q + 1}]</span>
-          <img class="hub-slot-sprite" src="${iconSrc}" alt="${entry.def.name}" />
+          <img class="hub-slot-sprite" src="${iconSrc}" alt="${escapeItemAttribute(entry.def.name)}" />
           ${
             entry.quantity > 1
               ? `<span class="hub-slot-qty">×${entry.quantity}</span>`
