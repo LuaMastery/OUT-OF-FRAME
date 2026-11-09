@@ -16,6 +16,7 @@ import {
 import { computeBinaryCanvasLayout } from '../src/terminal/TerminalBoot';
 import {
   computeShortcutsHubState,
+  DoomInventory,
   ITEM_CATALOG,
   QUICK_SLOT_COUNT,
   renderFirstPersonWebOverlay,
@@ -3599,6 +3600,404 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
       coordinator.destroy();
       guestClient.disconnect();
     } finally {
+      (globalThis as Record<string, unknown>).window = prevWindow;
+      (globalThis as Record<string, unknown>).document = prevDocument;
+    }
+  });
+
+  it('mantém nós DOM de itens estáveis sem cliques múltiplos no hover e aciona atalhos pela rolinha + botão esquerdo sem precisar das teclas 1, 2 e 3', () => {
+    interface InvMockEl {
+      tagName: string;
+      id: string;
+      className: string;
+      textContent: string;
+      title: string;
+      width: number;
+      height: number;
+      dataset: Record<string, string>;
+      style: Record<string, string>;
+      attrs: Map<string, string>;
+      children: InvMockEl[];
+      parent: InvMockEl | null;
+      listeners: Map<string, Array<(ev: Record<string, unknown>) => void>>;
+      classList: {
+        add: (...tokens: string[]) => void;
+        remove: (...tokens: string[]) => void;
+        toggle: (token: string, force?: boolean) => boolean;
+        contains: (token: string) => boolean;
+      };
+      appendChild: (child: InvMockEl) => InvMockEl;
+      remove: () => void;
+      querySelector: (selector: string) => InvMockEl | null;
+      querySelectorAll: (selector: string) => InvMockEl[];
+      addEventListener: (
+        type: string,
+        cb: (ev: Record<string, unknown>) => void
+      ) => void;
+      dispatch: (type: string, extra?: Record<string, unknown>) => void;
+      getBoundingClientRect: () => {
+        x: number;
+        y: number;
+        left: number;
+        top: number;
+        width: number;
+        height: number;
+      };
+      getContext: (kind: string) => Record<string, unknown>;
+      toDataURL: () => string;
+      innerHTML: string;
+    }
+
+    const matchesSingleSelector = (node: InvMockEl, sel: string): boolean => {
+      const s = sel.trim();
+      if (!s) return false;
+      const attrValMatch = /^\[([a-z0-9-]+)="([^"]*)"\]$/i.exec(s);
+      if (attrValMatch) {
+        const [, attrName, expected] = attrValMatch;
+        if (attrName.startsWith('data-')) {
+          const camel = attrName
+            .slice(5)
+            .replace(/-([a-z])/g, (_, c: string) => c.toUpperCase());
+          if (node.dataset[camel] === expected) return true;
+        }
+        return node.attrs.get(attrName) === expected;
+      }
+      const attrOnlyMatch = /^\[([a-z0-9-]+)\]$/i.exec(s);
+      if (attrOnlyMatch) {
+        const attrName = attrOnlyMatch[1];
+        if (attrName.startsWith('data-')) {
+          const camel = attrName
+            .slice(5)
+            .replace(/-([a-z])/g, (_, c: string) => c.toUpperCase());
+          if (camel in node.dataset) return true;
+        }
+        return node.attrs.has(attrName);
+      }
+      if (s.startsWith('.')) {
+        const parts = s
+          .replace(/:not\([^)]*\)/g, '')
+          .split('.')
+          .filter(Boolean);
+        return parts.every((cls) => node.classList.contains(cls));
+      }
+      return false;
+    };
+
+    const makeEl = (tag: string): InvMockEl => {
+      const classes = new Set<string>();
+      let html = '';
+      const imgBuf = new Uint8ClampedArray(384 * 240 * 4);
+      const ctx2d = {
+        fillStyle: '#000',
+        strokeStyle: '#000',
+        clearRect: () => {},
+        fillRect: () => {},
+        getImageData: (_x: number, _y: number, w: number, h: number) => ({
+          data: new Uint8ClampedArray(w * h * 4),
+          width: w,
+          height: h,
+        }),
+        createImageData: (w: number, h: number) => ({
+          data: imgBuf.subarray(0, w * h * 4),
+          width: w,
+          height: h,
+        }),
+        putImageData: () => {},
+        setTransform: () => {},
+        save: () => {},
+        restore: () => {},
+        beginPath: () => {},
+        moveTo: () => {},
+        lineTo: () => {},
+        stroke: () => {},
+        fillText: () => {},
+      };
+
+      const el: InvMockEl = {
+        tagName: tag.toUpperCase(),
+        id: '',
+        get className() {
+          return Array.from(classes).join(' ');
+        },
+        set className(val: string) {
+          classes.clear();
+          for (const t of val.split(/\s+/).filter(Boolean)) classes.add(t);
+        },
+        textContent: '',
+        title: '',
+        width: 32,
+        height: 32,
+        dataset: {},
+        style: {},
+        attrs: new Map(),
+        children: [],
+        parent: null,
+        listeners: new Map(),
+        classList: {
+          add: (...tokens) => tokens.forEach((t) => classes.add(t)),
+          remove: (...tokens) => tokens.forEach((t) => classes.delete(t)),
+          toggle: (token, force) => {
+            const next = force ?? !classes.has(token);
+            if (next) classes.add(token);
+            else classes.delete(token);
+            return next;
+          },
+          contains: (token) => classes.has(token),
+        },
+        appendChild(child: InvMockEl) {
+          child.parent = el;
+          el.children.push(child);
+          return child;
+        },
+        remove() {
+          if (!el.parent) return;
+          const idx = el.parent.children.indexOf(el);
+          if (idx >= 0) el.parent.children.splice(idx, 1);
+          el.parent = null;
+        },
+        querySelector(selector: string): InvMockEl | null {
+          return el.querySelectorAll(selector)[0] ?? null;
+        },
+        querySelectorAll(selector: string): InvMockEl[] {
+          const groups = selector.split(',').map((g) => g.trim());
+          const out: InvMockEl[] = [];
+          const visit = (node: InvMockEl) => {
+            for (const c of node.children) {
+              if (groups.some((g) => matchesSingleSelector(c, g))) {
+                out.push(c);
+              }
+              visit(c);
+            }
+          };
+          visit(el);
+          return out;
+        },
+        addEventListener(type, cb) {
+          const arr = el.listeners.get(type) ?? [];
+          arr.push(cb);
+          el.listeners.set(type, arr);
+        },
+        dispatch(type, extra = {}) {
+          const ev = {
+            type,
+            preventDefault: () => {},
+            stopPropagation: () => {},
+            ...extra,
+          };
+          for (const cb of el.listeners.get(type) ?? []) cb(ev);
+        },
+        getBoundingClientRect: () => ({
+          x: 10,
+          y: 10,
+          left: 10,
+          top: 10,
+          width: 80,
+          height: 80,
+        }),
+        getContext: () => ctx2d,
+        toDataURL: () => 'data:image/png;base64,AA==',
+        get innerHTML() {
+          return html;
+        },
+        set innerHTML(val: string) {
+          html = val;
+          el.children.length = 0;
+          const tagRe = /<([a-z0-9]+)\b([^>]*)>/gi;
+          let match: RegExpExecArray | null;
+          while ((match = tagRe.exec(val)) !== null) {
+            const tagName = match[1];
+            const attrsRaw = match[2];
+            const clsMatch = /\bclass="([^"]*)"/i.exec(attrsRaw);
+            const dataAttrRe = /\b(data-[a-z0-9-]+)(?:="([^"]*)")?/gi;
+            const foundData: Array<[string, string]> = [];
+            let dm: RegExpExecArray | null;
+            while ((dm = dataAttrRe.exec(attrsRaw)) !== null) {
+              foundData.push([dm[1], dm[2] ?? '']);
+            }
+            if (clsMatch || foundData.length > 0) {
+              const child = makeEl(tagName);
+              if (clsMatch) child.className = clsMatch[1];
+              for (const [k, v] of foundData) {
+                child.attrs.set(k, v);
+                const camel = k
+                  .slice(5)
+                  .replace(/-([a-z])/g, (_, c: string) => c.toUpperCase());
+                child.dataset[camel] = v;
+              }
+              el.appendChild(child);
+            }
+          }
+        },
+      };
+      return el;
+    };
+
+    const prevWindow = (globalThis as Record<string, unknown>).window;
+    const prevDocument = (globalThis as Record<string, unknown>).document;
+    const viewportEl = makeEl('div');
+
+    (globalThis as Record<string, unknown>).document = {
+      createElement: (tag: string) => makeEl(tag),
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    };
+    (globalThis as Record<string, unknown>).window = {
+      innerWidth: 1280,
+      innerHeight: 720,
+      devicePixelRatio: 1,
+      requestAnimationFrame: () => 1,
+      cancelAnimationFrame: () => {},
+      setTimeout: globalThis.setTimeout.bind(globalThis),
+      clearTimeout: globalThis.clearTimeout.bind(globalThis),
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    };
+    const prevRaf = globalThis.requestAnimationFrame;
+    const prevCaf = globalThis.cancelAnimationFrame;
+    globalThis.requestAnimationFrame = (() => 1) as unknown as typeof requestAnimationFrame;
+    globalThis.cancelAnimationFrame = (() => {}) as unknown as typeof cancelAnimationFrame;
+
+    try {
+      const sound = new SoundEngine();
+      let hoverSelectCalls = 0;
+      let clickSelectCalls = 0;
+      vi.spyOn(sound, 'playInventorySelect').mockImplementation((confirm) => {
+        if (confirm) clickSelectCalls++;
+        else hoverSelectCalls++;
+      });
+
+      let knifeUsedCount = 0;
+      let healUsedCount = 0;
+      let flareUsedCount = 0;
+
+      const inv = new DoomInventory(
+        viewportEl as unknown as HTMLElement,
+        sound,
+        {
+          onToggleFlashlightFromUI: () => {},
+          onUseHeal: () => {
+            healUsedCount++;
+            return true;
+          },
+          onUseBattery: () => true,
+          onUseFlare: () => {
+            flareUsedCount++;
+            return true;
+          },
+          onUseKnife: () => {
+            knifeUsedCount++;
+            return { cutWeb: true };
+          },
+          onCloseRequest: () => {},
+          onPermanentDeathTerminate: () => {},
+        }
+      );
+
+      // Coleta itens que preenchem automaticamente os atalhos [1], [2] e [3]!
+      inv.addItem('rusty_knife', 1, true); // -> [1]
+      inv.addItem('sterile_bandage', 2, true); // -> [2]
+      inv.addItem('magnesium_flare', 1, true); // -> [3]
+      expect(inv.getQuickSlots()).toEqual([
+        'rusty_knife',
+        'sterile_bandage',
+        'magnesium_flare',
+      ]);
+
+      // ----------------------------------------------------------------------
+      // PARTE 1: Estabilidade total no Hover (zero cliques repetidos a 60fps!)
+      // ----------------------------------------------------------------------
+      inv.setOpen(true);
+      hoverSelectCalls = 0;
+      clickSelectCalls = 0;
+
+      const gridEl = viewportEl.querySelector('[data-inv-grid]')!;
+      const quickRowEl = viewportEl.querySelector('[data-quick-row]')!;
+      expect(gridEl.children.length).toBe(12);
+      expect(quickRowEl.children.length).toBe(3);
+
+      const knifePocketNodeBefore = gridEl.children[1];
+      const quickSlot0NodeBefore = quickRowEl.children[0];
+
+      // Passa o cursor sobre o canivete no bolso (sem clicar!)
+      knifePocketNodeBefore.dispatch('mouseenter');
+      expect(hoverSelectCalls).toBe(1);
+      expect(clickSelectCalls).toBe(0);
+
+      // Disparo espúrio extra de mouseenter sem mouseleave NUNCA repete som!
+      knifePocketNodeBefore.dispatch('mouseenter');
+      expect(hoverSelectCalls).toBe(1);
+
+      // Simula 120 quadros (2 segundos a 60fps) de updateVitalsAndDiegeticFX enquanto o mouse repousa no item!
+      for (let f = 0; f < 120; f++) {
+        inv.updateVitalsAndDiegeticFX({
+          health: 85 - (f % 3) * 0.1,
+          sanity: 90,
+          battery: 78,
+          flashlightEquipped: true,
+          radarActive: false,
+          trappedInWeb: false,
+          bleeding: false,
+          crouching: false,
+          beingChased: false,
+        });
+      }
+
+      // Os nós DOM permanecem EXATAMENTE a mesma instância e o som de hover continua em 1 (nunca metralha cliques!)
+      expect(gridEl.children[1]).toBe(knifePocketNodeBefore);
+      expect(quickRowEl.children[0]).toBe(quickSlot0NodeBefore);
+      expect(hoverSelectCalls).toBe(1);
+      expect(clickSelectCalls).toBe(0);
+
+      // Passar o cursor na HUB inferior também mantém o nó DOM intacto!
+      inv.setOpen(false);
+      const hubBarEl = viewportEl.querySelector('[data-hub-bar]')!;
+      const hubQuick0Before = hubBarEl.querySelector('[data-hub-quick="0"]')!;
+      hubQuick0Before.dispatch('mouseenter');
+      const hubQuick0After = hubBarEl.querySelector('[data-hub-quick="0"]')!;
+      expect(hubQuick0After).toBe(hubQuick0Before);
+      expect(hubQuick0After.classList.contains('selected')).toBe(true);
+
+      // ----------------------------------------------------------------------
+      // PARTE 2: Rolinha do mouse + Botão Esquerdo aciona atalhos sem teclas 1, 2, 3!
+      // ----------------------------------------------------------------------
+      inv.clearWheelQuickSlotSelection();
+      expect(inv.hasWheelSelectedQuickSlot()).toBe(false);
+
+      // 1º giro da rolinha -> seleciona [1] Canivete oxidado
+      expect(inv.cycleQuickSlotSelection(1)).toBe(0);
+      expect(inv.hasWheelSelectedQuickSlot()).toBe(true);
+      expect(inv.isWheelSelectionRecent()).toBe(true);
+
+      // Clique com botão esquerdo -> usa imediatamente o Canivete sem apertar '1'!
+      expect(inv.useWheelSelectedQuickSlot()).toBe(true);
+      expect(knifeUsedCount).toBe(1);
+      // Ferramenta reutilizável permanece armada na janela ativa para cortar outra teia se clicar de novo
+      expect(inv.hasWheelSelectedQuickSlot()).toBe(true);
+
+      // 2º giro da rolinha -> avança para [2] Rolo de gaze (×2)
+      expect(inv.cycleQuickSlotSelection(1)).toBe(1);
+      expect(inv.getSelectedQuickSlot()).toBe(1);
+
+      // Clique com botão esquerdo -> aplica 1 Rolo de gaze sem apertar '2' e desarma para não desperdiçar a 2ª unidade!
+      expect(inv.useWheelSelectedQuickSlot()).toBe(true);
+      expect(healUsedCount).toBe(1);
+      expect(inv.hasWheelSelectedQuickSlot()).toBe(false);
+      expect(inv.useWheelSelectedQuickSlot()).toBe(false);
+      expect(healUsedCount).toBe(1);
+
+      // Girar para [3] Bastão de magnésio e cancelar com botão direito não consome o item!
+      inv.cycleQuickSlotSelection(1); // -> [1]
+      inv.cycleQuickSlotSelection(1); // -> [2]
+      expect(inv.cycleQuickSlotSelection(1)).toBe(2); // -> [3]
+      expect(inv.hasWheelSelectedQuickSlot()).toBe(true);
+      inv.clearWheelQuickSlotSelection();
+      expect(inv.hasWheelSelectedQuickSlot()).toBe(false);
+      expect(flareUsedCount).toBe(0);
+
+      inv.destroy();
+    } finally {
+      globalThis.requestAnimationFrame = prevRaf;
+      globalThis.cancelAnimationFrame = prevCaf;
       (globalThis as Record<string, unknown>).window = prevWindow;
       (globalThis as Record<string, unknown>).document = prevDocument;
     }

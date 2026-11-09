@@ -1208,16 +1208,46 @@ export class DoomGameApp {
           return;
         }
         this.sound.unlock();
+        const hadPointerLockBeforeClick = this.pointerLocked;
         if (!this.pointerLocked || !document.fullscreenElement) {
           this.tryPointerLock(true);
         }
+        if (
+          e.button === 2 &&
+          this.inventory.hasWheelSelectedQuickSlot()
+        ) {
+          e.preventDefault();
+          this.inventory.clearWheelQuickSlotSelection();
+          return;
+        }
         if (e.button === 0) {
+          if (
+            this.inventory.hasWheelSelectedQuickSlot() &&
+            (hadPointerLockBeforeClick || this.inventory.isWheelSelectionRecent())
+          ) {
+            this.inventory.useWheelSelectedQuickSlot();
+            this.struggleQueued = true;
+            this.isDragging = true;
+            this.lastMouseX = e.clientX;
+            this.lastMouseY = e.clientY;
+            return;
+          }
           this.interactQueued = true;
           this.struggleQueued = true;
         }
         this.isDragging = true;
         this.lastMouseX = e.clientX;
         this.lastMouseY = e.clientY;
+      },
+      sig
+    );
+
+    this.canvas.addEventListener(
+      'contextmenu',
+      (e) => {
+        if (!this.inventory.open && !this.multiplayer?.isChatTyping) {
+          e.preventDefault();
+        }
       },
       sig
     );

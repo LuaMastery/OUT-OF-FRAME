@@ -1485,14 +1485,29 @@ export class DoomInventory {
   );
   private selectedIndex = 0;
   private hoveredIndex: number | null = null;
+  private hoveredQuickSlotIndex: number | null = null;
+  private hoveredHubQuickIndex: number | null = null;
   private isOpen = false;
   private isGameOver = false;
   private pickupFlashTimer = 0;
   private animRafId = 0;
   private lastPlateTick = -1;
 
+  // Nós DOM persistentes dos 3 atalhos e 12 bolsos (jamais recriados sob o cursor para não disparar mouseenter repetido!)
+  private readonly quickSlotEls: HTMLDivElement[] = [];
+  private readonly quickSlotSignatures: string[] = new Array(
+    QUICK_SLOT_COUNT
+  ).fill('');
+  private readonly gridSlotEls: HTMLDivElement[] = [];
+  private readonly gridSlotSignatures: string[] = new Array(TOTAL_SLOTS).fill(
+    ''
+  );
+  private lastVitalsDomSignature = '';
+
   // Estado da HUB minimizada de atalhos no centro inferior da tela
   private selectedQuickSlot: number | null = null;
+  private wheelSelectionArmed = false;
+  private lastWheelSelectAtMs = 0;
   private triggeredHubSlotKey: string | null = null;
   private hubHovered = false;
   private hubActiveUntilMs = 0;
@@ -1815,11 +1830,14 @@ export class DoomInventory {
       () => this.collectInteractiveRects()
     );
 
+    this.initQuickSlotElements();
+    this.initGridSlotElements();
+
     this.addItem('tactical_lantern', 1, true);
-    this.renderQuickSlots();
-    this.renderGrid();
+    this.renderQuickSlots(true);
+    this.renderGrid(true);
     this.renderInspector();
-    this.renderVitals();
+    this.renderVitals(true);
     this.renderShortcutsHub(true);
     this.syncShortcutsHubVisibility();
   }
@@ -1869,19 +1887,26 @@ export class DoomInventory {
     if (this.isOpen === next) return;
     this.isOpen = next;
     this.hoveredIndex = null;
+    this.hoveredQuickSlotIndex = null;
+    this.hoveredHubQuickIndex = null;
     this.feedbackEl.textContent = '';
     if (next) {
+      this.wheelSelectionArmed = false;
+      this.selectedQuickSlot = null;
       this.overlayEl.classList.add('open');
-      this.renderVitals();
-      this.renderQuickSlots();
-      this.renderGrid();
+      this.renderVitals(true);
+      this.renderQuickSlots(true);
+      this.renderGrid(true);
       this.renderInspector();
       this.startAnatomyLoop();
     } else {
       this.overlayEl.classList.remove('open');
       this.stopAnatomyLoop();
       if (this.hasConfiguredShortcuts()) {
-        this.wakeShortcutsHub(3000, 'Atalhos configurados · [1–3] ou roda do mouse');
+        this.wakeShortcutsHub(
+          3000,
+          'Atalhos configurados · rolinha + clique esq. ou [1–3]'
+        );
       }
     }
     this.renderShortcutsHub(true);
@@ -2074,8 +2099,9 @@ export class DoomInventory {
       this.hubDecayTimerId = 0;
       if (!this.hubHovered && performance.now() >= this.hubActiveUntilMs - 16) {
         this.selectedQuickSlot = null;
+        this.wheelSelectionArmed = false;
         this.hubActiveCaption = '';
-        this.renderShortcutsHub();
+        this.syncHubInteractiveClasses();
       }
       this.syncShortcutsHubVisibility();
     }, durationMs + 40);
@@ -2083,15 +2109,35 @@ export class DoomInventory {
 
   private pulseHubSlotTrigger(slotKey: string): void {
     this.triggeredHubSlotKey = slotKey;
-    this.renderShortcutsHub(true);
+    this.syncHubInteractiveClasses();
     if (this.hubTriggerTimerId) {
       window.clearTimeout(this.hubTriggerTimerId);
     }
     this.hubTriggerTimerId = window.setTimeout(() => {
       this.hubTriggerTimerId = 0;
       this.triggeredHubSlotKey = null;
-      this.renderShortcutsHub(true);
+      this.syncHubInteractiveClasses();
     }, 220);
+  }
+
+  /**
+   * Atualiza classes de seleção (.selected) e pulso (.triggered) nos botões da HUB
+   * em local (sem esvaziar hubBarEl.innerHTML), evitando destruir o elemento sob o cursor!
+   */
+  private syncHubInteractiveClasses(): void {
+    const lanternEl = this.hubBarEl.querySelector('[data-hub-fixed="F"]');
+    lanternEl?.classList.toggle('triggered', this.triggeredHubSlotKey === 'F');
+
+    const radarEl = this.hubBarEl.querySelector('[data-hub-fixed="M"]');
+    radarEl?.classList.toggle('triggered', this.triggeredHubSlotKey === 'M');
+
+    const quickNodes = this.hubBarEl.querySelectorAll('[data-hub-quick]');
+    quickNodes.forEach((node) => {
+      const el = node as HTMLElement;
+      const q = Number(el.dataset.hubQuick ?? -1);
+      el.classList.toggle('selected', this.selectedQuickSlot === q);
+      el.classList.toggle('triggered', this.triggeredHubSlotKey === String(q));
+    });
   }
 
   private syncShortcutsHubVisibility(): void {
@@ -2142,13 +2188,77 @@ export class DoomInventory {
     const caption = entry
       ? `[${q + 1}] ${entry.def.name}${
           entry.quantity > 1 ? ` ×${entry.quantity}` : ''
-        } · [Q] ou [${q + 1}] usar`
+        } · Clique Esq. p/ usar`
       : `[${q + 1}] Vazio · aperte [Tab] p/ configurar`;
 
+    this.wheelSelectionArmed = true;
+    this.lastWheelSelectAtMs = performance.now();
     this.sound.playInventorySelect(false);
-    this.renderShortcutsHub(true);
-    this.wakeShortcutsHub(3800, caption);
+    this.renderShortcutsHub();
+    this.syncHubInteractiveClasses();
+    this.wakeShortcutsHub(6000, caption);
     return q;
+  }
+
+  /**
+   * Verdadeiro quando o jogador destacou um atalho rápido [1–3] pela rolinha do mouse
+   * e pode acioná-lo diretamente clicando com o botão esquerdo!
+   */
+  hasWheelSelectedQuickSlot(): boolean {
+    return this.wheelSelectionArmed && this.selectedQuickSlot !== null;
+  }
+
+  /**
+   * Verdadeiro nos segundos imediatamente após girar a rolinha do mouse (útil caso Pointer Lock não esteja ativo).
+   */
+  isWheelSelectionRecent(windowMs = 6000): boolean {
+    return (
+      this.hasWheelSelectedQuickSlot() &&
+      performance.now() - this.lastWheelSelectAtMs <= windowMs
+    );
+  }
+
+  /**
+   * Aciona o atalho [1–3] atualmente destacado pela rolinha do mouse ao clicar com o botão esquerdo,
+   * sem precisar apertar as teclas 1, 2 ou 3 no teclado!
+   */
+  useWheelSelectedQuickSlot(): boolean {
+    if (!this.wheelSelectionArmed || this.selectedQuickSlot === null) {
+      return false;
+    }
+    const target = this.selectedQuickSlot;
+    const itemId = this.quickSlots[target];
+    const def = itemId ? ITEM_CATALOG[itemId] : undefined;
+    const isReusableTool = Boolean(
+      def &&
+        (def.kind === 'knife' ||
+          def.kind === 'lantern' ||
+          def.kind === 'radar' ||
+          def.kind === 'key')
+    );
+
+    const activated = this.useQuickSlot(target);
+
+    if (isReusableTool && activated) {
+      // Mantém ferramentas reutilizáveis (ex.: canivete) prontas enquanto a HUB estiver acesa
+      this.wheelSelectionArmed = true;
+      this.selectedQuickSlot = target;
+      this.lastWheelSelectAtMs = performance.now();
+    } else {
+      // Consumíveis (gaze, láudano, sinalizador, bateria) ou slots vazios desarmam após 1 clique para nunca desperdiçar carga!
+      this.wheelSelectionArmed = false;
+      this.selectedQuickSlot = null;
+    }
+    this.syncHubInteractiveClasses();
+    return activated;
+  }
+
+  clearWheelQuickSlotSelection(): void {
+    this.wheelSelectionArmed = false;
+    this.selectedQuickSlot = null;
+    this.hubActiveCaption = '';
+    this.syncHubInteractiveClasses();
+    this.syncShortcutsHubVisibility();
   }
 
   /**
@@ -2156,7 +2266,13 @@ export class DoomInventory {
    */
   useSelectedQuickSlot(): boolean {
     const target = this.selectedQuickSlot ?? 0;
-    return this.useQuickSlot(target);
+    const activated = this.useQuickSlot(target);
+    if (this.wheelSelectionArmed) {
+      this.wheelSelectionArmed = false;
+      this.selectedQuickSlot = null;
+      this.syncHubInteractiveClasses();
+    }
+    return activated;
   }
 
   /**
@@ -2418,13 +2534,26 @@ export class DoomInventory {
     }
   }
 
-  private renderVitals(): void {
+  private renderVitals(force = false): void {
     const v = this.latestVitals;
     const hp = Math.max(0, Math.min(100, v.health));
     const san = Math.max(0, Math.min(100, v.sanity));
     const bat = Math.max(0, Math.min(100, v.battery));
+    const litCells = Math.round(bat / 10);
+    const lowBattery = bat > 0 && bat <= 22;
 
-    renderAnatomyCanvas(this.anatomyCtx, v, performance.now() / 1000);
+    if (force) {
+      renderAnatomyCanvas(this.anatomyCtx, v, performance.now() / 1000);
+    }
+
+    const hpTier = hp < 26 ? 0 : hp < 52 ? 1 : hp < 82 ? 2 : 3;
+    const sanTier = san < 30 ? 0 : san < 62 ? 1 : san < 84 ? 2 : 3;
+    const vitalsSig = `${hpTier}|${sanTier}|${litCells}|${lowBattery ? 1 : 0}|${
+      bat <= 0.5 ? 0 : v.flashlightEquipped ? 2 : 1
+    }|${v.bleeding ? 1 : 0}|${v.trappedInWeb ? 1 : 0}|${v.beingChased ? 1 : 0}`;
+
+    if (!force && vitalsSig === this.lastVitalsDomSignature) return;
+    this.lastVitalsDomSignature = vitalsSig;
 
     // Estado físico (qualitativo, sem "100%" ou barra genérica)
     let hpLabel = 'Íntegro';
@@ -2482,8 +2611,6 @@ export class DoomInventory {
       .join('');
 
     // Medidor físico de 10 células discretas para a lanterna
-    const litCells = Math.round(bat / 10);
-    const lowBattery = bat > 0 && bat <= 22;
     this.lanternStateEl.textContent =
       bat <= 0.5
         ? 'sem carga'
@@ -2501,49 +2628,39 @@ export class DoomInventory {
     this.lanternCellsEl.innerHTML = cellsHtml;
   }
 
-  private renderQuickSlots(): void {
+  /**
+   * Cria os 3 elementos de atalho rápido (.inv-quick-slot) UMA ÚNICA VEZ com listeners estáveis,
+   * eliminando completamente a recriação de DOM a 60fps que disparava mouseenter em loop!
+   */
+  private initQuickSlotElements(): void {
     this.quickRowEl.innerHTML = '';
+    this.quickSlotEls.length = 0;
 
     for (let q = 0; q < QUICK_SLOT_COUNT; q++) {
-      const itemId = this.quickSlots[q];
-      const slotIdx = itemId
-        ? this.slots.findIndex((s) => s !== null && s.def.id === itemId)
-        : -1;
-      const entry = slotIdx >= 0 ? this.slots[slotIdx] : null;
-
       const cell = document.createElement('div');
-      cell.className = `inv-quick-slot${entry ? ' bound' : ''}`;
+      cell.className = 'inv-quick-slot';
       cell.dataset.quickIndex = String(q);
 
-      if (entry) {
-        const iconSrc = this.icons[entry.def.kind];
-        cell.title = `[${q + 1}] ${entry.def.name} — clique para vincular item selecionado | botão direito para limpar`;
-        cell.innerHTML = `
-          <span class="inv-quick-key">[${q + 1}]</span>
-          <img class="inv-slot-sprite" src="${iconSrc}" alt="${entry.def.name}" />
-          ${
-            entry.quantity > 1
-              ? `<span class="inv-slot-qty">×${entry.quantity}</span>`
-              : ''
-          }
-        `;
-      } else {
-        cell.title = `Atalho [${q + 1}] vazio — clique para vincular o item selecionado`;
-        cell.innerHTML = `
-          <span class="inv-quick-key">[${q + 1}]</span>
-          <span class="inv-quick-empty-mark">—</span>
-        `;
-      }
-
       cell.addEventListener('mouseenter', () => {
+        if (this.hoveredQuickSlotIndex === q) return;
+        this.hoveredQuickSlotIndex = q;
         this.sound.playInventorySelect(false);
       });
 
+      cell.addEventListener('mouseleave', () => {
+        if (this.hoveredQuickSlotIndex === q) {
+          this.hoveredQuickSlotIndex = null;
+        }
+      });
+
       cell.addEventListener('click', () => {
+        const itemId = this.quickSlots[q];
+        const slotIdx = itemId
+          ? this.slots.findIndex((s) => s !== null && s.def.id === itemId)
+          : -1;
         const currentSelected = this.slots[this.selectedIndex];
         if (currentSelected && currentSelected.def.usable) {
           if (this.quickSlots[q] === currentSelected.def.id) {
-            // Se já é o próprio item selecionado, alterna/remove ou mantém com feedback claro
             this.toggleQuickSlotForSlot(this.selectedIndex, q);
           } else {
             this.assignQuickSlot(q, currentSelected.def.id);
@@ -2553,7 +2670,6 @@ export class DoomInventory {
           return;
         }
 
-        // Caso o bolso selecionado esteja vazio/não-utilizável, clicar num atalho ocupado foca aquele item!
         if (slotIdx >= 0) {
           this.selectedIndex = slotIdx;
           this.feedbackEl.textContent = '';
@@ -2577,35 +2693,140 @@ export class DoomInventory {
       });
 
       this.quickRowEl.appendChild(cell);
+      this.quickSlotEls.push(cell);
     }
   }
 
-  private renderGrid(): void {
-    const occupied = this.slots.filter((s) => s !== null).length;
-    this.slotCounterEl.textContent = `${occupied} / ${TOTAL_SLOTS}`;
+  private renderQuickSlots(force = false): void {
+    for (let q = 0; q < QUICK_SLOT_COUNT; q++) {
+      const cell = this.quickSlotEls[q];
+      if (!cell) continue;
 
+      const itemId = this.quickSlots[q];
+      const slotIdx = itemId
+        ? this.slots.findIndex((s) => s !== null && s.def.id === itemId)
+        : -1;
+      const entry = slotIdx >= 0 ? this.slots[slotIdx] : null;
+      const sig = entry ? `${entry.def.id}:${entry.quantity}` : '-';
+
+      if (!force && this.quickSlotSignatures[q] === sig) continue;
+      this.quickSlotSignatures[q] = sig;
+
+      cell.className = `inv-quick-slot${entry ? ' bound' : ''}`;
+      if (entry) {
+        const iconSrc = this.icons[entry.def.kind];
+        cell.title = `[${q + 1}] ${entry.def.name} — clique para vincular item selecionado | botão direito para limpar`;
+        cell.innerHTML = `
+          <span class="inv-quick-key">[${q + 1}]</span>
+          <img class="inv-slot-sprite" src="${iconSrc}" alt="${entry.def.name}" />
+          ${
+            entry.quantity > 1
+              ? `<span class="inv-slot-qty">×${entry.quantity}</span>`
+              : ''
+          }
+        `;
+      } else {
+        cell.title = `Atalho [${q + 1}] vazio — clique para vincular o item selecionado`;
+        cell.innerHTML = `
+          <span class="inv-quick-key">[${q + 1}]</span>
+          <span class="inv-quick-empty-mark">—</span>
+        `;
+      }
+    }
+  }
+
+  /**
+   * Cria os 12 bolsos (.inv-slot) UMA ÚNICA VEZ com listeners estáveis,
+   * garantindo zero disparo fantasma de clique/hover ao passar o mouse!
+   */
+  private initGridSlotElements(): void {
     this.gridEl.innerHTML = '';
+    this.gridSlotEls.length = 0;
+
     for (let i = 0; i < TOTAL_SLOTS; i++) {
-      const entry = this.slots[i];
       const slotEl = document.createElement('div');
+      slotEl.className = 'inv-slot';
+
+      slotEl.addEventListener('mouseenter', () => {
+        if (this.hoveredIndex === i) return;
+        this.hoveredIndex = i;
+        if (this.slots[i]) {
+          this.sound.playInventorySelect(false);
+        }
+      });
+
+      slotEl.addEventListener('mouseleave', () => {
+        if (this.hoveredIndex === i) {
+          this.hoveredIndex = null;
+        }
+      });
+
+      slotEl.addEventListener('click', () => {
+        const hasEntry = Boolean(this.slots[i]);
+        this.selectedIndex = i;
+        this.feedbackEl.textContent = '';
+        if (hasEntry) {
+          this.sound.playInventorySelect(true);
+        }
+        this.renderGrid();
+        this.renderInspector();
+      });
+
+      slotEl.addEventListener('dblclick', () => {
+        if (!this.slots[i]) return;
+        this.selectedIndex = i;
+        this.useSelectedItem();
+      });
+
+      this.gridEl.appendChild(slotEl);
+      this.gridSlotEls.push(slotEl);
+    }
+  }
+
+  private renderGrid(force = false): void {
+    const occupied = this.slots.filter((s) => s !== null).length;
+    const nextCounter = `${occupied} / ${TOTAL_SLOTS}`;
+    if (this.slotCounterEl.textContent !== nextCounter) {
+      this.slotCounterEl.textContent = nextCounter;
+    }
+
+    for (let i = 0; i < TOTAL_SLOTS; i++) {
+      const slotEl = this.gridSlotEls[i];
+      if (!slotEl) continue;
+
+      const entry = this.slots[i];
+      const isSelected = i === this.selectedIndex;
+      const showEquipDot = Boolean(
+        entry &&
+          (entry.def.kind === 'lantern' ||
+            entry.def.kind === 'knife' ||
+            entry.def.kind === 'radar')
+      );
+      const dotActive = Boolean(
+        entry &&
+          ((entry.def.kind === 'lantern' &&
+            this.latestVitals.flashlightEquipped) ||
+            (entry.def.kind === 'radar' &&
+              Boolean(this.latestVitals.radarActive)) ||
+            entry.def.kind === 'knife')
+      );
+      const boundShortcut = entry ? this.getShortcutForItem(entry.def.id) : -1;
+
+      const sig = entry
+        ? `${entry.def.id}|${entry.quantity}|${isSelected ? 1 : 0}|${boundShortcut}|${
+            dotActive ? 1 : 0
+          }`
+        : `empty|${isSelected ? 1 : 0}`;
+
+      if (!force && this.gridSlotSignatures[i] === sig) continue;
+      this.gridSlotSignatures[i] = sig;
+
       slotEl.className = `inv-slot${entry ? ' filled' : ''}${
-        i === this.selectedIndex ? ' selected' : ''
+        isSelected ? ' selected' : ''
       }`;
 
       if (entry) {
         const iconSrc = this.icons[entry.def.kind];
-        const showEquipDot =
-          entry.def.kind === 'lantern' ||
-          entry.def.kind === 'knife' ||
-          entry.def.kind === 'radar';
-        const dotActive =
-          (entry.def.kind === 'lantern' &&
-            this.latestVitals.flashlightEquipped) ||
-          (entry.def.kind === 'radar' &&
-            Boolean(this.latestVitals.radarActive)) ||
-          entry.def.kind === 'knife';
-        const boundShortcut = this.getShortcutForItem(entry.def.id);
-
         slotEl.title =
           boundShortcut >= 0
             ? `${entry.def.name} (Atalho [${boundShortcut + 1}])`
@@ -2628,40 +2849,10 @@ export class DoomInventory {
               : ''
           }
         `;
-
-        slotEl.addEventListener('mouseenter', () => {
-          this.hoveredIndex = i;
-          this.sound.playInventorySelect(false);
-        });
-
-        slotEl.addEventListener('mouseleave', () => {
-          if (this.hoveredIndex === i) {
-            this.hoveredIndex = null;
-          }
-        });
-
-        slotEl.addEventListener('click', () => {
-          this.selectedIndex = i;
-          this.feedbackEl.textContent = '';
-          this.sound.playInventorySelect(true);
-          this.renderGrid();
-          this.renderInspector();
-        });
-
-        slotEl.addEventListener('dblclick', () => {
-          this.selectedIndex = i;
-          this.useSelectedItem();
-        });
       } else {
-        slotEl.addEventListener('click', () => {
-          this.selectedIndex = i;
-          this.feedbackEl.textContent = '';
-          this.renderGrid();
-          this.renderInspector();
-        });
+        slotEl.title = '';
+        slotEl.innerHTML = '';
       }
-
-      this.gridEl.appendChild(slotEl);
     }
   }
 
@@ -2886,11 +3077,12 @@ export class DoomInventory {
 
     const sig = `${lanternOn ? 1 : 0}|${litFive}|${lowBat ? 1 : 0}|${
       hasRadar ? 1 : 0
-    }|${radarOn ? 1 : 0}|${this.selectedQuickSlot ?? -1}|${
-      this.triggeredHubSlotKey ?? '-'
-    }|${quickSigParts.join(',')}`;
+    }|${radarOn ? 1 : 0}|${quickSigParts.join(',')}`;
 
-    if (!force && sig === this.lastHubRenderSignature) return;
+    if (!force && sig === this.lastHubRenderSignature) {
+      this.syncHubInteractiveClasses();
+      return;
+    }
     this.lastHubRenderSignature = sig;
 
     this.hubBarEl.innerHTML = '';
@@ -2900,6 +3092,7 @@ export class DoomInventory {
     lanternCell.className = `hub-slot fixed-gear${
       this.triggeredHubSlotKey === 'F' ? ' triggered' : ''
     }`;
+    lanternCell.dataset.hubFixed = 'F';
     lanternCell.title = `[F] Lanterna de bolso (${lanternOn ? 'acesa' : 'guardada'})`;
     let miniSegs = '';
     for (let c = 0; c < 5; c++) {
@@ -2936,6 +3129,7 @@ export class DoomInventory {
       radarCell.className = `hub-slot fixed-gear${
         this.triggeredHubSlotKey === 'M' ? ' triggered' : ''
       }`;
+      radarCell.dataset.hubFixed = 'M';
       radarCell.title = `[M] Radar topográfico (${
         radarOn ? 'ativo · [N] zoom' : 'oculto'
       })`;
@@ -3003,8 +3197,10 @@ export class DoomInventory {
       }
 
       cell.addEventListener('mouseenter', () => {
+        if (this.hoveredHubQuickIndex === q) return;
+        this.hoveredHubQuickIndex = q;
         this.selectedQuickSlot = q;
-        this.renderShortcutsHub(true);
+        this.syncHubInteractiveClasses();
         this.wakeShortcutsHub(
           3000,
           entry
@@ -3013,6 +3209,12 @@ export class DoomInventory {
               }`
             : `[${q + 1}] Vazio · aperte [Tab] p/ configurar`
         );
+      });
+
+      cell.addEventListener('mouseleave', () => {
+        if (this.hoveredHubQuickIndex === q) {
+          this.hoveredHubQuickIndex = null;
+        }
       });
 
       cell.addEventListener('click', (e) => {
