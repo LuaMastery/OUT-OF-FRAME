@@ -51,6 +51,16 @@ import {
 } from '../src/doom/DoomShader';
 import { DoomSpider } from '../src/doom/DoomSpider';
 import { DoomSpiderWebManager } from '../src/doom/DoomSpiderWebs';
+import {
+  boostPlayerStamina,
+  canPlayerSlideWithStamina,
+  canPlayerSprintWithStamina,
+  createInitialStaminaState,
+  MAX_PLAYER_STAMINA,
+  STAMINA_EXHAUSTION_RECOVERY_THRESHOLD,
+  STAMINA_SLIDE_BURST_COST,
+  stepPlayerStaminaState,
+} from '../src/doom/DoomStamina';
 import { createDoomTextures } from '../src/doom/DoomTextures';
 import { DoomWorldItems } from '../src/doom/DoomWorldItems';
 import {
@@ -2138,11 +2148,14 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
     );
 
     // 1) Seleção inteligente de alvo multi-jogador: Host furtivo atrás de parede vs Convidado correndo de lanterna acesa perto da aranha!
-    const hostPos = gridCellToWorld(2, 13);
     const nearSpiderCell = worldToGridCell(
       hostSpider.position.x,
       hostSpider.position.z
     );
+    const hostPos =
+      nearSpiderCell.gx < 14
+        ? gridCellToWorld(25, 1)
+        : gridCellToWorld(2, 13);
     const guestPos = gridCellToWorld(nearSpiderCell.gx, nearSpiderCell.gz);
 
     const selected = hostSpider.selectBestMultiplayerCandidate([
@@ -2944,5 +2957,112 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
 
     // E o mapa arquitetônico 29x29 permanece 100% imutável!
     expect(LABYRINTH_MAP).toEqual(mapSnapshotBefore);
+  });
+
+  it('implementa sistema de estamina diegético completo (dreno na corrida e slide, exaustão, recuperação e tônico) com ZERO HUD na tela', () => {
+    const stam = createInitialStaminaState();
+    expect(stam.stamina).toBe(MAX_PLAYER_STAMINA);
+    expect(stam.exhausted).toBe(false);
+    expect(canPlayerSprintWithStamina(stam)).toBe(true);
+    expect(canPlayerSlideWithStamina(stam)).toBe(true);
+
+    // 1. Descansado (100%): fadiga zero e câmera sem balanço de falta de ar
+    const rested = stepPlayerStaminaState(stam, {
+      dt: 1 / 60,
+      isSprinting: false,
+      startedSlide: false,
+      isSliding: false,
+      isCrouching: false,
+      planarSpeed: 0,
+    });
+    expect(rested.fatigue01).toBe(0);
+    expect(rested.chestHeaveOffsetY).toBe(0);
+
+    // 2. Iniciar um deslize consome custo imediato de estamina
+    const afterSlide = stepPlayerStaminaState(stam, {
+      dt: 1 / 60,
+      isSprinting: false,
+      startedSlide: true,
+      isSliding: true,
+      isCrouching: true,
+      planarSpeed: 11.2,
+    });
+    expect(afterSlide.stamina).toBeCloseTo(
+      MAX_PLAYER_STAMINA - STAMINA_SLIDE_BURST_COST,
+      2
+    );
+
+    // 3. Correr continuamente esgota o fôlego até 0%, disparando `becameExhausted` uma única vez e travando sprint/slide
+    let exhaustedTriggerCount = 0;
+    for (let i = 0; i < 600; i++) {
+      const canRun = canPlayerSprintWithStamina(stam);
+      const res = stepPlayerStaminaState(stam, {
+        dt: 1 / 60,
+        isSprinting: canRun,
+        startedSlide: false,
+        isSliding: false,
+        isCrouching: false,
+        planarSpeed: canRun ? 8.9 : 5.2,
+      });
+      if (res.becameExhausted) {
+        exhaustedTriggerCount++;
+      }
+      if (stam.exhausted) break;
+    }
+    expect(exhaustedTriggerCount).toBe(1);
+    expect(stam.stamina).toBe(0);
+    expect(stam.exhausted).toBe(true);
+    expect(canPlayerSprintWithStamina(stam)).toBe(false);
+    expect(canPlayerSlideWithStamina(stam)).toBe(false);
+
+    // Confirma que `stepPlayerSlideState` bloqueia sprint e slide quando sem fôlego
+    const slideState = createInitialSlideState();
+    const blockedMove = stepPlayerSlideState(slideState, {
+      dt: 1 / 60,
+      holdingCtrl: true,
+      holdingShift: true,
+      wishX: 0,
+      wishZ: -1,
+      forwardX: 0,
+      forwardZ: -1,
+      velX: 0,
+      velZ: -8.0,
+      canStandUp: true,
+      ensnared: false,
+      injurySlow: 1,
+      webSpeedMultiplier: 1,
+      canSprint: canPlayerSprintWithStamina(stam),
+      canSlide: canPlayerSlideWithStamina(stam),
+    });
+    expect(blockedMove.sprinting).toBe(false);
+    expect(blockedMove.startedSlide).toBe(false);
+    expect(blockedMove.isSliding).toBe(false);
+
+    // 4. Parado recuperando o fôlego: produz oscilação respiratória sutil na câmera e destrava ao cruzar 26%
+    let maxHeave = 0;
+    for (let i = 0; i < 120; i++) {
+      const res = stepPlayerStaminaState(stam, {
+        dt: 1 / 60,
+        isSprinting: false,
+        startedSlide: false,
+        isSliding: false,
+        isCrouching: true,
+        planarSpeed: 0,
+      });
+      maxHeave = Math.max(maxHeave, Math.abs(res.chestHeaveOffsetY));
+    }
+    expect(maxHeave).toBeGreaterThan(0.004);
+    expect(stam.stamina).toBeGreaterThanOrEqual(
+      STAMINA_EXHAUSTION_RECOVERY_THRESHOLD
+    );
+    expect(stam.exhausted).toBe(false);
+    expect(canPlayerSprintWithStamina(stam)).toBe(true);
+
+    // 5. Frasco de láudano (`boostPlayerStamina`) restaura fôlego e limpa exaustão na hora
+    stam.stamina = 0;
+    stam.exhausted = true;
+    boostPlayerStamina(stam, 55);
+    expect(stam.stamina).toBe(55);
+    expect(stam.exhausted).toBe(false);
   });
 });

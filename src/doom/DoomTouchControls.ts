@@ -279,6 +279,11 @@ export class DoomTouchControls {
     return { yawDelta, pitchDelta };
   }
 
+  clearSprintLatch(): void {
+    this.sprintLatched = false;
+    this.sprintHeldByFinger = false;
+  }
+
   resetTransientInputs(): void {
     this.joyTouchId = null;
     this.lookTouchId = null;

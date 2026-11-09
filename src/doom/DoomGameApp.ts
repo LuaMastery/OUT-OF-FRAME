@@ -43,6 +43,14 @@ import {
   SpiderCinematicMode,
 } from './DoomSpider';
 import { DoomSpiderWebManager } from './DoomSpiderWebs';
+import {
+  boostPlayerStamina,
+  canPlayerSlideWithStamina,
+  canPlayerSprintWithStamina,
+  createInitialStaminaState,
+  STAMINA_EXHAUSTION_RECOVERY_THRESHOLD,
+  stepPlayerStaminaState,
+} from './DoomStamina';
 import { createDoomTextures } from './DoomTextures';
 import {
   computeAdaptiveVerticalFov,
@@ -98,6 +106,8 @@ export interface SlideStepInput {
   ensnared: boolean;
   injurySlow: number;
   webSpeedMultiplier: number;
+  canSprint?: boolean;
+  canSlide?: boolean;
 }
 
 export interface SlideStepResult {
@@ -134,6 +144,8 @@ export function stepPlayerSlideState(
     ensnared,
     injurySlow,
     webSpeedMultiplier,
+    canSprint = true,
+    canSlide = true,
   } = input;
 
   state.slideCooldown = Math.max(0, state.slideCooldown - dt);
@@ -144,7 +156,7 @@ export function stepPlayerSlideState(
 
   const runningNow =
     !ensnared &&
-    ((holdingShift && wishLenSq > 0.01) ||
+    ((holdingShift && canSprint && wishLenSq > 0.01) ||
       (state.wasSprinting && planarSpeed > 5.0) ||
       planarSpeed >= 6.8);
 
@@ -152,6 +164,7 @@ export function stepPlayerSlideState(
 
   if (
     !state.isSliding &&
+    canSlide &&
     justPressedCtrl &&
     runningNow &&
     state.slideCooldown <= 0
@@ -220,7 +233,7 @@ export function stepPlayerSlideState(
 
   const isCrouching = state.isSliding || holdingCtrl;
   const sprinting =
-    !isCrouching && !ensnared && holdingShift && wishLenSq > 0.01;
+    !isCrouching && !ensnared && canSprint && holdingShift && wishLenSq > 0.01;
 
   state.wasHoldingCtrl = holdingCtrl;
   state.wasSprinting = sprinting;
@@ -298,7 +311,9 @@ export class DoomGameApp {
   private touchCrouchLatched = false;
   private touchAutoUnlatchAfterSlide = false;
   private currentBaseDesktopFov = 74;
-  private sprintExertionSec = 0;
+  private readonly staminaState = createInitialStaminaState();
+  private staminaChestHeaveY = 0;
+  private staminaBreathPitch = 0;
   private readonly slideState = createInitialSlideState();
 
   // Sinais vitais
@@ -465,16 +480,22 @@ export class DoomGameApp {
         this.syncInventoryVitals();
       },
       onUseHeal: (healAmount, calmAmount, itemKind) => {
+        const canBoostStamina =
+          itemKind === 'morphine' && this.staminaState.stamina < 85;
         if (
           this.playerHealth >= 99.5 &&
           !this.playerBleeding &&
-          this.playerSanity >= 96
+          this.playerSanity >= 96 &&
+          !canBoostStamina
         ) {
           return false;
         }
         this.flashlight.triggerQuickItemAction(itemKind);
         this.playerHealth = Math.min(100, this.playerHealth + healAmount);
         this.playerSanity = Math.min(100, this.playerSanity + calmAmount);
+        if (itemKind === 'morphine') {
+          boostPlayerStamina(this.staminaState, 55);
+        }
         this.playerBleeding = false;
         this.syncInventoryVitals();
         return true;
@@ -579,6 +600,7 @@ export class DoomGameApp {
         const horizVel = Math.hypot(this.velocity.x, this.velocity.z);
         const sprintingNow =
           !this.wasCrouching &&
+          canPlayerSlideWithStamina(this.staminaState) &&
           (this.touchControls.isSprintRequested ||
             this.keys.has('ShiftLeft') ||
             this.keys.has('ShiftRight')) &&
@@ -1371,6 +1393,7 @@ export class DoomGameApp {
     this.setCameraFov(74);
     this.playerHealth = Math.max(this.playerHealth, 38);
     this.playerSanity = Math.max(this.playerSanity, 40);
+    boostPlayerStamina(this.staminaState, 65);
     this.sound.playWakeUpGasp();
     this.syncInventoryVitals();
     this.syncCamera(0);
@@ -1690,6 +1713,7 @@ export class DoomGameApp {
       this.playerHealth = 22;
       this.playerBleeding = true;
       this.playerSanity = 25;
+      boostPlayerStamina(this.staminaState, 80);
       // Acorda olhando para o corredor aberto de saída do ninho
       const dragDir = this.webManager.dragDirection;
       this.yaw = Math.atan2(dragDir.x, dragDir.z);
@@ -2003,6 +2027,8 @@ export class DoomGameApp {
     // Levemente mais lento quando gravemente ferido (<28% vida) para reforçar sensação de ferimento
     const injurySlow = this.playerHealth < 28 ? 0.88 : 1.0;
     const canStand = this.canStandUp();
+    const canSprintNow = canPlayerSprintWithStamina(this.staminaState);
+    const canSlideNow = canPlayerSlideWithStamina(this.staminaState);
 
     const slideStep = stepPlayerSlideState(this.slideState, {
       dt,
@@ -2018,6 +2044,8 @@ export class DoomGameApp {
       ensnared: this.webManager.isPlayerEnsnared,
       injurySlow,
       webSpeedMultiplier: webState.speedMultiplier,
+      canSprint: canSprintNow,
+      canSlide: canSlideNow,
     });
 
     const isSliding = slideStep.isSliding;
@@ -2044,15 +2072,31 @@ export class DoomGameApp {
       (crouchTarget - this.crouchAmount) *
       (1 - Math.exp(-(isSliding ? 18.0 : 12.5) * dt));
 
-    // Corrida livre sem trava de fôlego para que o jogador consiga correr bastante e despistar a aranha!
     const sprinting = !isCrouching && slideStep.sprinting;
+
+    const sprintFatigueMul =
+      this.staminaState.stamina >= 22
+        ? 1.0
+        : 0.82 + 0.18 * Math.max(0, this.staminaState.stamina / 22);
+    const walkExhaustionMul = this.staminaState.exhausted
+      ? 0.86 +
+        0.14 *
+          Math.min(
+            1,
+            this.staminaState.stamina / STAMINA_EXHAUSTION_RECOVERY_THRESHOLD
+          )
+      : 1.0;
 
     if (slideStep.overrideVelocity) {
       this.velocity.x = slideStep.outVelX;
       this.velocity.z = slideStep.outVelZ;
     } else {
       const baseMaxSpeed =
-        (isCrouching ? 2.75 : sprinting ? 9.1 : 6.2) * injurySlow;
+        (isCrouching
+          ? 2.75
+          : sprinting
+            ? 9.1 * sprintFatigueMul
+            : 6.2 * walkExhaustionMul) * injurySlow;
       const maxSpeed = baseMaxSpeed * webState.speedMultiplier;
 
       const accel = wish.lengthSq() > 0 ? 18.5 : 12.5;
@@ -2123,16 +2167,22 @@ export class DoomGameApp {
       this.lastBobHalfCycle = 0;
     }
 
-    // Fôlego imersivo dentro do capacete EVA durante corrida prolongada (sem limitar stamina)
-    if (sprinting && planarSpeed > 6.8) {
-      this.sprintExertionSec = Math.min(7.5, this.sprintExertionSec + dt);
-    } else {
-      this.sprintExertionSec = Math.max(0, this.sprintExertionSec - dt * 1.6);
+    // Sistema diegético de Estamina (100% sem HUD na tela — sentido pelo fôlego no capacete e movimento do tórax!)
+    const stamStep = stepPlayerStaminaState(this.staminaState, {
+      dt,
+      isSprinting: sprinting,
+      startedSlide: slideStep.startedSlide,
+      isSliding,
+      isCrouching,
+      planarSpeed,
+    });
+    this.staminaChestHeaveY = stamStep.chestHeaveOffsetY;
+    this.staminaBreathPitch = stamStep.breathPitchOffset;
+    if (stamStep.becameExhausted) {
+      this.sound.playExhaustionGasp();
+      this.touchControls.clearSprintLatch();
     }
-    if (this.sprintExertionSec > 2.2) {
-      const exertion01 = Math.min(1, (this.sprintExertionSec - 2.2) / 4.5);
-      this.sound.playSprintBreath(exertion01);
-    }
+    this.sound.playSprintBreath(stamStep.fatigue01, stamStep.exhausted);
 
     if (this.flashlight.isEquipped && this.lanternBattery > 0) {
       this.lanternBattery = Math.max(0, this.lanternBattery - dt * 0.62);
@@ -2378,7 +2428,11 @@ export class DoomGameApp {
       inCaptureSequence: false,
       isSprinting: sprinting,
       isCrouchedOrSliding: isCrouching || isSliding,
-      canTriggerSlide: sprinting && planarSpeed > 6.0 && !isSliding,
+      canTriggerSlide:
+        sprinting &&
+        planarSpeed > 6.0 &&
+        !isSliding &&
+        canPlayerSlideWithStamina(this.staminaState),
       interactContext: touchInteractContext,
       inMultiplayer: Boolean(this.multiplayer),
       isPushToTalkActive: Boolean(this.multiplayer?.localVoiceSpeaking),
@@ -2475,7 +2529,14 @@ export class DoomGameApp {
       ? Math.max(0.35, 1 - spiderDist / 16)
       : 0;
     const dangerInjury = Math.max(0, (55 - this.playerHealth) / 55);
-    const heartIntensity = Math.max(dangerChase, dangerInjury);
+    const dangerExhaustion = this.staminaState.exhausted
+      ? 0.42
+      : Math.max(0, (24 - this.staminaState.stamina) / 24) * 0.32;
+    const heartIntensity = Math.max(
+      dangerChase,
+      dangerInjury,
+      dangerExhaustion
+    );
     this.sound.playTensionHeartbeat(heartIntensity);
 
     this.syncInventoryVitals();
@@ -2552,11 +2613,11 @@ export class DoomGameApp {
 
     this.camera.position.set(
       this.position.x + shakeX,
-      currentEyeHeight + bobOffset + shakeY,
+      currentEyeHeight + bobOffset + this.staminaChestHeaveY + shakeY,
       this.position.z
     );
     const euler = new THREE.Euler(
-      this.pitch,
+      this.pitch + this.staminaBreathPitch,
       this.yaw,
       woundedSway + slideTilt,
       'YXZ'

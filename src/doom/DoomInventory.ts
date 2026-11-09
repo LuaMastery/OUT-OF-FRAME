@@ -142,7 +142,7 @@ export const ITEM_CATALOG: Record<string, InventoryItemDef> = {
     name: 'Frasco de láudano',
     category: 'Tônico',
     description:
-      'Vidro âmbar pesado deixado por equipes antigas. Ameniza a dor profunda rapidamente e reduz o tremor das mãos.',
+      'Vidro âmbar pesado deixado por equipes antigas. Ameniza a dor profunda rapidamente, reduz o tremor das mãos e devolve o fôlego.',
     stackable: true,
     usable: true,
     actionLabel: 'Beber dose',

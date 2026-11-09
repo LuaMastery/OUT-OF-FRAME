@@ -1491,25 +1491,33 @@ export class SoundEngine {
   }
 
   /**
-   * Respiração abafada dentro do visor do capacete EVA após corrida intensa contínua,
-   * trazendo imersão física sem limitar o fôlego da corrida!
+   * Respiração diegética dentro do capacete EVA refletindo em tempo real a estamina restante
+   * (sem poluir a tela com barras ou medidores de HUD!).
    */
-  playSprintBreath(exertion01: number): void {
+  playSprintBreath(exertion01: number, exhausted = false): void {
     const level = Math.max(0, Math.min(1, exertion01));
-    if (level < 0.15) return;
+    if (level < 0.14 && !exhausted) return;
 
     const nowMs = performance.now();
-    const intervalMs = 1_380 - level * 460;
+    const intervalMs = exhausted
+      ? 680
+      : 1_360 - level * 610;
     if (nowMs - this.lastSprintBreathMs < intervalMs) return;
     this.lastSprintBreathMs = nowMs;
 
     if (!this.isRunning() || !this.ctx || !this.worldDryBus) return;
     const now = this.ctx.currentTime;
 
-    // Expiração + inspiração suave com ressonância interna de capacete fechado
+    const gainMul = exhausted ? 1.38 : 1.0;
+    // Expiração + inspiração com ressonância acústica interna de capacete fechado
     const phases: ReadonlyArray<readonly [number, number, number, number]> = [
-      [0, 0.28, 720, 0.032 * level],
-      [0.36, 0.24, 960, 0.024 * level],
+      [0, exhausted ? 0.25 : 0.28, exhausted ? 680 : 720, 0.036 * level * gainMul],
+      [
+        exhausted ? 0.29 : 0.36,
+        exhausted ? 0.22 : 0.24,
+        exhausted ? 1_040 : 960,
+        0.028 * level * gainMul,
+      ],
     ];
     for (const [delay, dur, freq, peakGain] of phases) {
       if (!this.pinkNoiseBuffer) continue;
@@ -1521,11 +1529,11 @@ export class SoundEngine {
       const bp = this.ctx.createBiquadFilter();
       bp.type = 'bandpass';
       bp.frequency.value = freq;
-      bp.Q.value = 1.65;
+      bp.Q.value = exhausted ? 1.45 : 1.65;
 
       const g = this.ctx.createGain();
       g.gain.setValueAtTime(0.0005, t);
-      g.gain.linearRampToValueAtTime(peakGain, t + dur * 0.38);
+      g.gain.linearRampToValueAtTime(peakGain, t + dur * 0.35);
       g.gain.exponentialRampToValueAtTime(0.0005, t + dur);
 
       src.connect(bp);
@@ -1533,6 +1541,47 @@ export class SoundEngine {
       g.connect(this.worldDryBus);
       src.start(t, offset, dur + 0.02);
     }
+  }
+
+  /**
+   * Arquejo pesado imediato dentro do capacete quando a estamina esgota completamente (0%),
+   * comunicando ao jogador sem qualquer HUD que ele precisa recuperar o fôlego!
+   */
+  playExhaustionGasp(): void {
+    if (!this.isRunning() || !this.ctx || !this.worldDryBus) return;
+    const now = this.ctx.currentTime;
+
+    // Expiração pesada seguida de puxada funda de ar + pulsação surda no ouvido
+    this.triggerFilteredNoise(
+      this.worldDryBus,
+      now,
+      0.32,
+      640,
+      1.35,
+      0.072,
+      'pink'
+    );
+    this.triggerFilteredNoise(
+      this.worldDryBus,
+      now + 0.34,
+      0.36,
+      1_080,
+      1.55,
+      0.056,
+      'pink'
+    );
+
+    const pulse = this.ctx.createOscillator();
+    const pulseGain = this.ctx.createGain();
+    pulse.type = 'sine';
+    pulse.frequency.setValueAtTime(62, now);
+    pulse.frequency.exponentialRampToValueAtTime(28, now + 0.22);
+    pulseGain.gain.setValueAtTime(0.085, now);
+    pulseGain.gain.exponentialRampToValueAtTime(0.0008, now + 0.24);
+    pulse.connect(pulseGain);
+    pulseGain.connect(this.worldDryBus);
+    pulse.start(now);
+    pulse.stop(now + 0.25);
   }
 
   /** Movimento tátil do traje e equipamento ao agachar ou levantar (Ctrl / C) */
