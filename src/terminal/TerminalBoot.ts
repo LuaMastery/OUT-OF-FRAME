@@ -119,6 +119,7 @@ export class TerminalBootController {
   private mainMenuButtons: HTMLButtonElement[] = [];
   private titleBackdrop: TitleGameBackdrop | null = null;
   private titleBackdropStartFrame = 0;
+  private openingProgram = false;
   private titleParticles: TitleParticleLayer | null = null;
   private titleIntro: TitleTerminalIntroHandle | null = null;
   private titleIntroTimer = 0;
@@ -1141,6 +1142,7 @@ export class TerminalBootController {
     this.clearZoomLayer();
     this.proximityFx?.destroy();
     this.proximityFx = null;
+    this.openingProgram = false;
     this.transientTaskTab = null;
     this.phase = 'powered_off';
     this.closeStartMenu();
@@ -1159,11 +1161,105 @@ export class TerminalBootController {
     }, 650);
   }
 
-  /** Abre diretamente o menu do jogo, sem a antiga animação de aviso. */
+  /**
+   * Abre o menu do jogo a partir do ícone da área de trabalho:
+   * primeiro a aba do aplicativo abre em quadros retrô (degraus DOS), depois o
+   * menu toma a tela com as partículas e a impressão do terminal.
+   */
   private startProgramSequence(): void {
-    if (this.phase !== 'desktop') return;
+    if (this.openingProgram || this.phase !== 'desktop') return;
+    this.openingProgram = true;
     this.closeStartMenu();
     this.hiddenInputEl.blur();
+
+    const wsRect = this.workspaceEl.getBoundingClientRect();
+    const midW = Math.min(520, Math.max(280, wsRect.width - 48));
+    const midH = Math.min(280, Math.max(180, wsRect.height - 48));
+    const midLocalLeft = Math.floor((wsRect.width - midW) * 0.5);
+    const midLocalTop = Math.floor((wsRect.height - midH) * 0.5);
+    const iconRect = this.getIconScreenRect('out_of_frame');
+    const midScreenRect = {
+      x: wsRect.left + midLocalLeft,
+      y: wsRect.top + midLocalTop,
+      w: midW,
+      h: midH,
+    };
+
+    // Etapa 1: a janela/aba se abre do ícone em quadros discretos.
+    this.runSteppedFrameSequence({
+      from: iconRect,
+      to: midScreenRect,
+      steps: 4,
+      stepMs: 36,
+      title: 'out_of_frame.exe',
+      expanding: true,
+      onComplete: () => {
+        if (this.phase !== 'desktop') {
+          this.openingProgram = false;
+          return;
+        }
+
+        this.sound.windowOpen();
+        this.transientTaskTab = 'out_of_frame.exe';
+        this.renderTaskbarWindows();
+
+        // A aba aparece já "aberta", com o corpo do terminal em degraus.
+        const appWinEl = document.createElement('div');
+        appWinEl.className = 'tui-window focused opening';
+        appWinEl.style.width = `${midW}px`;
+        appWinEl.style.height = `${midH}px`;
+        appWinEl.style.left = `${midLocalLeft}px`;
+        appWinEl.style.top = `${midLocalTop}px`;
+        appWinEl.style.zIndex = String(++this.topZ);
+
+        const titlebar = document.createElement('div');
+        titlebar.className = 'tui-window-titlebar';
+        const titleSpan = document.createElement('span');
+        titleSpan.textContent = '[ out_of_frame.exe ]';
+        const controlsSpan = document.createElement('span');
+        controlsSpan.textContent = '[□] [X]';
+        titlebar.append(titleSpan, controlsSpan);
+
+        const body = document.createElement('div');
+        body.className = 'tui-window-body';
+        body.textContent = '> Executando out_of_frame.exe...';
+
+        appWinEl.append(titlebar, body);
+        this.workspaceEl.appendChild(appWinEl);
+
+        // Etapa 2: a aba latcheia e o menu ocupa a tela inteira.
+        const latchId = window.setTimeout(() => {
+          appWinEl.remove();
+          if (this.phase !== 'desktop') {
+            this.openingProgram = false;
+            this.transientTaskTab = null;
+            this.renderTaskbarWindows();
+            return;
+          }
+          this.runSteppedFrameSequence({
+            from: midScreenRect,
+            to: { x: 0, y: 0, w: window.innerWidth, h: window.innerHeight },
+            steps: 5,
+            stepMs: 32,
+            title: 'out_of_frame.exe',
+            expanding: true,
+            onComplete: () => {
+              this.openingProgram = false;
+              this.transientTaskTab = null;
+              this.renderTaskbarWindows();
+              this.openTitleMenu();
+            },
+          });
+        }, 170);
+
+        this.zoomTimers.push(latchId);
+      },
+    });
+  }
+
+  /** Exibe o menu com a condensação de partículas e a impressão do terminal. */
+  private openTitleMenu(): void {
+    if (this.phase !== 'desktop') return;
     this.phase = 'title_menu';
     this.menuIndex = 0;
     try {
@@ -1237,6 +1333,8 @@ export class TerminalBootController {
 
   private returnToDesktopFromTitle(): void {
     this.sound.stopCoalesceDrone();
+    this.openingProgram = false;
+    this.transientTaskTab = null;
     this.mainMenuEl.hidden = true;
     this.disposeTitleBackdrop();
     this.disposeTitleEffects();
@@ -1317,6 +1415,7 @@ export class TerminalBootController {
   }
 
   destroy(disposeAudio = false): void {
+    this.openingProgram = false;
     this.disposeTitleEffects();
     this.disposeTitleBackdrop();
     this.clearTimers();
