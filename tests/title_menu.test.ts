@@ -60,7 +60,19 @@ function createSequenceState(search = '') {
     titleIntroTimer: 0,
     mainMenuEl: { hidden: true },
     hiddenInputEl: { blur: vi.fn() },
-    sound: { unlock: vi.fn(), windowOpen: vi.fn() },
+    sound: {
+      unlock: vi.fn(),
+      windowOpen: vi.fn(),
+      startTerminalPowerBed: vi.fn(),
+      stopTerminalPowerBed: vi.fn(),
+      startBootBed: vi.fn(),
+      updateBootBed: vi.fn(),
+      stopBootBed: vi.fn(),
+      startTitlePad: vi.fn(),
+      stopTitlePad: vi.fn(),
+      stopCoalesceDrone: vi.fn(),
+      keyBackspace: vi.fn(),
+    },
     workspaceEl: {
       getBoundingClientRect: () => ({ left: 0, top: 0, width: 1024, height: 700 }),
       appendChild: (el: FakeElement) => appended.push(el),
@@ -71,6 +83,7 @@ function createSequenceState(search = '') {
     closeStartMenu: vi.fn(),
     renderTaskbarWindows: vi.fn(),
     getIconScreenRect: () => ({ x: 20, y: 20, w: 148, h: 76 }),
+    clearZoomLayer: vi.fn(),
     runSteppedFrameSequence: (opts: FrameCall) => {
       frames.push(opts);
     },
@@ -79,6 +92,13 @@ function createSequenceState(search = '') {
     },
     latchTimers: [] as Array<() => void>,
     openTitleMenu: vi.fn(),
+    disposeTitleBackdrop: vi.fn(),
+    disposeTitleEffects: vi.fn(),
+    titleIntro: null,
+    titleParticles: null,
+    titleBackdrop: null,
+    titleBackdropStartFrame: 0,
+
     playTitleParticles: vi.fn(),
     startTitleTerminalIntro: vi.fn(),
   };
@@ -95,7 +115,10 @@ function createSequenceState(search = '') {
     setTimeout: setTimeoutMock,
     clearTimeout: vi.fn(),
   });
-  vi.stubGlobal('document', { createElement: makeElement });
+  vi.stubGlobal('document', {
+    createElement: makeElement,
+    body: { classList: { remove: vi.fn(), add: vi.fn() } },
+  });
 
   return { state, setTimeoutMock };
 }
@@ -125,6 +148,8 @@ describe('Abertura da tela inicial', () => {
     // A janela aparece e a aba é registrada na barra de tarefas.
     state.finishLastFrameSequence();
     expect(state.sound.windowOpen).toHaveBeenCalled();
+    // O som do terminal começa devagar junto com a janela abrindo.
+    expect(state.sound.startTerminalPowerBed).toHaveBeenCalledWith(0.5);
     expect(state.transientTaskTab).toBe('out_of_frame.exe');
     expect(state.renderTaskbarWindows).toHaveBeenCalled();
     expect(state.appended).toHaveLength(1);
@@ -190,6 +215,9 @@ describe('Abertura da tela inicial', () => {
     expect(state.mainMenuEl.hidden).toBe(false);
     expect(state.menuIndex).toBe(selected);
     expect(state.playTitleParticles).toHaveBeenCalledOnce();
+    // O sopro da formação começa antes das partículas e o pad só depois.
+    expect(state.sound.startBootBed).toHaveBeenCalledOnce();
+    expect(state.sound.startTitlePad).not.toHaveBeenCalled();
     expect(state.startTitleTerminalIntro).not.toHaveBeenCalled();
 
     const timer = setTimeoutMock.mock.calls[0];
@@ -197,6 +225,33 @@ describe('Abertura da tela inicial', () => {
     expect(TITLE_PARTICLES_TOTAL_MS).toBe(
       TITLE_PARTICLE_TIMING.formMs + TITLE_PARTICLE_TIMING.settleMs
     );
+  });
+});
+
+describe('Trilha sonora da abertura em camadas', () => {
+  it('troca o sopro das partículas pelo pad do menu e encerra tudo ao sair', () => {
+    const { state } = createSequenceState();
+    const startIntro = (TerminalBootController.prototype as unknown as {
+      startTitleTerminalIntro(this: typeof state): void;
+    }).startTitleTerminalIntro;
+    // Sem DOM real o terminal não imprime, mas a troca de camadas sonoras
+    // acontece antes de qualquer acesso ao documento.
+    expect(() => startIntro.call(state)).toThrow();
+    expect(state.sound.startTitlePad).toHaveBeenCalledOnce();
+    expect(state.sound.stopBootBed).toHaveBeenCalled();
+
+    const back = (TerminalBootController.prototype as unknown as {
+      returnToDesktopFromTitle(this: typeof state): void;
+    }).returnToDesktopFromTitle;
+    back.call(state);
+    expect(state.sound.stopTitlePad).toHaveBeenCalled();
+    expect(state.sound.stopBootBed).toHaveBeenCalled();
+    expect(state.sound.stopTerminalPowerBed).toHaveBeenCalled();
+  });
+
+  it('mantém a abertura lenta: partículas levam segundos, não quadros', () => {
+    expect(TITLE_PARTICLE_TIMING.formMs).toBeGreaterThanOrEqual(2000);
+    expect(TITLE_PARTICLE_TIMING.settleMs).toBeGreaterThanOrEqual(600);
   });
 });
 

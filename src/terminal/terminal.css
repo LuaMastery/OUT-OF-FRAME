@@ -552,7 +552,7 @@
   pointer-events: none;
 }
 
-.oof-title-screen__background { opacity: 0; animation: oofTitleBackdropIn 1450ms cubic-bezier(.22,.61,.36,1) 220ms both; }
+.oof-title-screen__background { opacity: 0; animation: oofTitleBackdropIn 2400ms cubic-bezier(.22,.61,.36,1) 300ms both; }
 .oof-title-screen__background canvas {
   display: block;
   width: 100%;
@@ -582,7 +582,7 @@
   background-size: 100% 60%;
   background-repeat: no-repeat;
   opacity: 0;
-  animation: oofTitleScanSweep 700ms ease-out 1150ms 1 both;
+  animation: oofTitleScanSweep 900ms ease-out 2300ms 1 both;
 }
 
 @keyframes oofTitleScanSweep {
@@ -597,7 +597,7 @@
     linear-gradient(90deg, rgba(6, 10, 9, .96), rgba(6, 10, 9, .84) 27%, rgba(6, 10, 9, .22) 55%, rgba(6, 10, 9, .04) 100%),
     linear-gradient(0deg, rgba(5, 8, 7, .74), transparent 26%, rgba(5, 8, 7, .32));
   opacity: 0;
-  animation: oofTitleVeilIn 1600ms ease-out 260ms both;
+  animation: oofTitleVeilIn 2200ms ease-out 400ms both;
 }
 
 @keyframes oofTitleVeilIn {

@@ -1140,6 +1140,9 @@ export class TerminalBootController {
 
   private shutdownSystem(): void {
     this.clearZoomLayer();
+    this.sound.stopBootBed(0.4);
+    this.sound.stopTitlePad(0.4);
+    this.sound.stopTerminalPowerBed(0.4);
     this.proximityFx?.destroy();
     this.proximityFx = null;
     this.openingProgram = false;
@@ -1189,8 +1192,8 @@ export class TerminalBootController {
     this.runSteppedFrameSequence({
       from: iconRect,
       to: midScreenRect,
-      steps: 4,
-      stepMs: 36,
+      steps: 6,
+      stepMs: 92,
       title: 'out_of_frame.exe',
       expanding: true,
       onComplete: () => {
@@ -1200,6 +1203,8 @@ export class TerminalBootController {
         }
 
         this.sound.windowOpen();
+        // Zumbido do terminal entra devagar enquanto a aba termina de abrir.
+        this.sound.startTerminalPowerBed(0.5);
         this.transientTaskTab = 'out_of_frame.exe';
         this.renderTaskbarWindows();
 
@@ -1239,8 +1244,8 @@ export class TerminalBootController {
           this.runSteppedFrameSequence({
             from: midScreenRect,
             to: { x: 0, y: 0, w: window.innerWidth, h: window.innerHeight },
-            steps: 5,
-            stepMs: 32,
+            steps: 7,
+            stepMs: 78,
             title: 'out_of_frame.exe',
             expanding: true,
             onComplete: () => {
@@ -1250,7 +1255,7 @@ export class TerminalBootController {
               this.openTitleMenu();
             },
           });
-        }, 170);
+        }, 420);
 
         this.zoomTimers.push(latchId);
       },
@@ -1271,6 +1276,8 @@ export class TerminalBootController {
     this.mainMenuEl.hidden = false;
 
     // 1. As partículas se condensam e formam o fundo do jogo.
+    this.sound.stopTerminalPowerBed(1.1);
+    this.sound.startBootBed(0);
     this.playTitleParticles();
 
     // 2. Somente depois da condensação o terminal imprime o texto e as opções.
@@ -1290,7 +1297,9 @@ export class TerminalBootController {
     if (!container) return;
     container.innerHTML = '';
     try {
-      this.titleParticles = createTitleParticleLayer(container);
+      this.titleParticles = createTitleParticleLayer(container, (progress) => {
+        this.sound.updateBootBed(progress);
+      });
     } catch (error) {
       // Sem canvas 2D o menu continua utilizável, sem imagem fabricada.
       console.warn('Não foi possível exibir as partículas do menu:', error);
@@ -1300,6 +1309,9 @@ export class TerminalBootController {
   /** O terminal digita o título e, em seguida, cada opção do menu. */
   private startTitleTerminalIntro(): void {
     this.titleIntro?.destroy();
+    // O sopro das partículas cede lugar ao pad lento da tela inicial.
+    this.sound.stopBootBed(1.4);
+    this.sound.startTitlePad(0.55);
     this.titleIntro = playTitleTerminalIntro(this.mainMenuEl, this.sound, {
       onComplete: () => {
         this.syncMainMenuSelection(true);
@@ -1333,6 +1345,9 @@ export class TerminalBootController {
 
   private returnToDesktopFromTitle(): void {
     this.sound.stopCoalesceDrone();
+    this.sound.stopBootBed(0.5);
+    this.sound.stopTitlePad(0.6);
+    this.sound.stopTerminalPowerBed(0.5);
     this.openingProgram = false;
     this.transientTaskTab = null;
     this.mainMenuEl.hidden = true;
@@ -1374,6 +1389,8 @@ export class TerminalBootController {
 
   private executeMenuSelection(): void {
     this.finishTitleIntro();
+    this.sound.stopTitlePad(0.8);
+    this.sound.stopBootBed(0.4);
     if (this.menuIndex === 0) {
       // INICIAR (Modo Solo) — mantém o SoundEngine vivo para crossfade contínuo com o Labirinto DOOM!
       this.destroy(false);
@@ -1396,6 +1413,9 @@ export class TerminalBootController {
   }
 
   private disposeTitleEffects(): void {
+    this.sound.stopBootBed(0.4);
+    this.sound.stopTitlePad(0.4);
+    this.sound.stopTerminalPowerBed(0.4);
     if (this.titleIntroTimer) {
       window.clearTimeout(this.titleIntroTimer);
       this.titleIntroTimer = 0;

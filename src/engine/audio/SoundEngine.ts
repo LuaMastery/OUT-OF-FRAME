@@ -262,6 +262,17 @@ export class SoundEngine {
   private coalesceOscB: OscillatorNode | null = null;
   private lastGrainMs = 0;
 
+  // Ambiência da abertura do terminal (aba abrindo -> tela inicial)
+  private bootBedGain: GainNode | null = null;
+  private bootBedFilter: BiquadFilterNode | null = null;
+  private bootBedOscA: OscillatorNode | null = null;
+  private bootBedOscB: OscillatorNode | null = null;
+  private terminalHumGain: GainNode | null = null;
+  private terminalHumOsc: OscillatorNode | null = null;
+  private terminalHumOscB: OscillatorNode | null = null;
+  private titlePadGain: GainNode | null = null;
+  private titlePadOscillators: OscillatorNode[] = [];
+
   // Ambiência espacial e industrial do Labirinto DOOM
   private dungeonStarted = false;
   private dungeonActive = false;
@@ -735,6 +746,226 @@ export class SoundEngine {
     gain.connect(this.terminalBus);
     osc.start(now);
     osc.stop(now + 0.032);
+  }
+
+  // --------------------------------------------------------------------------
+  // Ambiência contínua da abertura: cada camada entra devagar e sustenta o som
+  // enquanto a janela, as partículas e o menu se formam na tela.
+  // --------------------------------------------------------------------------
+
+  /**
+   * Zumbido de fundo do terminal. Entra com fade longo e vai ganhando corpo
+   * conforme a janela/aba termina de abrir (`intensity` de 0 a 1).
+   */
+  startTerminalPowerBed(intensity = 0.35): void {
+    if (!this.isRunning() || !this.ctx || !this.terminalBus) return;
+    const ctx = this.ctx;
+    const now = ctx.currentTime;
+    this.stopTerminalPowerBed(0.4);
+
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.linearRampToValueAtTime(0.008 + intensity * 0.028, now + 1.2);
+
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(220, now);
+    filter.frequency.linearRampToValueAtTime(420 + intensity * 260, now + 1.6);
+    filter.Q.value = 1.2;
+
+    const oscA = ctx.createOscillator();
+    oscA.type = 'sawtooth';
+    oscA.frequency.setValueAtTime(48.5, now);
+    oscA.frequency.linearRampToValueAtTime(54.5, now + 1.4);
+
+    const oscB = ctx.createOscillator();
+    oscB.type = 'triangle';
+    oscB.frequency.setValueAtTime(72.8, now);
+
+    oscA.connect(filter);
+    oscB.connect(filter);
+    filter.connect(gain);
+    gain.connect(this.terminalBus);
+    oscA.start(now);
+    oscB.start(now);
+
+    this.terminalHumGain = gain;
+    this.terminalHumOsc = oscA;
+    this.terminalHumOscB = oscB;
+  }
+
+  /** Encerra o zumbido do terminal com fade (usado ao trocar de camada). */
+  stopTerminalPowerBed(fadeSeconds = 0.6): void {
+    if (!this.ctx) return;
+    const now = this.ctx.currentTime;
+    const gain = this.terminalHumGain;
+    const oscA = this.terminalHumOsc;
+    const oscB = this.terminalHumOscB;
+    this.terminalHumGain = null;
+    this.terminalHumOsc = null;
+    this.terminalHumOscB = null;
+    if (!gain) return;
+    gain.gain.cancelScheduledValues(now);
+    gain.gain.setTargetAtTime(0.0001, now, Math.max(0.02, fadeSeconds / 3));
+    window.setTimeout(() => {
+      try {
+        oscA?.stop();
+        oscB?.stop();
+        gain.disconnect();
+      } catch {
+        // já encerrados
+      }
+    }, Math.ceil(fadeSeconds * 1000) + 120);
+  }
+
+  /**
+   * Sopro/ruído de formação: acompanha as partículas que condensam o cenário.
+   * O `progress` (0 a 1) abre o filtro e sobe o volume devagar.
+   */
+  startBootBed(progress = 0): void {
+    if (!this.isRunning() || !this.ctx || !this.terminalBus) return;
+    const ctx = this.ctx;
+    const now = ctx.currentTime;
+    this.stopBootBed(0.5);
+
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.linearRampToValueAtTime(0.012 + progress * 0.05, now + 1.5);
+
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.Q.value = 0.9;
+    filter.frequency.setValueAtTime(320, now);
+    filter.frequency.linearRampToValueAtTime(900 + progress * 1500, now + 1.8);
+
+    const oscA = ctx.createOscillator();
+    oscA.type = 'sine';
+    oscA.frequency.setValueAtTime(110, now);
+    oscA.frequency.linearRampToValueAtTime(146.8, now + 2.4);
+
+    const oscB = ctx.createOscillator();
+    oscB.type = 'triangle';
+    oscB.frequency.setValueAtTime(164.8, now);
+
+    oscA.connect(filter);
+    filter.connect(gain);
+    gain.connect(this.terminalBus);
+    oscA.start(now);
+
+    this.bootBedGain = gain;
+    this.bootBedFilter = filter;
+    this.bootBedOscA = oscA;
+    this.bootBedOscB = oscB;
+  }
+
+  /** Atualiza a intensidade do sopro de formação (0 a 1). */
+  updateBootBed(progress: number): void {
+    if (!this.ctx || !this.bootBedGain || !this.bootBedFilter) return;
+    const now = this.ctx.currentTime;
+    const p = Math.max(0, Math.min(1, progress));
+    this.bootBedGain.gain.setTargetAtTime(0.012 + p * 0.055, now, 0.35);
+    this.bootBedFilter.frequency.setTargetAtTime(320 + p * 2100, now, 0.35);
+  }
+
+  stopBootBed(fadeSeconds = 0.8): void {
+    if (!this.ctx) return;
+    const now = this.ctx.currentTime;
+    const gain = this.bootBedGain;
+    const oscA = this.bootBedOscA;
+    const oscB = this.bootBedOscB;
+    this.bootBedGain = null;
+    this.bootBedFilter = null;
+    this.bootBedOscA = null;
+    this.bootBedOscB = null;
+    if (!gain) return;
+    gain.gain.cancelScheduledValues(now);
+    gain.gain.setTargetAtTime(0.0001, now, Math.max(0.02, fadeSeconds / 3));
+    window.setTimeout(() => {
+      try {
+        oscA?.stop();
+        oscB?.stop();
+        gain.disconnect();
+      } catch {
+        // já encerrados
+      }
+    }, Math.ceil(fadeSeconds * 1000) + 120);
+  }
+
+  /**
+   * Pad harmônico da tela inicial: acorde lento e grave que entra por baixo
+   * do menu, com brilho aberto aos poucos.
+   */
+  startTitlePad(volume = 0.5): void {
+    if (!this.isRunning() || !this.ctx || !this.terminalBus) return;
+    const ctx = this.ctx;
+    const now = ctx.currentTime;
+    this.stopTitlePad(0.6);
+
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.linearRampToValueAtTime(0.02 + volume * 0.045, now + 2.8);
+
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(260, now);
+    filter.frequency.linearRampToValueAtTime(1150, now + 3.4);
+    filter.Q.value = 0.7;
+    filter.connect(gain);
+    gain.connect(this.terminalBus);
+    if (this.reverbSend) gain.connect(this.reverbSend);
+
+    // Acorde de Lá menor aberto: fundamental, quinta, oitava e terça maior.
+    const voices: Array<[number, OscillatorType, number]> = [
+      [55, 'sine', 0.9],
+      [82.41, 'triangle', 0.55],
+      [110, 'sine', 0.5],
+      [164.81, 'sine', 0.32],
+      [220, 'triangle', 0.2],
+    ];
+    const oscillators: OscillatorNode[] = [];
+    voices.forEach(([freq, type, level], index) => {
+      const osc = ctx.createOscillator();
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq, now);
+      // Deriva minúscula dá vida ao pad sem soar desafinada.
+      osc.detune.setValueAtTime(index % 2 === 0 ? -3 : 3, now);
+      const voiceGain = ctx.createGain();
+      voiceGain.gain.setValueAtTime(0.0001, now);
+      voiceGain.gain.linearRampToValueAtTime(level, now + 2.2 + index * 0.35);
+      osc.connect(voiceGain);
+      voiceGain.connect(filter);
+      osc.start(now);
+      oscillators.push(osc);
+    });
+
+    this.titlePadGain = gain;
+    this.titlePadOscillators = oscillators;
+  }
+
+  stopTitlePad(fadeSeconds = 1.2): void {
+    if (!this.ctx) return;
+    const now = this.ctx.currentTime;
+    const gain = this.titlePadGain;
+    const oscillators = this.titlePadOscillators;
+    this.titlePadGain = null;
+    this.titlePadOscillators = [];
+    if (!gain) return;
+    gain.gain.cancelScheduledValues(now);
+    gain.gain.setTargetAtTime(0.0001, now, Math.max(0.02, fadeSeconds / 3));
+    window.setTimeout(() => {
+      for (const osc of oscillators) {
+        try {
+          osc.stop();
+        } catch {
+          // já encerrados
+        }
+      }
+      try {
+        gain.disconnect();
+      } catch {
+        // já desconectado
+      }
+    }, Math.ceil(fadeSeconds * 1000) + 150);
   }
 
   /** Avanço da barra de progresso combinando pulso harmônico + micro-seek de disco rígido */

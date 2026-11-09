@@ -15,8 +15,8 @@ export type TitleParticleTuning = {
 };
 
 export const TITLE_PARTICLE_TIMING: TitleParticleTuning = {
-  formMs: 1250,
-  settleMs: 420,
+  formMs: 2400,
+  settleMs: 760,
 };
 
 /** Duração total da entrada de partículas antes dos textos surgirem. */
@@ -67,7 +67,10 @@ function randomBetween(min: number, max: number): number {
  * Cria a camada decorativa dentro de `container` (um elemento já no DOM).
  * Retorna `null` quando não há canvas 2D disponível; o menu continua funcional.
  */
-export function createTitleParticleLayer(container: HTMLElement): TitleParticleLayer | null {
+export function createTitleParticleLayer(
+  container: HTMLElement,
+  onProgress?: (progress: number) => void
+): TitleParticleLayer | null {
   let canvas: HTMLCanvasElement;
   try {
     canvas = document.createElement('canvas');
@@ -165,6 +168,7 @@ export function createTitleParticleLayer(container: HTMLElement): TitleParticleL
     ctx.clearRect(0, 0, width, height);
     ctx.globalCompositeOperation = 'lighter';
     const settleStart = TITLE_PARTICLE_TIMING.formMs;
+    onProgress?.(Math.min(1, elapsed / (settleStart + TITLE_PARTICLE_TIMING.settleMs)));
 
     for (const particle of particles) {
       const local = (elapsed - particle.delay) / TITLE_PARTICLE_TIMING.formMs;

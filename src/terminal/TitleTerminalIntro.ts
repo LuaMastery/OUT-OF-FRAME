@@ -12,10 +12,12 @@ export type TitleTerminalIntroOptions = {
   onComplete?: () => void;
 };
 
-const TITLE_CHAR_MS = 68;
-const LABEL_CHAR_MS = 44;
-const LINE_PAUSE_MS = 110;
-const AFTER_TITLE_MS = 170;
+const TITLE_CHAR_MS = 86;
+const LABEL_CHAR_MS = 52;
+const LINE_PAUSE_MS = 150;
+const AFTER_TITLE_MS = 240;
+/** Pausa antes de a primeira linha do menu começar a ser impressa. */
+const BEFORE_LABELS_MS = 240;
 
 function prefersReducedMotion(): boolean {
   try {
@@ -156,7 +158,7 @@ export function playTitleTerminalIntro(
             sound?.keyType(false);
           }, i * (LINE_PAUSE_MS + 40));
         });
-      }, AFTER_TITLE_MS);
+      }, AFTER_TITLE_MS + BEFORE_LABELS_MS);
     }
   );
 
