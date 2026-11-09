@@ -1,6 +1,10 @@
 import * as THREE from 'three';
 import { StaticColliderBox } from '../engine/physics/SpatialSweep';
 import {
+  DoomArenaLayout,
+  getOrCreateSceneArenaLayout,
+} from './DoomArenaRandomizer';
+import {
   createDoomSurfaceMaterial,
   DoomSharedUniforms,
   MAX_DOOM_LIGHTS,
@@ -106,6 +110,7 @@ export interface DoomMazeResult {
   spawnYaw: number;
   lights: DoomLightSource[];
   lightPanelEmissionAttr: THREE.BufferAttribute | null;
+  arenaLayout: DoomArenaLayout;
 }
 
 /**
@@ -398,8 +403,10 @@ function pushCylinder(
 export function buildDoomLabyrinth(
   scene: THREE.Scene,
   textures: DoomTextureSet,
-  sharedUniforms: DoomSharedUniforms
+  sharedUniforms: DoomSharedUniforms,
+  explicitArenaLayout?: DoomArenaLayout
 ): DoomMazeResult {
+  const arenaLayout = getOrCreateSceneArenaLayout(scene, explicitArenaLayout);
   const rows = LABYRINTH_MAP.length;
   const cols = LABYRINTH_MAP[0].length;
   const halfW = cols * CELL_SIZE * 0.5;
@@ -523,8 +530,8 @@ export function buildDoomLabyrinth(
   southCeilMesh.position.set(0, WALL_HEIGHT, southCenterZ);
   root.add(southCeilMesh);
 
-  let spawnPosition = new THREE.Vector3(0, 0, 0);
-  const spawnYaw = -Math.PI * 0.5; // Olhando para Leste (+X) ao longo do corredor inicial
+  const spawnPosition = arenaLayout.playerSpawnPosition.clone();
+  const spawnYaw = arenaLayout.playerSpawnYaw;
 
   const half = CELL_SIZE * 0.5;
 
@@ -557,7 +564,9 @@ export function buildDoomLabyrinth(
   const ceilingFixtureCellKeys = new Set<string>(
     ceilingFixtureSpecs.map((s) => `${s.gx},${s.gz}`)
   );
-  ceilingFixtureCellKeys.add(`${LAIR_GRID_CELL.gx},${LAIR_GRID_CELL.gz}`);
+  ceilingFixtureCellKeys.add(
+    `${arenaLayout.lairCell.gx},${arenaLayout.lairCell.gz}`
+  );
 
   const isLightCell = (cx: number, cz: number): boolean =>
     cz >= 0 && cz < rows && cx >= 0 && cx < cols && LABYRINTH_MAP[cz][cx] === 'L';
@@ -567,10 +576,6 @@ export function buildDoomLabyrinth(
       const ch = LABYRINTH_MAP[gz][gx];
       const wx = cellToWorldX(gx);
       const wz = cellToWorldZ(gz);
-
-      if (ch === 'P') {
-        spawnPosition = new THREE.Vector3(wx, 0, wz);
-      }
 
       // ======================================================================
       // 1. VÃOS ABERTOS ('.' / 'P'): VIGAS, TUBULAÇÕES E QUADROS DE MINA SEM COLISÃO
@@ -1310,9 +1315,9 @@ export function buildDoomLabyrinth(
     );
   }
 
-  // E) Luminária industrial antiga suspensa e torta no teto do Grande Ninho da Aranha (LAIR_GRID_CELL)
-  const lairX = cellToWorldX(LAIR_GRID_CELL.gx);
-  const lairZ = cellToWorldZ(LAIR_GRID_CELL.gz);
+  // E) Luminária industrial antiga suspensa e torta no teto do Grande Ninho da Aranha (câmara aleatória da partida)
+  const lairX = cellToWorldX(arenaLayout.lairCell.gx);
+  const lairZ = cellToWorldZ(arenaLayout.lairCell.gz);
   pushCylinder(
     darkIronGeos,
     0.036,
@@ -1399,5 +1404,6 @@ export function buildDoomLabyrinth(
     spawnYaw,
     lights,
     lightPanelEmissionAttr,
+    arenaLayout,
   };
 }

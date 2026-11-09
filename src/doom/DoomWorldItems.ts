@@ -1,4 +1,8 @@
 import * as THREE from 'three';
+import {
+  DoomArenaLayout,
+  getOrCreateSceneArenaLayout,
+} from './DoomArenaRandomizer';
 import { DoomInventory } from './DoomInventory';
 import { gridCellToWorld } from './DoomMazeBuilder';
 import { ProbableEquipmentSignal } from './DoomRadar';
@@ -12,6 +16,8 @@ interface WorldPickupInstance {
   position: THREE.Vector3;
   cellWorldX: number;
   cellWorldZ: number;
+  radarJitterX: number;
+  radarJitterZ: number;
   collected: boolean;
 }
 
@@ -63,6 +69,7 @@ export class DoomWorldItems {
   private readonly root = new THREE.Group();
   private readonly pickups: WorldPickupInstance[] = [];
   private readonly activeFlares: ActiveMagnesiumFlare[] = [];
+  private readonly arenaLayout: DoomArenaLayout;
 
   private readonly matCrateWood: THREE.ShaderMaterial;
   private readonly matDarkIron: THREE.ShaderMaterial;
@@ -88,7 +95,12 @@ export class DoomWorldItems {
   private readonly matFlameMid: THREE.MeshBasicMaterial;
   private readonly matFlameCore: THREE.MeshBasicMaterial;
 
-  constructor(scene: THREE.Scene, sharedUniforms: DoomSharedUniforms) {
+  constructor(
+    scene: THREE.Scene,
+    sharedUniforms: DoomSharedUniforms,
+    explicitArenaLayout?: DoomArenaLayout
+  ) {
+    this.arenaLayout = getOrCreateSceneArenaLayout(scene, explicitArenaLayout);
     this.root.name = 'DoomWorldItems';
     scene.add(this.root);
 
@@ -551,52 +563,7 @@ export class DoomWorldItems {
   }
 
   private populateLabyrinthItems(): void {
-    const placements: Array<{
-      gx: number;
-      gz: number;
-      ox: number;
-      oz: number;
-      itemId: string;
-    }> = [
-      // 1. Setor Noroeste — Corredor de Chegada & Enfermaria Médica
-      { gx: 3, gz: 1, ox: 0.35, oz: -0.58, itemId: 'torn_log_04' },
-      { gx: 5, gz: 1, ox: 0.12, oz: 0.54, itemId: 'field_radar' },
-      { gx: 6, gz: 1, ox: 0.45, oz: -0.58, itemId: 'industrial_battery' },
-      { gx: 5, gz: 3, ox: -0.52, oz: -0.52, itemId: 'sterile_bandage' },
-      { gx: 9, gz: 5, ox: 0.52, oz: 0.52, itemId: 'old_morphine' },
-      { gx: 1, gz: 7, ox: -0.55, oz: 0.35, itemId: 'magnesium_flare' },
-
-      // 2. Ponte de Comando Norte & Galeria Central
-      { gx: 11, gz: 1, ox: 0.0, oz: -0.58, itemId: 'rusty_knife' },
-      { gx: 13, gz: 7, ox: -0.45, oz: 0.52, itemId: 'industrial_battery' },
-      { gx: 11, gz: 9, ox: -0.52, oz: -0.52, itemId: 'sterile_bandage' },
-      { gx: 17, gz: 13, ox: 0.52, oz: 0.52, itemId: 'magnesium_flare' },
-
-      // 3. Setor Nordeste — Salão dos Reatores & Passarela Leste
-      { gx: 19, gz: 3, ox: -0.52, oz: -0.52, itemId: 'industrial_battery' },
-      { gx: 24, gz: 5, ox: 0.48, oz: -0.42, itemId: 'magnesium_flare' },
-      { gx: 27, gz: 5, ox: 0.55, oz: 0.0, itemId: 'old_morphine' },
-
-      // 4. Alas Laterais — Logística Oeste & Subestação de Munições Leste
-      { gx: 3, gz: 9, ox: 0.0, oz: -0.56, itemId: 'industrial_battery' },
-      { gx: 3, gz: 15, ox: -0.42, oz: 0.54, itemId: 'sterile_bandage' },
-      { gx: 25, gz: 9, ox: 0.52, oz: -0.48, itemId: 'magnesium_flare' },
-      { gx: 25, gz: 15, ox: 0.45, oz: 0.54, itemId: 'industrial_battery' },
-
-      // 5. Divisória Blindada & Minas de Escavação Sudoeste
-      { gx: 15, gz: 17, ox: 0.42, oz: -0.52, itemId: 'sterile_bandage' },
-      { gx: 3, gz: 17, ox: -0.48, oz: -0.52, itemId: 'industrial_battery' },
-      { gx: 6, gz: 21, ox: 0.0, oz: 0.54, itemId: 'old_morphine' },
-      { gx: 3, gz: 25, ox: -0.48, oz: 0.52, itemId: 'magnesium_flare' },
-
-      // 6. Catacumbas Centrais, Santuário do Ninho & Cripta Abobadada Ala B (Sudeste)
-      { gx: 10, gz: 23, ox: -0.38, oz: -0.54, itemId: 'arachnid_report_09' },
-      { gx: 14, gz: 26, ox: 0.45, oz: 0.38, itemId: 'sterile_bandage' },
-      { gx: 23, gz: 17, ox: 0.0, oz: -0.55, itemId: 'industrial_battery' },
-      { gx: 25, gz: 26, ox: 0.48, oz: -0.48, itemId: 'sector_b_key' },
-    ];
-
-    placements.forEach((p, idx) => {
+    this.arenaLayout.cratePlacements.forEach((p, idx) => {
       const world = gridCellToWorld(p.gx, p.gz);
       const wx = world.x + p.ox;
       const wz = world.z + p.oz;
@@ -606,13 +573,13 @@ export class DoomWorldItems {
 
       // Caixote baixo de suprimentos esculpido voltado para o centro livre do corredor
       const crate = this.buildSupplyCrate();
-      crate.rotation.y = Math.atan2(-p.ox, -p.oz + 0.01);
+      crate.rotation.y = p.crateYaw;
       group.add(crate);
 
       // Apoiado FISICAMENTE sobre o forro interno do caixote (y = 0.095), alinhado à bandeja sem flutuar nem atravessar paredes!
       const itemMesh = this.buildItemMesh(p.itemId);
       itemMesh.position.set(0, 0.095, 0.01);
-      itemMesh.rotation.y = ((idx % 3) - 1) * 0.14;
+      itemMesh.rotation.y = p.itemTiltYaw;
       crate.add(itemMesh);
 
       this.root.add(group);
@@ -624,9 +591,28 @@ export class DoomWorldItems {
         position: new THREE.Vector3(wx, 0.18, wz),
         cellWorldX: world.x,
         cellWorldZ: world.z,
+        radarJitterX: p.radarJitterX,
+        radarJitterZ: p.radarJitterZ,
         collected: false,
       });
     });
+  }
+
+  /**
+   * Snapshot somente-leitura das instâncias geradas (útil para inspeção e testes).
+   */
+  getPickupsSnapshot(): ReadonlyArray<{
+    id: string;
+    itemId: string;
+    position: THREE.Vector3;
+    collected: boolean;
+  }> {
+    return this.pickups.map((p) => ({
+      id: p.id,
+      itemId: p.itemId,
+      position: p.position.clone(),
+      collected: p.collected,
+    }));
   }
 
   /**
@@ -1333,12 +1319,6 @@ export class DoomWorldItems {
       const p = this.pickups[i];
       if (p.collected) continue;
 
-      // Desvio determinístico sutil dentro da própria célula aberta (~0.4m) para leitura orgânica de "ponto provável"
-      const seedA = Math.sin((i + 1) * 12.9898) * 43758.5453;
-      const seedB = Math.sin((i + 1) * 78.233) * 24634.6345;
-      const jx = ((seedA - Math.floor(seedA)) * 2 - 1) * 0.42;
-      const jz = ((seedB - Math.floor(seedB)) * 2 - 1) * 0.42;
-
       const isHighSignature =
         p.itemId === 'rusty_knife' ||
         p.itemId === 'sector_b_key' ||
@@ -1346,8 +1326,8 @@ export class DoomWorldItems {
 
       signals.push({
         id: p.id,
-        probableX: p.cellWorldX + jx,
-        probableZ: p.cellWorldZ + jz,
+        probableX: p.cellWorldX + p.radarJitterX,
+        probableZ: p.cellWorldZ + p.radarJitterZ,
         uncertaintyRadiusM: isHighSignature ? 1.15 : 1.45,
         signalStrength: isHighSignature ? 1.0 : 0.84,
       });

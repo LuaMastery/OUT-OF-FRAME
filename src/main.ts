@@ -26,21 +26,25 @@ function createTerminalController(skipBootToDesktop: boolean): void {
 
       gameViewport.classList.remove('dormant');
       if (!doomApp) {
-        doomApp = new DoomGameApp(soundEngine, () => {
-          // Morte permanente ou saída da sala: destrói a sessão/mundo e retorna ao Terminal!
-          doomApp?.destroy();
-          doomApp = null;
+        doomApp = new DoomGameApp(
+          soundEngine,
+          () => {
+            // Morte permanente ou saída da sala: destrói a sessão/mundo e retorna ao Terminal!
+            doomApp?.destroy();
+            doomApp = null;
 
-          const oldCanvas = document.getElementById('webgl-canvas');
-          if (oldCanvas) {
-            const freshCanvas = document.createElement('canvas');
-            freshCanvas.id = 'webgl-canvas';
-            oldCanvas.replaceWith(freshCanvas);
-          }
+            const oldCanvas = document.getElementById('webgl-canvas');
+            if (oldCanvas) {
+              const freshCanvas = document.createElement('canvas');
+              freshCanvas.id = 'webgl-canvas';
+              oldCanvas.replaceWith(freshCanvas);
+            }
 
-          gameViewport.classList.add('dormant');
-          createTerminalController(true);
-        });
+            gameViewport.classList.add('dormant');
+            createTerminalController(true);
+          },
+          multiplayerSession
+        );
         doomApp.start();
       }
       doomApp.engageFromTerminal(multiplayerSession);

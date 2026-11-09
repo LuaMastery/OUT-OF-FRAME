@@ -21,6 +21,11 @@ import {
   renderFirstPersonWebOverlay,
 } from '../src/doom/DoomInventory';
 import {
+  createRandomArenaLayout,
+  findValidLairChambers,
+  hashArenaSeed,
+} from '../src/doom/DoomArenaRandomizer';
+import {
   buildDoomLabyrinth,
   evaluateDoomLightFlicker,
   gridCellToWorld,
@@ -28,6 +33,7 @@ import {
   isStoneSectorWorld,
   LABYRINTH_MAP,
   LAIR_GRID_CELL,
+  STONE_SECTOR_START_ROW,
   syncLightPanelEmissionAttribute,
   syncNearestDoomLightsToUniforms,
   WALL_HEIGHT,
@@ -881,7 +887,10 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
     // 2) Iluminação distribuída pelos 5 setores (>= 70 pontos luminosos) + streaming das luzes mais próximas
     expect(maze.lights.length).toBeGreaterThanOrEqual(70);
     expect(MAX_DOOM_LIGHTS).toBeGreaterThanOrEqual(48);
-    const lairWorld = gridCellToWorld(LAIR_GRID_CELL.gx, LAIR_GRID_CELL.gz);
+    const lairWorld = gridCellToWorld(
+      maze.arenaLayout.lairCell.gx,
+      maze.arenaLayout.lairCell.gz
+    );
     const uploaded = syncNearestDoomLightsToUniforms(
       maze.lights.map((l) => ({
         position: l.position,
@@ -897,11 +906,14 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
     );
     expect(nearestUploadedDist).toBeLessThan(1.0);
 
-    // 3) Transição acústica precisa entre setores industriais Norte e Catacumbas Sul
+    // 3) Transição acústica precisa entre setores industriais Norte e Catacumbas Sul (inclusive com spawn aleatório)
+    const northRef = gridCellToWorld(2, 1);
+    const southRef = gridCellToWorld(LAIR_GRID_CELL.gx, LAIR_GRID_CELL.gz);
+    expect(isStoneSectorWorld(northRef.x, northRef.z)).toBe(false);
+    expect(isStoneSectorWorld(southRef.x, southRef.z)).toBe(true);
     expect(
       isStoneSectorWorld(maze.spawnPosition.x, maze.spawnPosition.z)
-    ).toBe(false);
-    expect(isStoneSectorWorld(lairWorld.x, lairWorld.z)).toBe(true);
+    ).toBe(start.gz >= STONE_SECTOR_START_ROW);
 
     // 4) 24 caixotes de suprimento esculpidos e 100% alcançáveis em todos os setores
     const items = new DoomWorldItems(scene, shared);
@@ -1045,18 +1057,22 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
       expect(sig.uncertaintyRadiusM).toBeGreaterThan(1.0);
     }
 
-    // 2) Ao caminhar até (5, 1) no corredor inicial, o jogador encontra e ativa o Radar Topográfico!
+    // 2) Ao caminhar até a caixa aleatória onde o Radar Topográfico foi gerado, o jogador o encontra e ativa!
     const radar = new DoomRadar(null);
     expect(radar.hasRadar).toBe(false);
     expect(radar.isActive).toBe(false);
 
-    const radarCellWorld = gridCellToWorld(5, 1);
+    const radarCrate = items
+      .getPickupsSnapshot()
+      .find((p) => p.itemId === 'field_radar')!;
+    expect(radarCrate).toBeDefined();
+
     let radarPicked = false;
     items.updateAndCheckPickups(
       0.016,
       0,
-      new THREE.Vector3(radarCellWorld.x + 0.12, 0, radarCellWorld.z + 0.54),
-      new THREE.Vector3(radarCellWorld.x + 0.12, 1.72, radarCellWorld.z + 0.54),
+      new THREE.Vector3(radarCrate.position.x, 0, radarCrate.position.z),
+      new THREE.Vector3(radarCrate.position.x, 1.72, radarCrate.position.z),
       new THREE.Vector3(1, 0, 0),
       false,
       { addItem: () => true } as never,
@@ -1119,10 +1135,14 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
     } as unknown as CanvasRenderingContext2D;
 
     const explored = new Uint8Array(29 * 29);
-    explored[1 * 29 + 5] = 1;
+    const radarCell = worldToGridCell(
+      radarCrate.position.x,
+      radarCrate.position.z
+    );
+    explored[radarCell.gz * 29 + radarCell.gx] = 1;
     renderRadarMinimapCanvas(mockCtx, {
-      playerX: radarCellWorld.x,
-      playerZ: radarCellWorld.z,
+      playerX: radarCrate.position.x,
+      playerZ: radarCrate.position.z,
       playerYaw: -Math.PI * 0.5,
       elapsedSec: 2.5,
       mode: 'FULL',
@@ -1133,10 +1153,10 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
     // Verifica que os 24 anéis prováveis + feixe + cone direcional foram desenhados, além do núcleo branco na posição exata do jogador!
     expect(arcCalls).toBeGreaterThanOrEqual(26);
     const expectedPxX = Math.round(
-      ((radarCellWorld.x + (29 * 3) / 2) / (29 * 3)) * RADAR_CANVAS_SIZE
+      ((radarCrate.position.x + (29 * 3) / 2) / (29 * 3)) * RADAR_CANVAS_SIZE
     );
     const expectedPxY = Math.round(
-      ((radarCellWorld.z + (29 * 3) / 2) / (29 * 3)) * RADAR_CANVAS_SIZE
+      ((radarCrate.position.z + (29 * 3) / 2) / (29 * 3)) * RADAR_CANVAS_SIZE
     );
     const playerCoreDraw = drawOps.find(
       (op) =>
@@ -2799,5 +2819,130 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
         }
       }
     }
+  });
+
+  it('randomiza itens das caixas, posições das caixas, spawn do jogador, ninho, teias e aranha preservando o mapa 29x29 intacto', () => {
+    const mapSnapshotBefore = LABYRINTH_MAP.slice();
+    const lairChambers = findValidLairChambers();
+    expect(lairChambers.length).toBeGreaterThanOrEqual(10);
+
+    const uniqueSpawnCells = new Set<string>();
+    const uniqueLairCells = new Set<string>();
+    const uniqueSpiderCells = new Set<string>();
+    const uniqueRadarCells = new Set<string>();
+    const uniqueConsumableDistributions = new Set<string>();
+    const uniqueFirstCrateItems = new Set<string>();
+
+    for (let run = 0; run < 24; run++) {
+      const layout = createRandomArenaLayout({
+        worldSeed: 100001 + run * 7919,
+        playerSeed: 900007 + run * 104729,
+      });
+
+      // 1) Spawn do jogador em célula aberta segura, longe >= 18m da Aranha e sem armadilha no pé
+      expect(
+        isSolidCell(
+          LABYRINTH_MAP,
+          layout.playerSpawnCell.gx,
+          layout.playerSpawnCell.gz
+        )
+      ).toBe(false);
+
+      const spiderWorld = gridCellToWorld(
+        layout.spiderInitialSpawnCell.gx,
+        layout.spiderInitialSpawnCell.gz
+      );
+      const distPlayerToSpider = Math.hypot(
+        spiderWorld.x - layout.playerSpawnPosition.x,
+        spiderWorld.z - layout.playerSpawnPosition.z
+      );
+      expect(distPlayerToSpider).toBeGreaterThanOrEqual(18.0);
+
+      for (const trap of layout.initialWebTrapCells) {
+        expect(
+          Math.hypot(
+            trap.gx - layout.playerSpawnCell.gx,
+            trap.gz - layout.playerSpawnCell.gz
+          )
+        ).toBeGreaterThanOrEqual(2.5);
+      }
+
+      // 2) Olhar inicial do jogador aponta na direção de um corredor transitável (nunca colado na parede)
+      const lookStepX =
+        layout.playerSpawnPosition.x - Math.sin(layout.playerSpawnYaw) * 2.2;
+      const lookStepZ =
+        layout.playerSpawnPosition.z - Math.cos(layout.playerSpawnYaw) * 2.2;
+      const aheadCell = worldToGridCell(lookStepX, lookStepZ);
+      expect(
+        isSolidCell(LABYRINTH_MAP, aheadCell.gx, aheadCell.gz)
+      ).toBe(false);
+
+      // 3) Todas as 25 caixas caem em células abertas distintas, fora do spawn exato do jogador e com itens essenciais garantidos
+      expect(layout.cratePlacements.length).toBe(25);
+      const crateKeys = new Set<string>();
+      const itemCounts: Record<string, number> = {};
+      for (const c of layout.cratePlacements) {
+        expect(isSolidCell(LABYRINTH_MAP, c.gx, c.gz)).toBe(false);
+        expect(
+          c.gx === layout.playerSpawnCell.gx &&
+            c.gz === layout.playerSpawnCell.gz
+        ).toBe(false);
+        const key = `${c.gx},${c.gz}`;
+        expect(crateKeys.has(key)).toBe(false);
+        crateKeys.add(key);
+        itemCounts[c.itemId] = (itemCounts[c.itemId] ?? 0) + 1;
+        if (c.itemId === 'field_radar') {
+          uniqueRadarCells.add(key);
+        }
+      }
+
+      expect(itemCounts.field_radar).toBe(1);
+      expect(itemCounts.rusty_knife).toBe(1);
+      expect(itemCounts.sector_b_key).toBe(1);
+      expect(itemCounts.industrial_battery).toBeGreaterThanOrEqual(1);
+      expect(itemCounts.sterile_bandage).toBeGreaterThanOrEqual(1);
+      expect(itemCounts.magnesium_flare).toBeGreaterThanOrEqual(1);
+      expect(itemCounts.old_morphine).toBeGreaterThanOrEqual(1);
+
+      uniqueSpawnCells.add(
+        `${layout.playerSpawnCell.gx},${layout.playerSpawnCell.gz}`
+      );
+      uniqueLairCells.add(`${layout.lairCell.gx},${layout.lairCell.gz}`);
+      uniqueSpiderCells.add(
+        `${layout.spiderInitialSpawnCell.gx},${layout.spiderInitialSpawnCell.gz}`
+      );
+      uniqueFirstCrateItems.add(layout.cratePlacements[0].itemId);
+      uniqueConsumableDistributions.add(
+        `${itemCounts.industrial_battery}-${itemCounts.sterile_bandage}-${itemCounts.magnesium_flare}-${itemCounts.old_morphine}`
+      );
+    }
+
+    // Confirma alta diversidade real entre partidas em TODOS os sistemas!
+    expect(uniqueSpawnCells.size).toBeGreaterThanOrEqual(14);
+    expect(uniqueLairCells.size).toBeGreaterThanOrEqual(6);
+    expect(uniqueSpiderCells.size).toBeGreaterThanOrEqual(12);
+    expect(uniqueRadarCells.size).toBeGreaterThanOrEqual(12);
+    expect(uniqueFirstCrateItems.size).toBeGreaterThanOrEqual(4);
+    expect(uniqueConsumableDistributions.size).toBeGreaterThanOrEqual(5);
+
+    // Sincronismo Multiplayer Co-op por código de sala: mundo compartilhado idêntico, spawns individuais variados!
+    const roomWorldSeed = hashArenaSeed('oof-arena-world:SALA77');
+    const hostLayout = createRandomArenaLayout({
+      worldSeed: roomWorldSeed,
+      playerSeed: 11111,
+    });
+    const guestLayout = createRandomArenaLayout({
+      worldSeed: roomWorldSeed,
+      playerSeed: 22222,
+    });
+    expect(hostLayout.lairCell).toEqual(guestLayout.lairCell);
+    expect(hostLayout.cratePlacements).toEqual(guestLayout.cratePlacements);
+    expect(hostLayout.initialWebTrapCells).toEqual(
+      guestLayout.initialWebTrapCells
+    );
+    expect(hostLayout.playerSpawnCell).not.toEqual(guestLayout.playerSpawnCell);
+
+    // E o mapa arquitetônico 29x29 permanece 100% imutável!
+    expect(LABYRINTH_MAP).toEqual(mapSnapshotBefore);
   });
 });

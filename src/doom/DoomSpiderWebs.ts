@@ -1,13 +1,14 @@
 import * as THREE from 'three';
 import { SoundEngine } from '../engine/audio/SoundEngine';
 import {
+  DoomArenaLayout,
+  getOrCreateSceneArenaLayout,
+} from './DoomArenaRandomizer';
+import {
   CELL_SIZE,
-  DRAG_START_GRID_CELL,
   gridCellToWorld,
-  INITIAL_WEB_TRAP_CELLS,
   isSolidCell,
   LABYRINTH_MAP,
-  LAIR_GRID_CELL,
   WALL_HEIGHT,
   worldToGridCell,
 } from './DoomMazeBuilder';
@@ -589,6 +590,7 @@ export class DoomSpiderWebManager {
 
   readonly lairCenter: THREE.Vector3;
   readonly dragCorridorStart: THREE.Vector3;
+  readonly dragDirection: THREE.Vector3;
 
   private ensnaredRemaining = 0;
   private ensnaredMaxDuration = 2.85;
@@ -605,7 +607,12 @@ export class DoomSpiderWebManager {
   // Contador incrementado toda vez que fios ao redor do jogador se rompem / são cortados
   private webSnapBurstSeq = 0;
 
-  constructor(scene: THREE.Scene, sharedUniforms: DoomSharedUniforms) {
+  constructor(
+    scene: THREE.Scene,
+    sharedUniforms: DoomSharedUniforms,
+    explicitArenaLayout?: DoomArenaLayout
+  ) {
+    const arenaLayout = getOrCreateSceneArenaLayout(scene, explicitArenaLayout);
     this.root.name = 'DoomSpiderWebs';
     scene.add(this.root);
 
@@ -638,24 +645,28 @@ export class DoomSpiderWebManager {
       }
     );
 
-    const lairW = gridCellToWorld(LAIR_GRID_CELL.gx, LAIR_GRID_CELL.gz);
+    const lairW = gridCellToWorld(
+      arenaLayout.lairCell.gx,
+      arenaLayout.lairCell.gz
+    );
     this.lairCenter = new THREE.Vector3(lairW.x, 0, lairW.z);
+    this.dragDirection = arenaLayout.dragDirection.clone();
 
     const dragStartW = gridCellToWorld(
-      DRAG_START_GRID_CELL.gx,
-      DRAG_START_GRID_CELL.gz
+      arenaLayout.dragStartCell.gx,
+      arenaLayout.dragStartCell.gz
     );
     this.dragCorridorStart = new THREE.Vector3(
-      dragStartW.x,
+      dragStartW.x + this.dragDirection.x * 0.4,
       0,
-      dragStartW.z + 0.4
+      dragStartW.z + this.dragDirection.z * 0.4
     );
 
     this.buildMainSpiderLair();
     this.buildPlayerSnareTethers();
 
-    // Armadilhas iniciais distribuídas estrategicamente pelos 5 setores (fora do corredor de arrasto)
-    for (const tc of INITIAL_WEB_TRAP_CELLS) {
+    // Armadilhas iniciais distribuídas aleatoriamente pela arena (fora do spawn e do corredor de arrasto)
+    for (const tc of arenaLayout.initialWebTrapCells) {
       const presetW = gridCellToWorld(tc.gx, tc.gz);
       this.spawnWebTrap(presetW.x, presetW.z, true);
     }

@@ -16,6 +16,11 @@ import {
   ActiveRoomSession,
   isPlayerConsideredAfk,
 } from '../multiplayer/MultiplayerService';
+import {
+  createRandomArenaLayout,
+  createRandomArenaSeed,
+  hashArenaSeed,
+} from './DoomArenaRandomizer';
 import { DoomAstronaut } from './DoomAstronaut';
 import { DoomFlashlight } from './DoomFlashlight';
 import { DoomInventory } from './DoomInventory';
@@ -340,7 +345,8 @@ export class DoomGameApp {
 
   constructor(
     private readonly sound: SoundEngine,
-    private readonly onPermanentDeathExit?: () => void
+    private readonly onPermanentDeathExit?: () => void,
+    initialMultiplayerSession?: ActiveRoomSession
   ) {
     this.viewportEl = document.getElementById('game-viewport') as HTMLElement;
     this.canvas = document.getElementById('webgl-canvas') as HTMLCanvasElement;
@@ -387,11 +393,25 @@ export class DoomGameApp {
     this.sharedUniforms = createDoomSharedUniforms();
     this.flashlight = new DoomFlashlight(aspect);
 
+    // Gera layout aleatório a cada partida (caixas, itens, spawn do jogador, ninho, teias e aranha),
+    // mantendo o mundo sincronizado por código de sala no Co-op enquanto o spawn de cada jogador varia!
+    const arenaLayout = createRandomArenaLayout(
+      initialMultiplayerSession
+        ? {
+            worldSeed: hashArenaSeed(
+              `oof-arena-world:${initialMultiplayerSession.roomCode}`
+            ),
+            playerSeed: createRandomArenaSeed(),
+          }
+        : {}
+    );
+
     const textures = createDoomTextures();
     const maze = buildDoomLabyrinth(
       this.scene,
       textures,
-      this.sharedUniforms
+      this.sharedUniforms,
+      arenaLayout
     );
 
     this.colliders = maze.colliders;
@@ -411,16 +431,25 @@ export class DoomGameApp {
       false,
       false
     );
-    this.worldItems = new DoomWorldItems(this.scene, this.sharedUniforms);
-    this.radar = new DoomRadar(this.viewportEl);
+    this.worldItems = new DoomWorldItems(
+      this.scene,
+      this.sharedUniforms,
+      arenaLayout
+    );
+    this.radar = new DoomRadar(this.viewportEl, arenaLayout.lairCell);
     this.radar.markExploredAtWorld(this.position.x, this.position.z);
-    this.webManager = new DoomSpiderWebManager(this.scene, this.sharedUniforms);
+    this.webManager = new DoomSpiderWebManager(
+      this.scene,
+      this.sharedUniforms,
+      arenaLayout
+    );
     this.spider = new DoomSpider(
       this.scene,
       this.sharedUniforms,
       this.colliders,
       this.webManager,
-      this.sound
+      this.sound,
+      arenaLayout
     );
     this.spider.onWebTrapSpawned = (x, z) => {
       this.multiplayer?.notifyWebTrapSpawned(x, z);
@@ -1497,12 +1526,13 @@ export class DoomGameApp {
         this.position.copy(this.webManager.dragCorridorStart);
       }
 
+      const dragDir = this.webManager.dragDirection;
       this.currentAbductionMode = 'DRAGGING_TO_WEB';
       this.currentAbductionProgress = 0;
       this.currentAbductionSpiderPos.set(
-        this.position.x,
+        this.position.x + dragDir.x * 2.15,
         1.38,
-        this.position.z + 2.15
+        this.position.z + dragDir.z * 2.15
       );
       this.setCameraFov(68);
       this.astronaut.updateSupineAbductionPose(this.position, this.yaw, 0, false);
@@ -1515,7 +1545,9 @@ export class DoomGameApp {
     // ------------------------------------------------------------------------
     if (t < 4.65) {
       const u = (t - 2.05) / 2.6;
-      // Movimento em puxões rítmicos ("heave-and-drag") ao longo do corredor sul até o Ninho!
+      const dragDir = this.webManager.dragDirection;
+      const lookAtSpiderYaw = Math.atan2(-dragDir.x, -dragDir.z);
+      // Movimento em puxões rítmicos ("heave-and-drag") ao longo do corredor até o Ninho!
       const pullCycles = u * 4.0;
       const pullStep = Math.floor(pullCycles);
       if (pullStep !== this.lastDragPullStep) {
@@ -1547,18 +1579,19 @@ export class DoomGameApp {
         u > 0.78 ? ((u - 0.78) / 0.22) * 0.3 : 0
       );
 
-      // Olhando para +Z (direto para a Aranha Gigante andando de costas puxando suas pernas!)
+      // Olhando direto para a Aranha Gigante andando de costas puxando suas pernas!
       const jolt = Math.sin(pullCycles * Math.PI * 2) * 0.035;
-      this.yaw = Math.PI + Math.sin(t * 2.3) * 0.05;
+      this.yaw = lookAtSpiderYaw + Math.sin(t * 2.3) * 0.05;
       this.pitch = 0.22 + jolt * 0.9;
       this.roll = -0.17 + Math.sin(pullCycles * Math.PI * 2) * 0.05;
       this.cameraShake = 0.022;
       this.setCameraFov(68);
 
+      const lateralSway = Math.sin(t * 2.1) * 0.08;
       const spiderDragPos = new THREE.Vector3(
-        this.position.x + Math.sin(t * 2.1) * 0.08,
+        this.position.x + dragDir.x * 2.15 - dragDir.z * lateralSway,
         1.38 + Math.abs(jolt) * 0.8,
-        this.position.z + 2.15
+        this.position.z + dragDir.z * 2.15 + dragDir.x * lateralSway
       );
 
       this.currentAbductionMode = 'DRAGGING_TO_WEB';
@@ -1590,6 +1623,8 @@ export class DoomGameApp {
     // ------------------------------------------------------------------------
     if (t < 5.85) {
       const u = (t - 4.65) / 1.2;
+      const dragDir = this.webManager.dragDirection;
+      const lookAtSpiderYaw = Math.atan2(-dragDir.x, -dragDir.z);
       this.position.copy(this.webManager.lairCenter);
 
       const spinStep = Math.floor(u * 4);
@@ -1606,15 +1641,15 @@ export class DoomGameApp {
 
       this.inventory.setAbductionScreenFX(0, lidClosed, black, cocoon);
 
-      this.yaw = Math.PI + Math.sin(t * 4.5) * 0.04;
+      this.yaw = lookAtSpiderYaw + Math.sin(t * 4.5) * 0.04;
       this.pitch = 0.46;
       this.roll = -0.1 * (1 - u);
       this.cameraShake = 0.015;
 
       const spiderOverLair = new THREE.Vector3(
-        this.position.x,
+        this.position.x + dragDir.x * 1.05,
         1.36,
-        this.position.z + 1.05
+        this.position.z + dragDir.z * 1.05
       );
 
       this.currentAbductionMode = 'WEBBING_IN_LAIR';
@@ -1655,7 +1690,9 @@ export class DoomGameApp {
       this.playerHealth = 22;
       this.playerBleeding = true;
       this.playerSanity = 25;
-      this.yaw = 0; // Acorda olhando para o corredor norte de saída do ninho
+      // Acorda olhando para o corredor aberto de saída do ninho
+      const dragDir = this.webManager.dragDirection;
+      this.yaw = Math.atan2(dragDir.x, dragDir.z);
       this.syncInventoryVitals();
     }
 

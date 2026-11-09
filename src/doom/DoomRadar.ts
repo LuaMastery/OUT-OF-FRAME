@@ -47,7 +47,18 @@ export const RADAR_CANVAS_SIZE = 203; // 29 células × 7 px = 203 px exatos!
 /**
  * Nome tático do setor atual na planta 29x29 para orientação imediata do jogador.
  */
-export function getSectorNameForCell(gx: number, gz: number): string {
+export function getSectorNameForCell(
+  gx: number,
+  gz: number,
+  lairCell: { gx: number; gz: number } = LAIR_GRID_CELL
+): string {
+  if (
+    Math.abs(gx - lairCell.gx) <= 2 &&
+    Math.abs(gz - lairCell.gz) <= 2
+  ) {
+    return gz >= STONE_SECTOR_START_ROW ? 'GRANDE NINHO SUL' : 'NINHO DA ARANHA';
+  }
+
   if (gz < STONE_SECTOR_START_ROW) {
     if (gz <= 7 && gx <= 10) {
       if (gx >= 5 && gx <= 9 && gz >= 3 && gz <= 5) {
@@ -70,12 +81,6 @@ export function getSectorNameForCell(gx: number, gz: number): string {
     return 'PAIOL LESTE';
   }
 
-  if (
-    Math.abs(gx - LAIR_GRID_CELL.gx) <= 2 &&
-    Math.abs(gz - LAIR_GRID_CELL.gz) <= 2
-  ) {
-    return 'GRANDE NINHO SUL';
-  }
   if (gx <= 10) {
     return 'MINAS SUDOESTE';
   }
@@ -351,12 +356,17 @@ export class DoomRadar {
   private readonly signalsCountEl: HTMLSpanElement | null = null;
 
   private readonly exploredMask: Uint8Array;
+  private readonly lairCell: { gx: number; gz: number };
   private owned = false;
   private active = false;
   private scaleMode: RadarScaleMode = 'FULL';
   private lastDrawMs = -1;
 
-  constructor(parentViewport?: HTMLElement | null) {
+  constructor(
+    parentViewport?: HTMLElement | null,
+    lairCell: { gx: number; gz: number } = LAIR_GRID_CELL
+  ) {
+    this.lairCell = lairCell;
     const rows = LABYRINTH_MAP.length;
     const cols = LABYRINTH_MAP[0].length;
     this.exploredMask = new Uint8Array(rows * cols);
@@ -503,7 +513,11 @@ export class DoomRadar {
     const clampedGz = Math.max(0, Math.min(LABYRINTH_MAP.length - 1, gz));
 
     if (this.sectorEl) {
-      this.sectorEl.textContent = getSectorNameForCell(clampedGx, clampedGz);
+      this.sectorEl.textContent = getSectorNameForCell(
+        clampedGx,
+        clampedGz,
+        this.lairCell
+      );
     }
     if (this.coordsEl) {
       this.coordsEl.textContent = `SETOR [${String(clampedGx).padStart(2, '0')},${String(clampedGz).padStart(2, '0')}]`;

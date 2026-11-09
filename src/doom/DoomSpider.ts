@@ -6,13 +6,16 @@ import {
   countLabyrinthWallsBetween,
 } from '../multiplayer/ProximityVoiceChat';
 import {
+  DoomArenaLayout,
+  getOrCreateSceneArenaLayout,
+  pickRandomWalkableCellFarFrom,
+} from './DoomArenaRandomizer';
+import {
   CELL_SIZE,
   gridCellToWorld,
   isArchCell,
   isSolidCell,
   LABYRINTH_MAP,
-  SPIDER_INITIAL_SPAWN_CELL,
-  SPIDER_POST_ABDUCTION_CELL,
   WALL_HEIGHT,
   worldToGridCell,
 } from './DoomMazeBuilder';
@@ -439,14 +442,17 @@ export class DoomSpider {
   private readonly tmpInvBodyQuat = new THREE.Quaternion();
   private readonly tmpCoxaDir = new THREE.Vector3();
   private readonly tmpUnitZ = new THREE.Vector3(0, 0, 1);
+  private readonly arenaLayout: DoomArenaLayout;
 
   constructor(
     scene: THREE.Scene,
     sharedUniforms: DoomSharedUniforms,
     private readonly colliders: StaticColliderBox[],
     private readonly webManager: DoomSpiderWebManager,
-    private readonly sound: SoundEngine
+    private readonly sound: SoundEngine,
+    explicitArenaLayout?: DoomArenaLayout
   ) {
+    this.arenaLayout = getOrCreateSceneArenaLayout(scene, explicitArenaLayout);
     this.rootGroup.name = 'EvilCrawlingSpider';
     scene.add(this.rootGroup);
 
@@ -490,21 +496,31 @@ export class DoomSpider {
 
   respawnFarFromPlayer(): void {
     const startCell = gridCellToWorld(
-      SPIDER_INITIAL_SPAWN_CELL.gx,
-      SPIDER_INITIAL_SPAWN_CELL.gz
+      this.arenaLayout.spiderInitialSpawnCell.gx,
+      this.arenaLayout.spiderInitialSpawnCell.gz
     );
-    this.placeAtCell(startCell.x, startCell.z, 'CEILING');
+    this.placeAtCell(
+      startCell.x,
+      startCell.z,
+      this.arenaLayout.spiderInitialSurfaceMode
+    );
   }
 
   /**
-   * Reposiciona a aranha longe do Ninho após ela deixar o jogador preso na teia!
+   * Reposiciona a aranha em um ponto aleatório distante do Ninho após ela deixar o jogador preso na teia!
    */
   relocateAwayAfterAbduction(): void {
-    const farNorth = gridCellToWorld(
-      SPIDER_POST_ABDUCTION_CELL.gx,
-      SPIDER_POST_ABDUCTION_CELL.gz
+    const retreatCell = pickRandomWalkableCellFarFrom(
+      this.webManager.lairCenter.x,
+      this.webManager.lairCenter.z,
+      24.0
     );
-    this.placeAtCell(farNorth.x, farNorth.z, 'CEILING');
+    const farWorld = gridCellToWorld(retreatCell.gx, retreatCell.gz);
+    this.placeAtCell(
+      farWorld.x,
+      farWorld.z,
+      Math.random() < 0.7 ? 'CEILING' : 'FLOOR'
+    );
     this.postAbductionGraceTimer = 7.5;
   }
 
@@ -2205,23 +2221,12 @@ export class DoomSpider {
   }
 
   private pickFarRetreatPath(awayFrom: THREE.Vector3): void {
-    let bestWorld = gridCellToWorld(
-      SPIDER_POST_ABDUCTION_CELL.gx,
-      SPIDER_POST_ABDUCTION_CELL.gz
+    const retreatCell = pickRandomWalkableCellFarFrom(
+      awayFrom.x,
+      awayFrom.z,
+      22.0
     );
-    let bestDist = -1;
-
-    for (let gz = 1; gz < LABYRINTH_MAP.length - 1; gz++) {
-      for (let gx = 1; gx < LABYRINTH_MAP[gz].length - 1; gx++) {
-        if (isSolidCell(LABYRINTH_MAP, gx, gz)) continue;
-        const w = gridCellToWorld(gx, gz);
-        const d = Math.hypot(w.x - awayFrom.x, w.z - awayFrom.z);
-        if (d > bestDist) {
-          bestDist = d;
-          bestWorld = w;
-        }
-      }
-    }
+    const bestWorld = gridCellToWorld(retreatCell.gx, retreatCell.gz);
     this.buildGridPathTo(bestWorld.x, bestWorld.z);
   }
 
