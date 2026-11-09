@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { StaticColliderBox } from '../engine/physics/SpatialSweep';
 import {
   CELL_SIZE,
@@ -3227,6 +3228,80 @@ function createWhitePixelTexture(): THREE.DataTexture {
   return tex;
 }
 
+/** Peças das duas faces da comporta, compartilhadas por todas as salas. */
+function buildBlastDoorLeafGeometry(side: -1 | 1): {
+  shell: THREE.BufferGeometry;
+  frame: THREE.BufferGeometry;
+  armor: THREE.BufferGeometry;
+  accent: THREE.BufferGeometry;
+  status: THREE.BufferGeometry;
+} {
+  const shell = new THREE.BoxGeometry(1.07, 2.54, .18);
+  const parts: Record<'frame' | 'armor' | 'accent' | 'status', THREE.BufferGeometry[]> = {
+    frame: [], armor: [], accent: [], status: [],
+  };
+
+  const addBox = (bucket: keyof typeof parts, w: number, h: number, depth: number,
+    x: number, y: number, face: -1 | 1, surface: number) => {
+    const source = new THREE.BoxGeometry(w, h, depth);
+    const geometry = source.toNonIndexed();
+    source.dispose();
+    geometry.translate(x, y, face * (surface + depth / 2));
+    parts[bucket].push(geometry);
+  };
+  const addPlate = (bucket: keyof typeof parts, w: number, h: number, bevel: number,
+    depth: number, y: number, face: -1 | 1, surface: number) => {
+    const hw = w / 2, hh = h / 2;
+    const shape = new THREE.Shape();
+    shape.moveTo(-hw + bevel, -hh); shape.lineTo(hw - bevel, -hh);
+    shape.lineTo(hw, -hh + bevel); shape.lineTo(hw, hh - bevel);
+    shape.lineTo(hw - bevel, hh); shape.lineTo(-hw + bevel, hh);
+    shape.lineTo(-hw, hh - bevel); shape.lineTo(-hw, -hh + bevel);
+    shape.closePath();
+    const geometry = new THREE.ExtrudeGeometry(shape, { depth, bevelEnabled: false });
+    if (face < 0) geometry.rotateY(Math.PI);
+    geometry.translate(0, y, face * surface);
+    parts[bucket].push(geometry);
+  };
+  const addBolt = (x: number, y: number, face: -1 | 1) => {
+    const source = new THREE.CylinderGeometry(.018, .018, .009, 8);
+    const geometry = source.toNonIndexed();
+    source.dispose();
+    geometry.rotateX(Math.PI / 2);
+    geometry.translate(x, y, face * (.102 + .009 / 2));
+    parts.frame.push(geometry);
+  };
+
+  for (const face of [-1, 1] as const) {
+    // Placas chanfradas têm assentos distintos: base escura sobre a chapa,
+    // blindagem sobre a base. As faces jamais ocupam o mesmo plano.
+    for (const y of [-.63, .63]) {
+      addPlate('frame', .88, .91, .075, .012, y, face, .09);
+      addPlate('armor', .76, .79, .065, .008, y, face, .102);
+      for (const x of [-.395, .395]) for (const dy of [-.37, .37]) addBolt(x, y + dy, face);
+    }
+    // Trilhos longitudinais, barra central e respiradouros moldados no aço.
+    for (const x of [-.49, .49]) addBox('frame', .025, 2.30, .014, x, 0, face, .09);
+    addBox('frame', .96, .19, .018, 0, 0, face, .09);
+    for (const y of [.37, .44, .51, .58]) addBox('frame', .51, .023, .008, 0, y, face, .11);
+    // Puxador de inspeção e marcação cromática identificam cada setor.
+    addBox('frame', .47, .15, .010, 0, -.64, face, .11);
+    addBox('armor', .29, .026, .008, 0, -.64, face, .12);
+    addBox('accent', .53, .035, .008, 0, .89, face, .11);
+    addBox('status', .19, .075, .01, -side * .31, 0, face, .108);
+  }
+  const merged = (bucket: keyof typeof parts): THREE.BufferGeometry => {
+    const result = mergeGeometries(parts[bucket]);
+    for (const geometry of parts[bucket]) geometry.dispose();
+    if (!result) throw new Error('Falha ao construir a porta blindada.');
+    result.computeBoundingBox();
+    return result;
+  };
+  shell.computeBoundingBox();
+  return { shell, frame: merged('frame'), armor: merged('armor'),
+    accent: merged('accent'), status: merged('status') };
+}
+
 function buildSpecialRoomDoorsAndPlaques(
   parentGroup: THREE.Group,
   mats: RoomMaterials,
@@ -3249,18 +3324,11 @@ function buildSpecialRoomDoorsAndPlaques(
   const plaquePlaneGeo = new THREE.PlaneGeometry(1.3, 0.36);
   const miniMapPlaneGeo = new THREE.PlaneGeometry(0.76, 0.76);
   const miniMapFrameGeo = new THREE.BoxGeometry(0.86, 0.86, 0.048);
-  const leafMainGeo = new THREE.BoxGeometry(1.075, portalClearH - 0.03, 0.22);
-  const leafInsetGeo = new THREE.BoxGeometry(0.84, 1.96, 0.25);
-  const leafBarGeo = new THREE.BoxGeometry(1.06, 0.16, 0.27);
-  const leafLedGeo = new THREE.BoxGeometry(0.22, 0.08, 0.285);
+  const leftGeometry = buildBlastDoorLeafGeometry(-1);
+  const rightGeometry = buildBlastDoorLeafGeometry(1);
   disposableGeometries.push(
-    plaquePlaneGeo,
-    miniMapPlaneGeo,
-    miniMapFrameGeo,
-    leafMainGeo,
-    leafInsetGeo,
-    leafBarGeo,
-    leafLedGeo
+    plaquePlaneGeo, miniMapPlaneGeo, miniMapFrameGeo,
+    ...Object.values(leftGeometry), ...Object.values(rightGeometry)
   );
 
   const doors: SpecialRoomDoorInstance[] = [];
@@ -3346,24 +3414,27 @@ function buildSpecialRoomDoorsAndPlaques(
     });
     disposableMaterials.push(ledMat);
 
+    const accentMat = createDoomPropMaterial(whiteTex, sharedUniforms, {
+      baseLight: .48, emissiveBoost: .12, tint: new THREE.Color(r.accentHex),
+    });
+    disposableMaterials.push(accentMat);
+
     const buildDoorLeaf = (side: -1 | 1): THREE.Group => {
       const leaf = new THREE.Group();
-      leaf.position.set(side * 0.54, portalClearH * 0.5, 0);
-
-      const mainPanel = new THREE.Mesh(leafMainGeo, mats.metalTrim);
-      leaf.add(mainPanel);
-
-      const armorInset = new THREE.Mesh(leafInsetGeo, mats.darkIron);
-      leaf.add(armorInset);
-
-      const lockBar = new THREE.Mesh(leafBarGeo, mats.darkIron);
-      lockBar.position.y = -0.06;
-      leaf.add(lockBar);
-
-      const ledIndicator = new THREE.Mesh(leafLedGeo, ledMat);
-      ledIndicator.position.set(-side * 0.3, 0.14, 0);
-      leaf.add(ledIndicator);
-
+      leaf.position.set(side * .54, portalClearH * .5 + .005, 0);
+      const geometry = side < 0 ? leftGeometry : rightGeometry;
+      const layers: Array<[string, THREE.BufferGeometry, THREE.Material]> = [
+        ['Shell', geometry.shell, mats.metalTrim],
+        ['FrameAndVents', geometry.frame, mats.darkIron],
+        ['ArmorPlates', geometry.armor, mats.metalTrim],
+        ['SectorMark', geometry.accent, accentMat],
+        ['LockStatus', geometry.status, ledMat],
+      ];
+      for (const [name, geo, material] of layers) {
+        const mesh = new THREE.Mesh(geo, material);
+        mesh.name = `BlastDoor${name}`;
+        leaf.add(mesh);
+      }
       return leaf;
     };
 
