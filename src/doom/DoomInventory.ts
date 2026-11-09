@@ -3129,7 +3129,7 @@ export class DoomInventory {
       this.sound.playInventorySelect(true);
       if (!fromQuickShortcut) {
         this.feedbackEl.textContent =
-          'Chave empunhada pelo astronauta. Nenhuma fechadura compatível por perto.';
+          'Chave empunhada pelo operador. Nenhuma fechadura compatível por perto.';
         this.callbacks.onCloseRequest();
       }
       return true;

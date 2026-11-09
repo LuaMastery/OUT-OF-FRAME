@@ -412,7 +412,7 @@ export const DOOM_SETTINGS_DESCRIPTORS: ReadonlyArray<SettingControlSpec> = [
     category: 'interface',
     label: 'Mão Dominante em 1ª Pessoa',
     description:
-      'Define o lado em que o astronauta empunha a lanterna e ferramentas na tela.',
+      'Define o lado em que o traje biológico empunha a lanterna e ferramentas na tela.',
     kind: 'choice',
     choices: [
       { value: 'right', label: 'Destro' },

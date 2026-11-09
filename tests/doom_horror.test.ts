@@ -703,7 +703,7 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
     );
     expect(astronaut.root.userData.characterId).toBe('protagonist_astronaut');
 
-    // Modelo 3D completo com capacete/viseira dourada, mochila PLSS, tronco, pernas e ambos os braços EVA
+    // Modelo 3D limpo e coeso em Traje Biológico Encapsulado Nível-A (capuz integrado + viseira panorâmica + bolsa dorsal interna + luvas pretas + galochas amarelas)
     expect(astronaut.headGroup.name).toBe('AstronautHelmet');
     expect(astronaut.plssBackpack.name).toBe('AstronautPLSSBackpack');
 
@@ -711,9 +711,11 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
     astronaut.root.traverse((obj) => {
       if ((obj as THREE.Mesh).isMesh) totalAstronautMeshes++;
     });
-    expect(totalAstronautMeshes).toBeGreaterThan(75);
+    // Geometria enxuta e sem poluição de micro-peças (reduzida de ~200 malhas sobrepostas para ~78 malhas limpas incluindo os 10 dedos articulados)
+    expect(totalAstronautMeshes).toBeGreaterThanOrEqual(55);
+    expect(totalAstronautMeshes).toBeLessThanOrEqual(95);
 
-    // Ambos os braços do Astronauta são explicitamente marcados como braços ativos de gameplay
+    // Ambos os braços do Traje Biológico são explicitamente marcados como braços ativos de gameplay
     for (const [arm, expectedSide, expectedName] of [
       [astronaut.leftArm, 'left', 'AstronautLeftArm'],
       [astronaut.rightArm, 'right', 'AstronautRightArm'],
@@ -725,9 +727,11 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
       expect(arm.root.userData.isAstronautArm).toBe(true);
       expect(arm.root.userData.isActiveGameplayArm).toBe(true);
       expect(arm.fingers.length).toBe(4);
+      // Anel único vermelho de travamento hermético no punho (sem excesso de travas metálicas)
+      expect(arm.wristRingGroup.children.length).toBe(1);
     }
-    // Braço esquerdo possui manômetro analógico no pulso
-    expect(astronaut.leftArm.gaugeNeedleMesh).not.toBeNull();
+    // Sem caixa de manômetro espacial saliente no antebraço
+    expect(astronaut.leftArm.gaugeNeedleMesh).toBeNull();
 
     // Sincronização em 1ª pessoa e em pose supina: corpo próprio permanece oculto para o jogador local!
     const playerPos = new THREE.Vector3(2, 0, -4);
@@ -742,16 +746,43 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
     expect(astronaut.rightArm.metadata.currentlyInUse).toBe(false);
     expect(astronaut.leftArm.metadata.currentlyInUse).toBe(false);
 
-    // Modo 3ª pessoa restaura capacete, mochila PLSS e ambos os braços EVA completos para aliados Multiplayer
+    // Modo 3ª pessoa restaura capuz biológico (5 malhas limpas), bolsa dorsal encapsulada (3 malhas limpas) e braços completos
     astronaut.setFirstPersonMode(false);
     expect(astronaut.root.visible).toBe(true);
     expect(astronaut.headGroup.visible).toBe(true);
-    expect(astronaut.headGroup.children.length).toBeGreaterThanOrEqual(16);
+    expect(astronaut.headGroup.children.length).toBe(5);
     expect(astronaut.plssBackpack.visible).toBe(true);
-    expect(astronaut.plssBackpack.children.length).toBeGreaterThanOrEqual(36);
-    expect(astronaut.plssBackpack.visible).toBe(true);
+    expect(astronaut.plssBackpack.children.length).toBe(3);
     expect(astronaut.leftArm.root.visible).toBe(true);
     expect(astronaut.rightArm.root.visible).toBe(true);
+
+    // Verifica que as galochas amarelas ficam niveladas ao piso (y ~ 0.00m) tanto em pé quanto 100% agachado (zero afundamento!)
+    for (const testCrouch of [0, 0.5, 1]) {
+      astronaut.updateThirdPersonAlly(
+        new THREE.Vector3(0, 0, 0),
+        0,
+        0,
+        0,
+        0,
+        testCrouch,
+        false,
+        false
+      );
+      astronaut.root.updateMatrixWorld(true);
+      let minCharY = Infinity;
+      const vTmp = new THREE.Vector3();
+      astronaut.hipsGroup.traverse((obj) => {
+        const mesh = obj as THREE.Mesh;
+        if (!mesh.isMesh) return;
+        const posAttr = mesh.geometry.getAttribute('position');
+        for (let i = 0; i < posAttr.count; i++) {
+          vTmp.fromBufferAttribute(posAttr, i).applyMatrix4(mesh.matrixWorld);
+          if (vTmp.y < minCharY) minCharY = vTmp.y;
+        }
+      });
+      expect(minCharY).toBeGreaterThanOrEqual(-0.008);
+      expect(minCharY).toBeLessThanOrEqual(0.018);
+    }
 
     // Viewmodel em 1ª pessoa usa exatamente os braços originais marcados do Astronauta (AstronautRightArm + AstronautLeftArm)
     const flashlight = new DoomFlashlight(16 / 9);
@@ -2005,7 +2036,7 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
     expect(allyAstronaut.thirdPersonFlashlightGroup.visible).toBe(true);
     expect(
       allyAstronaut.thirdPersonFlashlightGroup.children.length
-    ).toBeGreaterThanOrEqual(8);
+    ).toBeGreaterThanOrEqual(6);
     expect(allyAstronaut.thirdPersonFlashlightGroup.parent).toBe(
       allyAstronaut.rightArm.gripSocket
     );
