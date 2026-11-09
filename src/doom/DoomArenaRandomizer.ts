@@ -16,7 +16,11 @@ import {
   isThemedRoomThresholdCell,
   RoomFurniturePlacement,
   SPECIAL_ROOM_KEY_ITEM_IDS,
+  THEMED_ROOMS,
+  getThemedRoomMiniMapTile,
+  type DoomRoomId,
 } from './DoomRooms';
+import { SHOTGUN_PART_IDS, type ShotgunPartId } from './DoomShotgun';
 
 export interface GridCoord {
   gx: number;
@@ -33,6 +37,14 @@ export interface CrateRandomPlacement {
   radarJitterX: number;
   radarJitterZ: number;
   itemId: string;
+}
+
+export interface ShotgunRoomPlacement {
+  itemId: ShotgunPartId;
+  roomId: DoomRoomId;
+  gx: number;
+  gz: number;
+  yaw: number;
 }
 
 export type InitialSpiderSurface = 'FLOOR' | 'WALL' | 'CEILING';
@@ -54,6 +66,7 @@ export interface DoomArenaLayout {
   readonly cratePlacements: ReadonlyArray<CrateRandomPlacement>;
   readonly obstaclePlacements: ReadonlyArray<ObstaclePlacement>;
   readonly roomFurniturePlacements: ReadonlyArray<RoomFurniturePlacement>;
+  readonly shotgunRoomPlacements: ReadonlyArray<ShotgunRoomPlacement>;
 }
 
 export interface CreateArenaLayoutOptions {
@@ -327,7 +340,6 @@ export function buildRandomCrateLootPool(
     ...SPECIAL_ROOM_KEY_ITEM_IDS,
     'torn_log_04',
     'arachnid_report_09',
-    'shotgun_receiver', 'shotgun_barrel', 'shotgun_pump', 'shotgun_stock',
     'shotgun_shells', 'shotgun_shells',
   ];
 
@@ -374,6 +386,55 @@ export function buildRandomCrateLootPool(
   }
 
   return shuffleInPlace(pool, rng);
+}
+
+/** Four distinct locked rooms, with reachable floor positions clear of furniture. */
+export function planShotgunRoomPlacements(
+  worldSeed: number,
+  furniture: readonly RoomFurniturePlacement[]
+): ShotgunRoomPlacement[] {
+  const rng = createSeededRng((worldSeed ^ 0x1792f0c5) >>> 0);
+  const rooms = shuffleInPlace([...THEMED_ROOMS], rng);
+  const result: ShotgunRoomPlacement[] = [];
+  for (const room of rooms) {
+    const dx = room.outwardDir === 'E' ? 1 : room.outwardDir === 'W' ? -1 : 0;
+    const dz = room.outwardDir === 'S' ? 1 : room.outwardDir === 'N' ? -1 : 0;
+    const start = { gx: room.doorGx + dx, gz: room.doorGz + dz };
+    const queue = [start];
+    const seen = new Set<string>();
+    const candidates: GridCoord[] = [];
+    while (queue.length) {
+      const cell = queue.shift()!;
+      const key = `${cell.gx},${cell.gz}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (cell.gx < room.minGx || cell.gx > room.maxGx || cell.gz < room.minGz || cell.gz > room.maxGz ||
+          getThemedRoomMiniMapTile(cell.gx, cell.gz) !== '.') continue;
+      const world = gridCellToWorld(cell.gx, cell.gz);
+      // A 0.7m clearance accommodates the player's cylinder and the largest model.
+      if (furniture.some(f => world.x >= f.minX - .7 && world.x <= f.maxX + .7 &&
+                              world.z >= f.minZ - .7 && world.z <= f.maxZ + .7)) continue;
+      if (Math.abs(cell.gx - room.doorGx) + Math.abs(cell.gz - room.doorGz) >= 3) candidates.push(cell);
+      for (const [x, z] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const next = { gx: cell.gx + x, gz: cell.gz + z };
+        const nextWorld = gridCellToWorld(next.gx, next.gz);
+        // Also validate the entire step, not just its two endpoints.
+        const blocked = furniture.some(f => {
+          const minX = f.minX - .56, maxX = f.maxX + .56;
+          const minZ = f.minZ - .56, maxZ = f.maxZ + .56;
+          return x !== 0
+            ? world.z >= minZ && world.z <= maxZ && Math.max(world.x, nextWorld.x) >= minX && Math.min(world.x, nextWorld.x) <= maxX
+            : world.x >= minX && world.x <= maxX && Math.max(world.z, nextWorld.z) >= minZ && Math.min(world.z, nextWorld.z) <= maxZ;
+        });
+        if (!blocked) queue.push(next);
+      }
+    }
+    if (!candidates.length) continue;
+    const cell = candidates[rngInt(rng, 0, candidates.length)];
+    result.push({ itemId: SHOTGUN_PART_IDS[result.length], roomId: room.id, ...cell, yaw: rngRange(rng, -Math.PI, Math.PI) });
+    if (result.length === SHOTGUN_PART_IDS.length) return result;
+  }
+  throw new Error('Não há salas especiais acessíveis suficientes para distribuir as peças da shotgun.');
 }
 
 /**
@@ -786,6 +847,7 @@ export function createRandomArenaLayout(
     cratePlacements,
     obstaclePlacements,
     roomFurniturePlacements,
+    shotgunRoomPlacements: planShotgunRoomPlacements(worldSeed, roomFurniturePlacements),
   };
 }
 

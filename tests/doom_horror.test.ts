@@ -1192,10 +1192,10 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
 
     // 1) Todos os sinais prováveis iniciais situam-se dentro de células abertas transitáveis
     const initialSignals = items.getUncollectedEquipmentSignals();
-    expect(initialSignals.length).toBe(25);
+    expect(initialSignals.length).toBe(29);
     for (const sig of initialSignals) {
       const cell = worldToGridCell(sig.probableX, sig.probableZ);
-      expect(isSolidCell(LABYRINTH_MAP, cell.gx, cell.gz)).toBe(false);
+      expect(isWalkableArenaCell(cell.gx, cell.gz, { ignoreRoomLocks: true })).toBe(true);
       expect(sig.uncertaintyRadiusM).toBeGreaterThan(1.0);
     }
 
@@ -1230,9 +1230,9 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
     expect(radar.hasRadar).toBe(true);
     expect(radar.isActive).toBe(true);
 
-    // O item coletado deixa de emitir sinal provável no radar (25 -> 24)
+    // O item coletado deixa de emitir sinal provável no radar (29 -> 28)
     const remainingSignals = items.getUncollectedEquipmentSignals();
-    expect(remainingSignals.length).toBe(24);
+    expect(remainingSignals.length).toBe(28);
 
     // 3) Alternância de visibilidade [M], escala [N] (GERAL <-> ZOOM) e nomes táticos de setores
     expect(radar.mode).toBe('FULL');
@@ -7186,14 +7186,20 @@ describe('Correção do Canal VHF do Rádio Comunicador (voz de rádio não vaza
 
 
 describe('Shotgun: peças, munição e aranha', () => {
-  it('garante as quatro peças únicas em caixotes diferentes e cartuchos em várias sementes', () => {
+  it('garante as quatro peças únicas em salas diferentes e cartuchos nos caixotes', () => {
     for (const seed of [1, 42, 500, 9011, 75012]) {
       const layout = createRandomArenaLayout({ worldSeed: seed, playerSeed: seed });
       expect(layout.cratePlacements).toHaveLength(25);
-      const pieces = layout.cratePlacements.filter(p => SHOTGUN_PART_IDS.some(id => id === p.itemId));
+      expect(layout.cratePlacements.filter(p => SHOTGUN_PART_IDS.some(id => id === p.itemId))).toHaveLength(0);
+      const pieces = layout.shotgunRoomPlacements;
       expect(pieces).toHaveLength(4);
       expect(new Set(pieces.map(p => p.itemId)).size).toBe(4);
-      expect(new Set(pieces.map(p => `${p.gx},${p.gz}`)).size).toBe(4);
+      expect(new Set(pieces.map(p => p.roomId)).size).toBe(4);
+      for (const p of pieces) {
+        expect(getThemedRoomAtCell(p.gx, p.gz)?.id).toBe(p.roomId);
+        expect(getThemedRoomMiniMapTile(p.gx, p.gz)).toBe('.');
+      }
+      expect(createRandomArenaLayout({ worldSeed: seed, playerSeed: seed + 100 }).shotgunRoomPlacements).toEqual(pieces);
       expect(layout.cratePlacements.filter(p => p.itemId === SHOTGUN_AMMO_ITEM_ID).length).toBeGreaterThanOrEqual(2);
     }
   });
@@ -7262,7 +7268,7 @@ describe('Taser de contenção da aranha', () => {
     for (const seed of [1, 42, 500, 9011, 75012]) {
       const layout = createRandomArenaLayout({ worldSeed: seed, playerSeed: seed });
       expect(layout.cratePlacements).toHaveLength(25);
-      expect(layout.cratePlacements.filter(p => SHOTGUN_PART_IDS.some(id => id === p.itemId))).toHaveLength(4);
+      expect(layout.shotgunRoomPlacements).toHaveLength(4);
       expect(layout.cratePlacements.filter(p => p.itemId === SHOTGUN_AMMO_ITEM_ID).length).toBeGreaterThanOrEqual(2);
       for (const id of ['industrial_battery', 'sterile_bandage', 'magnesium_flare', 'old_morphine'])
         expect(layout.cratePlacements.some(p => p.itemId === id)).toBe(true);
@@ -7279,7 +7285,7 @@ describe('Taser de contenção da aranha', () => {
       const otherLayout = createRandomArenaLayout({ worldSeed: seed, playerSeed: seed + 1 });
       const coopItems = new DoomWorldItems(new THREE.Scene(), createDoomSharedUniforms(), otherLayout);
       expect(coopItems.getPickupsSnapshot().find(p => p.itemId === TASER_ITEM_ID)?.position.toArray()).toEqual(tasers[0].position.toArray());
-      expect(items.getUncollectedEquipmentSignals()).toHaveLength(25);
+      expect(items.getUncollectedEquipmentSignals()).toHaveLength(29);
       const rejectTaserInventory = { addItem: (id: string) => id !== TASER_ITEM_ID } as unknown as DoomInventory;
       items.updateAndCheckPickups(0.016, 1, tasers[0].position, tasers[0].position, new THREE.Vector3(0, 0, -1), false, rejectTaserInventory);
       expect(items.getUncollectedEquipmentSignals().some(signal => signal.id === tasers[0].id)).toBe(true);

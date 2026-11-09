@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { buildShotgunPickup, createShotgunPickupMaterials } from './DoomShotgunPickups';
 import {
   AstronautArmRig,
   createAstronautArmRig,
@@ -848,28 +849,24 @@ export class DoomFlashlight {
       mesh.position.set(x, y, z);
       return mesh;
     };
-    const pickupCylinder = (radius: number, height: number, mat: THREE.Material, y = height / 2) => {
-      const mesh = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, height, 10), mat);
-      mesh.position.y = y;
-      return mesh;
-    };
     const taserPickup = new THREE.Group();
     const taserYellow = new THREE.MeshLambertMaterial({ color: 0xd7a627, flatShading: true });
     taserPickup.add(pickupBox(0.065, 0.13, 0.08, taserYellow), pickupBox(0.04, 0.07, 0.045, darkRingMat, 0, -0.025));
-    const receiverPickup = new THREE.Group();
-    receiverPickup.add(pickupBox(0.065, 0.15, 0.07, darkRingMat), pickupBox(0.035, 0.045, 0.03, brassMat, 0, 0.12));
-    const barrelPickup = new THREE.Group();
-    barrelPickup.add(pickupCylinder(0.018, 0.32, darkRingMat));
-    const pumpPickup = new THREE.Group();
-    pumpPickup.add(pickupCylinder(0.034, 0.16, darkRingMat));
-    const stockPickup = new THREE.Group();
-    stockPickup.add(pickupBox(0.06, 0.18, 0.07, woodMat), pickupBox(0.075, 0.03, 0.09, woodMat, 0, 0.18));
-    const shellsPickup = new THREE.Group();
-    for (const x of [-0.035, 0, 0.035]) {
-      const shell = pickupCylinder(0.015, 0.075, flareRedMat); shell.position.x = x;
-      const cap = pickupCylinder(0.016, 0.012, brassMat, 0.006); cap.position.x = x;
-      shellsPickup.add(shell, cap);
-    }
+    const pickupMats = createShotgunPickupMaterials();
+    // O mesmo modelo do chão, girado para ficar na mão.
+    const heldPickup = (id: 'shotgun_receiver' | 'shotgun_barrel' | 'shotgun_pump' | 'shotgun_stock' | 'shotgun_shells') => {
+      const wrapper = new THREE.Group();
+      const model = buildShotgunPickup(id, pickupMats);
+      model.rotation.z = Math.PI / 2;
+      model.position.set(.04, .12, 0);
+      wrapper.add(model);
+      return wrapper;
+    };
+    const receiverPickup = heldPickup('shotgun_receiver');
+    const barrelPickup = heldPickup('shotgun_barrel');
+    const pumpPickup = heldPickup('shotgun_pump');
+    const stockPickup = heldPickup('shotgun_stock');
+    const shellsPickup = heldPickup('shotgun_shells');
 
     this.quickPropMeshes = {
       knife: knifeProp,

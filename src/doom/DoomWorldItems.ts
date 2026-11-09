@@ -8,6 +8,7 @@ import { gridCellToWorld } from './DoomMazeBuilder';
 import { ProbableEquipmentSignal } from './DoomRadar';
 import { getThemedRoomByKeyItemId } from './DoomRooms';
 import { createDoomPropMaterial, DoomSharedUniforms } from './DoomShader';
+import { buildShotgunPickup, createShotgunPickupMaterials, type ShotgunPickupId } from './DoomShotgunPickups';
 
 interface WorldPickupInstance {
   id: string;
@@ -63,7 +64,7 @@ function makeDetailedPixelTex(
 
 /**
  * Objetos 3D coletáveis esculpidos em múltiplas peças pelo labirinto
- * (apoiados fisicamente dentro dos caixotes abertos de suprimento, sem flutuar nem atravessar bordas)
+ * (suprimentos apoiados nos caixotes e peças da shotgun no piso das salas especiais)
  * + Sinalizadores de Magnésio acesos no chão.
  */
 export class DoomWorldItems {
@@ -72,6 +73,7 @@ export class DoomWorldItems {
   private readonly activeFlares: ActiveMagnesiumFlare[] = [];
   private readonly arenaLayout: DoomArenaLayout;
   private readonly sharedUniforms: DoomSharedUniforms;
+  private readonly shotgunMaterials: ReturnType<typeof createShotgunPickupMaterials>;
 
   private readonly matCrateWood: THREE.ShaderMaterial;
   private readonly matDarkIron: THREE.ShaderMaterial;
@@ -104,6 +106,7 @@ export class DoomWorldItems {
   ) {
     this.arenaLayout = getOrCreateSceneArenaLayout(scene, explicitArenaLayout);
     this.sharedUniforms = sharedUniforms;
+    this.shotgunMaterials = createShotgunPickupMaterials(sharedUniforms);
     this.root.name = 'DoomWorldItems';
     scene.add(this.root);
 
@@ -590,8 +593,10 @@ export class DoomWorldItems {
       // Apoiado FISICAMENTE sobre o forro interno do caixote (y = 0.095), alinhado à bandeja sem flutuar nem atravessar paredes!
       const itemMesh = this.buildItemMesh(p.itemId);
       if (idx === taserCrateIndex) itemMesh.name = 'WorldTaserShells';
+      // Na bandeja compartilhada, manter os cartuchos separados do Taser e das bordas.
+      if (idx === taserCrateIndex) itemMesh.scale.setScalar(.75);
       itemMesh.position.set(0, 0.095, idx === taserCrateIndex ? -0.075 : 0.01);
-      itemMesh.rotation.y = p.itemTiltYaw;
+      itemMesh.rotation.y = idx === taserCrateIndex ? 0 : p.itemTiltYaw;
       crate.add(itemMesh);
 
       this.root.add(group);
@@ -624,6 +629,25 @@ export class DoomWorldItems {
         });
       }
     });
+
+    // Peças soltas no piso de quatro salas especiais, não em caixotes.
+    for (const p of this.arenaLayout.shotgunRoomPlacements) {
+      const pos = gridCellToWorld(p.gx, p.gz);
+      const group = new THREE.Group();
+      group.name = `RoomShotgun_${p.itemId}`;
+      group.position.set(pos.x, 0, pos.z);
+      const itemMesh = this.buildItemMesh(p.itemId);
+      itemMesh.rotation.y = p.yaw;
+      itemMesh.scale.setScalar(1.45);
+      group.add(itemMesh);
+      this.root.add(group);
+      this.pickups.push({
+        id: `pickup-${p.itemId}`, itemId: p.itemId, group, itemMesh,
+        position: new THREE.Vector3(pos.x, .06, pos.z),
+        cellWorldX: pos.x, cellWorldZ: pos.z, radarJitterX: 0, radarJitterZ: 0,
+        collected: false,
+      });
+    }
   }
 
   /**
@@ -743,33 +767,12 @@ export class DoomWorldItems {
         const tip = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.012, 0.012), this.matCleanSteel);
         tip.position.set(-0.1, 0.075, z); holder.add(tip);
       }
-    } else if (itemId.startsWith('shotgun_')) {
-      const steel = this.matDarkIron;
-      const box = (w: number, h: number, d: number, x = 0, y = h / 2, z = 0) => {
-        const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), steel);
-        mesh.position.set(x, y, z); holder.add(mesh); return mesh;
-      };
-      if (itemId === 'shotgun_barrel') {
-        const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 0.32, 12), steel);
-        barrel.rotation.z = Math.PI / 2; barrel.position.y = 0.022; holder.add(barrel);
-      } else if (itemId === 'shotgun_receiver') {
-        box(0.15, 0.065, 0.07); box(0.06, 0.035, 0.03, 0.02, 0.08);
-      } else if (itemId === 'shotgun_pump') {
-        const pump = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.16, 10), steel);
-        pump.rotation.z = Math.PI / 2; pump.position.y = 0.035; holder.add(pump);
-      } else if (itemId === 'shotgun_stock') {
-        const stock = box(0.18, 0.06, 0.07); stock.rotation.z = -0.18;
-        box(0.022, 0.095, 0.075, -0.09, 0.048);
-      } else {
-        const shellMat = new THREE.MeshLambertMaterial({ color: 0xa12e25 });
-        const brassMat = new THREE.MeshLambertMaterial({ color: 0xc39a48 });
-        for (let i = -1; i <= 1; i++) {
-          const shell = new THREE.Mesh(new THREE.CylinderGeometry(0.017, 0.017, 0.075, 10), shellMat);
-          shell.rotation.z = Math.PI / 2; shell.position.set(0, 0.018, i * 0.04); holder.add(shell);
-          const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 0.014, 10), brassMat);
-          cap.rotation.z = Math.PI / 2; cap.position.set(-0.04, 0.018, i * 0.04); holder.add(cap);
-        }
-      }
+    } else if (itemId === 'shotgun_receiver' || itemId === 'shotgun_barrel' ||
+               itemId === 'shotgun_pump' || itemId === 'shotgun_stock' || itemId === 'shotgun_shells') {
+      const model = buildShotgunPickup(itemId as ShotgunPickupId, this.shotgunMaterials);
+      // Cartuchos maiores e contrastantes continuam dentro da bandeja do caixote.
+      if (itemId === 'shotgun_shells') model.scale.setScalar(1.5);
+      holder.add(model);
     } else if (itemId === 'sterile_bandage') {
       // Rolo de gaze estéril com cavidade central oca REAL, espiral visível no topo,
       // cinta de papel médico com cruz vermelha nítida e aba curta pousada dentro do caixote

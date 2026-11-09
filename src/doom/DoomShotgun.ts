@@ -6,7 +6,7 @@ import { computeAdaptiveVerticalFov } from './DoomTouchControls';
  * SHOTGUN DE COMBATE — MONTAGEM POR PEÇAS + MUNIÇÃO + VIEWMODEL 3D
  * ============================================================================
  * A arma NÃO aparece pronta no mapa: o corpo, o cano, a bomba (guarda-mão) e a
- * coronha ficam ESPALHADOS em caixotes diferentes do complexo. Só depois de
+ * coronha ficam ESPALHADOS em quatro salas especiais do complexo. Só depois de
  * reunir as 4 peças o jogador consegue montar a shotgun; depois disso o
  * desafio passa a ser achar cartuchos 12 Gauge e caçar a Aranha Gigante.
  *

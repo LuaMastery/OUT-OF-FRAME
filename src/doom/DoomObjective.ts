@@ -9,7 +9,7 @@ export function formatShotgunObjective(
   if (!assembled) {
     return partsFound >= 4
       ? 'MONTE A SHOTGUN · [TAB]'
-      : `ENCONTRE PEÇAS DA SHOTGUN · ${partsFound}/4`;
+      : `PEÇAS NAS SALAS ESPECIAIS · ${partsFound}/4`;
   }
   if (ammo <= 0) return 'BUSQUE CARTUCHOS NOS CAIXOTES';
   return `DESTRUA A ARANHA · ${ammo} CARTUCHOS · [H] EQUIPAR · CLIQUE ATIRAR`;
