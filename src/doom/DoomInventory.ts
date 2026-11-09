@@ -1516,6 +1516,9 @@ export class DoomInventory {
   private hubDecayTimerId = 0;
   private hubTriggerTimerId = 0;
   private lastHubRenderSignature = '';
+  private userHubIdleOpacity = 0.52;
+  private userBloodOverlayScale = 1.0;
+  private hubPausedHidden = false;
 
   private webSnareAmount = 0;
   private webCocoonAmount = 0;
@@ -2140,9 +2143,30 @@ export class DoomInventory {
     });
   }
 
+  setPauseMenuHidden(hidden: boolean): void {
+    if (this.hubPausedHidden === hidden) return;
+    this.hubPausedHidden = hidden;
+    this.syncShortcutsHubVisibility();
+  }
+
+  setUserInterfaceSettings(opts: {
+    hubIdleOpacityPercent: number;
+    bloodOverlayPercent: number;
+  }): void {
+    this.userHubIdleOpacity = Math.max(
+      0.1,
+      Math.min(0.98, opts.hubIdleOpacityPercent / 100)
+    );
+    this.userBloodOverlayScale = Math.max(
+      0.2,
+      Math.min(1, opts.bloodOverlayPercent / 100)
+    );
+    this.syncShortcutsHubVisibility();
+  }
+
   private syncShortcutsHubVisibility(): void {
     const state = computeShortcutsHubState({
-      inventoryOpen: this.isOpen,
+      inventoryOpen: this.isOpen || this.hubPausedHidden,
       gameOver: this.isGameOver,
       cinematicHidden: this.hubCinematicHidden,
       hasConfiguredSlots: this.hasConfiguredShortcuts(),
@@ -2152,6 +2176,18 @@ export class DoomInventory {
     });
 
     this.shortcutsHubEl.dataset.hubTier = state.tier;
+    if (state.tier === 'hidden') {
+      this.shortcutsHubEl.style.opacity = '';
+    } else if (state.tier === 'active') {
+      this.shortcutsHubEl.style.opacity = '0.96';
+    } else if (state.tier === 'configured-idle') {
+      this.shortcutsHubEl.style.opacity = this.userHubIdleOpacity.toFixed(2);
+    } else {
+      this.shortcutsHubEl.style.opacity = Math.max(
+        0.15,
+        this.userHubIdleOpacity * 0.72
+      ).toFixed(2);
+    }
 
     if (state.tier === 'active' && this.hubActiveCaption) {
       this.hubCaptionEl.textContent = this.hubActiveCaption;
@@ -2509,11 +2545,12 @@ export class DoomInventory {
     this.latestVitals = { ...snapshot };
 
     const injuryRatio = Math.max(0, (78 - snapshot.health) / 78);
-    const bloodOpacity = snapshot.bleeding
+    const rawBloodOpacity = snapshot.bleeding
       ? Math.min(0.92, 0.32 + injuryRatio * 0.62)
       : injuryRatio > 0.12
         ? injuryRatio * 0.72
         : 0;
+    const bloodOpacity = rawBloodOpacity * this.userBloodOverlayScale;
     this.bloodVignetteEl.style.opacity = bloodOpacity.toFixed(3);
 
     const prevTrapped = this.webSnareAmount > 0.1;

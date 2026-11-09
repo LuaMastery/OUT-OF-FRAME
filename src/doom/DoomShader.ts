@@ -583,12 +583,16 @@ export class DoomRetroCompositor {
   private readonly postScene = new THREE.Scene();
   private readonly postCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
   private readonly postMaterial: THREE.ShaderMaterial;
-  private readonly targetHeight = 250;
+  private targetHeight = 250;
+  private lastLowW = 444;
+  private lastLowH = 250;
 
   constructor(initialWidth: number, initialHeight: number) {
     const aspect = Math.max(1, initialWidth) / Math.max(1, initialHeight);
-    const lowW = Math.max(320, Math.round(this.targetHeight * aspect));
+    const lowW = Math.max(240, Math.round(this.targetHeight * aspect));
     const lowH = this.targetHeight;
+    this.lastLowW = lowW;
+    this.lastLowH = lowH;
 
     this.renderTarget = new THREE.WebGLRenderTarget(lowW, lowH, {
       minFilter: THREE.NearestFilter,
@@ -601,6 +605,10 @@ export class DoomRetroCompositor {
       uniforms: {
         tDiffuse: { value: this.renderTarget.texture },
         uResolution: { value: new THREE.Vector2(lowW, lowH) },
+        uBrightness: { value: 1.0 },
+        uContrast: { value: 1.0 },
+        uEnableDither: { value: 1.0 },
+        uScanlineIntensity: { value: 0.0 },
       },
       vertexShader: /* glsl */ `
         varying vec2 vUv;
@@ -612,6 +620,10 @@ export class DoomRetroCompositor {
       fragmentShader: /* glsl */ `
         uniform sampler2D tDiffuse;
         uniform vec2 uResolution;
+        uniform float uBrightness;
+        uniform float uContrast;
+        uniform float uEnableDither;
+        uniform float uScanlineIntensity;
         varying vec2 vUv;
 
         float bayer4x4(vec2 pixel) {
@@ -640,14 +652,27 @@ export class DoomRetroCompositor {
           vec2 pixelCoord = floor(vUv * uResolution);
           vec4 col = texture2D(tDiffuse, (pixelCoord + 0.5) / uResolution);
 
-          float dither = (bayer4x4(pixelCoord) - 0.5) / 36.0;
-          vec3 c = clamp(col.rgb + dither, 0.0, 1.0);
+          vec3 c = (col.rgb - 0.5) * uContrast + 0.5;
+          c *= uBrightness;
 
-          c.r = floor(c.r * 32.0 + 0.5) / 32.0;
-          c.g = floor(c.g * 32.0 + 0.5) / 32.0;
-          c.b = floor(c.b * 28.0 + 0.5) / 28.0;
+          if (uEnableDither > 0.5) {
+            float dither = (bayer4x4(pixelCoord) - 0.5) / 36.0;
+            c = clamp(c + dither, 0.0, 1.0);
+            c.r = floor(c.r * 32.0 + 0.5) / 32.0;
+            c.g = floor(c.g * 32.0 + 0.5) / 32.0;
+            c.b = floor(c.b * 28.0 + 0.5) / 28.0;
+          } else {
+            c = clamp(c, 0.0, 1.0);
+          }
 
-          gl_FragColor = vec4(c, 1.0);
+          if (uScanlineIntensity > 0.001) {
+            float scan = mod(floor(gl_FragCoord.y), 2.0) < 0.5 ? (1.0 - uScanlineIntensity) : 1.0;
+            vec2 centered = vUv * 2.0 - 1.0;
+            float vig = 1.0 - dot(centered, centered) * (uScanlineIntensity * 0.42);
+            c *= scan * clamp(vig, 0.55, 1.0);
+          }
+
+          gl_FragColor = vec4(clamp(c, 0.0, 1.0), 1.0);
         }
       `,
       depthTest: false,
@@ -658,10 +683,39 @@ export class DoomRetroCompositor {
     this.postScene.add(quad);
   }
 
+  getResolution(): { width: number; height: number } {
+    return { width: this.lastLowW, height: this.lastLowH };
+  }
+
+  setTargetHeight(
+    heightPx: number,
+    viewportWidth: number,
+    viewportHeight: number
+  ): void {
+    const clamped = Math.max(140, Math.min(1080, Math.round(heightPx)));
+    if (this.targetHeight === clamped) return;
+    this.targetHeight = clamped;
+    this.resize(viewportWidth, viewportHeight);
+  }
+
+  setPostFXOptions(opts: {
+    brightness: number;
+    contrast: number;
+    ditherMode: boolean;
+    scanlineIntensity: number;
+  }): void {
+    this.postMaterial.uniforms.uBrightness.value = opts.brightness;
+    this.postMaterial.uniforms.uContrast.value = opts.contrast;
+    this.postMaterial.uniforms.uEnableDither.value = opts.ditherMode ? 1.0 : 0.0;
+    this.postMaterial.uniforms.uScanlineIntensity.value = opts.scanlineIntensity;
+  }
+
   resize(viewportWidth: number, viewportHeight: number): void {
     const aspect = Math.max(1, viewportWidth) / Math.max(1, viewportHeight);
-    const lowW = Math.max(320, Math.round(this.targetHeight * aspect));
+    const lowW = Math.max(240, Math.round(this.targetHeight * aspect));
     const lowH = this.targetHeight;
+    this.lastLowW = lowW;
+    this.lastLowH = lowH;
 
     this.renderTarget.setSize(lowW, lowH);
     this.postMaterial.uniforms.uResolution.value.set(lowW, lowH);

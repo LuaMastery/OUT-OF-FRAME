@@ -31,7 +31,13 @@ import {
   isStoneSectorWorld,
   syncLightPanelEmissionAttribute,
 } from './DoomMazeBuilder';
+import { DoomPauseMenu } from './DoomPauseMenu';
 import { DoomRadar } from './DoomRadar';
+import {
+  DoomGameSettings,
+  DoomSettingsStore,
+  resolutionPresetToHeight,
+} from './DoomSettings';
 import {
   createDoomSharedUniforms,
   DoomRetroCompositor,
@@ -285,6 +291,9 @@ export class DoomGameApp {
   private readonly webManager: DoomSpiderWebManager;
   private readonly spider: DoomSpider;
   private readonly touchControls: DoomTouchControls;
+  private readonly settingsStore: DoomSettingsStore;
+  private readonly pauseMenu: DoomPauseMenu;
+  private unsubscribeSettings: (() => void) | null = null;
   private multiplayer: DoomMultiplayerCoordinator | null = null;
 
   private colliders: StaticColliderBox[] = [];
@@ -310,6 +319,11 @@ export class DoomGameApp {
   private wasCrouching = false;
   private touchCrouchLatched = false;
   private touchAutoUnlatchAfterSlide = false;
+  private desktopCrouchLatched = false;
+  private desktopAutoUnlatchAfterSlide = false;
+  private desktopSprintLatched = false;
+  private suppressAutoPauseOnUnlockUntilMs = 0;
+  private ignoreEscapeKeyUntilMs = 0;
   private currentBaseDesktopFov = 74;
   private readonly staminaState = createInitialStaminaState();
   private staminaChestHeaveY = 0;
@@ -361,7 +375,8 @@ export class DoomGameApp {
   constructor(
     private readonly sound: SoundEngine,
     private readonly onPermanentDeathExit?: () => void,
-    initialMultiplayerSession?: ActiveRoomSession
+    initialMultiplayerSession?: ActiveRoomSession,
+    private readonly onRestartRequested?: () => void
   ) {
     this.viewportEl = document.getElementById('game-viewport') as HTMLElement;
     this.canvas = document.getElementById('webgl-canvas') as HTMLCanvasElement;
@@ -570,9 +585,14 @@ export class DoomGameApp {
         return this.toggleRadarHud();
       },
       onOpenRequest: () => {
-        if (this.activeSequence !== 'NONE' || this.inventory.gameOverVisible) {
+        if (
+          this.activeSequence !== 'NONE' ||
+          this.inventory.gameOverVisible ||
+          this.pauseMenu.open
+        ) {
           return;
         }
+        this.suppressAutoPauseOnUnlockUntilMs = performance.now() + 350;
         this.inventory.setOpen(true);
         this.keys.clear();
         this.touchControls.resetTransientInputs();
@@ -633,12 +653,68 @@ export class DoomGameApp {
         );
       },
       onRadioChatPress: () => {
-        if (!this.multiplayer) return;
+        if (!this.multiplayer || this.pauseMenu.open) return;
+        this.suppressAutoPauseOnUnlockUntilMs = performance.now() + 350;
         this.keys.clear();
         this.touchControls.resetTransientInputs();
         this.multiplayer.openRadioChatInput();
       },
     });
+
+    this.settingsStore = new DoomSettingsStore();
+    this.pauseMenu = new DoomPauseMenu(
+      this.viewportEl,
+      this.settingsStore,
+      this.sound,
+      {
+        onPauseOpened: () => {
+          this.inventory.setOpen(false);
+          this.inventory.setPauseMenuHidden(true);
+          this.multiplayer?.closeRadioChatInput(false);
+          this.keys.clear();
+          this.isDragging = false;
+          this.touchControls.resetTransientInputs();
+          this.multiplayer?.setPushToTalkHeld(false);
+          if (!this.multiplayer) {
+            this.sound.playTensionHeartbeat(0);
+          }
+        },
+        onResumeRequest: () => {
+          this.resumeFromPause();
+        },
+        onToggleFullscreen: () => {
+          try {
+            if (document.fullscreenElement) {
+              void document.exitFullscreen?.();
+            } else {
+              acquireFullscreenAndKeyboardLock(() => {});
+            }
+          } catch {
+            // Ignorar restrições do navegador
+          }
+        },
+        onRestartSessionRequest: () => {
+          this.pauseMenu.setOpen(false);
+          this.inventory.setPauseMenuHidden(false);
+          if (this.onRestartRequested) {
+            this.onRestartRequested();
+          } else {
+            this.finalizePermanentDeath();
+          }
+        },
+        onExitToDesktopRequest: () => {
+          this.pauseMenu.setOpen(false);
+          this.inventory.setPauseMenuHidden(false);
+          this.finalizePermanentDeath();
+        },
+      }
+    );
+    this.pauseMenu.setHudSuppressed(true);
+    this.pauseMenu.setMultiplayerMode(Boolean(initialMultiplayerSession));
+    this.unsubscribeSettings = this.settingsStore.subscribe((s) => {
+      this.applySettings(s);
+    });
+    this.applySettings(this.settingsStore.value);
 
     this.syncCamera(0);
     this.bindInput();
@@ -647,13 +723,98 @@ export class DoomGameApp {
     });
   }
 
+  private applySettings(s: Readonly<DoomGameSettings>): void {
+    const targetH = resolutionPresetToHeight(s.resolutionHeight);
+    if (this.compositor.getResolution().height !== targetH) {
+      const w = Math.max(1, this.viewportEl.clientWidth || window.innerWidth);
+      const h = Math.max(1, this.viewportEl.clientHeight || window.innerHeight);
+      this.compositor.setTargetHeight(targetH, w, h);
+    }
+    this.compositor.setPostFXOptions({
+      brightness: s.brightness / 100,
+      contrast: s.contrast / 100,
+      ditherMode: s.ditherMode,
+      scanlineIntensity:
+        s.crtScanlines === 'strong'
+          ? 0.24
+          : s.crtScanlines === 'subtle'
+            ? 0.11
+            : 0,
+    });
+
+    this.sound.setUserAudioSettings({
+      masterVolume: s.masterVolume / 100,
+      sfxVolume: s.sfxVolume / 100,
+      uiVolume: s.uiVolume / 100,
+      reverbAmount: s.reverbAmount / 100,
+    });
+    this.syncAudioFocusMute();
+
+    if (s.crouchMode === 'hold') {
+      this.desktopCrouchLatched = false;
+      this.desktopAutoUnlatchAfterSlide = false;
+    }
+    if (s.sprintMode === 'hold') {
+      this.desktopSprintLatched = false;
+    }
+    this.touchControls.setLookSensitivityScale(s.touchLookSensitivity / 100);
+
+    this.flashlight.setHandedness(s.viewmodelHand);
+    this.flashlight.setHeadBobMultiplier(s.headBobIntensity / 100);
+    this.inventory.setUserInterfaceSettings({
+      hubIdleOpacityPercent: s.shortcutsHubIdleOpacity,
+      bloodOverlayPercent: s.bloodOverlayScale,
+    });
+
+    if (this.activeSequence === 'NONE') {
+      this.setCameraFov(s.fov + this.slideState.slideAmount * 5.5);
+    }
+
+    if (this.pauseMenu.open && !this.multiplayer) {
+      this.flashlight.update(
+        0.001,
+        this.bobPhase,
+        0,
+        () => {},
+        this.crouchAmount,
+        this.lanternBattery,
+        this.slideState.slideAmount
+      );
+      this.updateFlickeringLightsAndAudio();
+    }
+  }
+
+  private syncAudioFocusMute(): void {
+    const unfocused =
+      Boolean(document.hidden) ||
+      (typeof document.hasFocus === 'function' && !document.hasFocus());
+    this.sound.setFocusMuted(
+      this.settingsStore.value.muteWhenUnfocused && unfocused
+    );
+  }
+
+  private resumeFromPause(): void {
+    if (!this.pauseMenu.open) return;
+    this.pauseMenu.setOpen(false);
+    this.inventory.setPauseMenuHidden(false);
+    this.keys.clear();
+    this.isDragging = false;
+    this.lastRaf = performance.now();
+    this.tryPointerLock(true);
+  }
+
   engageFromTerminal(multiplayerSession?: ActiveRoomSession): void {
     this.lastUserActivityMs = performance.now();
     this.tabHiddenSinceMs = document.hidden ? performance.now() : null;
     this.localAfk = false;
     this.localAfkBannerEl.classList.add('hidden');
     this.attachMultiplayerSession(multiplayerSession);
+    this.pauseMenu.setMultiplayerMode(Boolean(multiplayerSession));
+    this.pauseMenu.setOpen(false);
+    this.pauseMenu.setHudSuppressed(false);
+    this.inventory.setPauseMenuHidden(false);
     this.engaged = true;
+    this.syncAudioFocusMute();
     this.onResize();
     this.sound.unlock();
     this.sound.enterDoomLabyrinth();
@@ -836,6 +997,7 @@ export class DoomGameApp {
 
   private requestCanvasPointerLockOnly(): void {
     if (
+      this.pauseMenu.open ||
       this.inventory.open ||
       this.inventory.gameOverVisible ||
       this.multiplayer?.isChatTyping ||
@@ -861,6 +1023,7 @@ export class DoomGameApp {
 
   private tryPointerLock(fromUserGesture = false): void {
     if (
+      this.pauseMenu.open ||
       this.inventory.open ||
       this.inventory.gameOverVisible ||
       this.multiplayer?.isChatTyping ||
@@ -868,7 +1031,7 @@ export class DoomGameApp {
     ) {
       return;
     }
-    if (fromUserGesture) {
+    if (fromUserGesture && this.settingsStore.value.autoFullscreenOnResume) {
       acquireFullscreenAndKeyboardLock(() => {
         this.requestCanvasPointerLockOnly();
       });
@@ -970,11 +1133,32 @@ export class DoomGameApp {
           return;
         }
 
+        // Enquanto a Tela de Pausa está aberta: Esc volta à visão anterior ou retoma o jogo; P retoma imediatamente
+        if (this.pauseMenu.open) {
+          if (e.code === 'Escape' && !e.repeat) {
+            e.preventDefault();
+            e.stopPropagation();
+            if (performance.now() <= this.ignoreEscapeKeyUntilMs) {
+              return;
+            }
+            this.pauseMenu.handleEscapeOrBack();
+            return;
+          }
+          if (e.code === 'KeyP' && !e.repeat) {
+            e.preventDefault();
+            e.stopPropagation();
+            this.resumeFromPause();
+            return;
+          }
+          return;
+        }
+
         if (e.code === 'Tab' && !e.repeat) {
           const opened = this.inventory.toggle();
           this.keys.clear();
           this.isDragging = false;
           if (opened) {
+            this.suppressAutoPauseOnUnlockUntilMs = performance.now() + 350;
             try {
               document.exitPointerLock?.();
             } catch {
@@ -991,10 +1175,29 @@ export class DoomGameApp {
           return;
         }
 
+        // Teclas [Esc] ou [P] durante o jogo abrem a Tela de Pausa & Configurações
+        if (
+          (e.code === 'Escape' || e.code === 'KeyP') &&
+          !this.inventory.open &&
+          !e.repeat
+        ) {
+          e.preventDefault();
+          e.stopPropagation();
+          if (
+            e.code === 'Escape' &&
+            performance.now() <= this.ignoreEscapeKeyUntilMs
+          ) {
+            return;
+          }
+          this.pauseMenu.setOpen(true);
+          return;
+        }
+
         // Atalho Multiplayer Co-op: [T] Rádio / Chat rápido (fecha o inventário automaticamente se estiver aberto)
         if (this.multiplayer && e.code === 'KeyT' && !e.repeat) {
           e.preventDefault();
           e.stopPropagation();
+          this.suppressAutoPauseOnUnlockUntilMs = performance.now() + 350;
           this.keys.clear();
           this.isDragging = false;
           this.inventory.setOpen(false);
@@ -1049,6 +1252,45 @@ export class DoomGameApp {
 
         this.keys.add(e.code);
 
+        if (
+          !e.repeat &&
+          this.settingsStore.value.crouchMode === 'toggle' &&
+          (e.code === 'ControlLeft' ||
+            e.code === 'ControlRight' ||
+            e.code === 'KeyC')
+        ) {
+          const horizVel = Math.hypot(this.velocity.x, this.velocity.z);
+          const sprintingNow =
+            !this.wasCrouching &&
+            canPlayerSlideWithStamina(this.staminaState) &&
+            (this.desktopSprintLatched ||
+              this.keys.has('ShiftLeft') ||
+              this.keys.has('ShiftRight')) &&
+            horizVel > 5.8;
+          if (sprintingNow && !this.slideState.isSliding) {
+            this.desktopCrouchLatched = true;
+            this.desktopAutoUnlatchAfterSlide = true;
+          } else {
+            this.desktopCrouchLatched = !this.desktopCrouchLatched;
+            this.desktopAutoUnlatchAfterSlide = false;
+          }
+        }
+
+        if (
+          !e.repeat &&
+          this.settingsStore.value.sprintMode === 'toggle' &&
+          (e.code === 'ShiftLeft' || e.code === 'ShiftRight')
+        ) {
+          this.desktopSprintLatched = !this.desktopSprintLatched;
+          if (
+            this.desktopSprintLatched &&
+            this.desktopCrouchLatched &&
+            !this.slideState.isSliding
+          ) {
+            this.desktopCrouchLatched = false;
+          }
+        }
+
         if (e.code === 'KeyE' && !e.repeat) {
           this.interactQueued = true;
           this.struggleQueued = true;
@@ -1097,6 +1339,7 @@ export class DoomGameApp {
         }
         if (
           !this.engaged ||
+          this.pauseMenu.open ||
           this.inventory.open ||
           this.inventory.gameOverVisible ||
           this.multiplayer?.isChatTyping ||
@@ -1109,7 +1352,13 @@ export class DoomGameApp {
         if (now - this.lastWheelSelectMs < 75) return;
         this.lastWheelSelectMs = now;
         this.sound.unlock();
-        this.inventory.cycleQuickSlotSelection(e.deltaY > 0 ? 1 : -1);
+        const wheelDir: 1 | -1 =
+          (e.deltaY > 0 ? 1 : -1) *
+            (this.settingsStore.value.invertWheelShortcuts ? -1 : 1) >
+          0
+            ? 1
+            : -1;
+        this.inventory.cycleQuickSlotSelection(wheelDir);
       },
       { passive: true, signal: this.abortCtrl.signal }
     );
@@ -1132,6 +1381,15 @@ export class DoomGameApp {
         this.isDragging = false;
         this.touchControls.resetTransientInputs();
         this.multiplayer?.setPushToTalkHeld(false);
+        this.syncAudioFocusMute();
+      },
+      sig
+    );
+
+    window.addEventListener(
+      'focus',
+      () => {
+        this.syncAudioFocusMute();
       },
       sig
     );
@@ -1148,6 +1406,7 @@ export class DoomGameApp {
           this.tabHiddenSinceMs = null;
           this.refreshLocalAfkStatus();
         }
+        this.syncAudioFocusMute();
       },
       sig
     );
@@ -1175,7 +1434,25 @@ export class DoomGameApp {
     document.addEventListener(
       'pointerlockchange',
       () => {
+        const wasLocked = this.pointerLocked;
         this.pointerLocked = document.pointerLockElement === this.canvas;
+        // Quando o jogador pressiona Esc durante o jogo, o navegador solta o Pointer Lock:
+        // abrimos imediatamente a Tela de Pausa para que ele veja o cursor e todas as opções!
+        if (
+          wasLocked &&
+          !this.pointerLocked &&
+          this.engaged &&
+          !this.disposed &&
+          !this.pauseMenu.open &&
+          !this.inventory.open &&
+          !this.inventory.gameOverVisible &&
+          !this.multiplayer?.isChatTyping &&
+          this.activeSequence === 'NONE' &&
+          performance.now() > this.suppressAutoPauseOnUnlockUntilMs
+        ) {
+          this.ignoreEscapeKeyUntilMs = performance.now() + 180;
+          this.pauseMenu.setOpen(true);
+        }
       },
       sig
     );
@@ -1192,6 +1469,7 @@ export class DoomGameApp {
           return;
         }
         if (
+          this.pauseMenu.open ||
           this.inventory.open ||
           this.inventory.gameOverVisible ||
           this.activeSequence !== 'NONE'
@@ -1245,7 +1523,11 @@ export class DoomGameApp {
     this.canvas.addEventListener(
       'contextmenu',
       (e) => {
-        if (!this.inventory.open && !this.multiplayer?.isChatTyping) {
+        if (
+          !this.pauseMenu.open &&
+          !this.inventory.open &&
+          !this.multiplayer?.isChatTyping
+        ) {
           e.preventDefault();
         }
       },
@@ -1273,6 +1555,7 @@ export class DoomGameApp {
           this.registerUserActivity();
         }
         if (
+          this.pauseMenu.open ||
           this.inventory.open ||
           this.inventory.gameOverVisible ||
           this.multiplayer?.isChatTyping ||
@@ -1283,7 +1566,9 @@ export class DoomGameApp {
           return;
         }
 
-        const sens = 0.0022;
+        const sens =
+          0.0022 * (this.settingsStore.value.mouseSensitivity / 100);
+        const yDir = this.settingsStore.value.invertMouseY ? -1 : 1;
         const maxPitch = 1.12;
         if (this.pointerLocked) {
           const dYaw = -e.movementX * sens;
@@ -1291,7 +1576,7 @@ export class DoomGameApp {
           this.yaw += dYaw;
           this.pitch = Math.max(
             -maxPitch,
-            Math.min(maxPitch, this.pitch - e.movementY * sens * 0.78)
+            Math.min(maxPitch, this.pitch - e.movementY * sens * 0.78 * yDir)
           );
           this.flashlight.addLookImpulse(dYaw, this.pitch - prevPitch);
         } else if (this.isDragging) {
@@ -1304,7 +1589,7 @@ export class DoomGameApp {
           this.yaw += dYaw;
           this.pitch = Math.max(
             -maxPitch,
-            Math.min(maxPitch, this.pitch - dy * sens * 0.85)
+            Math.min(maxPitch, this.pitch - dy * sens * 0.85 * yDir)
           );
           this.flashlight.addLookImpulse(dYaw, this.pitch - prevPitch);
         }
@@ -1334,9 +1619,25 @@ export class DoomGameApp {
     this.lastRaf = performance.now();
     const loop = (now: number) => {
       if (this.disposed) return;
-      const dt = Math.min(0.08, Math.max(0.0005, (now - this.lastRaf) / 1000));
+      const realDt = Math.max(0.0005, (now - this.lastRaf) / 1000);
+      const dt = Math.min(0.08, realDt);
       this.lastRaf = now;
-      this.update(dt);
+
+      const res = this.compositor.getResolution();
+      this.pauseMenu.updateTelemetry(realDt, res.width, res.height);
+      this.pauseMenu.setHudSuppressed(
+        !this.engaged ||
+          this.inventory.gameOverVisible ||
+          this.activeSequence !== 'NONE'
+      );
+
+      // Em Modo Solo, abrir a Tela de Pausa congela 100% da simulação física/IA/tempo (dt),
+      // mantendo apenas a renderização do quadro 3D para pré-visualizar ajustes de Vídeo em tempo real!
+      const soloSimulationPaused = this.pauseMenu.open && !this.multiplayer;
+      if (!soloSimulationPaused) {
+        this.update(dt);
+      }
+
       // Durante o desmaio, arrasto pela aranha, casulo ou morte, nenhum modelo 3D em 1ª pessoa pode aparecer na tela!
       const showViewmodel =
         this.activeSequence === 'NONE' ||
@@ -1363,12 +1664,18 @@ export class DoomGameApp {
   private triggerSpiderCatch(overrideSpiderPos?: THREE.Vector3): void {
     if (this.activeSequence !== 'NONE') return;
 
+    this.suppressAutoPauseOnUnlockUntilMs = performance.now() + 500;
+    this.pauseMenu.setOpen(false);
+    this.inventory.setPauseMenuHidden(false);
     this.multiplayer?.closeRadioChatInput(false);
     this.inventory.setOpen(false);
     this.keys.clear();
     this.touchControls.resetTransientInputs();
     this.touchCrouchLatched = false;
     this.touchAutoUnlatchAfterSlide = false;
+    this.desktopCrouchLatched = false;
+    this.desktopAutoUnlatchAfterSlide = false;
+    this.desktopSprintLatched = false;
     this.velocity.set(0, 0, 0);
     this.slideState.isSliding = false;
     this.slideState.slideAmount = 0;
@@ -1886,7 +2193,7 @@ export class DoomGameApp {
         )
       );
       this.roll = 0;
-      this.setCameraFov(74);
+      this.setCameraFov(this.settingsStore.value.fov);
       this.astronaut.updateFirstPersonBody(
         this.position,
         this.yaw,
@@ -1921,13 +2228,14 @@ export class DoomGameApp {
   }
 
   private syncCustomSequenceCamera(pos: THREE.Vector3, eyeY: number): void {
+    const shakeScale = this.settingsStore.value.screenShakeIntensity / 100;
     const shakeX =
       this.cameraShake > 0.001
-        ? (Math.random() - 0.5) * 2 * this.cameraShake
+        ? (Math.random() - 0.5) * 2 * this.cameraShake * shakeScale
         : 0;
     const shakeY =
       this.cameraShake > 0.001
-        ? (Math.random() - 0.5) * 2 * this.cameraShake
+        ? (Math.random() - 0.5) * 2 * this.cameraShake * shakeScale
         : 0;
 
     this.camera.position.set(pos.x + shakeX, eyeY + shakeY, pos.z);
@@ -2047,7 +2355,9 @@ export class DoomGameApp {
     }
 
     const overlayInputLocked =
-      this.inventory.open || Boolean(this.multiplayer?.isChatTyping);
+      this.pauseMenu.open ||
+      this.inventory.open ||
+      Boolean(this.multiplayer?.isChatTyping);
 
     const interactPressed = overlayInputLocked ? false : this.interactQueued;
     const strugglePressed = overlayInputLocked ? false : this.struggleQueued;
@@ -2059,14 +2369,16 @@ export class DoomGameApp {
       !overlayInputLocked &&
       (touchLook.yawDelta !== 0 || touchLook.pitchDelta !== 0)
     ) {
+      const yDir = this.settingsStore.value.invertMouseY ? -1 : 1;
+      const pitchDelta = touchLook.pitchDelta * yDir;
       this.yaw += touchLook.yawDelta;
       this.pitch = Math.max(
         -1.25,
-        Math.min(1.25, this.pitch + touchLook.pitchDelta)
+        Math.min(1.25, this.pitch + pitchDelta)
       );
       this.flashlight.addLookImpulse(
         touchLook.yawDelta * 22,
-        touchLook.pitchDelta * 22
+        pitchDelta * 22
       );
     }
 
@@ -2113,6 +2425,10 @@ export class DoomGameApp {
       }
     }
 
+    if (wish.lengthSq() < 0.001 && this.desktopSprintLatched) {
+      this.desktopSprintLatched = false;
+    }
+
     const touchSprint = !overlayInputLocked && this.touchControls.isSprintRequested;
     if (
       touchSprint &&
@@ -2124,17 +2440,21 @@ export class DoomGameApp {
       this.touchCrouchLatched = false;
     }
 
+    const ctrlKeyActive =
+      this.settingsStore.value.crouchMode === 'toggle'
+        ? this.desktopCrouchLatched
+        : this.keys.has('ControlLeft') ||
+          this.keys.has('ControlRight') ||
+          this.keys.has('KeyC');
+    const shiftKeyActive =
+      this.settingsStore.value.sprintMode === 'toggle'
+        ? this.desktopSprintLatched
+        : this.keys.has('ShiftLeft') || this.keys.has('ShiftRight');
+
     const holdingCtrl =
-      !overlayInputLocked &&
-      (this.keys.has('ControlLeft') ||
-        this.keys.has('ControlRight') ||
-        this.keys.has('KeyC') ||
-        this.touchCrouchLatched);
+      !overlayInputLocked && (ctrlKeyActive || this.touchCrouchLatched);
     const holdingShift =
-      !overlayInputLocked &&
-      (this.keys.has('ShiftLeft') ||
-        this.keys.has('ShiftRight') ||
-        touchSprint);
+      !overlayInputLocked && (shiftKeyActive || touchSprint);
 
     const hasKnife = this.inventory.hasItem('rusty_knife');
 
@@ -2198,6 +2518,14 @@ export class DoomGameApp {
     if (this.touchAutoUnlatchAfterSlide && !isSliding && !slideStep.startedSlide) {
       this.touchAutoUnlatchAfterSlide = false;
       this.touchCrouchLatched = false;
+    }
+    if (
+      this.desktopAutoUnlatchAfterSlide &&
+      !isSliding &&
+      !slideStep.startedSlide
+    ) {
+      this.desktopAutoUnlatchAfterSlide = false;
+      this.desktopCrouchLatched = false;
     }
     const isCrouching =
       slideStep.isCrouching || (this.wasCrouching && !canStand);
@@ -2292,7 +2620,8 @@ export class DoomGameApp {
       bobOffset =
         Math.sin(this.bobPhase) *
         bobAmp *
-        Math.min(1, planarSpeed / (isCrouching ? 2.75 : 5.5));
+        Math.min(1, planarSpeed / (isCrouching ? 2.75 : 5.5)) *
+        (this.settingsStore.value.headBobIntensity / 100);
 
       const halfCycle = Math.floor(this.bobPhase / Math.PI);
       if (halfCycle !== this.lastBobHalfCycle) {
@@ -2595,7 +2924,10 @@ export class DoomGameApp {
       this.yaw,
       this.elapsed,
       this.worldItems.getUncollectedEquipmentSignals(),
-      !this.engaged || this.inventory.open || this.inventory.gameOverVisible,
+      !this.engaged ||
+        this.pauseMenu.open ||
+        this.inventory.open ||
+        this.inventory.gameOverVisible,
       this.multiplayer?.getRadarAllyBlips()
     );
 
@@ -2622,7 +2954,10 @@ export class DoomGameApp {
       this.spider.getNetworkSnapshot(
         updatedRemoteAbduction?.allyId ?? null
       ),
-      !this.engaged || this.inventory.open || this.inventory.gameOverVisible
+      !this.engaged ||
+        this.pauseMenu.open ||
+        this.inventory.open ||
+        this.inventory.gameOverVisible
     );
 
     this.sharedUniforms.uFlashlightIntensity.value = fl.beamIntensity;
@@ -2633,9 +2968,11 @@ export class DoomGameApp {
       const camUp = new THREE.Vector3(0, 1, 0).applyQuaternion(
         this.camera.quaternion
       );
+      const handRightOffset =
+        this.settingsStore.value.viewmodelHand === 'left' ? -0.18 : 0.18;
       this.sharedUniforms.uFlashlightPos.value
         .copy(this.camera.position)
-        .addScaledVector(camRight, 0.18)
+        .addScaledVector(camRight, handRightOffset)
         .addScaledVector(camUp, -0.14);
 
       const beamEuler = new THREE.Euler(
@@ -2746,15 +3083,16 @@ export class DoomGameApp {
       baseCrouchEye + (this.slideEyeHeight - baseCrouchEye) * slideAmt;
 
     // Impulso dinâmico sutil de FOV durante o deslize no chão
-    this.setCameraFov(74 + slideAmt * 5.5);
+    this.setCameraFov(this.settingsStore.value.fov + slideAmt * 5.5);
 
+    const shakeScale = this.settingsStore.value.screenShakeIntensity / 100;
     const shakeX =
       this.cameraShake > 0.001
-        ? (Math.random() - 0.5) * 2 * this.cameraShake
+        ? (Math.random() - 0.5) * 2 * this.cameraShake * shakeScale
         : 0;
     const shakeY =
       this.cameraShake > 0.001
-        ? (Math.random() - 0.5) * 2 * this.cameraShake
+        ? (Math.random() - 0.5) * 2 * this.cameraShake * shakeScale
         : 0;
 
     // Leve oscilação sutil quando muito ferido (<26% vida) + inclinação tática do deslize
@@ -2795,9 +3133,16 @@ export class DoomGameApp {
       });
     }
 
+    const allowFlicker = this.settingsStore.value.lightFlicker;
     for (let i = 0; i < this.lights.length; i++) {
       const src = this.lights[i];
-      const sample = evaluateDoomLightFlicker(src, this.elapsed);
+      const sample = allowFlicker
+        ? evaluateDoomLightFlicker(src, this.elapsed)
+        : {
+            intensity: src.baseIntensity,
+            isDim: false,
+            panelEmission: 1.0,
+          };
       const isDim = sample.isDim;
       const curIntensity = sample.intensity;
 
@@ -2891,20 +3236,22 @@ export class DoomGameApp {
     }
     this.sharedUniforms.uLightCount.value = totalLights;
 
-    this.sound.updateSpatialLampAudio(
-      this.position,
-      this.yaw,
-      nearestLamp,
-      nearestDist,
-      nearestJustFlickered
-    );
-    this.sound.updateSpatialFlareAudio(
-      this.position,
-      this.yaw,
-      nearestFlarePos,
-      nearestFlareDist,
-      nearestFlareLife
-    );
+    if (!(this.pauseMenu.open && !this.multiplayer)) {
+      this.sound.updateSpatialLampAudio(
+        this.position,
+        this.yaw,
+        nearestLamp,
+        nearestDist,
+        nearestJustFlickered
+      );
+      this.sound.updateSpatialFlareAudio(
+        this.position,
+        this.yaw,
+        nearestFlarePos,
+        nearestFlareDist,
+        nearestFlareLife
+      );
+    }
   }
 
   destroy(): void {
@@ -2916,8 +3263,12 @@ export class DoomGameApp {
     }
     cancelAnimationFrame(this.rafId);
     this.abortCtrl.abort();
+    this.unsubscribeSettings?.();
+    this.unsubscribeSettings = null;
+    this.sound.setFocusMuted(false);
     unlockSystemKeyboardKeys();
     this.localAfkBannerEl.remove();
+    this.pauseMenu.destroy();
     this.touchControls.destroy();
     this.multiplayer?.destroy();
     this.multiplayer = null;

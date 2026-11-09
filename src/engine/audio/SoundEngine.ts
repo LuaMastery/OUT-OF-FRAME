@@ -260,6 +260,54 @@ export class SoundEngine {
   private lastSprintBreathMs = 0;
   private lastRadioSquelchMs = 0;
 
+  // Preferências do menu de Configurações (0..1)
+  private userMasterGain = 0.82;
+  private userSfxGain = 0.94;
+  private userUiGain = 0.9;
+  private userReverbSendGain = 0.46;
+  private mutedByFocusLoss = false;
+
+  setUserAudioSettings(opts: {
+    masterVolume: number;
+    sfxVolume: number;
+    uiVolume: number;
+    reverbAmount: number;
+    mutedByFocus?: boolean;
+  }): void {
+    this.userMasterGain = Math.max(0, Math.min(1, opts.masterVolume / 100));
+    this.userSfxGain = Math.max(0, Math.min(1, opts.sfxVolume / 100));
+    this.userUiGain = Math.max(0, Math.min(1, opts.uiVolume / 100));
+    this.userReverbSendGain =
+      Math.max(0, Math.min(1, opts.reverbAmount / 100)) * 0.68;
+    if (typeof opts.mutedByFocus === 'boolean') {
+      this.mutedByFocusLoss = opts.mutedByFocus;
+    }
+    this.applyUserGainsToGraph();
+  }
+
+  setFocusMuted(muted: boolean): void {
+    if (this.mutedByFocusLoss === muted) return;
+    this.mutedByFocusLoss = muted;
+    this.applyUserGainsToGraph();
+  }
+
+  private applyUserGainsToGraph(): void {
+    if (this.masterGain) {
+      this.masterGain.gain.value = this.mutedByFocusLoss
+        ? 0
+        : this.userMasterGain;
+    }
+    if (this.worldDryBus) {
+      this.worldDryBus.gain.value = this.userSfxGain;
+    }
+    if (this.terminalBus) {
+      this.terminalBus.gain.value = this.userUiGain;
+    }
+    if (this.reverbSend) {
+      this.reverbSend.gain.value = this.userReverbSendGain;
+    }
+  }
+
   unlock(): void {
     if (!this.ctx) {
       const AudioCtx =
@@ -334,6 +382,7 @@ export class SoundEngine {
     reverbHpf.connect(reverbReturn);
     reverbReturn.connect(shaper);
     this.reverbSend = reverbSend;
+    this.applyUserGainsToGraph();
 
     // Quatro buffers procedurais com texturas físicas distintas (1.4s cada, zero alocação em runtime)
     this.noiseBuffer = this.buildWhiteNoiseBuffer(ctx, 1.4);

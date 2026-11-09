@@ -46,8 +46,19 @@ import {
   RADAR_CANVAS_SIZE,
   renderRadarMinimapCanvas,
 } from '../src/doom/DoomRadar';
+import { DoomPauseMenu } from '../src/doom/DoomPauseMenu';
+import {
+  DEFAULT_DOOM_SETTINGS,
+  DOOM_SETTINGS_DESCRIPTORS,
+  DOOM_SETTINGS_STORAGE_KEY,
+  DoomSettingsStore,
+  resolutionPresetToHeight,
+  sanitizeDoomSettings,
+  SETTINGS_CATEGORIES,
+} from '../src/doom/DoomSettings';
 import {
   createDoomSharedUniforms,
+  DoomRetroCompositor,
   MAX_DOOM_LIGHTS,
 } from '../src/doom/DoomShader';
 import { DoomSpider } from '../src/doom/DoomSpider';
@@ -2659,7 +2670,14 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
       },
     } as unknown as SoundEngine;
 
-    const spider = new DoomSpider(scene, shared, built.colliders, webs, soundMock);
+    const spider = new DoomSpider(
+      scene,
+      shared,
+      built.colliders,
+      webs,
+      soundMock,
+      createRandomArenaLayout({ worldSeed: 4242, playerSeed: 4242 })
+    );
     const trapPos = new THREE.Vector3(spider.position.x + 0.5, 0, spider.position.z);
     const victimNearSpider = new THREE.Vector3(spider.position.x + 0.5, 0, spider.position.z);
     const farHostCell = gridCellToWorld(1, 1);
@@ -4003,3 +4021,494 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
     }
   });
 });
+
+describe('Botão de Pausa no HUD, Tela de Pausa Completa & 26 Configurações Reais', () => {
+  it('define 26 opções reais (>= 20) em 5 categorias com sanitização segura, persistência em localStorage e restauração de padrões', () => {
+    expect(DOOM_SETTINGS_DESCRIPTORS.length).toBe(26);
+    expect(DOOM_SETTINGS_DESCRIPTORS.length).toBeGreaterThanOrEqual(20);
+    expect(SETTINGS_CATEGORIES.map((c) => c.id)).toEqual([
+      'video',
+      'audio',
+      'controls',
+      'gameplay',
+      'interface',
+    ]);
+
+    const seenKeys = new Set<string>();
+    for (const desc of DOOM_SETTINGS_DESCRIPTORS) {
+      expect(seenKeys.has(desc.key)).toBe(false);
+      seenKeys.add(desc.key);
+      expect(desc.key in DEFAULT_DOOM_SETTINGS).toBe(true);
+      if (desc.kind === 'range') {
+        const defVal = DEFAULT_DOOM_SETTINGS[desc.key] as number;
+        expect(defVal).toBeGreaterThanOrEqual(desc.min);
+        expect(defVal).toBeLessThanOrEqual(desc.max);
+      } else if (desc.kind === 'choice') {
+        const defVal = String(DEFAULT_DOOM_SETTINGS[desc.key]);
+        expect(desc.choices.some((c) => c.value === defVal)).toBe(true);
+      } else {
+        expect(typeof DEFAULT_DOOM_SETTINGS[desc.key]).toBe('boolean');
+      }
+    }
+    expect(seenKeys.size).toBe(Object.keys(DEFAULT_DOOM_SETTINGS).length);
+
+    expect(resolutionPresetToHeight('180p')).toBe(180);
+    expect(resolutionPresetToHeight('250p')).toBe(250);
+    expect(resolutionPresetToHeight('480p')).toBe(480);
+    expect(resolutionPresetToHeight('720p')).toBe(720);
+
+    const sanitized = sanitizeDoomSettings({
+      fov: 999 as unknown as number,
+      masterVolume: -50 as unknown as number,
+      resolutionHeight: '8k' as unknown as '250p',
+      showCrosshair: 'laser' as unknown as 'dot',
+      invertMouseY: true,
+    });
+    expect(sanitized.fov).toBe(105);
+    expect(sanitized.masterVolume).toBe(0);
+    expect(sanitized.resolutionHeight).toBe('250p');
+    expect(sanitized.showCrosshair).toBe('dot');
+    expect(sanitized.invertMouseY).toBe(true);
+
+    const prevStorage = (globalThis as Record<string, unknown>).localStorage;
+    const mem = new Map<string, string>();
+    (globalThis as Record<string, unknown>).localStorage = {
+      getItem: (k: string) => mem.get(k) ?? null,
+      setItem: (k: string, v: string) => mem.set(k, v),
+      removeItem: (k: string) => mem.delete(k),
+    };
+
+    try {
+      const store = new DoomSettingsStore();
+      let notifications = 0;
+      const unsub = store.subscribe(() => {
+        notifications++;
+      });
+
+      store.set('fov', 92);
+      store.set('crtScanlines', 'strong');
+      store.set('crouchMode', 'toggle');
+      expect(notifications).toBe(3);
+      expect(store.value.fov).toBe(92);
+      expect(mem.has(DOOM_SETTINGS_STORAGE_KEY)).toBe(true);
+
+      // Recarregar de localStorage recupera exatamente as opções salvas
+      const reloaded = new DoomSettingsStore();
+      expect(reloaded.value.fov).toBe(92);
+      expect(reloaded.value.crtScanlines).toBe('strong');
+      expect(reloaded.value.crouchMode).toBe('toggle');
+
+      store.resetToDefaults();
+      expect(store.value).toEqual(DEFAULT_DOOM_SETTINGS);
+      unsub();
+    } finally {
+      (globalThis as Record<string, unknown>).localStorage = prevStorage;
+    }
+  });
+
+  it('conecta resolução interna, pós-processamento GLSL, mão dominante (destro/canhoto sem inverter normais) e head-bob diretamente na engine', () => {
+    const comp = new DoomRetroCompositor(1280, 720);
+    expect(comp.getResolution().height).toBe(250);
+
+    comp.setTargetHeight(480, 1280, 720);
+    expect(comp.getResolution().height).toBe(480);
+    expect(comp.getResolution().width).toBe(Math.round(480 * (1280 / 720)));
+
+    comp.setPostFXOptions({
+      brightness: 1.35,
+      contrast: 1.15,
+      ditherMode: false,
+      scanlineIntensity: 0.24,
+    });
+    comp.dispose();
+
+    const fl = new DoomFlashlight(16 / 9);
+    fl.toggle();
+    for (let i = 0; i < 40; i++) {
+      fl.update(1 / 60, i * 0.2, 5.2, () => {}, 0, 100, 0);
+    }
+    let rightHandX = 0;
+    fl.viewScene.traverse((obj) => {
+      if (obj.parent === fl.viewScene && obj.visible && Math.abs(obj.position.x) > 0.05) {
+        rightHandX = obj.position.x;
+      }
+    });
+    expect(rightHandX).toBeGreaterThan(0);
+
+    fl.setHandedness('left');
+    fl.setHeadBobMultiplier(0);
+    fl.update(1 / 60, 1.5, 5.2, () => {}, 0, 100, 0);
+
+    let leftHandX = 0;
+    let anyNegativeScale = false;
+    fl.viewScene.traverse((obj) => {
+      if (obj.scale.x < 0 || obj.scale.y < 0 || obj.scale.z < 0) {
+        anyNegativeScale = true;
+      }
+      if (obj.parent === fl.viewScene && obj.visible && Math.abs(obj.position.x) > 0.05) {
+        leftHandX = obj.position.x;
+      }
+    });
+    expect(leftHandX).toBeLessThan(0);
+    expect(anyNegativeScale).toBe(false);
+  });
+
+  it('monta o Botão de Pausa visível no HUD, abre a Tela de Pausa com 26 opções interativas sem recriar DOM no hover e confirma Reiniciar/Sair em 2 cliques', () => {
+    interface PauseMockEl {
+      tagName: string;
+      id: string;
+      type?: string;
+      title?: string;
+      min?: string;
+      max?: string;
+      step?: string;
+      value: string;
+      className: string;
+      textContent: string;
+      dataset: Record<string, string>;
+      style: Record<string, string>;
+      attrs: Map<string, string>;
+      children: PauseMockEl[];
+      parent: PauseMockEl | null;
+      listeners: Map<string, Array<(ev: unknown) => void>>;
+      classList: {
+        add: (...tokens: string[]) => void;
+        remove: (...tokens: string[]) => void;
+        toggle: (token: string, force?: boolean) => boolean;
+        contains: (token: string) => boolean;
+      };
+      appendChild: (child: PauseMockEl) => PauseMockEl;
+      remove: () => void;
+      setAttribute: (k: string, v: string) => void;
+      querySelector: (selector: string) => PauseMockEl | null;
+      querySelectorAll: (selector: string) => PauseMockEl[];
+      addEventListener: (type: string, cb: (ev: unknown) => void) => void;
+      dispatch: (type: string, extra?: Record<string, unknown>) => void;
+      getBoundingClientRect: () => {
+        x: number;
+        y: number;
+        left: number;
+        top: number;
+        width: number;
+        height: number;
+      };
+      getContext: () => Record<string, unknown>;
+      innerHTML: string;
+    }
+
+    const ctx2d = {
+      clearRect: () => {},
+      fillRect: () => {},
+      strokeRect: () => {},
+      beginPath: () => {},
+      moveTo: () => {},
+      lineTo: () => {},
+      arc: () => {},
+      closePath: () => {},
+      fill: () => {},
+      stroke: () => {},
+      save: () => {},
+      restore: () => {},
+      translate: () => {},
+      rotate: () => {},
+      scale: () => {},
+      setTransform: () => {},
+      fillText: () => {},
+      createLinearGradient: () => ({ addColorStop: () => {} }),
+      createRadialGradient: () => ({ addColorStop: () => {} }),
+    };
+
+    const matchesSingleSelector = (
+      node: PauseMockEl,
+      sel: string
+    ): boolean => {
+      if (!sel) return false;
+      if (sel.startsWith('#')) return node.id === sel.slice(1);
+      if (sel.startsWith('.')) {
+        return sel
+          .slice(1)
+          .split('.')
+          .every((cls) => node.classList.contains(cls));
+      }
+      const attrMatch = /^\[([a-z0-9-]+)(?:="([^"]*)")?\]$/i.exec(sel);
+      if (attrMatch) {
+        const [, attrName, attrVal] = attrMatch;
+        if (!node.attrs.has(attrName)) return false;
+        return attrVal === undefined || node.attrs.get(attrName) === attrVal;
+      }
+      return node.tagName.toLowerCase() === sel.toLowerCase();
+    };
+
+    const makeEl = (tag: string): PauseMockEl => {
+      const classes = new Set<string>();
+      let html = '';
+      const el: PauseMockEl = {
+        tagName: tag.toUpperCase(),
+        id: '',
+        value: '',
+        get className() {
+          return Array.from(classes).join(' ');
+        },
+        set className(v: string) {
+          classes.clear();
+          v.split(/\s+/)
+            .filter(Boolean)
+            .forEach((c) => classes.add(c));
+        },
+        textContent: '',
+        dataset: {},
+        style: {},
+        attrs: new Map(),
+        children: [],
+        parent: null,
+        listeners: new Map(),
+        classList: {
+          add: (...tokens) => tokens.forEach((t) => classes.add(t)),
+          remove: (...tokens) => tokens.forEach((t) => classes.delete(t)),
+          toggle: (token, force) => {
+            const next = force ?? !classes.has(token);
+            if (next) classes.add(token);
+            else classes.delete(token);
+            return next;
+          },
+          contains: (token) => classes.has(token),
+        },
+        appendChild(child: PauseMockEl) {
+          child.parent = el;
+          el.children.push(child);
+          return child;
+        },
+        remove() {
+          if (!el.parent) return;
+          const idx = el.parent.children.indexOf(el);
+          if (idx >= 0) el.parent.children.splice(idx, 1);
+          el.parent = null;
+        },
+        setAttribute(k: string, v: string) {
+          el.attrs.set(k, v);
+          if (k.startsWith('data-')) {
+            const camel = k
+              .slice(5)
+              .replace(/-([a-z])/g, (_, c: string) => c.toUpperCase());
+            el.dataset[camel] = v;
+          }
+        },
+        querySelector(selector: string): PauseMockEl | null {
+          return el.querySelectorAll(selector)[0] ?? null;
+        },
+        querySelectorAll(selector: string): PauseMockEl[] {
+          const groups = selector.split(',').map((g) => g.trim());
+          const out: PauseMockEl[] = [];
+          const visit = (node: PauseMockEl) => {
+            for (const c of node.children) {
+              if (groups.some((g) => matchesSingleSelector(c, g))) {
+                out.push(c);
+              }
+              visit(c);
+            }
+          };
+          visit(el);
+          return out;
+        },
+        addEventListener(type, cb) {
+          const arr = el.listeners.get(type) ?? [];
+          arr.push(cb);
+          el.listeners.set(type, arr);
+        },
+        dispatch(type, extra = {}) {
+          const ev = {
+            type,
+            preventDefault: () => {},
+            stopPropagation: () => {},
+            ...extra,
+          };
+          for (const cb of el.listeners.get(type) ?? []) cb(ev);
+        },
+        getBoundingClientRect: () => ({
+          x: 12,
+          y: 12,
+          left: 12,
+          top: 12,
+          width: 120,
+          height: 36,
+        }),
+        getContext: () => ctx2d,
+        get innerHTML() {
+          return html;
+        },
+        set innerHTML(val: string) {
+          html = val;
+          el.children.length = 0;
+          const tagRe = /<([a-z0-9]+)\b([^>]*)>/gi;
+          let match: RegExpExecArray | null;
+          while ((match = tagRe.exec(val)) !== null) {
+            const tagName = match[1];
+            const attrsRaw = match[2];
+            const clsMatch = /\bclass="([^"]*)"/i.exec(attrsRaw);
+            const dataAttrRe = /\b(data-[a-z0-9-]+)(?:="([^"]*)")?/gi;
+            const foundData: Array<[string, string]> = [];
+            let dm: RegExpExecArray | null;
+            while ((dm = dataAttrRe.exec(attrsRaw)) !== null) {
+              foundData.push([dm[1], dm[2] ?? '']);
+            }
+            if (clsMatch || foundData.length > 0) {
+              const child = makeEl(tagName);
+              if (clsMatch) child.className = clsMatch[1];
+              for (const [k, v] of foundData) {
+                child.setAttribute(k, v);
+              }
+              el.appendChild(child);
+            }
+          }
+        },
+      };
+      return el;
+    };
+
+    const prevWindow = (globalThis as Record<string, unknown>).window;
+    const prevDocument = (globalThis as Record<string, unknown>).document;
+    const prevRaf = globalThis.requestAnimationFrame;
+    const prevCaf = globalThis.cancelAnimationFrame;
+
+    (globalThis as Record<string, unknown>).window = {
+      innerWidth: 1280,
+      innerHeight: 720,
+      devicePixelRatio: 1,
+      setTimeout: globalThis.setTimeout.bind(globalThis),
+      clearTimeout: globalThis.clearTimeout.bind(globalThis),
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    };
+    (globalThis as Record<string, unknown>).document = {
+      createElement: (tag: string) => makeEl(tag),
+      pointerLockElement: null,
+      exitPointerLock: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    };
+    globalThis.requestAnimationFrame = () => 1;
+    globalThis.cancelAnimationFrame = () => {};
+
+    try {
+      const viewportEl = makeEl('div');
+      const store = new DoomSettingsStore();
+
+      let hoverSounds = 0;
+      let pauseOpenedCount = 0;
+      let resumeCount = 0;
+      let restartCount = 0;
+      let exitCount = 0;
+      let fullscreenCount = 0;
+
+      const mockSound = {
+        playInventoryToggle: vi.fn(),
+        playInventorySelect: (confirm?: boolean) => {
+          if (!confirm) hoverSounds++;
+        },
+      };
+
+      const pauseMenu = new DoomPauseMenu(
+        viewportEl as unknown as HTMLElement,
+        store,
+        mockSound as never,
+        {
+          onPauseOpened: () => {
+            pauseOpenedCount++;
+          },
+          onResumeRequest: () => {
+            resumeCount++;
+            pauseMenu.setOpen(false);
+          },
+          onToggleFullscreen: () => {
+            fullscreenCount++;
+          },
+          onRestartSessionRequest: () => {
+            restartCount++;
+          },
+          onExitToDesktopRequest: () => {
+            exitCount++;
+          },
+        }
+      );
+
+      // 1. Botão de Pausa visível no HUD superior (#doom-pause-trigger-btn)
+      const triggerBtn = viewportEl.querySelector('#doom-pause-trigger-btn');
+      expect(triggerBtn).not.toBeNull();
+      expect(pauseMenu.open).toBe(false);
+
+      // Clicar no botão de Pausa abre imediatamente a Tela de Pausa!
+      triggerBtn!.dispatch('click');
+      expect(pauseMenu.open).toBe(true);
+      expect(pauseOpenedCount).toBe(1);
+      expect(triggerBtn!.classList.contains('hidden-by-ui')).toBe(true);
+
+      // 2. Navegar para Configurações exibe exatamente as 26 linhas persistentes
+      const openSettingsBtn = viewportEl.querySelector(
+        '[data-pause-action="open-settings"]'
+      )!;
+      openSettingsBtn.dispatch('click');
+      expect(pauseMenu.subView).toBe('settings');
+
+      const rowsBefore = viewportEl.querySelectorAll('.setting-row');
+      expect(rowsBefore.length).toBe(26);
+      const firstRowRef = rowsBefore[0];
+      const firstSegBtn = firstRowRef.querySelector('.setting-seg-btn')!;
+      expect(firstSegBtn).not.toBeNull();
+
+      // Hover no botão interativo toca som apenas 1 vez; alterar valores NÃO recria nós DOM!
+      const hoverCountBefore = hoverSounds;
+      firstSegBtn.dispatch('mouseenter');
+      firstSegBtn.dispatch('mouseenter');
+      expect(hoverSounds).toBe(hoverCountBefore + 1);
+
+      // Clicar na opção "180p" altera imediatamente o store sem recriar os elementos!
+      firstSegBtn.dispatch('click');
+      expect(store.value.resolutionHeight).toBe('180p');
+
+      store.set('fov', 90);
+      store.set('masterVolume', 55);
+      store.set('showFpsCounter', true);
+      const rowsAfter = viewportEl.querySelectorAll('.setting-row');
+      expect(rowsAfter[0]).toBe(firstRowRef);
+      expect(rowsAfter[0].querySelector('.setting-seg-btn')).toBe(firstSegBtn);
+      expect(hoverSounds).toBe(hoverCountBefore + 1);
+
+      // 3. Esc dentro de Configurações volta ao Menu Principal; 2º Esc retoma o jogo!
+      pauseMenu.handleEscapeOrBack();
+      expect(pauseMenu.open).toBe(true);
+      expect(pauseMenu.subView).toBe('main');
+      expect(resumeCount).toBe(0);
+
+      pauseMenu.handleEscapeOrBack();
+      expect(resumeCount).toBe(1);
+      expect(pauseMenu.open).toBe(false);
+
+      // 4. Confirmação segura em 2 cliques para Reiniciar e Sair + Tela Cheia direta
+      pauseMenu.setOpen(true);
+      viewportEl.querySelector('[data-pause-action="fullscreen"]')!.dispatch('click');
+      expect(fullscreenCount).toBe(1);
+
+      const restartBtn = viewportEl.querySelector('[data-pause-action="restart"]')!;
+      restartBtn.dispatch('click');
+      expect(restartCount).toBe(0);
+      expect(restartBtn.classList.contains('confirm-armed')).toBe(true);
+      restartBtn.dispatch('click');
+      expect(restartCount).toBe(1);
+
+      const exitBtn = viewportEl.querySelector('[data-pause-action="exit"]')!;
+      exitBtn.dispatch('click');
+      expect(exitCount).toBe(0);
+      expect(exitBtn.classList.contains('confirm-armed')).toBe(true);
+      exitBtn.dispatch('click');
+      expect(exitCount).toBe(1);
+
+      pauseMenu.destroy();
+    } finally {
+      globalThis.requestAnimationFrame = prevRaf;
+      globalThis.cancelAnimationFrame = prevCaf;
+      (globalThis as Record<string, unknown>).window = prevWindow;
+      (globalThis as Record<string, unknown>).document = prevDocument;
+    }
+  });
+});
+

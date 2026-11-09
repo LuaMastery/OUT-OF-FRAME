@@ -189,6 +189,16 @@ export class DoomFlashlight {
   // Inércia suave ao virar a câmera
   private swayX = 0;
   private swayY = 0;
+  private handSign: 1 | -1 = 1;
+  private headBobMul = 1.0;
+
+  setHandedness(hand: 'right' | 'left'): void {
+    this.handSign = hand === 'left' ? -1 : 1;
+  }
+
+  setHeadBobMultiplier(mul: number): void {
+    this.headBobMul = Math.max(0, Math.min(2, mul));
+  }
 
   constructor(aspect: number) {
     this.viewCamera = new THREE.PerspectiveCamera(
@@ -1289,6 +1299,7 @@ export class DoomFlashlight {
       );
       this.leftAstronautArm.wristPivot.rotation.set(0.14, -0.18, -0.16);
     }
+    this.quickRootGroup.position.x *= this.handSign;
   }
 
   /**
@@ -1378,16 +1389,18 @@ export class DoomFlashlight {
     this.swayY += (0 - this.swayY) * relax;
 
     const moveFactor = Math.min(1, planarSpeed / 6.0);
-    const bobScale = (1 - crouchAmount * 0.35) * (1 - slideAmount * 0.85);
+    const bobScale =
+      (1 - crouchAmount * 0.35) * (1 - slideAmount * 0.85) * this.headBobMul;
     const walkX = Math.cos(bobPhase * 0.5) * 0.013 * moveFactor * bobScale;
     const walkY =
       Math.abs(Math.sin(bobPhase * 0.5)) * -0.015 * moveFactor * bobScale;
 
-    const stowedX = 0.32;
+    const stowedX = 0.32 * this.handSign;
     const stowedY = -0.48;
     const stowedZ = -0.25;
 
-    const heldX = 0.195 - crouchAmount * 0.015 - slideAmount * 0.022;
+    const heldX =
+      (0.195 - crouchAmount * 0.015 - slideAmount * 0.022) * this.handSign;
     const heldY = -0.156 + crouchAmount * 0.012 - slideAmount * 0.022;
     const heldZ = -0.41 + crouchAmount * 0.016 + slideAmount * 0.012;
 
@@ -1399,10 +1412,10 @@ export class DoomFlashlight {
 
     const stowedPitch = -0.72;
     const heldPitch = 0.03 + slideAmount * 0.05;
-    const stowedYaw = -0.24;
-    const heldYaw = 0.08 + slideAmount * 0.06;
-    const stowedRoll = 0.36;
-    const heldRoll = -0.04 - slideAmount * 0.18;
+    const stowedYaw = -0.24 * this.handSign;
+    const heldYaw = (0.08 + slideAmount * 0.06) * this.handSign;
+    const stowedRoll = 0.36 * this.handSign;
+    const heldRoll = (-0.04 - slideAmount * 0.18) * this.handSign;
 
     this.animGroup.rotation.set(
       stowedPitch + (heldPitch - stowedPitch) * eased + this.swayY * 1.4,

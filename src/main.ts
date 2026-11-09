@@ -1,8 +1,10 @@
 import './style.css';
 import './terminal/terminal.css';
 import './doom/inventory.css';
+import './doom/pause.css';
 import './multiplayer/multiplayer.css';
 import { DoomGameApp } from './doom/DoomGameApp';
+import { loadDoomSettings } from './doom/DoomSettings';
 import { SoundEngine } from './engine/audio/SoundEngine';
 import { acquireFullscreenAndKeyboardLock } from './engine/input/BrowserShortcutGuard';
 import { ActiveRoomSession } from './multiplayer/MultiplayerService';
@@ -14,40 +16,58 @@ const gameViewport = document.getElementById('game-viewport') as HTMLElement;
 const soundEngine = new SoundEngine();
 let doomApp: DoomGameApp | null = null;
 
+function replaceFreshWebglCanvas(): void {
+  const oldCanvas = document.getElementById('webgl-canvas');
+  if (oldCanvas) {
+    const freshCanvas = document.createElement('canvas');
+    freshCanvas.id = 'webgl-canvas';
+    oldCanvas.replaceWith(freshCanvas);
+  }
+}
+
+function exitDoomToDesktop(): void {
+  doomApp?.destroy();
+  doomApp = null;
+  replaceFreshWebglCanvas();
+  gameViewport.classList.add('dormant');
+  createTerminalController(true);
+}
+
+function launchDoomSession(multiplayerSession?: ActiveRoomSession): void {
+  if (loadDoomSettings().autoFullscreenOnResume) {
+    acquireFullscreenAndKeyboardLock(() => {
+      doomApp?.reacquirePointerLockAfterFullscreen();
+    });
+  }
+
+  if (doomApp) {
+    doomApp.destroy();
+    doomApp = null;
+    replaceFreshWebglCanvas();
+  }
+
+  gameViewport.classList.remove('dormant');
+  doomApp = new DoomGameApp(
+    soundEngine,
+    () => {
+      // Morte permanente ou saída da sala: destrói a sessão/mundo e retorna ao Terminal!
+      exitDoomToDesktop();
+    },
+    multiplayerSession,
+    () => {
+      // Reiniciar incursão a partir do Menu de Pausa: recria o labirinto com novo spawn e loot!
+      launchDoomSession(undefined);
+    }
+  );
+  doomApp.start();
+  doomApp.engageFromTerminal(multiplayerSession);
+}
+
 function createTerminalController(skipBootToDesktop: boolean): void {
   const terminal = new TerminalBootController(appRoot, {
     sound: soundEngine,
     onLaunchImmediateGesture: (multiplayerSession?: ActiveRoomSession) => {
-      // Solicita Tela Cheia + Keyboard Lock no primeiro microssegundo do gesto do usuário
-      // para que o navegador capture Ctrl+W diretamente para o jogo sem fechar a aba!
-      acquireFullscreenAndKeyboardLock(() => {
-        doomApp?.reacquirePointerLockAfterFullscreen();
-      });
-
-      gameViewport.classList.remove('dormant');
-      if (!doomApp) {
-        doomApp = new DoomGameApp(
-          soundEngine,
-          () => {
-            // Morte permanente ou saída da sala: destrói a sessão/mundo e retorna ao Terminal!
-            doomApp?.destroy();
-            doomApp = null;
-
-            const oldCanvas = document.getElementById('webgl-canvas');
-            if (oldCanvas) {
-              const freshCanvas = document.createElement('canvas');
-              freshCanvas.id = 'webgl-canvas';
-              oldCanvas.replaceWith(freshCanvas);
-            }
-
-            gameViewport.classList.add('dormant');
-            createTerminalController(true);
-          },
-          multiplayerSession
-        );
-        doomApp.start();
-      }
-      doomApp.engageFromTerminal(multiplayerSession);
+      launchDoomSession(multiplayerSession);
     },
   });
 

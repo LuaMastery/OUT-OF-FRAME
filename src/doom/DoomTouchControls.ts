@@ -268,6 +268,12 @@ export class DoomTouchControls {
     return false;
   }
 
+  private lookSensitivityScale = 1.0;
+
+  setLookSensitivityScale(scale: number): void {
+    this.lookSensitivityScale = Math.max(0.25, Math.min(3.0, scale));
+  }
+
   /**
    * Consome o delta acumulado de rotação de câmera pelo dedo de visão livre.
    */
@@ -518,7 +524,7 @@ export class DoomTouchControls {
       target.closest(
         '.oof-touch-joy-zone, .oof-touch-btn, .oof-touch-coop-btn, ' +
           '#doom-shortcuts-hub, #doom-inventory-overlay, .oof-coop-hud, ' +
-          '.doom-radar-hud, #doom-capture-gameover'
+          '.doom-radar-hud, #doom-capture-gameover, #doom-pause-trigger-btn, #doom-pause-overlay'
       )
     );
   }
@@ -566,7 +572,7 @@ export class DoomTouchControls {
         this.lookLastX = t.clientX;
         this.lookLastY = t.clientY;
         // Sensibilidade tátil calibrada para rotação 1ª pessoa rápida e precisa
-        const sens = 0.0048;
+        const sens = 0.0048 * this.lookSensitivityScale;
         this.pendingYawDelta -= dx * sens;
         this.pendingPitchDelta -= dy * sens * 0.88;
       }
