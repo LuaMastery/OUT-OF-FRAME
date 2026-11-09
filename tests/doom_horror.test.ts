@@ -5328,6 +5328,7 @@ describe('Correção Integral de Pausa, Áudio WebAudio & Botão de Pausa no Inv
       const param = {
         value: initial,
         cancelCalls: 0,
+        targetCalls: [] as Array<{ value: number; timeConstant: number }>,
         cancelScheduledValues() {
           param.cancelCalls++;
           return param;
@@ -5344,8 +5345,9 @@ describe('Correção Integral de Pausa, Áudio WebAudio & Botão de Pausa no Inv
           param.value = v;
           return param;
         },
-        setTargetAtTime(v: number) {
+        setTargetAtTime(v: number, _time: number, timeConstant: number) {
           param.value = v;
+          param.targetCalls.push({ value: v, timeConstant });
           return param;
         },
       };
@@ -5727,6 +5729,28 @@ describe('Correção Integral de Pausa, Áudio WebAudio & Botão de Pausa no Inv
       // Entrar no labirinto preserva o masterVolume do usuário em vez de cravar 0.82!
       sound.enterDoomLabyrinth();
       expect(sound.debugGainState.masterGain).toBeCloseTo(0.85, 2);
+      // Um único grafo procedural é reutilizado nas mudanças de sala.
+      const ambient = sound as unknown as {
+        ambientOscA: { frequency: { value: number; targetCalls: Array<{ value: number; timeConstant: number }> } };
+        ambientNoiseGain: { gain: { value: number } };
+        ambientZone: string | null;
+        dungeonBus: { gain: { value: number } };
+        dungeonPendingActivation: boolean;
+        ctx: FakeAudioContext;
+      };
+      const ambientOsc = ambient.ambientOscA;
+      const oscillatorCount = createdOscCount;
+      sound.setDoomAmbientZone('computer_room');
+      expect(ambient.ambientZone).toBe('computer_room');
+      expect(ambientOsc.frequency.value).toBe(60);
+      expect(ambientOsc.frequency.targetCalls.at(-1)?.timeConstant).toBe(1.2);
+      const scheduledCount = ambientOsc.frequency.targetCalls.length;
+      sound.setDoomAmbientZone('computer_room');
+      expect(ambientOsc.frequency.targetCalls.length).toBe(scheduledCount);
+      sound.setDoomAmbientZone('library_room');
+      expect(ambientOsc.frequency.value).toBe(38);
+      expect(ambient.ambientNoiseGain.gain.value).toBe(0.007);
+      expect(createdOscCount).toBe(oscillatorCount);
 
       // Pausar o mundo em Solo zera 100% do barramento da masmorra e do envio de reverb,
       // bloqueia passos/aranha, mas mantém os sons de UI da Pausa vivos!
@@ -5847,6 +5871,27 @@ describe('Correção Integral de Pausa, Áudio WebAudio & Botão de Pausa no Inv
 
       inv.destroy();
       pauseMenu.destroy();
+      sound.stopDungeonAtmosphere();
+      expect(ambient.ambientZone).toBeNull();
+      sound.setDoomAmbientZone('reactor_hall');
+      expect(ambient.ambientZone).toBeNull();
+      sound.enterDoomLabyrinth();
+      const oscillatorsAfterRestart = createdOscCount;
+      sound.setDoomAmbientZone('reactor_hall');
+      expect(ambient.ambientOscA).toBe(ambientOsc);
+      expect(createdOscCount).toBe(oscillatorsAfterRestart);
+      expect(ambient.ambientZone).toBe('reactor_hall');
+      sound.stopDungeonAtmosphere();
+      // Reentrar com AudioContext ainda suspenso recupera o barramento assim que desbloqueia.
+      ambient.ctx.state = 'suspended';
+      ambient.ctx.resume = () => Promise.resolve();
+      sound.enterDoomLabyrinth();
+      expect(ambient.dungeonPendingActivation).toBe(true);
+      ambient.ctx.state = 'running';
+      sound.setDoomAmbientZone('biology_lab');
+      expect(ambient.dungeonPendingActivation).toBe(false);
+      expect(ambient.dungeonBus.gain.value).toBe(1);
+      expect(ambient.ambientOscA).toBe(ambientOsc);
       sound.stopDungeonAtmosphere();
     } finally {
       (globalThis as Record<string, unknown>).window = prevWin;

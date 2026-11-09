@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import type { DoomAmbientZone } from '../../doom/DoomAmbientZones';
 
 export type FloorMaterialKind = 'tech' | 'stone';
 
@@ -207,6 +208,31 @@ export function computeSpiderStepLayerProfile(
   };
 }
 
+/** Subtle procedural room tones: electrical hum, ventilation and pressure variation. */
+export interface DoomAmbientProfile {
+  fundamental: number;
+  harmonic: number;
+  noiseFrequency: number;
+  noiseQ: number;
+  humGain: number;
+  noiseGain: number;
+  modulationHz: number;
+}
+
+export const DOOM_AMBIENT_PROFILES: Readonly<Record<DoomAmbientZone, DoomAmbientProfile>> = {
+  industrial:      { fundamental: 48, harmonic: 72, noiseFrequency: 230, noiseQ: 0.75, humGain: 0.010, noiseGain: 0.012, modulationHz: 0.11 },
+  atrium:          { fundamental: 55, harmonic: 83, noiseFrequency: 330, noiseQ: 0.65, humGain: 0.009, noiseGain: 0.015, modulationHz: 0.09 },
+  catacombs:       { fundamental: 36, harmonic: 54, noiseFrequency: 140, noiseQ: 0.65, humGain: 0.009, noiseGain: 0.012, modulationHz: 0.06 },
+  nest:            { fundamental: 32, harmonic: 48.5, noiseFrequency: 100, noiseQ: 0.8, humGain: 0.016, noiseGain: 0.016, modulationHz: 0.18 },
+  computer_room:   { fundamental: 60, harmonic: 120, noiseFrequency: 620, noiseQ: 1.4, humGain: 0.013, noiseGain: 0.014, modulationHz: 0.28 },
+  biology_lab:     { fundamental: 72, harmonic: 108, noiseFrequency: 370, noiseQ: 1.0, humGain: 0.009, noiseGain: 0.017, modulationHz: 0.15 },
+  crew_quarters:   { fundamental: 44, harmonic: 66, noiseFrequency: 170, noiseQ: 0.65, humGain: 0.007, noiseGain: 0.008, modulationHz: 0.07 },
+  medical_ward:    { fundamental: 98, harmonic: 147, noiseFrequency: 490, noiseQ: 0.85, humGain: 0.008, noiseGain: 0.012, modulationHz: 0.12 },
+  vegetation_room: { fundamental: 42, harmonic: 63, noiseFrequency: 820, noiseQ: 0.6, humGain: 0.006, noiseGain: 0.021, modulationHz: 0.21 },
+  library_room:    { fundamental: 38, harmonic: 57, noiseFrequency: 190, noiseQ: 0.6, humGain: 0.005, noiseGain: 0.007, modulationHz: 0.05 },
+  reactor_hall:    { fundamental: 56, harmonic: 112, noiseFrequency: 155, noiseQ: 1.8, humGain: 0.018, noiseGain: 0.019, modulationHz: 0.32 },
+};
+
 /**
  * Motor de Áudio Unificado (SoundEngine) — síntese física e Foley procedural multicamada
  * em tempo real para o Terminal TUI, Convergência Binária, Labirinto DOOM, Sobrevivência e Co-op.
@@ -239,8 +265,17 @@ export class SoundEngine {
   // Ambiência espacial e industrial do Labirinto DOOM
   private dungeonStarted = false;
   private dungeonActive = false;
+  private dungeonPendingActivation = false;
   private dungeonBus: GainNode | null = null;
   private dungeonAirGain: GainNode | null = null;
+  private ambientZone: DoomAmbientZone | null = null;
+  private ambientOscA: OscillatorNode | null = null;
+  private ambientOscB: OscillatorNode | null = null;
+  private ambientHumGain: GainNode | null = null;
+  private ambientNoiseFilter: BiquadFilterNode | null = null;
+  private ambientNoiseGain: GainNode | null = null;
+  private ambientLfo: OscillatorNode | null = null;
+  private ambientLfoDepth: GainNode | null = null;
   private lampBuzzGain: GainNode | null = null;
   private lampBuzzPanner: StereoPannerNode | null = null;
   private flareBurnGain: GainNode | null = null;
@@ -1171,6 +1206,7 @@ export class SoundEngine {
     this.stopCoalesceDrone();
     this.worldPaused = false;
     this.dungeonActive = true;
+    this.dungeonPendingActivation = true;
     if (!this.isRunning() || !this.ctx || !this.worldDryBus || !this.reverbSend) {
       this.applyUserGainsToGraph(true);
       return;
@@ -1223,23 +1259,28 @@ export class SoundEngine {
     boom.start(now);
     boom.stop(now + 0.68);
 
+    this.activateDungeonAtmosphere(ctx);
+  }
+
+  private activateDungeonAtmosphere(ctx: AudioContext): void {
     if (!this.dungeonStarted) {
       this.dungeonStarted = true;
       this.startDungeonAtmosphere(ctx);
     } else if (this.dungeonBus) {
+      const now = ctx.currentTime;
       this.rampGainParam(this.dungeonBus.gain, 1.0, now + 0.08, 0.35);
-      this.rampGainParam(
-        this.dungeonAirGain?.gain ?? null,
-        0.0085,
-        now + 0.08,
-        0.35
-      );
+      if (!this.worldPaused) {
+        this.rampGainParam(this.dungeonAirGain?.gain ?? null, 0.0085, now + 0.08, 0.35);
+      }
       this.ensureDungeonPulseTimer();
     }
+    this.dungeonPendingActivation = false;
   }
 
   stopDungeonAtmosphere(): void {
     this.dungeonActive = false;
+    this.dungeonPendingActivation = false;
+    this.ambientZone = null;
     this.worldPaused = false;
     if (this.pulseTimerId) {
       window.clearInterval(this.pulseTimerId);
@@ -1385,8 +1426,88 @@ export class SoundEngine {
       this.flareBurnPanner = flarePan;
     }
 
+    // Fonte única por mundo, reutilizada em todas as transições de sala.
+    this.startAmbientZoneGraph(ctx, bus);
+
     // 5. Micro-eventos ambientais distantes nos corredores (gotas na pedra / dilatação metálica)
     this.ensureDungeonPulseTimer();
+  }
+
+  private startAmbientZoneGraph(ctx: AudioContext, bus: GainNode): void {
+    const hum = ctx.createGain();
+    hum.gain.value = 0;
+    hum.connect(bus);
+    const oscA = ctx.createOscillator();
+    oscA.type = 'sine';
+    oscA.frequency.value = 48;
+    oscA.connect(hum);
+    oscA.start();
+    const oscB = ctx.createOscillator();
+    oscB.type = 'triangle';
+    oscB.frequency.value = 72;
+    const harmonicWeight = ctx.createGain();
+    harmonicWeight.gain.value = 0.35;
+    oscB.connect(harmonicWeight);
+    harmonicWeight.connect(hum);
+    oscB.start();
+    this.ambientOscA = oscA;
+    this.ambientOscB = oscB;
+    this.ambientHumGain = hum;
+
+    if (this.pinkNoiseBuffer) {
+      const source = ctx.createBufferSource();
+      source.buffer = this.pinkNoiseBuffer;
+      source.loop = true;
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.frequency.value = 230;
+      filter.Q.value = 0.75;
+      const gain = ctx.createGain();
+      gain.gain.value = 0;
+      source.connect(filter);
+      filter.connect(gain);
+      gain.connect(bus);
+      source.start();
+      const lfo = ctx.createOscillator();
+      const depth = ctx.createGain();
+      depth.gain.value = 0;
+      lfo.frequency.value = 0.11;
+      lfo.connect(depth);
+      depth.connect(gain.gain);
+      lfo.start();
+      this.ambientNoiseFilter = filter;
+      this.ambientNoiseGain = gain;
+      this.ambientLfo = lfo;
+      this.ambientLfoDepth = depth;
+    }
+  }
+
+  /** Called locally per listener; no network state or extra audio sources per transition. */
+  setDoomAmbientZone(zone: DoomAmbientZone): void {
+    if (!this.dungeonActive || !DOOM_AMBIENT_PROFILES[zone]) return;
+    // A browser may finish unlocking the context after the game was entered.
+    if (this.dungeonPendingActivation || !this.dungeonStarted) {
+      if (!this.isRunning() || !this.ctx || !this.worldDryBus || !this.reverbSend) return;
+      this.activateDungeonAtmosphere(this.ctx);
+    }
+    if (!this.ctx || this.ambientZone === zone) return;
+    this.ambientZone = zone;
+    const profile = DOOM_AMBIENT_PROFILES[zone];
+    const now = this.ctx.currentTime;
+    const ramp = (param: AudioParam | undefined, target: number) => {
+      if (!param) return;
+      param.cancelScheduledValues(now);
+      param.setValueAtTime(param.value, now);
+      param.setTargetAtTime(target, now, 1.2);
+    };
+    ramp(this.ambientOscA?.frequency, profile.fundamental);
+    ramp(this.ambientOscB?.frequency, profile.harmonic);
+    ramp(this.ambientHumGain?.gain, profile.humGain);
+    ramp(this.ambientNoiseFilter?.frequency, profile.noiseFrequency);
+    ramp(this.ambientNoiseFilter?.Q, profile.noiseQ);
+    ramp(this.ambientNoiseGain?.gain, profile.noiseGain);
+    ramp(this.ambientLfo?.frequency, profile.modulationHz);
+    ramp(this.ambientLfoDepth?.gain, profile.noiseGain * 0.28);
   }
 
   private ensureDungeonPulseTimer(): void {

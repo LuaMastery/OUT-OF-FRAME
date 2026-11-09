@@ -23,6 +23,7 @@ import {
   hashArenaSeed,
 } from './DoomArenaRandomizer';
 import { DoomAstronaut } from './DoomAstronaut';
+import { DoomAmbientZoneTracker } from './DoomAmbientZones';
 import {
   computeDoomDancePose,
   DoomDanceId,
@@ -337,6 +338,7 @@ export class DoomGameApp {
   private prevLightDimState: boolean[] = [];
 
   private readonly position = new THREE.Vector3();
+  private ambientZoneTracker!: DoomAmbientZoneTracker;
   private readonly velocity = new THREE.Vector3();
   private yaw = 0;
   private pitch = 0;
@@ -598,6 +600,7 @@ export class DoomGameApp {
         : {}
     );
 
+    this.ambientZoneTracker = new DoomAmbientZoneTracker(arenaLayout.lairCell);
     const textures = createDoomTextures();
     const maze = buildDoomLabyrinth(
       this.scene,
@@ -2961,6 +2964,8 @@ export class DoomGameApp {
   private update(dt: number): void {
     if (!this.engaged || this.disposed) return;
 
+    const ambientCell = worldToGridCell(this.position.x, this.position.z);
+    this.sound.setDoomAmbientZone(this.ambientZoneTracker.update(ambientCell.gx, ambientCell.gz, dt));
     this.updateShotgunObjective();
     this.updateTaserHud();
     const isLocalAfk = this.refreshLocalAfkStatus();
