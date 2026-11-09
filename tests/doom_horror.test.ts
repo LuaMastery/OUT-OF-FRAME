@@ -78,9 +78,11 @@ import {
   MultiplayerLobbyService,
   MultiplayerRoomClient,
   NetworkPlayerPosePacket,
+  NetworkWorldEvent,
   normalizeRoomCode,
   STALE_HEARTBEAT_TTL_MS,
 } from '../src/multiplayer/MultiplayerService';
+import { DoomMultiplayerCoordinator } from '../src/multiplayer/DoomMultiplayerCoordinator';
 import {
   computeProximityVoiceAcousticParams,
   computeSpiderVoiceHearingAlert,
@@ -1759,18 +1761,27 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
           !isSolidCell(LABYRINTH_MAP, gx, gz) &&
           !isSolidCell(LABYRINTH_MAP, gx, gz + 1) &&
           !isSolidCell(LABYRINTH_MAP, gx, gz + 2) &&
-          isSolidCell(LABYRINTH_MAP, gx - 1, gz + 1) &&
-          (!isSolidCell(LABYRINTH_MAP, gx - 1, gz + 2) ||
-            !isSolidCell(LABYRINTH_MAP, gx + 1, gz + 2))
+          isSolidCell(LABYRINTH_MAP, gx - 1, gz + 1)
         ) {
           cellA = gridCellToWorld(gx - 2, gz);
           cornerB = gridCellToWorld(gx, gz);
-          const alcoveX = !isSolidCell(LABYRINTH_MAP, gx - 1, gz + 2)
-            ? gx - 1
-            : gx + 1;
-          if (isSolidCell(LABYRINTH_MAP, alcoveX, gz + 1)) {
-            hideC = gridCellToWorld(alcoveX, gz + 2);
-            foundCorner = true;
+          // Escolhe um esconderijo oculto a várias esquinas de distância (sem visão direta de A nem B, provando que a aranha não tem wallhack!)
+          for (let hz = LABYRINTH_MAP.length - 3; hz >= 2 && !foundCorner; hz--) {
+            for (
+              let hx = LABYRINTH_MAP[hz].length - 3;
+              hx >= 2 && !foundCorner;
+              hx--
+            ) {
+              if (
+                !isSolidCell(LABYRINTH_MAP, hx, hz) &&
+                hx !== gx &&
+                hz !== gz &&
+                Math.abs(hx - gx) + Math.abs(hz - gz) >= 10
+              ) {
+                hideC = gridCellToWorld(hx, hz);
+                foundCorner = true;
+              }
+            }
           }
         }
       }
@@ -3228,5 +3239,368 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
     expect(isSolidCell(LABYRINTH_MAP, ejectedCell.gx, ejectedCell.gz)).toBe(
       false
     );
+  });
+
+  it('abre, foca sem scroll, mantém HUD visível e fecha limpo o Chat de Rádio [T] sem bugar a tela nem travar o teclado', async () => {
+    // Harness DOM determinístico para validar ciclo completo de foco, scroll, visibilidade do HUD e rede!
+    interface MockEl {
+      tagName: string;
+      className: string;
+      textContent: string;
+      value: string;
+      title: string;
+      scrollTop: number;
+      scrollLeft: number;
+      clientWidth: number;
+      clientHeight: number;
+      style: Record<string, string>;
+      attrs: Map<string, string>;
+      children: MockEl[];
+      readonly firstChild: MockEl | null;
+      parent: MockEl | null;
+      listeners: Map<string, Array<(ev: Record<string, unknown>) => void>>;
+      classList: {
+        add: (...tokens: string[]) => void;
+        remove: (...tokens: string[]) => void;
+        toggle: (token: string, force?: boolean) => boolean;
+        contains: (token: string) => boolean;
+      };
+      appendChild: (child: MockEl) => MockEl;
+      append: (...nodes: MockEl[]) => void;
+      remove: () => void;
+      querySelector: (selector: string) => MockEl | null;
+      addEventListener: (
+        type: string,
+        cb: (ev: Record<string, unknown>) => void
+      ) => void;
+      dispatch: (type: string, extra?: Record<string, unknown>) => void;
+      focus: (opts?: { preventScroll?: boolean }) => void;
+      blur: () => void;
+      innerHTML: string;
+    }
+
+    const focusCalls: Array<{ preventScroll?: boolean } | undefined> = [];
+    let activeEl: MockEl | null = null;
+    let pointerLockedEl: unknown = { id: 'webgl-canvas' };
+    let exitPointerLockCalls = 0;
+    const scrollToCalls: Array<[number, number]> = [];
+
+    const makeEl = (tag: string): MockEl => {
+      const classes = new Set<string>();
+      let html = '';
+      const el: MockEl = {
+        tagName: tag.toUpperCase(),
+        get className() {
+          return Array.from(classes).join(' ');
+        },
+        set className(val: string) {
+          classes.clear();
+          for (const t of val.split(/\s+/).filter(Boolean)) classes.add(t);
+        },
+        textContent: '',
+        value: '',
+        title: '',
+        scrollTop: 0,
+        scrollLeft: 0,
+        clientWidth: 1280,
+        clientHeight: 720,
+        style: {},
+        attrs: new Map(),
+        children: [],
+        get firstChild() {
+          return el.children[0] ?? null;
+        },
+        parent: null,
+        listeners: new Map(),
+        classList: {
+          add: (...tokens) => tokens.forEach((t) => classes.add(t)),
+          remove: (...tokens) => tokens.forEach((t) => classes.delete(t)),
+          toggle: (token, force) => {
+            const next = force ?? !classes.has(token);
+            if (next) classes.add(token);
+            else classes.delete(token);
+            return next;
+          },
+          contains: (token) => classes.has(token),
+        },
+        appendChild(child: MockEl) {
+          child.parent = el;
+          el.children.push(child);
+          return child;
+        },
+        append(...nodes: MockEl[]) {
+          for (const n of nodes) el.appendChild(n);
+        },
+        remove() {
+          if (!el.parent) return;
+          const idx = el.parent.children.indexOf(el);
+          if (idx >= 0) el.parent.children.splice(idx, 1);
+          el.parent = null;
+        },
+        querySelector(selector: string): MockEl | null {
+          const m = /^\[([a-z0-9-]+)\]$/i.exec(selector.trim());
+          const attrName = m ? m[1] : null;
+          const visit = (node: MockEl): MockEl | null => {
+            if (attrName && node.attrs.has(attrName)) return node;
+            for (const c of node.children) {
+              const hit = visit(c);
+              if (hit) return hit;
+            }
+            return null;
+          };
+          return visit(el);
+        },
+        addEventListener(type, cb) {
+          const arr = el.listeners.get(type) ?? [];
+          arr.push(cb);
+          el.listeners.set(type, arr);
+        },
+        dispatch(type, extra = {}) {
+          const ev = {
+            type,
+            preventDefault: () => {},
+            stopPropagation: () => {},
+            ...extra,
+          };
+          for (const cb of el.listeners.get(type) ?? []) cb(ev);
+        },
+        focus(opts) {
+          focusCalls.push(opts);
+          // Simula navegador tentando rolar contêineres se preventScroll não estivesse ativo
+          if (!opts?.preventScroll) {
+            viewportEl.scrollTop = 340;
+            docRootEl.scrollTop = 340;
+          }
+          activeEl = el;
+          el.dispatch('focus');
+        },
+        blur() {
+          if (activeEl === el) activeEl = null;
+          el.dispatch('blur');
+        },
+        get innerHTML() {
+          return html;
+        },
+        set innerHTML(val: string) {
+          html = val;
+          el.children.length = 0;
+          // Extrai automaticamente todas as tags com [data-coop-*] do template do HUD!
+          const tagRe = /<([a-z0-9]+)\b([^>]*)>/gi;
+          let match: RegExpExecArray | null;
+          while ((match = tagRe.exec(val)) !== null) {
+            const attrsRaw = match[2];
+            const dataAttrRe = /\b(data-coop-[a-z0-9-]+)\b/gi;
+            const foundAttrs: string[] = [];
+            let dm: RegExpExecArray | null;
+            while ((dm = dataAttrRe.exec(attrsRaw)) !== null) {
+              foundAttrs.push(dm[1]);
+            }
+            if (foundAttrs.length > 0) {
+              const child = makeEl(match[1]);
+              const clsMatch = /\bclass="([^"]*)"/i.exec(attrsRaw);
+              if (clsMatch) child.className = clsMatch[1];
+              for (const a of foundAttrs) child.attrs.set(a, '');
+              el.appendChild(child);
+            }
+          }
+        },
+      };
+      return el;
+    };
+
+    const docRootEl = makeEl('html');
+    const bodyEl = makeEl('body');
+    const appEl = makeEl('div');
+    const viewportEl = makeEl('div');
+
+    const prevWindow = (globalThis as Record<string, unknown>).window;
+    const prevDocument = (globalThis as Record<string, unknown>).document;
+
+    (globalThis as Record<string, unknown>).document = {
+      createElement: (tag: string) => makeEl(tag),
+      getElementById: (id: string) => (id === 'app' ? appEl : null),
+      get activeElement() {
+        return activeEl;
+      },
+      get pointerLockElement() {
+        return pointerLockedEl;
+      },
+      exitPointerLock: () => {
+        exitPointerLockCalls++;
+        pointerLockedEl = null;
+      },
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      hidden: false,
+      documentElement: docRootEl,
+      body: bodyEl,
+      fullscreenElement: null,
+    };
+    (globalThis as Record<string, unknown>).window = {
+      innerWidth: 1280,
+      innerHeight: 720,
+      scrollTo: (x: number, y: number) => {
+        scrollToCalls.push([x, y]);
+      },
+      requestAnimationFrame: (cb: FrameRequestCallback) => {
+        cb(16);
+        return 1;
+      },
+      setTimeout: globalThis.setTimeout.bind(globalThis),
+      clearTimeout: globalThis.clearTimeout.bind(globalThis),
+      setInterval: globalThis.setInterval.bind(globalThis),
+      clearInterval: globalThis.clearInterval.bind(globalThis),
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    };
+
+    try {
+      clearLocalMirrorRoomsForTests();
+      const lobby = new MultiplayerLobbyService({ forceLocalOnly: true });
+      const hostSession = await lobby.createRoom(
+        { roomName: 'Sala Rádio T', isListed: true, maxPlayers: 4 },
+        { id: 'host-chat-t', name: 'CAPITÃO' }
+      );
+      const guestJoin = await lobby.joinRoom(
+        hostSession.roomCode,
+        undefined,
+        { id: 'guest-chat-t', name: 'ENGENHEIRO' }
+      );
+      expect(guestJoin.ok).toBe(true);
+
+      const receivedEvents: NetworkWorldEvent[] = [];
+      const guestClient = new MultiplayerRoomClient(
+        guestJoin.session!,
+        {
+          onRemotePlayerPose: () => {},
+          onRemotePlayerLeft: () => {},
+          onSpiderSync: () => {},
+          onWorldEvent: (ev) => receivedEvents.push(ev),
+          onRosterUpdated: () => {},
+        },
+        true
+      );
+      guestClient.connect();
+
+      let closedCallbackCount = 0;
+      const scene = new THREE.Scene();
+      const shared = createDoomSharedUniforms();
+      const coordinator = new DoomMultiplayerCoordinator(
+        hostSession,
+        scene,
+        shared,
+        viewportEl as unknown as HTMLElement,
+        new SoundEngine(),
+        {
+          onReceiveFlare: () => {},
+          onRescuedByAlly: () => {},
+          onAbductionInterruptedByAlly: () => {},
+          onSpiderInterruptedAndFlees: () => {},
+          onCaughtByAuthoritativeSpider: () => {},
+          onRemoteVictimFinishedAbduction: () => {},
+          onRemoteWebTrapSpawned: () => {},
+          onRemoteWebTrapTriggered: () => {},
+          onRemoteWebTrapCut: () => {},
+          onNotifyHud: () => {},
+          onRadioChatClosed: () => {
+            closedCallbackCount++;
+          },
+          onLeaveRoomRequested: () => {},
+        },
+        true
+      );
+
+      // Simula sujeira de scroll antes de apertar [T]
+      viewportEl.scrollTop = 180;
+      appEl.scrollTop = 95;
+      docRootEl.scrollTop = 210;
+
+      // 1. Apertar [T]: abre chat, libera Pointer Lock, foca sincronamente com { preventScroll: true } e zera scroll!
+      coordinator.openRadioChatInput();
+      expect(coordinator.isChatTyping).toBe(true);
+      expect(exitPointerLockCalls).toBe(1);
+      expect(focusCalls.length).toBeGreaterThanOrEqual(1);
+      expect(focusCalls[0]).toEqual({ preventScroll: true });
+      expect(activeEl).toBe(coordinator.chatInputElement as unknown as MockEl);
+      expect(viewportEl.scrollTop).toBe(0);
+      expect(appEl.scrollTop).toBe(0);
+      expect(docRootEl.scrollTop).toBe(0);
+      expect(scrollToCalls.length).toBeGreaterThanOrEqual(1);
+
+      // 2. PROTEÇÃO CRÍTICA DO HUD: mesmo se update() receber hideHud=true enquanto digita,
+      // o HUD jamais pode virar display:'none' (o que antes matava o foco e travava a tela inteira!)
+      const hudRoot = viewportEl.children.find((c) =>
+        c.className.includes('oof-coop-hud')
+      )!;
+      const cam = new THREE.PerspectiveCamera(75, 16 / 9, 0.1, 100);
+      coordinator.update(
+        0.016,
+        1.0,
+        cam,
+        {
+          pos: new THREE.Vector3(0, 0, 0),
+          yaw: 0,
+          pitch: 0,
+          speed: 0,
+          bobPhase: 0,
+          crouch: 0,
+          flashlightOn: true,
+          flashDir: new THREE.Vector3(0, 0, -1),
+          health: 100,
+          bleeding: false,
+          ensnared: false,
+          inSequence: false,
+          dead: false,
+          afk: false,
+        },
+        {
+          x: 0,
+          y: 1.42,
+          z: 0,
+          upX: 0,
+          upY: 1,
+          upZ: 0,
+          fwdX: 0,
+          fwdY: 0,
+          fwdZ: 1,
+          state: 'PATROL_HUNT',
+          surfaceMode: 'FLOOR',
+        },
+        true
+      );
+      expect(hudRoot.style.display).toBe('flex');
+
+      // 3. Mesmo se o input perder foco (ex: clique acidental no HUD), submitAndCloseRadioChat envia a mensagem,
+      // fecha a caixa, limpa o texto e dispara onRadioChatClosed para devolver o Pointer Lock!
+      activeEl = null;
+      coordinator.chatInputElement.value = 'Aranha vista no corredor norte!';
+      coordinator.submitAndCloseRadioChat(true);
+
+      expect(coordinator.isChatTyping).toBe(false);
+      expect(coordinator.chatInputElement.value).toBe('');
+      expect(closedCallbackCount).toBe(1);
+      await new Promise((r) => setTimeout(r, 35));
+      if (typeof BroadcastChannel !== 'undefined') {
+        expect(
+          receivedEvents.some(
+            (ev) =>
+              ev.kind === 'chat' && ev.text === 'Aranha vista no corredor norte!'
+          )
+        ).toBe(true);
+      }
+
+      // 4. Abrir e fechar com closeRadioChatInput(false) (ex: clique direto no canvas 3D) fecha sem duplicar callback!
+      coordinator.openRadioChatInput();
+      expect(coordinator.isChatTyping).toBe(true);
+      coordinator.closeRadioChatInput(false);
+      expect(coordinator.isChatTyping).toBe(false);
+      expect(closedCallbackCount).toBe(1);
+
+      coordinator.destroy();
+      guestClient.disconnect();
+    } finally {
+      (globalThis as Record<string, unknown>).window = prevWindow;
+      (globalThis as Record<string, unknown>).document = prevDocument;
+    }
   });
 });

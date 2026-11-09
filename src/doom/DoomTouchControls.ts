@@ -485,16 +485,31 @@ export class DoomTouchControls {
     );
 
     const chatBtn = this.rootEl.querySelector('[data-touch-chat]');
+    let lastChatTouchMs = 0;
     chatBtn?.addEventListener(
       'touchstart',
       (e) => {
-        e.preventDefault();
+        // Não chama preventDefault() em touchstart para permitir abertura do teclado virtual mobile em touchend/click!
         e.stopPropagation();
+      },
+      { passive: true }
+    );
+    chatBtn?.addEventListener(
+      'touchend',
+      (e) => {
+        e.stopPropagation();
+        lastChatTouchMs = performance.now();
         this.callbacks.onActivity();
         this.callbacks.onRadioChatPress();
       },
-      { passive: false }
+      { passive: true }
     );
+    chatBtn?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (performance.now() - lastChatTouchMs < 400) return;
+      this.callbacks.onActivity();
+      this.callbacks.onRadioChatPress();
+    });
   }
 
   private isUiInteractiveTarget(target: EventTarget | null): boolean {

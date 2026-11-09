@@ -760,6 +760,14 @@ export class DoomGameApp {
         onNotifyHud: (text) => {
           this.multiplayer?.pushHudNotice(text);
         },
+        onRadioChatClosed: () => {
+          this.keys.clear();
+          this.isDragging = false;
+          if (document.fullscreenElement) {
+            lockSystemKeyboardKeys();
+          }
+          this.requestCanvasPointerLockOnly();
+        },
         onLeaveRoomRequested: () => {
           this.finalizePermanentDeath();
         },
@@ -830,6 +838,7 @@ export class DoomGameApp {
     if (
       this.inventory.open ||
       this.inventory.gameOverVisible ||
+      this.multiplayer?.isChatTyping ||
       this.activeSequence !== 'NONE'
     ) {
       return;
@@ -854,6 +863,7 @@ export class DoomGameApp {
     if (
       this.inventory.open ||
       this.inventory.gameOverVisible ||
+      this.multiplayer?.isChatTyping ||
       this.activeSequence !== 'NONE'
     ) {
       return;
@@ -876,7 +886,8 @@ export class DoomGameApp {
         !this.disposed &&
         !this.inventory.gameOverVisible &&
         this.activeSequence !== 'DEAD_TERMINATED',
-      this.abortCtrl.signal
+      this.abortCtrl.signal,
+      () => !this.multiplayer?.isChatTyping
     );
 
     window.addEventListener(
@@ -885,8 +896,35 @@ export class DoomGameApp {
         if (!this.engaged || this.disposed) return;
         this.registerUserActivity();
 
-        // Se estiver digitando mensagem de rádio multiplayer, não captura teclas de movimento!
+        // Enquanto o chat de rádio [T] está aberto: garante saída limpa em Esc/Enter
+        // mesmo se o input perder foco, protege Ctrl+W e direciona digitação direto ao campo!
         if (this.multiplayer?.isChatTyping) {
+          if (e.code === 'Escape') {
+            e.preventDefault();
+            e.stopPropagation();
+            this.multiplayer.closeRadioChatInput(true);
+            return;
+          }
+          if (e.code === 'Enter' || e.code === 'NumpadEnter') {
+            e.preventDefault();
+            e.stopPropagation();
+            this.multiplayer.submitAndCloseRadioChat(true);
+            return;
+          }
+          if (e.code === 'Tab') {
+            e.preventDefault();
+            e.stopPropagation();
+            this.multiplayer.focusChatInput();
+            return;
+          }
+          if ((e.ctrlKey || e.metaKey) && e.code === 'KeyW') {
+            e.preventDefault();
+            e.stopPropagation();
+            return;
+          }
+          if (document.activeElement !== this.multiplayer.chatInputElement) {
+            this.multiplayer.focusChatInput();
+          }
           return;
         }
 
@@ -953,6 +991,18 @@ export class DoomGameApp {
           return;
         }
 
+        // Atalho Multiplayer Co-op: [T] Rádio / Chat rápido (fecha o inventário automaticamente se estiver aberto)
+        if (this.multiplayer && e.code === 'KeyT' && !e.repeat) {
+          e.preventDefault();
+          e.stopPropagation();
+          this.keys.clear();
+          this.isDragging = false;
+          this.inventory.setOpen(false);
+          this.multiplayer.setPushToTalkHeld(false);
+          this.multiplayer.openRadioChatInput();
+          return;
+        }
+
         if (this.inventory.open) {
           return;
         }
@@ -983,14 +1033,7 @@ export class DoomGameApp {
           return;
         }
 
-        // Atalhos Multiplayer Co-op: [T] Rádio / Chat rápido e [V] Sinalizador 3D de posição!
-        if (this.multiplayer && e.code === 'KeyT' && !e.repeat) {
-          e.preventDefault();
-          this.keys.clear();
-          this.multiplayer.setPushToTalkHeld(false);
-          this.multiplayer.openRadioChatInput();
-          return;
-        }
+        // Atalho Multiplayer Co-op: [V] Sinalizador 3D de posição!
         if (this.multiplayer && e.code === 'KeyV' && !e.repeat) {
           const camDir = new THREE.Vector3(0, 0, -1).applyQuaternion(
             this.camera.quaternion
@@ -1056,6 +1099,7 @@ export class DoomGameApp {
           !this.engaged ||
           this.inventory.open ||
           this.inventory.gameOverVisible ||
+          this.multiplayer?.isChatTyping ||
           this.activeSequence !== 'NONE'
         ) {
           return;
@@ -1154,6 +1198,15 @@ export class DoomGameApp {
         ) {
           return;
         }
+        if (this.multiplayer?.isChatTyping) {
+          // Clicar de volta na visão 3D fecha suavemente o chat e retoma o controle do jogo!
+          this.multiplayer.closeRadioChatInput(false);
+          this.sound.unlock();
+          this.tryPointerLock(true);
+          this.lastMouseX = e.clientX;
+          this.lastMouseY = e.clientY;
+          return;
+        }
         this.sound.unlock();
         if (!this.pointerLocked || !document.fullscreenElement) {
           this.tryPointerLock(true);
@@ -1192,6 +1245,7 @@ export class DoomGameApp {
         if (
           this.inventory.open ||
           this.inventory.gameOverVisible ||
+          this.multiplayer?.isChatTyping ||
           this.activeSequence !== 'NONE'
         ) {
           this.lastMouseX = e.clientX;
@@ -1231,9 +1285,9 @@ export class DoomGameApp {
 
   private onResize(): void {
     if (this.disposed) return;
-    const w = window.innerWidth;
-    const h = window.innerHeight;
-    const aspect = Math.max(1, w) / Math.max(1, h);
+    const w = Math.max(1, this.viewportEl.clientWidth || window.innerWidth);
+    const h = Math.max(1, this.viewportEl.clientHeight || window.innerHeight);
+    const aspect = w / h;
     this.camera.aspect = aspect;
     this.camera.fov = computeAdaptiveVerticalFov(
       aspect,
@@ -1279,6 +1333,7 @@ export class DoomGameApp {
   private triggerSpiderCatch(overrideSpiderPos?: THREE.Vector3): void {
     if (this.activeSequence !== 'NONE') return;
 
+    this.multiplayer?.closeRadioChatInput(false);
     this.inventory.setOpen(false);
     this.keys.clear();
     this.touchControls.resetTransientInputs();

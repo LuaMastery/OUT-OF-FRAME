@@ -212,9 +212,13 @@ export function shouldPreventBrowserShortcut(e: {
  */
 export function installSessionTabGuard(
   isSessionActive: () => boolean,
-  signal: AbortSignal
+  signal: AbortSignal,
+  shouldLockKeyboard?: () => boolean
 ): void {
   if (typeof window === 'undefined' || typeof document === 'undefined') return;
+
+  const canLockKeys = () =>
+    isSessionActive() && (shouldLockKeyboard ? shouldLockKeyboard() : true);
 
   window.addEventListener(
     'beforeunload',
@@ -231,7 +235,7 @@ export function installSessionTabGuard(
   document.addEventListener(
     'fullscreenchange',
     () => {
-      if (isSessionActive() && document.fullscreenElement) {
+      if (canLockKeys() && document.fullscreenElement) {
         lockSystemKeyboardKeys();
       }
     },
@@ -241,7 +245,7 @@ export function installSessionTabGuard(
   window.addEventListener(
     'focus',
     () => {
-      if (isSessionActive() && document.fullscreenElement) {
+      if (canLockKeys() && document.fullscreenElement) {
         lockSystemKeyboardKeys();
       }
     },

@@ -867,7 +867,10 @@
   display: flex;
   gap: 4px;
   align-items: stretch;
+  width: min(300px, calc(100vw - 28px));
+  max-width: calc(100vw - 28px);
   pointer-events: auto;
+  z-index: 46;
 }
 
 .oof-coop-chat-box.hidden {
@@ -884,6 +887,9 @@
   font-family: inherit;
   font-size: 12px;
   outline: none;
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: var(--cursor-text);
 }
 
 .oof-coop-chat-send-btn,

@@ -14,6 +14,7 @@ import {
   SpiderPlayerCandidate,
 } from '../doom/DoomSpider';
 import { SoundEngine } from '../engine/audio/SoundEngine';
+import { unlockSystemKeyboardKeys } from '../engine/input/BrowserShortcutGuard';
 import {
   ActiveRoomSession,
   AFK_IDLE_TIMEOUT_MS,
@@ -93,6 +94,7 @@ export interface MultiplayerCoordinatorHooks {
   ) => void;
   onRemoteWebTrapCut: (x: number, z: number) => void;
   onNotifyHud: (text: string) => void;
+  onRadioChatClosed?: () => void;
   onLeaveRoomRequested: () => void;
 }
 
@@ -176,7 +178,8 @@ export class DoomMultiplayerCoordinator {
     private readonly sharedUniforms: DoomSharedUniforms,
     private readonly viewportEl: HTMLElement,
     private readonly sound: SoundEngine,
-    private readonly hooks: MultiplayerCoordinatorHooks
+    private readonly hooks: MultiplayerCoordinatorHooks,
+    forceLocalOnly = false
   ) {
     this.roster = [...session.playersSummary];
 
@@ -254,42 +257,46 @@ export class DoomMultiplayerCoordinator {
 
     this.bindHudButtons();
 
-    this.client = new MultiplayerRoomClient(session, {
-      onRemotePlayerPose: (pkt) => this.handleRemotePose(pkt),
-      onRemotePlayerLeft: (playerId) => this.removeAlly(playerId),
-      onSpiderSync: (pkt) => {
-        this.latestSpiderPacket = pkt;
-        this.latestSpiderReceivedPerfMs = performance.now();
-      },
-      onWorldEvent: (ev) => this.handleWorldEvent(ev),
-      onVoiceSignal: (sig) => {
-        void this.voiceChat.handleIncomingSignal(sig);
-      },
-      onVoiceRelayChunk: (chunk) => {
-        this.voiceChat.handleIncomingRelayChunk(chunk);
-      },
-      onRosterUpdated: (players) => {
-        this.roster = players;
-        const activeIds = new Set(players.map((p) => p.id));
-        const nowWall = Date.now();
-        // Remove imediatamente qualquer aliado que saiu da sala e não consta mais no roster do servidor!
-        for (const [allyId, ally] of Array.from(this.allies.entries())) {
-          if (!activeIds.has(allyId) && nowWall - ally.joinedAtWallMs > 3500) {
-            this.removeAlly(allyId);
+    this.client = new MultiplayerRoomClient(
+      session,
+      {
+        onRemotePlayerPose: (pkt) => this.handleRemotePose(pkt),
+        onRemotePlayerLeft: (playerId) => this.removeAlly(playerId),
+        onSpiderSync: (pkt) => {
+          this.latestSpiderPacket = pkt;
+          this.latestSpiderReceivedPerfMs = performance.now();
+        },
+        onWorldEvent: (ev) => this.handleWorldEvent(ev),
+        onVoiceSignal: (sig) => {
+          void this.voiceChat.handleIncomingSignal(sig);
+        },
+        onVoiceRelayChunk: (chunk) => {
+          this.voiceChat.handleIncomingRelayChunk(chunk);
+        },
+        onRosterUpdated: (players) => {
+          this.roster = players;
+          const activeIds = new Set(players.map((p) => p.id));
+          const nowWall = Date.now();
+          // Remove imediatamente qualquer aliado que saiu da sala e não consta mais no roster do servidor!
+          for (const [allyId, ally] of Array.from(this.allies.entries())) {
+            if (!activeIds.has(allyId) && nowWall - ally.joinedAtWallMs > 3500) {
+              this.removeAlly(allyId);
+            }
           }
-        }
-        for (const r of players) {
-          if (r.id !== this.session.localPlayerId) {
-            this.voiceChat.ensurePeer(r.id);
+          for (const r of players) {
+            if (r.id !== this.session.localPlayerId) {
+              this.voiceChat.ensurePeer(r.id);
+            }
+            const ally = this.allies.get(r.id);
+            if (ally && (r.status === 'AFK' || r.status === 'HOST_AFK')) {
+              this.applyAllyAfkTransition(ally, true);
+            }
           }
-          const ally = this.allies.get(r.id);
-          if (ally && (r.status === 'AFK' || r.status === 'HOST_AFK')) {
-            this.applyAllyAfkTransition(ally, true);
-          }
-        }
-        this.renderSquadHud();
+          this.renderSquadHud();
+        },
       },
-    });
+      forceLocalOnly
+    );
 
     this.voiceChat = new ProximityVoiceChatManager({
       localPlayerId: session.localPlayerId,
@@ -326,6 +333,10 @@ export class DoomMultiplayerCoordinator {
 
   get isChatTyping(): boolean {
     return this.chatInputActive;
+  }
+
+  get chatInputElement(): HTMLInputElement {
+    return this.chatInputEl;
   }
 
   get localVoiceLevel(): number {
@@ -387,21 +398,103 @@ export class DoomMultiplayerCoordinator {
   }
 
   openRadioChatInput(): void {
-    if (this.chatInputActive) return;
+    if (this.chatInputActive) {
+      this.focusChatInput();
+      return;
+    }
     this.chatInputActive = true;
+    // Garante visibilidade imediata do contêiner antes do foco (impede perda de foco!)
+    this.hudRootEl.style.display = 'flex';
     this.chatBoxEl.classList.remove('hidden');
+
+    // Libera Keyboard Lock e Pointer Lock enquanto digita para permitir acentos, espaço, Ctrl+A/C/V e cursor livre!
+    unlockSystemKeyboardKeys();
     try {
-      document.exitPointerLock?.();
+      if (document.pointerLockElement) {
+        document.exitPointerLock?.();
+      }
     } catch {
       // Ignorar
     }
-    window.setTimeout(() => this.chatInputEl.focus(), 10);
+
+    this.focusChatInput();
+    if (typeof window.requestAnimationFrame === 'function') {
+      window.requestAnimationFrame(() => {
+        if (this.chatInputActive && document.activeElement !== this.chatInputEl) {
+          this.focusChatInput();
+        }
+      });
+    }
   }
 
-  closeRadioChatInput(): void {
+  focusChatInput(): void {
+    if (!this.chatInputActive) return;
+    try {
+      this.chatInputEl.focus({ preventScroll: true });
+    } catch {
+      try {
+        this.chatInputEl.focus();
+      } catch {
+        // Ignorar
+      }
+    }
+    this.resetViewportScroll();
+  }
+
+  submitAndCloseRadioChat(restorePointerLock = true): void {
+    const text = this.chatInputEl.value.trim();
+    if (text.length > 0) {
+      this.pushRadioFeed(`${this.session.localPlayerName}: ${text}`, false);
+      this.client.broadcastWorldEvent({
+        kind: 'chat',
+        senderId: this.session.localPlayerId,
+        senderName: this.session.localPlayerName,
+        text,
+        ts: Date.now(),
+      });
+    }
+    this.closeRadioChatInput(restorePointerLock);
+  }
+
+  closeRadioChatInput(restorePointerLock = true): void {
+    const wasActive = this.chatInputActive;
     this.chatInputActive = false;
     this.chatInputEl.value = '';
     this.chatBoxEl.classList.add('hidden');
+    try {
+      if (document.activeElement === this.chatInputEl) {
+        this.chatInputEl.blur();
+      }
+    } catch {
+      // Ignorar
+    }
+    this.resetViewportScroll();
+    if (wasActive && restorePointerLock) {
+      this.hooks.onRadioChatClosed?.();
+    }
+  }
+
+  private resetViewportScroll(): void {
+    try {
+      this.viewportEl.scrollTop = 0;
+      this.viewportEl.scrollLeft = 0;
+      const appEl = document.getElementById('app');
+      if (appEl) {
+        appEl.scrollTop = 0;
+        appEl.scrollLeft = 0;
+      }
+      if (document.documentElement) {
+        document.documentElement.scrollTop = 0;
+        document.documentElement.scrollLeft = 0;
+      }
+      if (document.body) {
+        document.body.scrollTop = 0;
+        document.body.scrollLeft = 0;
+      }
+      window.scrollTo?.(0, 0);
+    } catch {
+      // Ignorar em ambientes de teste sem window.scrollTo
+    }
   }
 
   emitTacticalPing(
@@ -847,7 +940,9 @@ export class DoomMultiplayerCoordinator {
     },
     hideHud: boolean
   ): void {
-    this.hudRootEl.style.display = hideHud ? 'none' : 'flex';
+    // NUNCA oculta o HUD enquanto a caixa de chat de rádio estiver aberta (evita matar foco e travar teclado!)
+    const effectiveHideHud = hideHud && !this.chatInputActive;
+    this.hudRootEl.style.display = effectiveHideHud ? 'none' : 'flex';
     this.worldLabelsLayerEl.style.display = hideHud ? 'none' : 'block';
 
     // Alerta SOS automático quando o jogador local cai numa armadilha de teia ou começa a ser arrastado!
@@ -1224,43 +1319,36 @@ export class DoomMultiplayerCoordinator {
       collapseBtn.textContent = collapsed ? '[+]' : '[−]';
     });
 
-    const submitCurrentChat = () => {
-      const text = this.chatInputEl.value.trim();
-      if (text.length > 0) {
-        this.pushRadioFeed(`${this.session.localPlayerName}: ${text}`, false);
-        this.client.broadcastWorldEvent({
-          kind: 'chat',
-          senderId: this.session.localPlayerId,
-          senderName: this.session.localPlayerName,
-          text,
-          ts: Date.now(),
-        });
-      }
-      this.closeRadioChatInput();
-    };
-
     this.hudRootEl
       .querySelector('[data-coop-chat-send]')
       ?.addEventListener('click', (e) => {
         e.stopPropagation();
-        submitCurrentChat();
+        this.submitAndCloseRadioChat(true);
       });
 
     this.hudRootEl
       .querySelector('[data-coop-chat-cancel]')
       ?.addEventListener('click', (e) => {
         e.stopPropagation();
-        this.closeRadioChatInput();
+        this.closeRadioChatInput(true);
       });
+
+    this.chatInputEl.addEventListener('focus', () => {
+      this.resetViewportScroll();
+    });
+
+    this.chatInputEl.addEventListener('blur', () => {
+      this.resetViewportScroll();
+    });
 
     this.chatInputEl.addEventListener('keydown', (e) => {
       e.stopPropagation();
       if (e.key === 'Enter') {
         e.preventDefault();
-        submitCurrentChat();
+        this.submitAndCloseRadioChat(true);
       } else if (e.key === 'Escape') {
         e.preventDefault();
-        this.closeRadioChatInput();
+        this.closeRadioChatInput(true);
       }
     });
   }
