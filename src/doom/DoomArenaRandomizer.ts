@@ -33,6 +33,8 @@ export interface CrateRandomPlacement {
   ox: number;
   oz: number;
   crateYaw: number;
+  baseY: number;
+  supportObstacleId: string;
   itemTiltYaw: number;
   radarJitterX: number;
   radarJitterZ: number;
@@ -673,6 +675,8 @@ export function createRandomArenaLayout(
         ox,
         oz,
         crateYaw,
+        baseY: 0,
+        supportObstacleId: '',
         itemTiltYaw: rngRange(worldRng, -0.22, 0.22),
         radarJitterX: rngRange(worldRng, -0.42, 0.42),
         radarJitterZ: rngRange(worldRng, -0.42, 0.42),
@@ -702,6 +706,59 @@ export function createRandomArenaLayout(
     lairCell,
     existingRoomFurniture: roomFurniturePlacements,
   });
+  // Usa obstáculos reais junto às paredes. Quando faltam pilhas adequadas,
+  // converte alguns agrupamentos de barris em pilhas com dimensões equivalentes.
+  // O sorteio separado preserva a sequência de loot e a sincronia solo/co-op.
+  const supportRng = createSeededRng((worldSeed ^ 0x74b3a269) >>> 0 || 7);
+  const supports = obstaclePlacements.filter(o => o.role === 'wall' &&
+    (o.kind === 'wooden_crate_stack' || o.kind === 'mixed_cargo_depot' ||
+     o.kind === 'iron_barrel_cluster' || o.kind === 'wooden_barrel_cluster'));
+  shuffleInPlace(supports, supportRng);
+  supports.sort((a, b) => Number(a.kind.endsWith('barrel_cluster')) - Number(b.kind.endsWith('barrel_cluster')));
+  const chosenSupports: ObstaclePlacement[] = [];
+  for (const spacing of [2.2, 1.0]) {
+    for (const o of supports) {
+      if (chosenSupports.length >= cratePlacements.length) break;
+      if (chosenSupports.includes(o) || chosenSupports.some(c => Math.hypot(c.gx - o.gx, c.gz - o.gz) < spacing)) continue;
+      chosenSupports.push(o);
+    }
+  }
+  for (let i = 0; i < cratePlacements.length; i++) {
+    let o = chosenSupports[i];
+    if (!o) {
+      // Contagens personalizadas grandes usam os pontos reservados originais,
+      // com um caixote sólido adicional em vez de deixar itens no piso.
+      const c = cratePlacements[i], w = gridCellToWorld(c.gx, c.gz);
+      const x = w.x + c.ox, z = w.z + c.oz;
+      const hx = Math.abs(Math.cos(c.crateYaw)) * .36 + Math.abs(Math.sin(c.crateYaw)) * .32;
+      const hz = Math.abs(Math.sin(c.crateYaw)) * .36 + Math.abs(Math.cos(c.crateYaw)) * .32;
+      o = { id: `obs-supply-${i}`, kind: 'supply_cargo', role: 'wall', gx: c.gx, gz: c.gz,
+        worldX: x, worldZ: z, yaw: c.crateYaw, variant: 0, supplyTop: true,
+        minX: x - hx, maxX: x + hx, minY: 0, maxY: .72, minZ: z - hz, maxZ: z + hz };
+      obstaclePlacements.push(o);
+    }
+    if (o.kind === 'iron_barrel_cluster' || o.kind === 'wooden_barrel_cluster') {
+      o.kind = 'wooden_crate_stack';
+      const halfX = Math.abs(Math.cos(o.yaw)) * .65 + Math.abs(Math.sin(o.yaw)) * .39;
+      const halfZ = Math.abs(Math.sin(o.yaw)) * .65 + Math.abs(Math.cos(o.yaw)) * .39;
+      o.minX = o.worldX - halfX; o.maxX = o.worldX + halfX;
+      o.minZ = o.worldZ - halfZ; o.maxZ = o.worldZ + halfZ;
+      o.maxY = 1.52;
+    }
+    o.supplyTop = true;
+    const isStack = o.kind === 'wooden_crate_stack';
+    const x = isStack ? -.25 : o.kind === 'mixed_cargo_depot' ? -.3 : 0, z = isStack ? -.01 : 0;
+    const center = gridCellToWorld(o.gx, o.gz);
+    const c = cratePlacements[i];
+    c.gx = o.gx; c.gz = o.gz;
+    c.ox = o.worldX + Math.cos(o.yaw) * x + Math.sin(o.yaw) * z - center.x;
+    c.oz = o.worldZ - Math.sin(o.yaw) * x + Math.cos(o.yaw) * z - center.z;
+    c.crateYaw = o.yaw;
+    c.baseY = isStack ? 1.41 : o.kind === 'mixed_cargo_depot' ? 1.23 : .72;
+    // Topo do colisor coincide com a tampa estrutural (e suas cantoneiras).
+    o.maxY = c.baseY + .0025;
+    c.supportObstacleId = o.id;
+  }
   const usedObstacleKeys = new Set(
     obstaclePlacements.map((o) => `${o.gx},${o.gz}`)
   );

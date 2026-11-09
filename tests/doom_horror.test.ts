@@ -1066,21 +1066,14 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
         return true;
       },
     };
-    const fwd = new THREE.Vector3(0, 0, -1);
-    for (let gz = 1; gz < 28; gz++) {
-      for (let gx = 1; gx < 28; gx++) {
-        if (isSolidCell(LABYRINTH_MAP, gx, gz)) continue;
-        const w = gridCellToWorld(gx, gz);
-        items.updateAndCheckPickups(
-          0.016,
-          0,
-          new THREE.Vector3(w.x, 0, w.z),
-          new THREE.Vector3(w.x, 1.72, w.z),
-          fwd,
-          false,
-          invMock as never
-        );
-      }
+    // Aproxima-se pela frente do obstáculo, em vez de presumir que o item
+    // continua próximo ao centro da célula no chão.
+    for (const c of maze.arenaLayout.cratePlacements) {
+      const w = gridCellToWorld(c.gx, c.gz);
+      const front = new THREE.Vector3(Math.sin(c.crateYaw), 0, Math.cos(c.crateYaw));
+      const player = new THREE.Vector3(w.x + c.ox, 0, w.z + c.oz).addScaledVector(front, .96);
+      const camera = player.clone().add(new THREE.Vector3(0, 1.72, 0));
+      items.updateAndCheckPickups(.016, 0, player, camera, front.clone().negate(), false, invMock as never);
     }
     // 25 caixotes, com o Taser adicional na mesma caixa de cartuchos.
     expect(collectedCount).toBe(26);

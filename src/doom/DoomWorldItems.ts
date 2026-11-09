@@ -583,7 +583,8 @@ export class DoomWorldItems {
       const wz = world.z + p.oz;
 
       const group = new THREE.Group();
-      group.position.set(wx, 0, wz);
+      group.name = `SupplyLocation_${idx}`;
+      group.position.set(wx, p.baseY, wz);
 
       // Caixote baixo de suprimentos esculpido voltado para o centro livre do corredor
       const crate = this.buildSupplyCrate();
@@ -605,7 +606,7 @@ export class DoomWorldItems {
         itemId: p.itemId,
         group,
         itemMesh,
-        position: new THREE.Vector3(wx, 0.18, wz),
+        position: new THREE.Vector3(wx, p.baseY + 0.18, wz),
         cellWorldX: world.x,
         cellWorldZ: world.z,
         radarJitterX: p.radarJitterX,
@@ -622,7 +623,7 @@ export class DoomWorldItems {
         const offset = new THREE.Vector3(0, 0, 0.075).applyAxisAngle(new THREE.Vector3(0, 1, 0), p.crateYaw);
         this.pickups.push({
           id: 'pickup-field-taser', itemId: 'field_taser', group, itemMesh: taser,
-          position: new THREE.Vector3(wx + offset.x, 0.18, wz + offset.z),
+          position: new THREE.Vector3(wx + offset.x, p.baseY + 0.18, wz + offset.z),
           cellWorldX: world.x, cellWorldZ: world.z,
           radarJitterX: p.radarJitterX, radarJitterZ: p.radarJitterZ,
           collected: false,
@@ -673,81 +674,57 @@ export class DoomWorldItems {
    */
   private buildSupplyCrate(): THREE.Group {
     const crate = new THREE.Group();
+    crate.name = 'SupplyCrate';
+    const box = (name: string, w: number, h: number, d: number,
+      x: number, y: number, z: number, material: THREE.Material, parent: THREE.Object3D = crate) => {
+      const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), material);
+      mesh.name = name;
+      mesh.position.set(x, y, z);
+      parent.add(mesh);
+      return mesh;
+    };
 
-    // Base de tábuas
-    const base = new THREE.Mesh(
-      new THREE.BoxGeometry(0.52, 0.08, 0.42),
-      this.matCrateWood
-    );
-    base.position.y = 0.04;
-    crate.add(base);
+    // Trilhos apoiados no caixote de carga, com o fundo apoiado sobre eles.
+    for (const x of [-.2, .2]) box('SupplySkid', .06, .03, .44, x, .015, 0, this.matDarkIron);
+    box('SupplyBase', .52, .05, .42, 0, .055, 0, this.matCrateWood);
+    box('SupplyLiner', .42, .018, .32, 0, .085, 0, this.matDarkIron);
 
-    // Pés/trilhos inferiores de ferro
-    for (const sx of [-0.2, 0.2]) {
-      const skid = new THREE.Mesh(
-        new THREE.BoxGeometry(0.06, 0.03, 0.44),
-        this.matDarkIron
-      );
-      skid.position.set(sx, 0.015, 0);
-      crate.add(skid);
-    }
-
-    // 4 bordas elevadas formando bandeja interna côncava
-    const rimFront = new THREE.Mesh(
-      new THREE.BoxGeometry(0.52, 0.085, 0.045),
-      this.matCrateWood
-    );
-    rimFront.position.set(0, 0.115, 0.188);
-    const rimBack = rimFront.clone();
-    rimBack.position.z = -0.188;
-    const rimLeft = new THREE.Mesh(
-      new THREE.BoxGeometry(0.045, 0.085, 0.34),
-      this.matCrateWood
-    );
-    rimLeft.position.set(-0.238, 0.115, 0);
-    const rimRight = rimLeft.clone();
-    rimRight.position.x = 0.238;
-    crate.add(rimFront, rimBack, rimLeft, rimRight);
-
-    // Forro escuro interno do estojo (superfície superior em y = 0.094)
-    const liner = new THREE.Mesh(
-      new THREE.BoxGeometry(0.42, 0.018, 0.32),
-      this.matDarkIron
-    );
-    liner.position.y = 0.085;
-    crate.add(liner);
-
-    // 4 cantoneiras de ferro fundido nos cantos
-    for (const cx of [-0.245, 0.245]) {
-      for (const cz of [-0.195, 0.195]) {
-        const bracket = new THREE.Mesh(
-          new THREE.BoxGeometry(0.065, 0.15, 0.065),
-          this.matDarkIron
-        );
-        bracket.position.set(cx, 0.085, cz);
-        crate.add(bracket);
+    // Bordas, com uma placa identificadora e reforços de ferro faceados.
+    for (const z of [-.188, .188]) box('SupplyRim', .52, .085, .045, 0, .1225, z, this.matCrateWood);
+    for (const x of [-.238, .238]) box('SupplyRim', .045, .085, .331, x, .1225, 0, this.matCrateWood);
+    for (const x of [-.245, .245]) for (const z of [-.195, .195]) {
+      box('SupplyCorner', .034, .13, .034, x, .095, z, this.matDarkIron);
+      // Rebites nas faces externas, sem invadir o espaço dos itens.
+      for (const y of [.065, .135]) {
+        const rivet = new THREE.Mesh(new THREE.SphereGeometry(.007, 8, 6), this.matBrass);
+        rivet.name = 'SupplyRivet';
+        rivet.position.set(x, y, z + Math.sign(z) * .018);
+        crate.add(rivet);
       }
     }
-
-    // Alças metálicas nas laterais
-    for (const sx of [-0.27, 0.27]) {
-      const handle = new THREE.Mesh(
-        new THREE.BoxGeometry(0.025, 0.03, 0.14),
-        this.matBrass
-      );
-      handle.position.set(sx, 0.1, 0);
-      crate.add(handle);
+    box('SupplyLabel', .14, .036, .004, 0, .119, .2125, this.matBrass);
+    for (const x of [-.27, .27]) {
+      // Alça aberta, não uma barra sólida atravessando a parede.
+      for (const z of [-.065, .065]) box('SupplyHandleMount', .025, .024, .018, x, .105, z, this.matDarkIron);
+      box('SupplyHandleGrip', .02, .018, .13, x + Math.sign(x) * .018, .105, 0, this.matBrass);
     }
 
-    // Tampa ripada entreaberta apoiada na borda traseira
-    const openLid = new THREE.Mesh(
-      new THREE.BoxGeometry(0.48, 0.03, 0.22),
-      this.matCrateWood
-    );
-    openLid.position.set(0, 0.21, -0.24);
-    openLid.rotation.x = -0.98;
-    crate.add(openLid);
-
+    // Tampa articulada a partir da borda traseira; a parte baixa começa na
+    // dobradiça, em vez de flutuar sobre o estojo.
+    const lid = new THREE.Group();
+    lid.name = 'SupplyLid';
+    lid.position.set(0, .165, -.21);
+    lid.rotation.x = 1.18;
+    crate.add(lid);
+    box('SupplyLidPanel', .48, .025, .34, 0, 0, -.17, this.matCrateWood, lid);
+    for (const x of [-.19, .19]) box('SupplyLidStrap', .028, .007, .33, x, .016, -.17, this.matDarkIron, lid);
+    for (const x of [-.16, .16]) {
+      const hinge = new THREE.Mesh(new THREE.CylinderGeometry(.014, .014, .065, 10), this.matBrass);
+      hinge.name = 'SupplyHinge';
+      hinge.rotation.z = Math.PI / 2;
+      hinge.position.set(x, .165, -.21);
+      crate.add(hinge);
+    }
     return crate;
   }
 

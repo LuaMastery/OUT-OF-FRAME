@@ -21,6 +21,7 @@ export type DoomObstacleKind =
   | 'metal_shelving_rack'
   | 'wooden_shelving_rack'
   | 'wooden_crate_stack'
+  | 'supply_cargo'
   | 'mixed_cargo_depot'
   | 'steel_barricade'
   | 'stone_rubble_barricade'
@@ -39,6 +40,8 @@ export interface ObstaclePlacement {
   /** Rotação Y em radianos (eixo local -Z é o fundo encostado na parede; +Z aponta para o corredor) */
   yaw: number;
   variant: number;
+  /** Superfície superior preparada para o estojo de suprimentos. */
+  supplyTop?: boolean;
   minX: number;
   maxX: number;
   minY: number;
@@ -1801,6 +1804,11 @@ function emitObstacleGeometry(
       break;
     }
 
+    case 'supply_cargo': {
+      emitHeavyWoodenCrate(b, xf, .72, .72, .64, 0, 0, 0);
+      break;
+    }
+
     case 'wooden_crate_stack': {
       // Estrado/pallet de madeira no chão (topo exato em y = 0.090)
       const palW = p.role === 'island' ? 1.2 : 1.24;
@@ -1832,13 +1840,13 @@ function emitObstacleGeometry(
       emitHeavyWoodenCrate(
         b,
         xf,
-        0.52,
+        p.supplyTop ? 0.64 : 0.52,
         0.56,
-        mainD * 0.78,
+        p.supplyTop ? 0.60 : mainD * 0.78,
         -0.25,
         0.85,
         -0.01,
-        p.variant === 0 ? -0.1 : 0.12
+        p.supplyTop ? 0 : p.variant === 0 ? -0.1 : 0.12
       );
       break;
     }
@@ -1852,7 +1860,7 @@ function emitObstacleGeometry(
 
       // Caixotes à esquerda + tambor/tonel apoiado EM CIMA do estrado (baseY = 0.07) sem encostar nas caixas!
       emitHeavyWoodenCrate(b, xf, 0.62, 0.7, palD * 0.86, -0.3, 0.07, 0, 0.04);
-      emitHeavyWoodenCrate(b, xf, 0.46, 0.46, palD * 0.74, -0.3, 0.77, 0, -0.1);
+      emitHeavyWoodenCrate(b, xf, p.supplyTop ? 0.58 : 0.46, 0.46, p.supplyTop ? 0.56 : palD * 0.74, -0.3, 0.77, 0, p.supplyTop ? 0 : -0.1);
       if (p.gz >= STONE_SECTOR_START_ROW) {
         emitUprightWoodenBarrel(b, xf, 0.35, 0.0, 0.6, 0.9, 0.07);
       } else {
