@@ -4,6 +4,7 @@ import {
   DoomArenaLayout,
   getOrCreateSceneArenaLayout,
 } from './DoomArenaRandomizer';
+import { buildDoomMapObstacles } from './DoomObstacles';
 import {
   createDoomSurfaceMaterial,
   DoomSharedUniforms,
@@ -1390,6 +1391,15 @@ export function buildDoomLabyrinth(
       root.add(m);
     }
   }
+
+  // 6. OBSTÁCULOS TÁTICOS 3D (Barris de Ferro, Tonéis de Madeira, Prateleiras, Caixotes, Barricadas & Vigas Arriadas)
+  buildDoomMapObstacles(
+    root,
+    arenaLayout.obstaclePlacements,
+    textures,
+    sharedUniforms,
+    colliders
+  );
 
   syncNearestDoomLightsToUniforms(
     lights.map((l) => ({ position: l.position, intensity: l.baseIntensity })),

@@ -2314,19 +2314,22 @@ export class DoomSpider {
     if (dist < 1e-4) return true;
 
     const steps = Math.max(2, Math.ceil(dist / 0.22));
-    const rSq = radius * radius;
     for (let s = 1; s <= steps; s++) {
       const f = s / steps;
       const px = fromX + dx * f;
       const pz = fromZ + dz * f;
       for (let i = 0; i < this.colliders.length; i++) {
-        const b = this.colliders[i].box;
+        const col = this.colliders[i];
+        if (col.isCrawlUnder) continue;
+        if (col.isObstacle && this.surfaceMode !== 'FLOOR') continue;
+        const b = col.box;
         if (b.max.y < 0.5) continue;
+        const effR = col.isObstacle ? Math.min(radius, 0.38) : radius;
         const cx = Math.max(b.min.x, Math.min(px, b.max.x));
         const cz = Math.max(b.min.z, Math.min(pz, b.max.z));
         const ox = px - cx;
         const oz = pz - cz;
-        if (ox * ox + oz * oz < rSq) {
+        if (ox * ox + oz * oz < effR * effR) {
           return false;
         }
       }
@@ -2799,20 +2802,24 @@ export class DoomSpider {
     const bodyRadius = 0.56;
     for (let pass = 0; pass < 3; pass++) {
       for (let i = 0; i < this.colliders.length; i++) {
-        const b = this.colliders[i].box;
+        const col = this.colliders[i];
+        if (col.isCrawlUnder) continue;
+        if (col.isObstacle && this.surfaceMode !== 'FLOOR') continue;
+        const b = col.box;
         if (b.max.y < 0.5) continue;
+        const curRadius = col.isObstacle ? 0.44 : bodyRadius;
         const cx = Math.max(b.min.x, Math.min(this.bodyPos.x, b.max.x));
         const cz = Math.max(b.min.z, Math.min(this.bodyPos.z, b.max.z));
         const ox = this.bodyPos.x - cx;
         const oz = this.bodyPos.z - cz;
         const dSq = ox * ox + oz * oz;
-        if (dSq < bodyRadius * bodyRadius) {
+        if (dSq < curRadius * curRadius) {
           if (dSq > 1e-8) {
             const d = Math.sqrt(dSq);
-            const push = bodyRadius - d;
+            const push = curRadius - d;
             this.bodyPos.x += (ox / d) * push;
             this.bodyPos.z += (oz / d) * push;
-          } else {
+          } else if (!col.isObstacle) {
             // Centro caiu exatamente dentro de um bloco sólido: expulsa SOMENTE por uma face vizinha ABERTA!
             const midX = (b.min.x + b.max.x) * 0.5;
             const midZ = (b.min.z + b.max.z) * 0.5;
@@ -3461,6 +3468,7 @@ export class DoomSpider {
     // Apoia as garras gigantes diretamente nas paredes laterais (respeitando altura Y de arcos!)
     for (let pass = 0; pass < 2; pass++) {
       for (let c = 0; c < this.colliders.length; c++) {
+        if (this.colliders[c].isObstacle) continue;
         const b = this.colliders[c].box;
         if (hit.y < b.min.y - 0.06 || hit.y > b.max.y + 0.06) continue;
         if (
@@ -3553,6 +3561,7 @@ export class DoomSpider {
     if (hit.y > 0.08 && hit.y < WALL_HEIGHT - 0.08) {
       let touchesWall = false;
       for (let c = 0; c < this.colliders.length; c++) {
+        if (this.colliders[c].isObstacle) continue;
         const b = this.colliders[c].box;
         if (hit.y < b.min.y - 0.06 || hit.y > b.max.y + 0.06) continue;
         const dx = Math.max(b.min.x - hit.x, 0, hit.x - b.max.x);
@@ -3595,6 +3604,10 @@ export class DoomSpider {
       }
 
       for (let c = 0; c < this.colliders.length; c++) {
+        if (this.colliders[c].isObstacle && this.surfaceMode !== 'FLOOR') {
+          continue;
+        }
+        if (this.colliders[c].isCrawlUnder) continue;
         const b = this.colliders[c].box;
         const pad = 0.08;
         if (p.y < b.min.y - pad || p.y > b.max.y + pad) continue;

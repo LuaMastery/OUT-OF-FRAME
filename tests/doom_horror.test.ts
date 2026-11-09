@@ -81,6 +81,7 @@ import {
   computeSpiderStepLayerProfile,
   SoundEngine,
 } from '../src/engine/audio/SoundEngine';
+import { resolveCylinderWorldCollisions } from '../src/engine/physics/SpatialSweep';
 import {
   AFK_HIDDEN_GRACE_MS,
   AFK_IDLE_TIMEOUT_MS,
@@ -4511,4 +4512,141 @@ describe('Botão de Pausa no HUD, Tela de Pausa Completa & 26 Configurações Re
     }
   });
 });
+
+describe('Obstáculos Táticos 3D no Mapa (Barris de Ferro, Madeira, Prateleiras, Caixotes, Barricadas & Vigas Arriadas)', () => {
+  it('popula o mapa com mais de 95 obstáculos 3D sólidos variados, preserva passagens livres, permite agachar sob vigas e esconder-se da Aranha', () => {
+    const layoutA = createRandomArenaLayout({ worldSeed: 777123, playerSeed: 101 });
+    const layoutCoopMirror = createRandomArenaLayout({ worldSeed: 777123, playerSeed: 909 });
+    const layoutDifferent = createRandomArenaLayout({ worldSeed: 444999, playerSeed: 101 });
+
+    // 1. Densidade rica (>= 95 obstáculos) e sincronia 100% idêntica por worldSeed no Co-op
+    expect(layoutA.obstaclePlacements.length).toBeGreaterThanOrEqual(95);
+    expect(layoutCoopMirror.obstaclePlacements).toEqual(layoutA.obstaclePlacements);
+    expect(layoutDifferent.obstaclePlacements).not.toEqual(layoutA.obstaclePlacements);
+
+    const kindsPresent = new Set(layoutA.obstaclePlacements.map((o) => o.kind));
+    expect(kindsPresent.has('iron_barrel_cluster')).toBe(true);
+    expect(kindsPresent.has('wooden_barrel_cluster')).toBe(true);
+    expect(kindsPresent.has('metal_shelving_rack')).toBe(true);
+    expect(kindsPresent.has('wooden_shelving_rack')).toBe(true);
+    expect(kindsPresent.has('wooden_crate_stack')).toBe(true);
+    expect(kindsPresent.has('mixed_cargo_depot')).toBe(true);
+    expect(kindsPresent.has('steel_barricade')).toBe(true);
+    expect(kindsPresent.has('stone_rubble_barricade')).toBe(true);
+    expect(kindsPresent.has('low_crawl_obstruction')).toBe(true);
+
+    // 2. Constrói as malhas em lote e registra colisores físicos no labirinto
+    const scene = new THREE.Scene();
+    const shared = createDoomSharedUniforms();
+    const textures = createDoomTextures();
+    const maze = buildDoomLabyrinth(scene, textures, shared, layoutA);
+    const items = new DoomWorldItems(scene, shared);
+
+    const obstacleColliders = maze.colliders.filter((c) => c.isObstacle);
+    expect(obstacleColliders.length).toBe(layoutA.obstaclePlacements.length);
+
+    for (const meshName of [
+      'MazeObstaclesIronBarrel',
+      'MazeObstaclesOakWood',
+      'MazeObstaclesWood',
+      'MazeObstaclesMetal',
+      'MazeObstaclesDarkIron',
+      'MazeObstaclesStone',
+    ]) {
+      const m = scene.getObjectByName(meshName) as THREE.Mesh | undefined;
+      expect(m).toBeDefined();
+      expect(m!.geometry.getAttribute('position').count).toBeGreaterThan(24);
+    }
+
+    // 3. Nem o Spawn do Jogador nem os 25 Itens coletáveis colidem com obstáculos
+    const spawnPos = layoutA.playerSpawnPosition.clone();
+    const zeroVel = new THREE.Vector3();
+    resolveCylinderWorldCollisions(spawnPos, zeroVel, 0.52, 1.8, obstacleColliders);
+    expect(spawnPos.distanceTo(layoutA.playerSpawnPosition)).toBeLessThan(1e-4);
+
+    for (const pickup of items.getPickupsSnapshot()) {
+      for (const col of obstacleColliders) {
+        if (col.isCrawlUnder) continue;
+        expect(col.box.containsPoint(pickup.position)).toBe(false);
+      }
+    }
+
+    // 4. Colisão sólida real contra barris/prateleiras + agachar/deslizar sob viga arriada!
+    const barrelObs = layoutA.obstaclePlacements.find(
+      (o) => o.kind === 'iron_barrel_cluster'
+    )!;
+    const testPos = new THREE.Vector3(barrelObs.worldX, 0, barrelObs.worldZ);
+    const testVel = new THREE.Vector3();
+    resolveCylinderWorldCollisions(testPos, testVel, 0.52, 1.8, obstacleColliders);
+    expect(
+      Math.hypot(testPos.x - barrelObs.worldX, testPos.z - barrelObs.worldZ)
+    ).toBeGreaterThan(0.25);
+
+    const crawlObs = layoutA.obstaclePlacements.find(
+      (o) => o.kind === 'low_crawl_obstruction'
+    )!;
+    const crawlCol = obstacleColliders.find((c) => c.id === crawlObs.id)!;
+    expect(crawlCol.isCrawlUnder).toBe(true);
+
+    // Em pé (1.80m): bloqueado pela viga arriada!
+    const standCrawlPos = new THREE.Vector3(crawlObs.worldX, 0, crawlObs.worldZ);
+    resolveCylinderWorldCollisions(standCrawlPos, new THREE.Vector3(), 0.52, 1.8, [crawlCol]);
+    expect(
+      Math.hypot(
+        standCrawlPos.x - crawlObs.worldX,
+        standCrawlPos.z - crawlObs.worldZ
+      )
+    ).toBeGreaterThan(0.2);
+
+    // Agachado / dando slide (1.05m): passa 100% livre por baixo da viga!
+    const crouchCrawlPos = new THREE.Vector3(crawlObs.worldX, 0, crawlObs.worldZ);
+    resolveCylinderWorldCollisions(crouchCrawlPos, new THREE.Vector3(), 0.52, 1.05, [crawlCol]);
+    expect(crouchCrawlPos.x).toBeCloseTo(crawlObs.worldX, 5);
+    expect(crouchCrawlPos.z).toBeCloseTo(crawlObs.worldZ, 5);
+
+    // 5. Cobertura furtiva real: agachar atrás de um obstáculo bloqueia a linha de visão da Aranha!
+    const webs = new DoomSpiderWebManager(scene, shared, layoutA);
+    const mockSound = {
+      playSpiderFootstep: () => {},
+      playSpiderChitter: () => {},
+      playSpiderScream: () => {},
+      playSpiderWebSpin: () => {},
+    } as unknown as SoundEngine;
+    const spider = new DoomSpider(
+      scene,
+      shared,
+      maze.colliders,
+      webs,
+      mockSound,
+      layoutA
+    );
+    const spiderAny = spider as unknown as {
+      hasLineOfSight: (
+        from: THREE.Vector3,
+        to: THREE.Vector3,
+        crouching: boolean
+      ) => boolean;
+    };
+
+    const islandBarrel = layoutA.obstaclePlacements.find(
+      (o) =>
+        o.role === 'island' &&
+        (o.kind === 'iron_barrel_cluster' ||
+          o.kind === 'wooden_barrel_cluster' ||
+          o.kind === 'wooden_crate_stack')
+    )!;
+    const eyeFrom = new THREE.Vector3(
+      islandBarrel.worldX,
+      0.85,
+      islandBarrel.minZ - 0.9
+    );
+    const hidingPlayer = new THREE.Vector3(
+      islandBarrel.worldX,
+      0,
+      islandBarrel.maxZ + 0.9
+    );
+    expect(spiderAny.hasLineOfSight(eyeFrom, hidingPlayer, true)).toBe(false);
+  });
+});
+
 

@@ -68,6 +68,8 @@ export interface DoomTextureSet {
   stoneVaultCeiling: THREE.DataTexture;
   darkIron: THREE.DataTexture;
   weatheredWood: THREE.DataTexture;
+  ironBarrel: THREE.DataTexture;
+  oakStave: THREE.DataTexture;
 }
 
 /**
@@ -660,6 +662,129 @@ export function createDoomTextures(): DoomTextureSet {
     }
   });
 
+  // 12. IRON BARREL (128x128) — Tambor de ferro industrial oxidado com frisos, costura e faixa técnica desgastada
+  const ironBarrel = makePixelTexture(S, S, (px) => {
+    const rand = mulberry32(199309);
+    const dripLen: number[] = [];
+    for (let x = 0; x < S; x++) {
+      dripLen.push(rand() < 0.28 ? 14 + rand() * 44 : 0);
+    }
+
+    for (let y = 0; y < S; y++) {
+      for (let x = 0; x < S; x++) {
+        const grit = (rand() - 0.5) * 9;
+        const fine = (hash2i(x, y, 811) - 0.5) * 7;
+
+        // Costura vertical soldada do tambor
+        const isWeld = x === 63 || x === 64;
+
+        // Frisos horizontais estampados no aço (topo, 1/3, 2/3 e base)
+        const isRibDark =
+          y === 3 || y === 39 || y === 85 || y === 123;
+        const isRibBright =
+          y === 4 || y === 5 || y === 40 || y === 41 || y === 86 || y === 87 || y === 122;
+
+        // Faixa central de contenção industrial desgastada (y = 56..69)
+        const inBand = y >= 56 && y <= 69;
+
+        let r = 64 + grit * 0.6 + fine * 0.5;
+        let g = 70 + grit * 0.6 + fine * 0.5;
+        let b = 60 + grit * 0.5 + fine * 0.5;
+
+        if (inBand) {
+          const diag = ((x + y) >> 3) % 2 === 0;
+          const chipped = hash2i(x >> 1, y >> 1, 823) < 0.24;
+          if (!chipped) {
+            if (diag) {
+              r = 128 + grit * 0.5;
+              g = 96 + grit * 0.4;
+              b = 34 + grit * 0.3;
+            } else {
+              r = 34 + grit * 0.4;
+              g = 34 + grit * 0.4;
+              b = 32 + grit * 0.4;
+            }
+          }
+        }
+
+        if (isRibDark) {
+          r *= 0.48;
+          g *= 0.48;
+          b *= 0.48;
+        } else if (isRibBright) {
+          r = Math.min(185, r * 1.32 + 12);
+          g = Math.min(185, g * 1.30 + 10);
+          b = Math.min(175, b * 1.26 + 8);
+        }
+
+        if (isWeld) {
+          r *= 0.65;
+          g *= 0.64;
+          b *= 0.64;
+        }
+
+        // Ferrugem e óleo escorrendo dos frisos e da tampa
+        const fromTop = y < dripLen[x];
+        const fromMid = y > 41 && y < 41 + dripLen[(x + 37) % S] * 0.55;
+        const rustPatch = hash2i(x >> 2, y >> 2, 829) > 0.82;
+        if (fromTop || fromMid || rustPatch) {
+          r = r * 0.78 + 26;
+          g = g * 0.68 + 11;
+          b = b * 0.62 + 5;
+        }
+
+        // Sujeira pesada junto ao fundo apoiado no piso úmido
+        if (y > 108) {
+          const k = 1 - ((y - 108) / 20) * 0.38;
+          r *= k;
+          g *= k;
+          b *= k;
+        }
+
+        px(x, y, r, g, b);
+      }
+    }
+  });
+
+  // 13. OAK STAVE (128x128) — Aduelas verticais de carvalho escuro para tonéis e caixotes reforçados
+  const oakStave = makePixelTexture(S, S, (px) => {
+    const rand = mulberry32(199310);
+    for (let y = 0; y < S; y++) {
+      for (let x = 0; x < S; x++) {
+        const stave = Math.floor(x / 16);
+        const lx = x % 16;
+        const grit = (rand() - 0.5) * 7;
+
+        // Junta calafetada escura entre aduelas verticais
+        if (lx === 0) {
+          px(x, y, 22, 16, 12);
+          continue;
+        }
+
+        const grain =
+          Math.sin((y + stave * 19) * 0.22 + Math.sin(x * 0.55) * 0.8) * 8;
+        const knotDist = Math.hypot(
+          lx - 8,
+          ((y + stave * 37) % 64) - 32
+        );
+        const knot = knotDist < 3.4 ? -16 + knotDist * 3 : 0;
+
+        let tone =
+          82 + ((stave * 7) % 3 - 1) * 6 + grain + grit + knot;
+        if (lx === 1) tone += 9;
+        if (lx === 15) tone -= 9;
+
+        // Escurecimento úmido perto das extremidades superior e inferior do barril
+        const edgeDist = Math.min(y, S - 1 - y);
+        if (edgeDist < 14) {
+          tone -= ((14 - edgeDist) / 14) * 20;
+        }
+
+        px(x, y, tone * 1.08, tone * 0.75, tone * 0.48);
+      }
+    }
+  });
+
   return {
     startanWall,
     stoneWall,
@@ -672,5 +797,7 @@ export function createDoomTextures(): DoomTextureSet {
     stoneVaultCeiling,
     darkIron,
     weatheredWood,
+    ironBarrel,
+    oakStave,
   };
 }

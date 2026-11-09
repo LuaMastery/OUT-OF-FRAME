@@ -5,6 +5,10 @@ export interface StaticColliderBox {
   box: THREE.Box3;
   /** Se verdadeiro, reflete projéteis em vez de absorvê-los (painéis defletores de calibração) */
   reflective?: boolean;
+  /** Obstáculo tático 3D do cenário (barris, caixotes, prateleiras, barricadas, vigas arriadas) */
+  isObstacle?: boolean;
+  /** Obstáculo aéreo baixo (viga/tubulação arriada) que exige agachar ou deslizar por baixo */
+  isCrawlUnder?: boolean;
 }
 
 export interface SweepHit {

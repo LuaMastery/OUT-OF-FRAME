@@ -6,6 +6,10 @@ import {
   LABYRINTH_MAP,
   STONE_SECTOR_START_ROW,
 } from './DoomMazeBuilder';
+import {
+  generateArenaObstacles,
+  ObstaclePlacement,
+} from './DoomObstacles';
 
 export interface GridCoord {
   gx: number;
@@ -41,6 +45,7 @@ export interface DoomArenaLayout {
   readonly spiderPostAbductionCell: GridCoord;
   readonly initialWebTrapCells: ReadonlyArray<GridCoord>;
   readonly cratePlacements: ReadonlyArray<CrateRandomPlacement>;
+  readonly obstaclePlacements: ReadonlyArray<ObstaclePlacement>;
 }
 
 export interface CreateArenaLayoutOptions {
@@ -592,7 +597,23 @@ export function createRandomArenaLayout(
     worldRng
   );
 
-  // 4. Sorteia o ponto seguro de Spawn do Jogador por `playerSeed` (livre de Ninho, Teias e Caixotes!)
+  // 3b. Gera ~95 obstáculos 3D variados (barris de ferro, tonéis de madeira, prateleiras, pilhas de caixotes,
+  //     barricadas e vigas arriadas) derivados de `worldSeed` para sincronia 100% exata no Co-op!
+  const obstacleRng = createSeededRng(
+    (worldSeed ^ 0x5bf03635) >>> 0 || 13
+  );
+  const obstaclePlacements = generateArenaObstacles({
+    rng: obstacleRng,
+    reservedCellKeys: reservedLairKeys,
+    usedCrateCellKeys: usedCrateKeys,
+    initialWebTrapCells,
+    lairCell,
+  });
+  const usedObstacleKeys = new Set(
+    obstaclePlacements.map((o) => `${o.gx},${o.gz}`)
+  );
+
+  // 4. Sorteia o ponto seguro de Spawn do Jogador por `playerSeed` (livre de Ninho, Teias, Caixotes e Obstáculos!)
   const spawnCandidates: GridCoord[] = [];
   for (let gz = 1; gz < LABYRINTH_MAP.length - 1; gz++) {
     for (let gx = 1; gx < LABYRINTH_MAP[gz].length - 1; gx++) {
@@ -601,6 +622,7 @@ export function createRandomArenaLayout(
       if (isNearReactorCollar(gx, gz)) continue;
       if (reservedLairKeys.has(`${gx},${gz}`)) continue;
       if (usedCrateKeys.has(`${gx},${gz}`)) continue;
+      if (usedObstacleKeys.has(`${gx},${gz}`)) continue;
 
       const distCellsToLair = Math.hypot(gx - lairCell.gx, gz - lairCell.gz);
       if (distCellsToLair < 4.0) continue;
@@ -664,6 +686,7 @@ export function createRandomArenaLayout(
       const ch = LABYRINTH_MAP[gz][gx];
       if (ch !== '.' && ch !== 'P') continue;
       if (isNearReactorCollar(gx, gz)) continue;
+      if (usedObstacleKeys.has(`${gx},${gz}`)) continue;
 
       const w = gridCellToWorld(gx, gz);
       const distToPlayer = Math.hypot(
@@ -731,6 +754,7 @@ export function createRandomArenaLayout(
     spiderPostAbductionCell,
     initialWebTrapCells,
     cratePlacements,
+    obstaclePlacements,
   };
 }
 

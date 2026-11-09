@@ -1711,6 +1711,7 @@ export class DoomGameApp {
       const pz = this.position.z + toSpider.z * d;
       let hitWall = false;
       for (let i = 0; i < this.colliders.length; i++) {
+        if (this.colliders[i].isCrawlUnder) continue;
         const b = this.colliders[i].box;
         if (b.max.y < 0.5) continue;
         const cx = Math.max(b.min.x, Math.min(px, b.max.x));
