@@ -515,14 +515,14 @@
 
 .inv-grid {
   display: grid;
-  grid-template-columns: repeat(4, 80px);
-  gap: 9px;
+  grid-template-columns: repeat(5, 64px);
+  gap: 7px;
 }
 
 .inv-slot {
   position: relative;
-  width: 80px;
-  height: 80px;
+  width: 64px;
+  height: 64px;
   background: #080809;
   border: 1px solid #24211d;
   display: flex;
@@ -563,13 +563,27 @@
   pointer-events: none;
 }
 
-/* Escala inteira exata 2x (32px -> 64px) para nitidez pixel-perfect */
+/* Escala nítida pixel-perfect dentro dos 20 bolsos (5x4) */
 .inv-slot-sprite {
-  width: 64px;
-  height: 64px;
+  width: 48px;
+  height: 48px;
   image-rendering: pixelated;
   image-rendering: crisp-edges;
   display: block;
+}
+
+.inv-slot-key-tag {
+  position: absolute;
+  left: 3px;
+  bottom: 3px;
+  padding: 1px 3px;
+  font-size: 8.5px;
+  line-height: 1;
+  letter-spacing: 0.04em;
+  font-weight: 700;
+  background: rgba(8, 10, 12, 0.88);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  pointer-events: none;
 }
 
 .inv-slot-qty {

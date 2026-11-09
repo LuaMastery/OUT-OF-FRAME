@@ -15,8 +15,18 @@ export const MAX_PROXIMITY_VOICE_DISTANCE = 22.0;
 /** Raio próximo (em metros) onde a voz soa em volume pleno sem atenuação de distância. */
 export const FULL_VOLUME_VOICE_DISTANCE = 2.8;
 
-/** Limiar mínimo de energia vocal para abrir o gate de voz (ignora chiado de fundo do microfone). */
-export const VOICE_NOISE_GATE_THRESHOLD = 0.045;
+/** Limiar base de abertura do gate de voz em modo Microfone Aberto (ignora chiado leve de fundo). */
+export const VOICE_NOISE_GATE_THRESHOLD = 0.032;
+
+/** Tempo de sustentação vocal (hangover) em segundos para NUNCA cortar sílabas ou pausas de respiração! */
+export const VOICE_GATE_HOLD_OPEN_SEC = 0.38;
+export const VOICE_GATE_HOLD_PTT_SEC = 0.56;
+
+/** Taxa de amostragem e duração (~108 ms = ~9,2 pacotes/s) do codec retrô 8-bit μ-law sem inundar a rede. */
+const RETRO_RELAY_SAMPLE_RATE = 8_512;
+const RETRO_RELAY_CHUNK_SAMPLES = 920; // ~108.1 ms por pacote (evita rate-limit e cortes no WebSocket!)
+const INITIAL_JITTER_BUFFER_SEC = 0.095;
+const MAX_JITTER_LEAD_SEC = 0.48;
 
 export interface VoiceSignalPayload {
   fromId: string;
@@ -37,7 +47,10 @@ export interface ProximityVoiceAcoustics {
   gain: number;
   lowpassHz: number;
   audible: boolean;
+  viaRadio?: boolean;
 }
+
+export type RadioVoiceLinkMode = 'none' | 'simplex' | 'duplex';
 
 export interface SpiderVoiceAlertResult {
   heard: boolean;
@@ -45,11 +58,230 @@ export interface SpiderVoiceAlertResult {
   intensity: number;
 }
 
+export interface VoiceGateState {
+  smoothedLevel: number;
+  gateOpen: boolean;
+  holdRemainingSec: number;
+}
+
 const RTC_ICE_SERVERS: RTCIceServer[] = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
   { urls: 'stun:stun.cloudflare.com:3478' },
 ];
+
+/**
+ * Cria o estado inicial do Gate Vocal com histerese (Schmitt Trigger) + tempo de sustentação (Hangover).
+ */
+export function createInitialVoiceGateState(): VoiceGateState {
+  return {
+    smoothedLevel: 0,
+    gateOpen: false,
+    holdRemainingSec: 0,
+  };
+}
+
+/**
+ * Avança o Gate Vocal de forma pura e à prova de cortes bruscos no meio das palavras:
+ * - Ataque rápido (`22/s`) para nunca comer o início da primeira sílaba;
+ * - Histerese dupla (limiar de fechamento é 45% menor que o de abertura);
+ * - Sustentação vocal (`holdRemainingSec`: 380ms em `OPEN`, 560ms em `PTT`) que mantém a voz
+ *   contínua durante consoantes surdas, respirações curtas e transições entre palavras!
+ */
+export function stepVoiceGateState(
+  state: VoiceGateState,
+  rawLevel: number,
+  dtSec: number,
+  isMicArmed: boolean,
+  isPttHeld: boolean
+): VoiceGateState {
+  const safeDt = Math.max(0, Math.min(0.25, Number.isFinite(dtSec) ? dtSec : 0));
+  if (!isMicArmed) {
+    const decayed = Math.max(0, state.smoothedLevel - safeDt * 12);
+    return {
+      smoothedLevel: decayed,
+      gateOpen: false,
+      holdRemainingSec: 0,
+    };
+  }
+
+  const clampedRaw = Math.max(0, Math.min(1, Number.isFinite(rawLevel) ? rawLevel : 0));
+  const rate = clampedRaw > state.smoothedLevel ? 22.0 : 9.5;
+  const smoothedLevel =
+    state.smoothedLevel + (clampedRaw - state.smoothedLevel) * Math.min(1, safeDt * rate);
+
+  const openThreshold = isPttHeld
+    ? VOICE_NOISE_GATE_THRESHOLD * 0.35
+    : VOICE_NOISE_GATE_THRESHOLD;
+  const closeThreshold = openThreshold * 0.45;
+  const holdDuration = isPttHeld ? VOICE_GATE_HOLD_PTT_SEC : VOICE_GATE_HOLD_OPEN_SEC;
+
+  let gateOpen = state.gateOpen;
+  let holdRemainingSec = Math.max(0, state.holdRemainingSec - safeDt);
+
+  if (!gateOpen) {
+    if (smoothedLevel >= openThreshold) {
+      gateOpen = true;
+      holdRemainingSec = holdDuration;
+    }
+  } else {
+    if (smoothedLevel >= closeThreshold) {
+      holdRemainingSec = holdDuration;
+    } else if (holdRemainingSec <= 0) {
+      gateOpen = false;
+    }
+  }
+
+  return {
+    smoothedLevel,
+    gateOpen,
+    holdRemainingSec,
+  };
+}
+
+/**
+ * Desduplicador O(1) de pacotes de áudio por `seq` para impedir 100% que entregas duplas
+ * (`BroadcastChannel` + `Supabase Realtime` ou retransmissões de rede) dupliquem a voz!
+ */
+export class RelaySeqDeduplicator {
+  private readonly seenSeqs = new Set<number>();
+  private readonly orderQueue: number[] = [];
+  private highestSeq = -1;
+
+  constructor(private readonly windowSize = 128) {}
+
+  accept(seq: number): boolean {
+    if (!Number.isFinite(seq) || seq < 0) return false;
+    const cleanSeq = Math.floor(seq);
+
+    if (this.seenSeqs.has(cleanSeq)) {
+      return false;
+    }
+
+    // Se o remetente reiniciou a sessão (ex.: reconectou do zero com seq baixo), reseta janela
+    if (this.highestSeq > 200 && cleanSeq <= 8) {
+      this.reset();
+    } else if (this.highestSeq >= 0 && cleanSeq < this.highestSeq - 24) {
+      // Descarta pacote extremamente atrasado que causaria eco/repetição fora de hora
+      return false;
+    }
+
+    if (cleanSeq > this.highestSeq) {
+      this.highestSeq = cleanSeq;
+    }
+
+    this.seenSeqs.add(cleanSeq);
+    this.orderQueue.push(cleanSeq);
+    while (this.orderQueue.length > this.windowSize) {
+      const oldest = this.orderQueue.shift();
+      if (oldest !== undefined) {
+        this.seenSeqs.delete(oldest);
+      }
+    }
+    return true;
+  }
+
+  reset(): void {
+    this.seenSeqs.clear();
+    this.orderQueue.length = 0;
+    this.highestSeq = -1;
+  }
+}
+
+/**
+ * Gera a curva de transferência do processador **Retro 8-Bit EVA Comm** (`WaveShaperNode`):
+ * - Zona morta limpa no zero (`|x| < deadzone`) para **zero chiado** quando o aliado está em silêncio;
+ * - Companding logarítmico suave + degraus de quantização 8-bit calibrados para preservar 100% da
+ *   inteligibilidade das palavras enquanto entrega a textura crocante clássica dos rádios retrô!
+ */
+export function buildRetro8BitQuantizerCurve(
+  steps = 56,
+  drive = 1.18,
+  samples = 2048
+): Float32Array<ArrayBuffer> {
+  const n = Math.max(256, samples | 0);
+  const cleanSteps = Math.max(12, Math.min(256, steps));
+  const curve = new Float32Array(new ArrayBuffer(n * 4));
+  const deadzone = 0.0035;
+  const mu = 24.0;
+  const invLogMu = 1 / Math.log(1 + mu);
+
+  for (let i = 0; i < n; i++) {
+    const x = (i * 2) / (n - 1) - 1;
+    const absX = Math.abs(x);
+    if (absX <= deadzone) {
+      curve[i] = 0;
+      continue;
+    }
+
+    const sign = x < 0 ? -1 : 1;
+    const norm = Math.min(1, ((absX - deadzone) / (1 - deadzone)) * drive);
+    // Compressão logarítmica antes da quantização (mantém sussurros nítidos sem virar onda quadrada!)
+    const companded = Math.log(1 + mu * norm) * invLogMu;
+    const quantized = Math.round(companded * cleanSteps) / cleanSteps;
+    // Expansão suave + mescla sutil (78% quantizado 8-bit + 22% fundamental limpa para clareza vocal)
+    const expanded = (Math.pow(1 + mu, quantized) - 1) / mu;
+    const softLimited = Math.tanh(expanded * 1.12) / Math.tanh(1.12);
+    curve[i] = sign * (softLimited * 0.78 + norm * 0.22) * 0.94;
+  }
+  return curve;
+}
+
+/**
+ * Downsampling com filtro anti-aliasing por média de janela (Boxcar) + leve pré-ênfase vocal
+ * para que a voz 8-bit em ~8.5 kHz soe limpa, encorpada e sem chiado metálico de aliasing!
+ */
+export function downsamplePcmWithAntiAlias(
+  input: Float32Array,
+  srcRate: number,
+  targetRate: number
+): Float32Array {
+  if (input.length === 0) return new Float32Array(0);
+  const safeSrc = Math.max(targetRate, Number.isFinite(srcRate) ? srcRate : 48_000);
+  const ratio = safeSrc / targetRate;
+  if (ratio <= 1.01) {
+    return new Float32Array(input);
+  }
+
+  const outLen = Math.max(1, Math.floor(input.length / ratio));
+  const out = new Float32Array(outLen);
+  let prevSample = input[0];
+
+  for (let i = 0; i < outLen; i++) {
+    const start = Math.floor(i * ratio);
+    const end = Math.min(input.length, Math.max(start + 1, Math.floor((i + 1) * ratio)));
+    let sum = 0;
+    for (let j = start; j < end; j++) {
+      sum += input[j];
+    }
+    const avg = sum / (end - start);
+    // Leve realce de consoantes (+0.22 high-shelf) + soft clip protetor [-0.98..0.98]
+    const preEmph = avg + (avg - prevSample) * 0.22;
+    prevSample = avg;
+    out[i] = Math.max(-0.98, Math.min(0.98, preEmph));
+  }
+  return out;
+}
+
+/**
+ * Aplica micro-envelope cosseno (3ms) nas bordas de um bloco de áudio para eliminar 100%
+ * qualquer estalo/clique caso ocorra variação de rede entre dois pacotes consecutivos.
+ */
+export function applyChunkMicroFade(
+  samples: Float32Array,
+  sampleRate: number,
+  fadeSec = 0.003
+): void {
+  const fadeSamples = Math.min(
+    Math.floor(samples.length * 0.25),
+    Math.max(4, Math.floor(sampleRate * fadeSec))
+  );
+  for (let i = 0; i < fadeSamples; i++) {
+    const gain = 0.5 - 0.5 * Math.cos((Math.PI * i) / fadeSamples);
+    samples[i] *= gain;
+    samples[samples.length - 1 - i] *= gain;
+  }
+}
 
 /**
  * Conta quantas células sólidas de parede existem no segmento horizontal entre dois pontos do labirinto.
@@ -94,52 +326,71 @@ export function countLabyrinthWallsBetween(
  */
 export function computeProximityVoiceAcousticParams(
   distanceMeters: number,
-  wallCount: number
+  wallCount: number,
+  radioLinkMode: RadioVoiceLinkMode = 'none'
 ): ProximityVoiceAcoustics {
+  let proxGain = 0;
+  let proxLowpassHz = 400;
+
   if (
-    !Number.isFinite(distanceMeters) ||
-    distanceMeters >= MAX_PROXIMITY_VOICE_DISTANCE
+    Number.isFinite(distanceMeters) &&
+    distanceMeters < MAX_PROXIMITY_VOICE_DISTANCE
   ) {
-    return { gain: 0, lowpassHz: 400, audible: false };
+    const clampedDist = Math.max(0, distanceMeters);
+    let distFactor = 1.0;
+    if (clampedDist > FULL_VOLUME_VOICE_DISTANCE) {
+      const u =
+        (clampedDist - FULL_VOLUME_VOICE_DISTANCE) /
+        (MAX_PROXIMITY_VOICE_DISTANCE - FULL_VOLUME_VOICE_DISTANCE);
+      // Queda acústica natural suave: nítido perto, sumindo gradualmente pelo corredor até 22m
+      const inv = Math.max(0, 1 - u);
+      distFactor = inv * inv * (0.82 + 0.18 * inv);
+    }
+
+    const cleanWalls = Math.max(0, Math.floor(wallCount));
+    let occlusionGain = 1.0;
+    proxLowpassHz = 16_500;
+
+    if (cleanWalls === 1) {
+      occlusionGain = 0.56;
+      proxLowpassHz = 1_900;
+    } else if (cleanWalls === 2) {
+      occlusionGain = 0.3;
+      proxLowpassHz = 920;
+    } else if (cleanWalls >= 3) {
+      occlusionGain = 0.14;
+      proxLowpassHz = 520;
+    }
+
+    // Absorção suave de agudos pelo ar em grandes distâncias no corredor
+    if (cleanWalls === 0 && clampedDist > 8) {
+      const airT = Math.min(1, (clampedDist - 8) / 14);
+      proxLowpassHz = Math.round(16_500 - airT * 8_500);
+    }
+
+    const rawGain = distFactor * occlusionGain;
+    proxGain = rawGain < 0.004 ? 0 : rawGain;
   }
 
-  const clampedDist = Math.max(0, distanceMeters);
-  let distFactor = 1.0;
-  if (clampedDist > FULL_VOLUME_VOICE_DISTANCE) {
-    const u =
-      (clampedDist - FULL_VOLUME_VOICE_DISTANCE) /
-      (MAX_PROXIMITY_VOICE_DISTANCE - FULL_VOLUME_VOICE_DISTANCE);
-    // Queda acústica natural suave: nítido perto, sumindo gradualmente pelo corredor até 22m
-    const inv = Math.max(0, 1 - u);
-    distFactor = inv * inv * (0.82 + 0.18 * inv);
+  // Transmissão de longa distância pelo Rádio Comunicador VHF (atravessa todo o complexo e Salas Especiais!)
+  if (radioLinkMode !== 'none') {
+    const radioGain = radioLinkMode === 'duplex' ? 0.88 : 0.78;
+    const radioLowpassHz = radioLinkMode === 'duplex' ? 2_950 : 2_600;
+    if (proxGain < radioGain) {
+      return {
+        gain: radioGain,
+        lowpassHz: radioLowpassHz,
+        audible: true,
+        viaRadio: true,
+      };
+    }
   }
 
-  const cleanWalls = Math.max(0, Math.floor(wallCount));
-  let occlusionGain = 1.0;
-  let lowpassHz = 16_500;
-
-  if (cleanWalls === 1) {
-    occlusionGain = 0.56;
-    lowpassHz = 1_900;
-  } else if (cleanWalls === 2) {
-    occlusionGain = 0.3;
-    lowpassHz = 920;
-  } else if (cleanWalls >= 3) {
-    occlusionGain = 0.14;
-    lowpassHz = 520;
-  }
-
-  // Leve absorção de agudos pelo ar em grandes distâncias no corredor
-  if (cleanWalls === 0 && clampedDist > 8) {
-    const airT = Math.min(1, (clampedDist - 8) / 14);
-    lowpassHz = Math.round(16_500 - airT * 8_500);
-  }
-
-  const finalGain = distFactor * occlusionGain;
   return {
-    gain: finalGain < 0.004 ? 0 : finalGain,
-    lowpassHz,
-    audible: finalGain >= 0.004,
+    gain: proxGain,
+    lowpassHz: proxLowpassHz,
+    audible: proxGain >= 0.004,
+    viaRadio: false,
   };
 }
 
@@ -197,8 +448,7 @@ export function computeSpiderVoiceHearingAlert(
 }
 
 // ============================================================================
-// CODEC COMPACTO G.711 μ-LAW (8 kHz) — Fallback universal instantâneo caso o
-// WebRTC P2P esteja negociando ICE, atrás de NAT simétrico estrito ou entre abas!
+// CODEC COMPACTO G.711 μ-LAW (8-BIT DIGITAL COMM) — Codificação logarítmica 8-bit
 // ============================================================================
 
 function linearSampleToMuLawByte(sample: number): number {
@@ -293,13 +543,24 @@ interface RemotePeerAudioEntry {
   pc: RTCPeerConnection | null;
   makingOffer: boolean;
   ignoreOffer: boolean;
-  rtcConnected: boolean;
+  iceConnected: boolean;
+  pcConnected: boolean;
+  remoteTrackLive: boolean;
+  usingWebRtcPath: boolean;
   pendingIce: RTCIceCandidateInit[];
   pullAudioEl: HTMLAudioElement | null;
   streamSourceNode: MediaStreamAudioSourceNode | null;
+  webrtcBranchGain: GainNode;
+  relayBranchGain: GainNode;
+  highpassNode: BiquadFilterNode | null;
+  presenceNode: BiquadFilterNode | null;
+  retroToneNode: BiquadFilterNode | null;
+  retro8BitShaper: WaveShaperNode | null;
   filterNode: BiquadFilterNode;
   pannerNode: PannerNode;
   gainNode: GainNode;
+  deduplicator: RelaySeqDeduplicator;
+  activeRelaySources: Set<AudioBufferSourceNode>;
   nextRelayPlayTime: number;
   lastAudibleGain: number;
 }
@@ -312,10 +573,12 @@ export interface ProximityVoiceChatHooks {
 }
 
 /**
- * Gerenciador Completo de Voz por Proximidade 3D (HRTF + Oclusão por Paredes + WebRTC Opus + Fallback Relay):
- * - Modo padrão: Push-to-Talk `[B]` (`PTT`), alternável a qualquer momento no `[Z]` para `OPEN` ou `MUTED`.
- * - Espacialização binaural real (esquerda/direita/frente/costas) via `PannerNode` HRTF + filtro de paredes.
- * - Medidor em tempo real de volume vocal (`localVoiceLevel`) para HUD e audição da Aranha Gigante!
+ * Gerenciador de Voz 3D + **Motor de Voz Retro 8-Bit EVA Comm Aprimorado**:
+ * - Timbre 8-bit digital retrô consistente, nítido e sem ruído de fundo (companding + WaveShaper + EQ vocal);
+ * - Arbitragem estritamente exclusiva entre WebRTC e Relay + desduplicação `seq` (ZERO voz duplicada!);
+ * - Gate vocal com Histerese + Hangover de 380–560ms + Pre-Roll (ZERO cortes no meio da fala!);
+ * - Reuso limpo de `RTCRtpTransceiver` (`replaceTrack` sem renegociação colidente) + pacotes de ~108ms
+ *   (~9 pkt/s) para NUNCA travar ou bugar o microfone dos outros jogadores da sala!
  */
 export class ProximityVoiceChatManager {
   private mode: VoiceActivationMode = 'PTT';
@@ -324,8 +587,11 @@ export class ProximityVoiceChatManager {
   private permissionState: MicPermissionState = 'idle';
 
   private audioCtx: AudioContext | null = null;
+  private sharedRetroCurve: Float32Array<ArrayBuffer> | null = null;
   private micStream: MediaStream | null = null;
   private micSourceNode: MediaStreamAudioSourceNode | null = null;
+  private micHighpassNode: BiquadFilterNode | null = null;
+  private micCompressorNode: DynamicsCompressorNode | null = null;
   private outboundGateGain: GainNode | null = null;
   private outboundDestNode: MediaStreamAudioDestinationNode | null = null;
   private analyserNode: AnalyserNode | null = null;
@@ -333,8 +599,14 @@ export class ProximityVoiceChatManager {
   private silentZeroGain: GainNode | null = null;
   private readonly analyserScratch = new Float32Array(512);
 
-  private smoothedVoiceLevel = 0;
-  private speakingNow = false;
+  // Acumulador de ~108ms (920 amostras @ 8.5kHz) + pre-roll de 1 quadro para nunca cortar sílabas iniciais
+  private readonly relayAccumBuf = new Float32Array(RETRO_RELAY_CHUNK_SAMPLES);
+  private relayAccumWritePos = 0;
+  private prevIdlePreRollChunk: Float32Array | null = null;
+  private preRollFlushedForPhrase = false;
+  private lastAudioCallbackMs = 0;
+
+  private gateState: VoiceGateState = createInitialVoiceGateState();
   private relaySeq = 0;
   private disposed = false;
 
@@ -356,11 +628,11 @@ export class ProximityVoiceChatManager {
   }
 
   get isSpeaking(): boolean {
-    return this.speakingNow && !this.forceSilenced;
+    return this.gateState.gateOpen && !this.forceSilenced;
   }
 
   get voiceLevel(): number {
-    return this.forceSilenced ? 0 : this.smoothedVoiceLevel;
+    return this.forceSilenced ? 0 : this.gateState.smoothedLevel;
   }
 
   /**
@@ -369,16 +641,15 @@ export class ProximityVoiceChatManager {
   get isMicArmed(): boolean {
     if (this.forceSilenced) return false;
     if (this.mode === 'OPEN') return true;
-    // Tanto em PTT quanto em MUTED, segurar [B] funciona como Push-to-Talk imediato!
     return this.pttHeld;
   }
 
   setForceSilenced(silenced: boolean): void {
+    if (this.forceSilenced === silenced) return;
     this.forceSilenced = silenced;
     if (silenced) {
       this.pttHeld = false;
-      this.speakingNow = false;
-      this.smoothedVoiceLevel = 0;
+      this.gateState = createInitialVoiceGateState();
     }
     this.syncOutboundGate();
   }
@@ -447,6 +718,13 @@ export class ProximityVoiceChatManager {
     }
   }
 
+  private getRetroQuantizerCurve(): Float32Array<ArrayBuffer> {
+    if (!this.sharedRetroCurve) {
+      this.sharedRetroCurve = buildRetro8BitQuantizerCurve(56, 1.18, 2048);
+    }
+    return this.sharedRetroCurve;
+  }
+
   async ensureMicrophoneInitialized(): Promise<boolean> {
     if (this.disposed) return false;
     if (this.micStream && this.permissionState === 'granted') {
@@ -498,37 +776,51 @@ export class ProximityVoiceChatManager {
       this.permissionState = 'granted';
 
       this.micSourceNode = ctx.createMediaStreamSource(stream);
+
+      // Condicionamento vocal de saída: corta grave/sopro (<155 Hz) + nivela volume sem distorcer os outros!
+      let conditionedNode: AudioNode = this.micSourceNode;
+      if (typeof ctx.createBiquadFilter === 'function') {
+        const hp = ctx.createBiquadFilter();
+        hp.type = 'highpass';
+        hp.frequency.value = 155;
+        hp.Q.value = 0.707;
+        conditionedNode.connect(hp);
+        conditionedNode = hp;
+        this.micHighpassNode = hp;
+      }
+      if (typeof ctx.createDynamicsCompressor === 'function') {
+        const comp = ctx.createDynamicsCompressor();
+        comp.threshold.value = -19;
+        comp.knee.value = 12;
+        comp.ratio.value = 4.5;
+        comp.attack.value = 0.003;
+        comp.release.value = 0.16;
+        conditionedNode.connect(comp);
+        conditionedNode = comp;
+        this.micCompressorNode = comp;
+      }
+
       this.analyserNode = ctx.createAnalyser();
       this.analyserNode.fftSize = 512;
-      this.analyserNode.smoothingTimeConstant = 0.45;
+      this.analyserNode.smoothingTimeConstant = 0.35;
 
       this.outboundGateGain = ctx.createGain();
       this.outboundGateGain.gain.value = 0;
 
       this.outboundDestNode = ctx.createMediaStreamDestination();
 
-      this.micSourceNode.connect(this.analyserNode);
-      this.micSourceNode.connect(this.outboundGateGain);
+      conditionedNode.connect(this.analyserNode);
+      conditionedNode.connect(this.outboundGateGain);
       this.outboundGateGain.connect(this.outboundDestNode);
 
-      // Canal compacto μ-law 8kHz de fallback para conexões sem P2P direto (NAT simétrico / abas locais)
-      this.setupFallbackRelayCapture(ctx, this.outboundGateGain);
+      // Captura em blocos estáveis de ~108ms (pré-gate para pre-roll limpo sem cortar início de frase!)
+      this.setupFallbackRelayCapture(ctx, conditionedNode);
 
-      // Anexa a trilha de voz com gate aos peers WebRTC já conectados
+      // CRÍTICO: Reutiliza o transceiver de áudio já negociado (`replaceTrack` sem criar 2ª trilha nem colidir SDP!)
       const outTrack = this.outboundDestNode.stream.getAudioTracks()[0];
       if (outTrack) {
         for (const peer of this.peers.values()) {
-          if (peer.pc) {
-            const senders = peer.pc.getSenders();
-            const audioSender = senders.find(
-              (s) => s.track && s.track.kind === 'audio'
-            );
-            if (audioSender) {
-              void audioSender.replaceTrack(outTrack);
-            } else {
-              peer.pc.addTrack(outTrack, this.outboundDestNode.stream);
-            }
-          }
+          this.attachOutboundTrackToPeer(peer, outTrack);
         }
       }
 
@@ -542,85 +834,211 @@ export class ProximityVoiceChatManager {
     }
   }
 
+  private attachOutboundTrackToPeer(
+    peer: RemotePeerAudioEntry,
+    outTrack: MediaStreamTrack
+  ): void {
+    const pc = peer.pc;
+    if (!pc || !this.outboundDestNode) return;
+
+    try {
+      if (typeof pc.getTransceivers === 'function') {
+        const audioTransceiver = pc
+          .getTransceivers()
+          .find(
+            (t) =>
+              t.receiver?.track?.kind === 'audio' ||
+              t.sender?.track?.kind === 'audio'
+          );
+        if (audioTransceiver) {
+          if (audioTransceiver.direction === 'recvonly') {
+            audioTransceiver.direction = 'sendrecv';
+          }
+          void audioTransceiver.sender.replaceTrack(outTrack).catch(() => {});
+          return;
+        }
+      }
+
+      const senders = pc.getSenders?.() ?? [];
+      const existingAudioSender = senders.find(
+        (s) => !s.track || s.track.kind === 'audio'
+      );
+      if (existingAudioSender) {
+        void existingAudioSender.replaceTrack(outTrack).catch(() => {});
+      } else {
+        pc.addTrack(outTrack, this.outboundDestNode.stream);
+      }
+    } catch {
+      // Ignorar caso a conexão já esteja encerrada
+    }
+  }
+
   private setupFallbackRelayCapture(
     ctx: AudioContext,
-    gatedInput: GainNode
+    conditionedInput: AudioNode
   ): void {
     if (typeof ctx.createScriptProcessor !== 'function') return;
     try {
       const proc = ctx.createScriptProcessor(2048, 1, 1);
       const zero = ctx.createGain();
       zero.gain.value = 0;
-      gatedInput.connect(proc);
+      conditionedInput.connect(proc);
       proc.connect(zero);
       zero.connect(ctx.destination);
 
       this.relayProcessorNode = proc;
       this.silentZeroGain = zero;
 
-      const targetRate = 8000;
       proc.onaudioprocess = (ev) => {
-        if (this.disposed || !this.isSpeaking || this.peers.size === 0) return;
+        if (this.disposed) return;
 
-        // Só envia fallback caso algum aliado ainda não tenha canal WebRTC P2P conectado
+        const input = ev.inputBuffer.getChannelData(0);
+        const nowMs =
+          typeof performance !== 'undefined' ? performance.now() : Date.now();
+        const dtAudio =
+          this.lastAudioCallbackMs > 0
+            ? Math.min(0.15, (nowMs - this.lastAudioCallbackMs) * 0.001)
+            : input.length / (ev.inputBuffer.sampleRate || 48_000);
+        this.lastAudioCallbackMs = nowMs;
+
+        // Mantém o gate atualizado diretamente na thread de áudio mesmo se o FPS 3D oscilar!
+        if (this.isMicArmed && this.permissionState === 'granted') {
+          let sumSq = 0;
+          let peak = 0;
+          for (let i = 0; i < input.length; i++) {
+            const s = input[i];
+            sumSq += s * s;
+            const a = Math.abs(s);
+            if (a > peak) peak = a;
+          }
+          const rms = Math.sqrt(sumSq / Math.max(1, input.length));
+          const rawLevel = Math.min(1, Math.max(rms * 4.2, peak * 1.35));
+          const prevOpen = this.gateState.gateOpen;
+          this.gateState = stepVoiceGateState(
+            this.gateState,
+            rawLevel,
+            dtAudio,
+            true,
+            this.pttHeld
+          );
+          if (this.gateState.gateOpen !== prevOpen) {
+            this.syncOutboundGate();
+          }
+        }
+
+        if (!this.isMicArmed || this.peers.size === 0) {
+          this.relayAccumWritePos = 0;
+          this.preRollFlushedForPhrase = false;
+          return;
+        }
+
+        // Só codifica pacotes de Relay se pelo menos 1 aliado ainda não estiver com áudio WebRTC ativo
         let anyPeerNeedsRelay = false;
         for (const p of this.peers.values()) {
-          if (!p.rtcConnected) {
+          if (!p.usingWebRtcPath) {
             anyPeerNeedsRelay = true;
             break;
           }
         }
-        if (!anyPeerNeedsRelay) return;
-
-        const input = ev.inputBuffer.getChannelData(0);
-        const srcRate = ev.inputBuffer.sampleRate || ctx.sampleRate || 48000;
-        const ratio = Math.max(1, srcRate / targetRate);
-        const outLen = Math.max(1, Math.floor(input.length / ratio));
-        const downsampled = new Float32Array(outLen);
-
-        let peak = 0;
-        for (let i = 0; i < outLen; i++) {
-          const idx = Math.min(input.length - 1, Math.floor(i * ratio));
-          const v = input[idx];
-          downsampled[i] = v;
-          const av = Math.abs(v);
-          if (av > peak) peak = av;
+        if (!anyPeerNeedsRelay) {
+          this.relayAccumWritePos = 0;
+          return;
         }
-        if (peak < 0.015) return;
 
-        const muLawB64 = encodePcmToMuLawBase64(downsampled);
-        this.hooks.sendRelayChunk({
-          fromId: this.hooks.localPlayerId,
-          seq: ++this.relaySeq,
-          sampleRate: targetRate,
-          muLawB64,
-        });
+        const srcRate = ev.inputBuffer.sampleRate || ctx.sampleRate || 48_000;
+        const downsampled = downsamplePcmWithAntiAlias(
+          input,
+          srcRate,
+          RETRO_RELAY_SAMPLE_RATE
+        );
+
+        let readOffset = 0;
+        while (readOffset < downsampled.length) {
+          const space = RETRO_RELAY_CHUNK_SAMPLES - this.relayAccumWritePos;
+          const toCopy = Math.min(space, downsampled.length - readOffset);
+          this.relayAccumBuf.set(
+            downsampled.subarray(readOffset, readOffset + toCopy),
+            this.relayAccumWritePos
+          );
+          this.relayAccumWritePos += toCopy;
+          readOffset += toCopy;
+
+          if (this.relayAccumWritePos >= RETRO_RELAY_CHUNK_SAMPLES) {
+            this.relayAccumWritePos = 0;
+            this.emitAccumulatedRelayFrame(this.relayAccumBuf);
+          }
+        }
       };
     } catch {
       // Ambientes sem ScriptProcessor continuam via WebRTC padrão
     }
   }
 
+  private emitAccumulatedRelayFrame(frame: Float32Array): void {
+    if (!this.isSpeaking) {
+      // Guarda 1 quadro de pre-roll (~108ms) para não engolir a primeira consoante quando começar a falar!
+      if (!this.prevIdlePreRollChunk) {
+        this.prevIdlePreRollChunk = new Float32Array(frame.length);
+      }
+      this.prevIdlePreRollChunk.set(frame);
+      this.preRollFlushedForPhrase = false;
+      return;
+    }
+
+    if (!this.preRollFlushedForPhrase) {
+      this.preRollFlushedForPhrase = true;
+      if (this.prevIdlePreRollChunk) {
+        let prePeak = 0;
+        for (let i = 0; i < this.prevIdlePreRollChunk.length; i++) {
+          const a = Math.abs(this.prevIdlePreRollChunk[i]);
+          if (a > prePeak) prePeak = a;
+        }
+        if (prePeak >= 0.008) {
+          const preCopy = new Float32Array(this.prevIdlePreRollChunk);
+          applyChunkMicroFade(preCopy, RETRO_RELAY_SAMPLE_RATE);
+          this.hooks.sendRelayChunk({
+            fromId: this.hooks.localPlayerId,
+            seq: ++this.relaySeq,
+            sampleRate: RETRO_RELAY_SAMPLE_RATE,
+            muLawB64: encodePcmToMuLawBase64(preCopy),
+          });
+        }
+      }
+    }
+
+    const outFrame = new Float32Array(frame);
+    applyChunkMicroFade(outFrame, RETRO_RELAY_SAMPLE_RATE);
+    this.hooks.sendRelayChunk({
+      fromId: this.hooks.localPlayerId,
+      seq: ++this.relaySeq,
+      sampleRate: RETRO_RELAY_SAMPLE_RATE,
+      muLawB64: encodePcmToMuLawBase64(outFrame),
+    });
+  }
+
   private syncOutboundGate(): void {
     const armed = this.isMicArmed && this.permissionState === 'granted';
     if (this.micStream) {
       for (const track of this.micStream.getAudioTracks()) {
-        // Mantém a trilha ativa quando armado para zero latência no Push-to-Talk!
         track.enabled = armed;
       }
     }
     if (this.outboundGateGain && this.audioCtx) {
-      const target = armed && this.speakingNow ? 1.0 : 0.0;
+      // Em Push-to-Talk ([B] pressionado), mantém o ganho aberto continuamente sem risco de cortar sussurros!
+      const shouldPassAudio =
+        armed && (this.pttHeld || this.gateState.gateOpen);
+      const target = shouldPassAudio ? 1.0 : 0.0;
+      const timeConstant = shouldPassAudio ? 0.008 : 0.042;
       this.outboundGateGain.gain.setTargetAtTime(
         target,
         this.audioCtx.currentTime,
-        0.018
+        timeConstant
       );
     }
   }
 
   /**
-   * Garante conexão de áudio 3D para cada aliado presente na sala.
+   * Garante cadeia de áudio 3D + DSP Retro 8-Bit EVA Comm isolada para cada aliado da sala.
    */
   ensurePeer(peerId: string): void {
     if (
@@ -635,14 +1053,71 @@ export class ProximityVoiceChatManager {
     const ctx = this.ensureAudioContext();
     if (!ctx) return;
 
+    // 2 ramos de entrada ESTRITAMENTE MUTUAMENTE EXCLUSIVOS (impede 100% voz duplicada WebRTC + Relay!)
+    const webrtcBranchGain = ctx.createGain();
+    webrtcBranchGain.gain.value = 0;
+
+    const relayBranchGain = ctx.createGain();
+    relayBranchGain.gain.value = 1;
+
+    // Estágio 8-Bit Retro Digital Comm para o ramo WebRTC (o ramo Relay já é 8-bit μ-law nativo!)
+    let retro8BitShaper: WaveShaperNode | null = null;
+    if (typeof ctx.createWaveShaper === 'function') {
+      retro8BitShaper = ctx.createWaveShaper();
+      retro8BitShaper.curve = this.getRetroQuantizerCurve();
+      retro8BitShaper.oversample = '2x';
+      webrtcBranchGain.connect(retro8BitShaper);
+    }
+
+    // Filtro anti-estrondo + presença de capacete EVA + suavizador harmônico 8-bit (6.2 kHz) compartilhado
+    let highpassNode: BiquadFilterNode | null = null;
+    let presenceNode: BiquadFilterNode | null = null;
+    let retroToneNode: BiquadFilterNode | null = null;
+
     const filterNode = ctx.createBiquadFilter();
     filterNode.type = 'lowpass';
     filterNode.frequency.value = 16_500;
     filterNode.Q.value = 0.7;
 
+    if (typeof ctx.createBiquadFilter === 'function') {
+      highpassNode = ctx.createBiquadFilter();
+      highpassNode.type = 'highpass';
+      highpassNode.frequency.value = 175;
+      highpassNode.Q.value = 0.707;
+
+      presenceNode = ctx.createBiquadFilter();
+      presenceNode.type = 'peaking';
+      presenceNode.frequency.value = 1_950;
+      presenceNode.Q.value = 0.88;
+      if (presenceNode.gain) {
+        presenceNode.gain.value = 2.8;
+      }
+
+      retroToneNode = ctx.createBiquadFilter();
+      retroToneNode.type = 'lowpass';
+      retroToneNode.frequency.value = 6_200;
+      retroToneNode.Q.value = 0.65;
+
+      if (retro8BitShaper) {
+        retro8BitShaper.connect(highpassNode);
+      } else {
+        webrtcBranchGain.connect(highpassNode);
+      }
+      relayBranchGain.connect(highpassNode);
+      highpassNode.connect(presenceNode);
+      presenceNode.connect(retroToneNode);
+      retroToneNode.connect(filterNode);
+    } else {
+      if (retro8BitShaper) {
+        retro8BitShaper.connect(filterNode);
+      } else {
+        webrtcBranchGain.connect(filterNode);
+      }
+      relayBranchGain.connect(filterNode);
+    }
+
     const pannerNode = ctx.createPanner();
     pannerNode.panningModel = 'HRTF';
-    // Atenuação de distância e oclusão é controlada com curva acústica exata no GainNode!
     pannerNode.distanceModel = 'linear';
     pannerNode.refDistance = 1;
     pannerNode.maxDistance = 10_000;
@@ -662,19 +1137,65 @@ export class ProximityVoiceChatManager {
       pc: null,
       makingOffer: false,
       ignoreOffer: false,
-      rtcConnected: false,
+      iceConnected: false,
+      pcConnected: false,
+      remoteTrackLive: false,
+      usingWebRtcPath: false,
       pendingIce: [],
       pullAudioEl: null,
       streamSourceNode: null,
+      webrtcBranchGain,
+      relayBranchGain,
+      highpassNode,
+      presenceNode,
+      retroToneNode,
+      retro8BitShaper,
       filterNode,
       pannerNode,
       gainNode,
+      deduplicator: new RelaySeqDeduplicator(128),
+      activeRelaySources: new Set(),
       nextRelayPlayTime: 0,
       lastAudibleGain: 0,
     };
     this.peers.set(peerId, entry);
 
     this.initWebRtcForPeer(entry);
+  }
+
+  private syncPeerExclusiveAudioSource(entry: RemotePeerAudioEntry): void {
+    const shouldUseWebRtc =
+      (entry.iceConnected || entry.pcConnected) &&
+      entry.remoteTrackLive &&
+      entry.streamSourceNode !== null;
+
+    if (entry.usingWebRtcPath === shouldUseWebRtc) return;
+    entry.usingWebRtcPath = shouldUseWebRtc;
+
+    const now = this.audioCtx?.currentTime ?? 0;
+    if (shouldUseWebRtc) {
+      // Silencia IMEDIATAMENTE qualquer bloco de Relay agendado antes de abrir o WebRTC (ZERO eco duplo!)
+      this.stopQueuedRelaySources(entry);
+      entry.relayBranchGain.gain.setTargetAtTime(0, now, 0.01);
+      entry.webrtcBranchGain.gain.setTargetAtTime(1, now, 0.018);
+    } else {
+      entry.webrtcBranchGain.gain.setTargetAtTime(0, now, 0.01);
+      entry.relayBranchGain.gain.setTargetAtTime(1, now, 0.018);
+    }
+  }
+
+  private stopQueuedRelaySources(entry: RemotePeerAudioEntry): void {
+    for (const src of entry.activeRelaySources) {
+      try {
+        src.onended = null;
+        src.stop();
+        src.disconnect();
+      } catch {
+        // Ignorar
+      }
+    }
+    entry.activeRelaySources.clear();
+    entry.nextRelayPlayTime = 0;
   }
 
   private isPoliteWith(peerId: string): boolean {
@@ -692,9 +1213,10 @@ export class ProximityVoiceChatManager {
         const track = this.outboundDestNode.stream.getAudioTracks()[0];
         if (track) {
           pc.addTrack(track, this.outboundDestNode.stream);
+        } else {
+          pc.addTransceiver('audio', { direction: 'sendrecv' });
         }
       } else {
-        // Garante transceiver bidirecional de áudio mesmo antes do jogador local ligar o próprio mic!
         pc.addTransceiver('audio', { direction: 'sendrecv' });
       }
 
@@ -731,7 +1253,14 @@ export class ProximityVoiceChatManager {
       };
 
       pc.onconnectionstatechange = () => {
-        entry.rtcConnected = pc.connectionState === 'connected';
+        entry.pcConnected = pc.connectionState === 'connected';
+        if (
+          pc.connectionState === 'failed' ||
+          pc.connectionState === 'closed'
+        ) {
+          entry.iceConnected = false;
+        }
+        this.syncPeerExclusiveAudioSource(entry);
       };
 
       pc.oniceconnectionstatechange = () => {
@@ -739,22 +1268,38 @@ export class ProximityVoiceChatManager {
           pc.iceConnectionState === 'connected' ||
           pc.iceConnectionState === 'completed'
         ) {
-          entry.rtcConnected = true;
+          entry.iceConnected = true;
         } else if (
           pc.iceConnectionState === 'failed' ||
           pc.iceConnectionState === 'disconnected' ||
           pc.iceConnectionState === 'closed'
         ) {
-          entry.rtcConnected = false;
+          entry.iceConnected = false;
         }
+        this.syncPeerExclusiveAudioSource(entry);
       };
 
       pc.ontrack = (ev) => {
         if (this.disposed) return;
+        const track = ev.track;
+        entry.remoteTrackLive = track.readyState === 'live';
+        track.onended = () => {
+          entry.remoteTrackLive = false;
+          this.syncPeerExclusiveAudioSource(entry);
+        };
+        track.onmute = () => {
+          entry.remoteTrackLive = false;
+          this.syncPeerExclusiveAudioSource(entry);
+        };
+        track.onunmute = () => {
+          entry.remoteTrackLive = track.readyState === 'live';
+          this.syncPeerExclusiveAudioSource(entry);
+        };
+
         const stream =
           ev.streams && ev.streams[0]
             ? ev.streams[0]
-            : new MediaStream([ev.track]);
+            : new MediaStream([track]);
         this.attachRemoteMediaStream(entry, stream);
       };
     } catch {
@@ -770,16 +1315,17 @@ export class ProximityVoiceChatManager {
     if (!ctx) return;
     this.resumeAudioContextIfNeeded();
 
-    // Workaround essencial do Chromium: um HTMLAudioElement mutado precisa puxar o fluxo WebRTC
-    // para que `createMediaStreamSource` receba amostras continuamente no Web Audio 3D!
+    // Workaround do Chromium totalmente silenciado (`muted = true` + `volume = 0`) para JAMAIS duplicar áudio 2D!
     if (typeof Audio !== 'undefined') {
       try {
         if (entry.pullAudioEl) {
+          entry.pullAudioEl.pause();
           entry.pullAudioEl.srcObject = null;
         }
         const pull = new Audio();
-        pull.srcObject = stream;
         pull.muted = true;
+        pull.volume = 0;
+        pull.srcObject = stream;
         pull.setAttribute('playsinline', '');
         void pull.play().catch(() => {});
         entry.pullAudioEl = pull;
@@ -791,8 +1337,10 @@ export class ProximityVoiceChatManager {
     try {
       entry.streamSourceNode?.disconnect();
       const srcNode = ctx.createMediaStreamSource(stream);
-      srcNode.connect(entry.filterNode);
+      srcNode.connect(entry.webrtcBranchGain);
       entry.streamSourceNode = srcNode;
+      entry.remoteTrackLive = true;
+      this.syncPeerExclusiveAudioSource(entry);
     } catch {
       // Ignorar
     }
@@ -875,7 +1423,15 @@ export class ProximityVoiceChatManager {
 
     this.ensurePeer(payload.fromId);
     const entry = this.peers.get(payload.fromId);
-    if (!entry || entry.rtcConnected) return;
+    if (!entry) return;
+
+    // 1. Filtra entregas duplicadas (ex.: BroadcastChannel + Supabase Realtime entregando o mesmo `seq`!)
+    if (!entry.deduplicator.accept(payload.seq)) {
+      return;
+    }
+
+    // 2. Se o canal WebRTC já está ativo e saudável, descarta o Relay (ZERO duplicação!)
+    if (entry.usingWebRtcPath) return;
     if (entry.lastAudibleGain <= 0.002) return;
 
     const ctx = this.ensureAudioContext();
@@ -885,21 +1441,35 @@ export class ProximityVoiceChatManager {
     try {
       const pcm = decodeMuLawBase64ToPcm(payload.muLawB64);
       if (pcm.length === 0) return;
-      const rate = Math.max(4000, Math.min(48000, payload.sampleRate || 8000));
+      const rate = Math.max(4000, Math.min(48000, payload.sampleRate || RETRO_RELAY_SAMPLE_RATE));
+      applyChunkMicroFade(pcm, rate, 0.0025);
+
       const audioBuf = ctx.createBuffer(1, pcm.length, rate);
       audioBuf.getChannelData(0).set(pcm);
 
+      const now = ctx.currentTime;
+      if (entry.nextRelayPlayTime > now + MAX_JITTER_LEAD_SEC) {
+        // Caso uma rajada de rede tenha acumulado atraso excessivo, limpa a fila antes de ressincronizar
+        // para JAMAIS tocar dois trechos da voz do jogador sobrepostos!
+        this.stopQueuedRelaySources(entry);
+      }
+      if (entry.nextRelayPlayTime < now + 0.004) {
+        entry.nextRelayPlayTime = now + INITIAL_JITTER_BUFFER_SEC;
+      }
+
       const src = ctx.createBufferSource();
       src.buffer = audioBuf;
-      src.connect(entry.filterNode);
+      src.connect(entry.relayBranchGain);
+      entry.activeRelaySources.add(src);
+      src.onended = () => {
+        entry.activeRelaySources.delete(src);
+        try {
+          src.disconnect();
+        } catch {
+          // Ignorar
+        }
+      };
 
-      const now = ctx.currentTime;
-      if (
-        entry.nextRelayPlayTime < now ||
-        entry.nextRelayPlayTime > now + 0.45
-      ) {
-        entry.nextRelayPlayTime = now + 0.035;
-      }
       src.start(entry.nextRelayPlayTime);
       entry.nextRelayPlayTime += audioBuf.duration;
     } catch {
@@ -912,8 +1482,16 @@ export class ProximityVoiceChatManager {
     if (!entry) return;
     this.peers.delete(peerId);
 
+    this.stopQueuedRelaySources(entry);
+
     try {
       entry.streamSourceNode?.disconnect();
+      entry.webrtcBranchGain.disconnect();
+      entry.relayBranchGain.disconnect();
+      entry.retro8BitShaper?.disconnect();
+      entry.highpassNode?.disconnect();
+      entry.presenceNode?.disconnect();
+      entry.retroToneNode?.disconnect();
       entry.filterNode.disconnect();
       entry.pannerNode.disconnect();
       entry.gainNode.disconnect();
@@ -939,9 +1517,9 @@ export class ProximityVoiceChatManager {
 
   /**
    * Atualiza quadro a quadro:
-   * 1) Medidor de energia vocal do microfone local + gate anti-ruído;
+   * 1) Medidor de energia vocal do microfone local + gate com histerese e sustentação;
    * 2) Posição e orientação 3D do ouvinte (`AudioListener`);
-   * 3) Posição 3D HRTF, distância e abafamento por paredes de cada aliado conectado!
+   * 3) Posição 3D HRTF, distância, oclusão por paredes e canal VHF de longa distância!
    */
   update(
     dt: number,
@@ -952,50 +1530,57 @@ export class ProximityVoiceChatManager {
       id: string;
       pos: THREE.Vector3;
       dead: boolean;
-    }>
+      radioActive?: boolean;
+    }>,
+    localRadioActive = false
   ): void {
     if (this.disposed) return;
 
-    // 1. Mede nível de voz local se o microfone estiver armado e autorizado
+    const nowPerfMs =
+      typeof performance !== 'undefined' ? performance.now() : Date.now();
+    const audioThreadRecentlyUpdated =
+      nowPerfMs - this.lastAudioCallbackMs < 95;
+
+    // 1. Mede nível de voz local caso o callback de áudio não tenha acabado de rodar neste instante
     if (
       this.isMicArmed &&
       this.permissionState === 'granted' &&
       this.analyserNode
     ) {
-      this.analyserNode.getFloatTimeDomainData(this.analyserScratch);
-      let sumSq = 0;
-      let peak = 0;
-      for (let i = 0; i < this.analyserScratch.length; i++) {
-        const s = this.analyserScratch[i];
-        sumSq += s * s;
-        const a = Math.abs(s);
-        if (a > peak) peak = a;
-      }
-      const rms = Math.sqrt(sumSq / this.analyserScratch.length);
-      // Combina RMS + pico vocal com curva sensível para fala natural e gritos
-      const rawLevel = Math.min(1, Math.max(rms * 4.2, peak * 1.35));
-      const smoothing = rawLevel > this.smoothedVoiceLevel ? 18 : 8.5;
-      this.smoothedVoiceLevel +=
-        (rawLevel - this.smoothedVoiceLevel) * Math.min(1, dt * smoothing);
-
-      const gateThreshold =
-        this.mode === 'PTT' || this.pttHeld
-          ? VOICE_NOISE_GATE_THRESHOLD * 0.65
-          : VOICE_NOISE_GATE_THRESHOLD;
-      const nextSpeaking = this.smoothedVoiceLevel >= gateThreshold;
-      if (nextSpeaking !== this.speakingNow) {
-        this.speakingNow = nextSpeaking;
-        this.syncOutboundGate();
+      if (!audioThreadRecentlyUpdated) {
+        this.analyserNode.getFloatTimeDomainData(this.analyserScratch);
+        let sumSq = 0;
+        let peak = 0;
+        for (let i = 0; i < this.analyserScratch.length; i++) {
+          const s = this.analyserScratch[i];
+          sumSq += s * s;
+          const a = Math.abs(s);
+          if (a > peak) peak = a;
+        }
+        const rms = Math.sqrt(sumSq / this.analyserScratch.length);
+        const rawLevel = Math.min(1, Math.max(rms * 4.2, peak * 1.35));
+        const prevOpen = this.gateState.gateOpen;
+        this.gateState = stepVoiceGateState(
+          this.gateState,
+          rawLevel,
+          dt,
+          true,
+          this.pttHeld
+        );
+        if (this.gateState.gateOpen !== prevOpen) {
+          this.syncOutboundGate();
+        }
       }
     } else {
-      this.smoothedVoiceLevel = Math.max(0, this.smoothedVoiceLevel - dt * 10);
-      if (this.speakingNow) {
-        this.speakingNow = false;
+      const prevOpen = this.gateState.gateOpen;
+      this.gateState = stepVoiceGateState(this.gateState, 0, dt, false, false);
+      if (this.gateState.gateOpen !== prevOpen) {
         this.syncOutboundGate();
       }
     }
 
-    const ctx = this.audioCtx;
+    const ctx =
+      remotePeers.length > 0 ? this.ensureAudioContext() : this.audioCtx;
     if (!ctx) return;
 
     // 2. Atualiza posição e direção 3D do ouvinte (câmera do jogador local)
@@ -1038,18 +1623,9 @@ export class ProximityVoiceChatManager {
       const entry = this.peers.get(rp.id);
       if (!entry) continue;
 
-      // Posição da boca/capacete do aliado (~1.58m de altura quando em pé)
       const headX = rp.pos.x;
       const headY = rp.pos.y + 1.55;
       const headZ = rp.pos.z;
-
-      if (typeof entry.pannerNode.positionX !== 'undefined') {
-        entry.pannerNode.positionX.setTargetAtTime(headX, tNow, 0.03);
-        entry.pannerNode.positionY.setTargetAtTime(headY, tNow, 0.03);
-        entry.pannerNode.positionZ.setTargetAtTime(headZ, tNow, 0.03);
-      } else {
-        entry.pannerNode.setPosition(headX, headY, headZ);
-      }
 
       if (rp.dead) {
         entry.lastAudibleGain = 0;
@@ -1071,7 +1647,30 @@ export class ProximityVoiceChatManager {
               headZ
             )
           : 4;
-      const acoustics = computeProximityVoiceAcousticParams(dist, walls);
+      const peerRadio = Boolean(rp.radioActive);
+      const radioLinkMode: RadioVoiceLinkMode =
+        localRadioActive && peerRadio
+          ? 'duplex'
+          : localRadioActive || peerRadio
+            ? 'simplex'
+            : 'none';
+      const acoustics = computeProximityVoiceAcousticParams(
+        dist,
+        walls,
+        radioLinkMode
+      );
+
+      // Quando a voz chega pelo Rádio VHF de longa distância, posiciona a fonte no transceptor do próprio ouvinte!
+      const srcX = acoustics.viaRadio ? listenerPos.x : headX;
+      const srcY = acoustics.viaRadio ? listenerPos.y + 0.12 : headY;
+      const srcZ = acoustics.viaRadio ? listenerPos.z : headZ;
+      if (typeof entry.pannerNode.positionX !== 'undefined') {
+        entry.pannerNode.positionX.setTargetAtTime(srcX, tNow, 0.03);
+        entry.pannerNode.positionY.setTargetAtTime(srcY, tNow, 0.03);
+        entry.pannerNode.positionZ.setTargetAtTime(srcZ, tNow, 0.03);
+      } else {
+        entry.pannerNode.setPosition(srcX, srcY, srcZ);
+      }
 
       entry.lastAudibleGain = acoustics.gain;
       entry.gainNode.gain.setTargetAtTime(acoustics.gain * 1.25, tNow, 0.035);
@@ -1108,6 +1707,24 @@ export class ProximityVoiceChatManager {
         // Ignorar
       }
       this.silentZeroGain = null;
+    }
+
+    if (this.micCompressorNode) {
+      try {
+        this.micCompressorNode.disconnect();
+      } catch {
+        // Ignorar
+      }
+      this.micCompressorNode = null;
+    }
+
+    if (this.micHighpassNode) {
+      try {
+        this.micHighpassNode.disconnect();
+      } catch {
+        // Ignorar
+      }
+      this.micHighpassNode = null;
     }
 
     if (this.micSourceNode) {

@@ -6,6 +6,7 @@ import {
 import { DoomInventory } from './DoomInventory';
 import { gridCellToWorld } from './DoomMazeBuilder';
 import { ProbableEquipmentSignal } from './DoomRadar';
+import { getThemedRoomByKeyItemId } from './DoomRooms';
 import { createDoomPropMaterial, DoomSharedUniforms } from './DoomShader';
 
 interface WorldPickupInstance {
@@ -70,6 +71,7 @@ export class DoomWorldItems {
   private readonly pickups: WorldPickupInstance[] = [];
   private readonly activeFlares: ActiveMagnesiumFlare[] = [];
   private readonly arenaLayout: DoomArenaLayout;
+  private readonly sharedUniforms: DoomSharedUniforms;
 
   private readonly matCrateWood: THREE.ShaderMaterial;
   private readonly matDarkIron: THREE.ShaderMaterial;
@@ -101,6 +103,7 @@ export class DoomWorldItems {
     explicitArenaLayout?: DoomArenaLayout
   ) {
     this.arenaLayout = getOrCreateSceneArenaLayout(scene, explicitArenaLayout);
+    this.sharedUniforms = sharedUniforms;
     this.root.name = 'DoomWorldItems';
     scene.add(this.root);
 
@@ -1020,12 +1023,33 @@ export class DoomWorldItems {
 
       flare.add(hexBase, gripSleeve, body, collar, strikerCap, strikerHead);
       holder.add(flare);
-    } else if (itemId === 'sector_b_key') {
-      // Chave antiga de latão maciço com dentes recortados REAIS (sem bloco cinza sobreposto!) e etiqueta
+    } else if (itemId === 'sector_b_key' || itemId.startsWith('key_')) {
+      // Chave maciça com dentes recortados REAIS + plaqueta esmaltada codificada por Sala Especial!
+      const specialRoom = getThemedRoomByKeyItemId(itemId);
+      const tagMat = specialRoom
+        ? createDoomPropMaterial(
+            makeDetailedPixelTex(16, 16, (px) => {
+              const r = (specialRoom.accentHex >> 16) & 0xff;
+              const g = (specialRoom.accentHex >> 8) & 0xff;
+              const b = specialRoom.accentHex & 0xff;
+              for (let y = 0; y < 16; y++) {
+                for (let x = 0; x < 16; x++) {
+                  const border = x === 0 || x === 15 || y === 0 || y === 15;
+                  const stamp = y >= 6 && y <= 9 && x >= 3 && x <= 12;
+                  if (border) px(x, y, 32, 36, 42);
+                  else if (stamp) px(x, y, 240, 245, 250);
+                  else px(x, y, r * 0.85, g * 0.85, b * 0.85);
+                }
+              }
+            }),
+            this.sharedUniforms,
+            { baseLight: 0.72, emissiveBoost: 0.2 }
+          )
+        : this.matKeyTag;
+
       const key = new THREE.Group();
       key.position.y = 0.012;
 
-      // Argola oval ornamentada (sem barra cortando o furo ao meio)
       const bow = new THREE.Mesh(
         new THREE.TorusGeometry(0.042, 0.01, 8, 12),
         this.matBrass
@@ -1043,7 +1067,6 @@ export class DoomWorldItems {
         key.add(boss);
       }
 
-      // Colar duplo torneado
       const collar1 = new THREE.Mesh(
         new THREE.CylinderGeometry(0.0155, 0.0155, 0.014, 10),
         this.matBrass
@@ -1058,7 +1081,6 @@ export class DoomWorldItems {
       collar2.rotation.z = Math.PI * 0.5;
       collar2.position.set(-0.02, 0, 0);
 
-      // Haste cilíndrica + ponta arredondada
       const shaft = new THREE.Mesh(
         new THREE.CylinderGeometry(0.0085, 0.0085, 0.155, 8),
         this.matBrass
@@ -1066,7 +1088,6 @@ export class DoomWorldItems {
       shaft.rotation.z = Math.PI * 0.5;
       shaft.position.set(0.058, 0, 0);
 
-      // Dentes/segredos recortados em latão real (com vãos abertos de verdade!)
       const bitBridge = new THREE.Mesh(
         new THREE.BoxGeometry(0.052, 0.01, 0.012),
         this.matBrass
@@ -1091,7 +1112,6 @@ export class DoomWorldItems {
       );
       tooth3.position.set(0.119, 0, 0.028);
 
-      // Argola metálica inclinada passando pelo olhal + plaqueta gravada pousada no fundo
       const splitRing = new THREE.Mesh(
         new THREE.TorusGeometry(0.016, 0.0032, 6, 10),
         this.matCleanSteel
@@ -1100,10 +1120,10 @@ export class DoomWorldItems {
       splitRing.position.set(-0.132, 0.004, 0.008);
 
       const keyTag = new THREE.Mesh(
-        new THREE.BoxGeometry(0.056, 0.006, 0.032),
-        this.matKeyTag
+        new THREE.BoxGeometry(0.058, 0.008, 0.036),
+        tagMat
       );
-      keyTag.position.set(-0.152, -0.005, 0.034);
+      keyTag.position.set(-0.152, -0.004, 0.034);
       keyTag.rotation.y = 0.48;
 
       key.add(
@@ -1119,6 +1139,74 @@ export class DoomWorldItems {
         keyTag
       );
       holder.add(key);
+    } else if (itemId === 'field_walkie_talkie') {
+      // Rádio Comunicador VHF de Longa Distância (Walkie-Talkie militar pousado no caixote)
+      const walkie = new THREE.Group();
+
+      const body = new THREE.Mesh(
+        new THREE.BoxGeometry(0.11, 0.044, 0.21),
+        this.matRadarCase
+      );
+      body.position.set(-0.01, 0.022, 0.02);
+
+      const speakerGrille = new THREE.Mesh(
+        new THREE.BoxGeometry(0.088, 0.008, 0.082),
+        this.matDarkIron
+      );
+      speakerGrille.position.set(-0.01, 0.047, -0.028);
+
+      const lcdBezel = new THREE.Mesh(
+        new THREE.BoxGeometry(0.084, 0.008, 0.042),
+        this.matDarkIron
+      );
+      lcdBezel.position.set(-0.01, 0.047, 0.05);
+
+      const lcdScreen = new THREE.Mesh(
+        new THREE.PlaneGeometry(0.072, 0.028),
+        this.matRadarScreen
+      );
+      lcdScreen.rotation.x = -Math.PI * 0.5;
+      lcdScreen.position.set(-0.01, 0.052, 0.05);
+
+      const pttSideButton = new THREE.Mesh(
+        new THREE.BoxGeometry(0.014, 0.02, 0.056),
+        this.matFlareRed
+      );
+      pttSideButton.position.set(-0.068, 0.024, -0.01);
+
+      const antBase = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.012, 0.015, 0.03, 8),
+        this.matDarkIron
+      );
+      antBase.rotation.x = Math.PI * 0.5;
+      antBase.position.set(-0.034, 0.025, -0.1);
+
+      const whip = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.004, 0.007, 0.19, 6),
+        this.matCleanSteel
+      );
+      whip.rotation.z = Math.PI * 0.5;
+      whip.rotation.y = 0.22;
+      whip.position.set(0.048, 0.025, -0.125);
+
+      const freqDial = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.013, 0.013, 0.024, 10),
+        this.matBrass
+      );
+      freqDial.rotation.x = Math.PI * 0.5;
+      freqDial.position.set(0.024, 0.025, -0.098);
+
+      walkie.add(
+        body,
+        speakerGrille,
+        lcdBezel,
+        lcdScreen,
+        pttSideButton,
+        antBase,
+        whip,
+        freqDial
+      );
+      holder.add(walkie);
     } else if (itemId === 'field_radar') {
       // Radar Topográfico EVA deitado na bandeja do caixote (carcaça oliva, visor CRT brilhante, antena e seletores)
       const radar = new THREE.Group();
@@ -1322,7 +1410,9 @@ export class DoomWorldItems {
       const isHighSignature =
         p.itemId === 'rusty_knife' ||
         p.itemId === 'sector_b_key' ||
-        p.itemId === 'field_radar';
+        p.itemId.startsWith('key_') ||
+        p.itemId === 'field_radar' ||
+        p.itemId === 'field_walkie_talkie';
 
       signals.push({
         id: p.id,

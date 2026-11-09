@@ -140,6 +140,7 @@ export interface NetworkPlayerPosePacket {
   devourSecondsLeft?: number;
   voiceSpeaking?: boolean;
   voiceLevel?: number;
+  radioActive?: boolean;
   ts: number;
 }
 
@@ -268,6 +269,14 @@ export type NetworkWorldEvent =
       sectorName: string;
       x: number;
       z: number;
+      ts: number;
+    }
+  | {
+      kind: 'room_unlocked';
+      senderId: string;
+      senderName: string;
+      roomId: string;
+      roomName: string;
       ts: number;
     };
 
@@ -1222,6 +1231,9 @@ export class MultiplayerRoomClient {
     null;
   private lastPoseSentAtMs = 0;
   private lastHeartbeatAtMs = 0;
+  private outboundEnvelopeSeq = 0;
+  private readonly seenEnvelopeIds = new Set<string>();
+  private readonly seenEnvelopeQueue: string[] = [];
   private readonly boundUnload: () => void;
   private readonly boundWakeUp: () => void;
 
@@ -1661,8 +1673,12 @@ export class MultiplayerRoomClient {
   }
 
   private sendEnvelope(payload: Record<string, unknown>): void {
+    const stamped = {
+      ...payload,
+      eid: `${this.session.localPlayerId}:${++this.outboundEnvelopeSeq}`,
+    };
     try {
-      this.localBc?.postMessage(payload);
+      this.localBc?.postMessage(stamped);
     } catch {
       // Ignorar
     }
@@ -1670,7 +1686,7 @@ export class MultiplayerRoomClient {
       void this.channel.send({
         type: 'broadcast',
         event: 'oof_pkt',
-        payload,
+        payload: stamped,
       });
     }
   }
@@ -1678,6 +1694,22 @@ export class MultiplayerRoomClient {
   private handleIncomingEnvelope(raw: unknown): void {
     if (this.disposed || !raw || typeof raw !== 'object') return;
     const msg = raw as Record<string, unknown>;
+    if (typeof msg.eid === 'string' && msg.eid.length > 0) {
+      if (msg.eid.startsWith(`${this.session.localPlayerId}:`)) {
+        return;
+      }
+      if (this.seenEnvelopeIds.has(msg.eid)) {
+        return;
+      }
+      this.seenEnvelopeIds.add(msg.eid);
+      this.seenEnvelopeQueue.push(msg.eid);
+      while (this.seenEnvelopeQueue.length > 512) {
+        const oldest = this.seenEnvelopeQueue.shift();
+        if (oldest !== undefined) {
+          this.seenEnvelopeIds.delete(oldest);
+        }
+      }
+    }
     const type = msg.t;
 
     if (type === 'pose' && msg.pkt) {

@@ -13,7 +13,8 @@ export type QuickHandheldKind =
   | 'battery'
   | 'flare'
   | 'key'
-  | 'radar';
+  | 'radar'
+  | 'walkie';
 
 /**
  * Textura pixel-art 32x32 (NearestFilter) de alumínio anodizado usinado com recartilhado tático.
@@ -797,6 +798,56 @@ export class DoomFlashlight {
       radarDial
     );
 
+    // 8. Rádio Comunicador VHF de Longa Distância (Walkie-Talkie militar com antena longa, LCD e PTT laranja)
+    const walkieProp = new THREE.Group();
+    const walkieCaseMat = new THREE.MeshLambertMaterial({ color: 0x2c3430 });
+    const walkieLcdMat = new THREE.MeshBasicMaterial({ color: 0x62f5a8 });
+    const walkiePttMat = new THREE.MeshLambertMaterial({ color: 0xd96b27 });
+    const walkieBody = new THREE.Mesh(
+      new THREE.BoxGeometry(0.064, 0.132, 0.036),
+      walkieCaseMat
+    );
+    walkieBody.position.set(0.012, 0.052, -0.008);
+    const walkieGrille = new THREE.Mesh(
+      new THREE.BoxGeometry(0.052, 0.05, 0.006),
+      bezelMat
+    );
+    walkieGrille.position.set(0.012, 0.082, 0.012);
+    const walkieLcd = new THREE.Mesh(
+      new THREE.BoxGeometry(0.044, 0.018, 0.005),
+      walkieLcdMat
+    );
+    walkieLcd.position.set(0.012, 0.034, 0.012);
+    const walkiePtt = new THREE.Mesh(
+      new THREE.BoxGeometry(0.008, 0.034, 0.018),
+      walkiePttMat
+    );
+    walkiePtt.position.set(-0.022, 0.068, -0.006);
+    const walkieAntCollar = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.007, 0.009, 0.02, 8),
+      bezelMat
+    );
+    walkieAntCollar.position.set(-0.006, 0.128, -0.008);
+    const walkieWhip = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.0022, 0.004, 0.145, 6),
+      bezelMat
+    );
+    walkieWhip.position.set(-0.006, 0.208, -0.008);
+    const walkieKnob = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.008, 0.008, 0.016, 10),
+      brassMat
+    );
+    walkieKnob.position.set(0.026, 0.126, -0.008);
+    walkieProp.add(
+      walkieBody,
+      walkieGrille,
+      walkieLcd,
+      walkiePtt,
+      walkieAntCollar,
+      walkieWhip,
+      walkieKnob
+    );
+
     this.quickPropMeshes = {
       knife: knifeProp,
       bandage: bandageProp,
@@ -805,6 +856,7 @@ export class DoomFlashlight {
       flare: flareProp,
       key: keyProp,
       radar: radarProp,
+      walkie: walkieProp,
     };
 
     for (const k of Object.keys(this.quickPropMeshes) as QuickHandheldKind[]) {
@@ -1001,7 +1053,7 @@ export class DoomFlashlight {
             ? 0.54
             : kind === 'key'
               ? 0.58
-              : kind === 'radar'
+              : kind === 'radar' || kind === 'walkie'
                 ? 0.68
                 : 0.62;
 
@@ -1280,6 +1332,28 @@ export class DoomFlashlight {
         0.18 + scanTilt,
         0.48,
         -0.08
+      );
+    } else if (kind === 'walkie') {
+      const pttPulse = Math.sin(u * Math.PI * 2) * 0.04 * raise;
+      this.quickRootGroup.position.set(
+        -0.25 + raise * 0.06,
+        -0.25 + raise * 0.125,
+        0.055
+      );
+      this.leftAstronautArm.shoulderPivot.rotation.set(
+        0.78 + raise * 0.58,
+        -0.08 - raise * 0.14,
+        0.08 + raise * 0.14
+      );
+      this.leftAstronautArm.elbowPivot.rotation.set(
+        0.64 + raise * 0.3,
+        -0.14,
+        0.22 + raise * 0.08
+      );
+      this.leftAstronautArm.wristPivot.rotation.set(
+        0.12 + pttPulse,
+        0.52,
+        -0.1
       );
     } else {
       this.quickRootGroup.position.set(

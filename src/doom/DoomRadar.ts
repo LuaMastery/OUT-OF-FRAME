@@ -10,6 +10,8 @@ import {
   ANNEX_MAX_GRID,
   ANNEX_MIN_GRID,
   getThemedRoomAtCell,
+  getThemedRoomMiniMapTile,
+  isThemedRoomUnlocked,
   isWalkableArenaCell,
 } from './DoomRooms';
 
@@ -175,7 +177,7 @@ export function renderRadarMinimapCanvas(
       if (px1 < 0 || px0 >= S) continue;
 
       const inCore = inCoreZ && gx >= 0 && gx < cols;
-      const walkable = isWalkableArenaCell(gx, gz);
+      const walkable = isWalkableArenaCell(gx, gz, { ignoreRoomLocks: true });
       const room = getThemedRoomAtCell(gx, gz);
       const explored = isCellExplored(gx, gz);
       const w = Math.max(1, px1 - px0);
@@ -191,10 +193,16 @@ export function renderRadarMinimapCanvas(
             ctx.fillStyle = isStone ? '#090907' : '#060c09';
             ctx.fillRect(px0, py0, w, h);
           }
-        } else if (room && room.id === 'reactor_hall') {
-          // Núcleo central Tokamak blindado dentro do Salão dos Reatores Anexo
-          ctx.fillStyle = explored ? '#24484d' : '#14282b';
-          ctx.fillRect(px0, py0, w, h);
+        } else if (room) {
+          const miniTile = getThemedRoomMiniMapTile(gx, gz);
+          if (miniTile === 'C') {
+            ctx.fillStyle = explored ? '#2f5a60' : '#183034';
+            ctx.fillRect(px0, py0, w, h);
+          } else if (miniTile === '#') {
+            // Parede divisória interna do mini-mapa 7x7 da Sala Especial!
+            ctx.fillStyle = explored ? '#0b1815' : '#060d0b';
+            ctx.fillRect(px0, py0, w, h);
+          }
         }
         continue;
       }
@@ -233,7 +241,22 @@ export function renderRadarMinimapCanvas(
       }
       ctx.fillRect(px0, py0, w, h);
 
-      // Contorno nítido de 1px apenas nas bordas com paredes sólidas / cascos das Salas Anexas!
+      // Sinalização visual nítida de porta blindada TRANCADA vs DESTRANCADA nas Salas Especiais
+      if (
+        room &&
+        gx === room.doorGx &&
+        gz === room.doorGz &&
+        !isThemedRoomUnlocked(room.id)
+      ) {
+        ctx.fillStyle = '#ff4b5c';
+        if (room.outwardDir === 'N' || room.outwardDir === 'S') {
+          ctx.fillRect(px0, Math.round((py0 + py1) * 0.5) - 1, w, Math.max(2, Math.round(h * 0.36)));
+        } else {
+          ctx.fillRect(Math.round((px0 + px1) * 0.5) - 1, py0, Math.max(2, Math.round(w * 0.36)), h);
+        }
+      }
+
+      // Contorno nítido de 1px nas bordas com paredes sólidas e divisórias internas '#' dos mini-mapas!
       const edgeColor = room
         ? explored
           ? '#52b49a'
@@ -246,16 +269,16 @@ export function renderRadarMinimapCanvas(
             ? '#3b3922'
             : '#214a38';
       ctx.fillStyle = edgeColor;
-      if (!isWalkableArenaCell(gx, gz - 1)) {
+      if (!isWalkableArenaCell(gx, gz - 1, { ignoreRoomLocks: true })) {
         ctx.fillRect(px0, py0, w, 1);
       }
-      if (!isWalkableArenaCell(gx, gz + 1)) {
+      if (!isWalkableArenaCell(gx, gz + 1, { ignoreRoomLocks: true })) {
         ctx.fillRect(px0, py1 - 1, w, 1);
       }
-      if (!isWalkableArenaCell(gx - 1, gz)) {
+      if (!isWalkableArenaCell(gx - 1, gz, { ignoreRoomLocks: true })) {
         ctx.fillRect(px0, py0, 1, h);
       }
-      if (!isWalkableArenaCell(gx + 1, gz)) {
+      if (!isWalkableArenaCell(gx + 1, gz, { ignoreRoomLocks: true })) {
         ctx.fillRect(px1 - 1, py0, 1, h);
       }
     }

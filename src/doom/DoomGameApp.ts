@@ -44,6 +44,7 @@ import {
 import {
   DoomAnnexLightSpec,
   DoomRoomId,
+  DoomSpecialRoomDoorController,
   getThemedRoomAtCell,
 } from './DoomRooms';
 import {
@@ -312,6 +313,8 @@ export class DoomGameApp {
   private colliders: StaticColliderBox[] = [];
   private lights: DoomLightSource[] = [];
   private annexLights: DoomAnnexLightSpec[] = [];
+  private specialRoomDoors: DoomSpecialRoomDoorController;
+  private walkieTalkieActive = false;
   private lightPanelEmissionAttr: THREE.BufferAttribute | null = null;
   private prevLightDimState: boolean[] = [];
 
@@ -391,6 +394,9 @@ export class DoomGameApp {
   private readonly roomBannerEl: HTMLDivElement;
   private readonly roomBannerTitleEl: HTMLDivElement;
   private readonly roomBannerSubEl: HTMLDivElement;
+  private readonly doorLockPromptEl: HTMLDivElement;
+  private readonly doorLockTitleEl: HTMLDivElement;
+  private readonly doorLockSubEl: HTMLDivElement;
   private readonly cocoonHudEl: HTMLDivElement;
   private readonly cocoonTitleEl: HTMLDivElement;
   private readonly cocoonSubEl: HTMLDivElement;
@@ -445,6 +451,16 @@ export class DoomGameApp {
       this.roomBannerSubEl
     );
     this.viewportEl.appendChild(this.roomBannerEl);
+
+    this.doorLockPromptEl = document.createElement('div');
+    this.doorLockPromptEl.id = 'doom-door-lock-prompt';
+    this.doorLockPromptEl.className = 'doom-door-lock-prompt';
+    this.doorLockTitleEl = document.createElement('div');
+    this.doorLockTitleEl.className = 'doom-door-lock-title';
+    this.doorLockSubEl = document.createElement('div');
+    this.doorLockSubEl.className = 'doom-door-lock-sub';
+    this.doorLockPromptEl.append(this.doorLockTitleEl, this.doorLockSubEl);
+    this.viewportEl.appendChild(this.doorLockPromptEl);
 
     this.cocoonHudEl = document.createElement('div');
     this.cocoonHudEl.id = 'doom-cocoon-devour-hud';
@@ -525,6 +541,7 @@ export class DoomGameApp {
     this.colliders = maze.colliders;
     this.lights = maze.lights;
     this.annexLights = maze.annexLights;
+    this.specialRoomDoors = maze.specialRoomDoors;
     this.lightPanelEmissionAttr = maze.lightPanelEmissionAttr;
     this.prevLightDimState = maze.lights.map(() => false);
     this.position.copy(maze.spawnPosition);
@@ -672,12 +689,40 @@ export class DoomGameApp {
             rescuedAlly,
         };
       },
-      onUseKey: () => {
+      onUseKey: (itemId) => {
         this.flashlight.triggerQuickItemAction('key');
         this.astronaut.setArmInUse('left', true);
+        if (!itemId) {
+          this.sound.playBlastDoorUnlock(false);
+          return false;
+        }
+        const matchingDoor = this.specialRoomDoors.findMatchingDoorForKey(
+          itemId,
+          this.position,
+          3.85
+        );
+        if (matchingDoor) {
+          const unlocked = this.specialRoomDoors.unlockRoom(
+            matchingDoor.room.id
+          );
+          if (unlocked) {
+            this.sound.playBlastDoorUnlock(true);
+            this.multiplayer?.broadcastRoomUnlocked(
+              matchingDoor.room.id,
+              matchingDoor.room.name
+            );
+            this.syncInventoryVitals();
+            return true;
+          }
+        }
+        this.sound.playBlastDoorUnlock(false);
+        return false;
       },
       onToggleRadar: () => {
         return this.toggleRadarHud();
+      },
+      onToggleWalkieTalkie: () => {
+        return this.toggleWalkieTalkieHud();
       },
       onOpenRequest: () => {
         if (
@@ -1031,6 +1076,14 @@ export class DoomGameApp {
             Math.hypot(x - this.position.x, z - this.position.z) < 12.0
           ) {
             this.sound.playWebCut();
+          }
+        },
+        onRemoteRoomUnlocked: (roomId) => {
+          const unlocked = this.specialRoomDoors.unlockRoom(
+            roomId as DoomRoomId
+          );
+          if (unlocked) {
+            this.sound.playBlastDoorUnlock(true);
           }
         },
         onNotifyHud: (text) => {
@@ -1489,6 +1542,15 @@ export class DoomGameApp {
           this.radar.cycleScaleMode();
           this.sound.playRadarPing(true);
           this.inventory.notifyEquipmentShortcutUsed('radar_zoom', true);
+        }
+
+        if (
+          e.code === 'KeyR' &&
+          !e.repeat &&
+          this.inventory.hasItem('field_walkie_talkie')
+        ) {
+          const nowActive = this.toggleWalkieTalkieHud();
+          this.inventory.notifyEquipmentShortcutUsed('walkie', nowActive);
         }
       },
       { capture: true, passive: false, signal: this.abortCtrl.signal }
@@ -2628,8 +2690,10 @@ export class DoomGameApp {
     }
 
     this.elapsed += dt;
+    this.specialRoomDoors.update(dt);
 
     if (this.activeSequence !== 'NONE') {
+      this.doorLockPromptEl.classList.remove('is-visible', 'can-unlock');
       this.cocoonHudEl.classList.remove('is-visible', 'is-critical');
       this.interactQueued = false;
       this.struggleQueued = false;
@@ -2668,6 +2732,9 @@ export class DoomGameApp {
             this.seqTime >= 6.35,
           cocoonLocked: Boolean(this.multiplayer) && this.seqTime >= 6.35,
           devourSecondsLeft: this.cocoonDevourTimerSec,
+          walkieTalkieActive:
+            this.walkieTalkieActive &&
+            this.inventory.hasItem('field_walkie_talkie'),
           inSequence: this.seqTime < 6.35,
           beingDragged,
           abductionMode: this.currentAbductionMode,
@@ -2684,6 +2751,7 @@ export class DoomGameApp {
     }
 
     if (this.inventory.gameOverVisible) {
+      this.doorLockPromptEl.classList.remove('is-visible', 'can-unlock');
       this.interactQueued = false;
       this.struggleQueued = false;
       this.touchControls.consumeLookDelta();
@@ -3294,6 +3362,7 @@ export class DoomGameApp {
     const camForward = new THREE.Vector3(0, 0, -1).applyQuaternion(
       this.camera.quaternion
     );
+    let pickedUpAnyItem = false;
     this.worldItems.updateAndCheckPickups(
       dt,
       this.elapsed,
@@ -3303,14 +3372,62 @@ export class DoomGameApp {
       interactPressed,
       this.inventory,
       (pickedItemId) => {
+        pickedUpAnyItem = true;
         if (pickedItemId === 'field_radar') {
           this.radar.unlockAndActivate();
           this.flashlight.triggerQuickItemAction('radar');
           this.sound.playRadarPing(true);
           this.syncInventoryVitals();
+        } else if (pickedItemId === 'field_walkie_talkie') {
+          this.walkieTalkieActive = true;
+          this.flashlight.triggerQuickItemAction('walkie');
+          this.astronaut.setArmInUse('left', true);
+          this.sound.playRadioSquelch(true);
+          this.inventory.notifyEquipmentShortcutUsed('walkie', true);
+          this.syncInventoryVitals();
         }
       }
     );
+
+    let nearbyLockedDoor = this.specialRoomDoors.findNearbyLockedDoor(
+      this.position,
+      3.05
+    );
+    if (interactPressed && !pickedUpAnyItem && nearbyLockedDoor) {
+      if (this.inventory.hasItem(nearbyLockedDoor.keyItemId)) {
+        this.flashlight.triggerQuickItemAction('key');
+        this.astronaut.setArmInUse('left', true);
+        this.unlockSpecialRoomWithKey(
+          nearbyLockedDoor.room.id,
+          nearbyLockedDoor.keyItemId,
+          nearbyLockedDoor.room.name
+        );
+        nearbyLockedDoor = null;
+      } else {
+        this.sound.playBlastDoorUnlock(false);
+      }
+    }
+
+    const showDoorLockPrompt =
+      Boolean(nearbyLockedDoor) &&
+      this.engaged &&
+      !this.pauseMenu.open &&
+      !this.inventory.open &&
+      !this.inventory.gameOverVisible;
+    if (showDoorLockPrompt && nearbyLockedDoor) {
+      const hasMatchingKey = this.inventory.hasItem(nearbyLockedDoor.keyItemId);
+      this.doorLockPromptEl.classList.toggle('can-unlock', hasMatchingKey);
+      this.doorLockPromptEl.classList.add('is-visible');
+      if (hasMatchingKey) {
+        this.doorLockTitleEl.textContent = `[E] DESTRANCAR ${nearbyLockedDoor.room.name} [${nearbyLockedDoor.room.doorCode}]`;
+        this.doorLockSubEl.textContent = `Usar ${nearbyLockedDoor.keyName}`;
+      } else {
+        this.doorLockTitleEl.textContent = `🔒 COMPORTA SELADA [${nearbyLockedDoor.room.doorCode}] — ${nearbyLockedDoor.room.name}`;
+        this.doorLockSubEl.textContent = `Requer ${nearbyLockedDoor.keyName} (procure nas caixas do labirinto)`;
+      }
+    } else {
+      this.doorLockPromptEl.classList.remove('is-visible', 'can-unlock');
+    }
 
     let touchInteractContext: TouchInteractContext = 'NONE';
     if (this.webManager.isPlayerEnsnared) {
@@ -3328,7 +3445,8 @@ export class DoomGameApp {
         this.position,
         this.camera.position,
         camForward
-      )
+      ) ||
+      Boolean(nearbyLockedDoor && this.inventory.hasItem(nearbyLockedDoor.keyItemId))
     ) {
       touchInteractContext = 'ITEM';
     }
@@ -3400,6 +3518,9 @@ export class DoomGameApp {
         ensnared: this.webManager.isPlayerEnsnared,
         cocoonLocked: this.webManager.isLockedInMultiplayerCocoon,
         devourSecondsLeft: this.cocoonDevourTimerSec,
+        walkieTalkieActive:
+          this.walkieTalkieActive &&
+          this.inventory.hasItem('field_walkie_talkie'),
         inSequence: false,
         dead: false,
         afk: isLocalAfk,
@@ -3494,6 +3615,30 @@ export class DoomGameApp {
     return nowActive;
   }
 
+  private toggleWalkieTalkieHud(): boolean {
+    if (!this.inventory.hasItem('field_walkie_talkie')) return false;
+    this.walkieTalkieActive = !this.walkieTalkieActive;
+    this.sound.playRadioSquelch(this.walkieTalkieActive);
+    this.flashlight.triggerQuickItemAction('walkie');
+    this.astronaut.setArmInUse('left', true);
+    this.syncInventoryVitals();
+    return this.walkieTalkieActive;
+  }
+
+  private unlockSpecialRoomWithKey(
+    roomId: DoomRoomId,
+    keyItemId: string,
+    roomName: string
+  ): boolean {
+    const unlocked = this.specialRoomDoors.unlockRoom(roomId);
+    if (!unlocked) return false;
+    this.inventory.consumeItemById(keyItemId);
+    this.sound.playBlastDoorUnlock(true);
+    this.multiplayer?.broadcastRoomUnlocked(roomId, roomName);
+    this.syncInventoryVitals();
+    return true;
+  }
+
   private syncInventoryVitals(): void {
     this.inventory.updateVitalsAndDiegeticFX({
       health: this.playerHealth,
@@ -3501,6 +3646,9 @@ export class DoomGameApp {
       battery: this.lanternBattery,
       flashlightEquipped: this.flashlight.isEquipped,
       radarActive: this.radar.isActive,
+      walkieActive:
+        this.walkieTalkieActive &&
+        this.inventory.hasItem('field_walkie_talkie'),
       trappedInWeb: this.webManager.isPlayerEnsnared,
       bleeding: this.playerBleeding,
       crouching: this.wasCrouching,
@@ -3742,7 +3890,9 @@ export class DoomGameApp {
     unlockSystemKeyboardKeys();
     this.localAfkBannerEl.remove();
     this.roomBannerEl.remove();
+    this.doorLockPromptEl.remove();
     this.cocoonHudEl.remove();
+    this.specialRoomDoors.dispose();
     this.pauseMenu.destroy();
     this.touchControls.destroy();
     this.multiplayer?.destroy();

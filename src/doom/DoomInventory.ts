@@ -13,6 +13,7 @@ export type InventoryItemKind =
   | 'flare'
   | 'key'
   | 'radar'
+  | 'walkie'
   | 'note';
 
 export interface InventoryItemDef {
@@ -22,6 +23,8 @@ export interface InventoryItemDef {
   category: string;
   description: string;
   noteContent?: string;
+  keyBadge?: string;
+  keyColor?: string;
   stackable: boolean;
   usable: boolean;
   actionLabel?: string;
@@ -42,6 +45,7 @@ export interface PlayerVitalsSnapshot {
   battery: number;
   flashlightEquipped: boolean;
   radarActive?: boolean;
+  walkieActive?: boolean;
   trappedInWeb: boolean;
   bleeding: boolean;
   crouching: boolean;
@@ -58,15 +62,16 @@ export interface DoomInventoryCallbacks {
   onUseBattery: (chargeAmount: number) => boolean;
   onUseFlare: () => boolean;
   onUseKnife: () => { cutWeb: boolean };
-  onUseKey?: () => void;
+  onUseKey?: (itemId?: string) => boolean | void;
   onToggleRadar?: () => boolean;
+  onToggleWalkieTalkie?: () => boolean;
   onOpenRequest?: () => void;
   onCloseRequest: () => void;
   onOpenPauseRequest?: () => void;
   onPermanentDeathTerminate: () => void;
 }
 
-const TOTAL_SLOTS = 12;
+const TOTAL_SLOTS = 20;
 export const QUICK_SLOT_COUNT = 3;
 
 export type ShortcutsHubVisibilityTier =
@@ -192,9 +197,109 @@ export const ITEM_CATALOG: Record<string, InventoryItemDef> = {
     category: 'Chave antiga',
     description:
       'Chave maciça recolhida entre os blocos úmidos de pedra, com plaqueta gravada da antiga galeria sul.',
+    keyBadge: 'ALA-B',
+    keyColor: '#e2c16b',
     stackable: false,
     usable: true,
     actionLabel: 'Empunhar chave',
+    droppable: false,
+  },
+  key_computer_room: {
+    id: 'key_computer_room',
+    kind: 'key',
+    name: 'Chave — Sala dos Computadores',
+    category: 'Chave de Sala Especial',
+    description:
+      'Chave codificada do pórtico CPU-01 (Ala Norte). Destranca a porta blindada da Sala dos Computadores ([E] diante do pórtico).',
+    keyBadge: 'CPU-01',
+    keyColor: '#42d4ff',
+    stackable: false,
+    usable: true,
+    actionLabel: 'Destrancar porta',
+    droppable: false,
+  },
+  key_biology_lab: {
+    id: 'key_biology_lab',
+    kind: 'key',
+    name: 'Chave — Laboratório Biológico',
+    category: 'Chave de Sala Especial',
+    description:
+      'Chave de contenção BIO-02 (Ala Noroeste). Destranca a porta blindada do Laboratório Biológico ([E] diante do pórtico).',
+    keyBadge: 'BIO-02',
+    keyColor: '#3ef09a',
+    stackable: false,
+    usable: true,
+    actionLabel: 'Destrancar porta',
+    droppable: false,
+  },
+  key_crew_quarters: {
+    id: 'key_crew_quarters',
+    kind: 'key',
+    name: 'Chave — Quartos da Equipe',
+    category: 'Chave de Sala Especial',
+    description:
+      'Chave habitacional HAB-03 (Ala Oeste). Destranca a porta blindada dos Quartos da Equipe ([E] diante do pórtico).',
+    keyBadge: 'HAB-03',
+    keyColor: '#f4b942',
+    stackable: false,
+    usable: true,
+    actionLabel: 'Destrancar porta',
+    droppable: false,
+  },
+  key_medical_ward: {
+    id: 'key_medical_ward',
+    kind: 'key',
+    name: 'Chave — Enfermaria & Quarentena',
+    category: 'Chave de Sala Especial',
+    description:
+      'Chave clínica MED-04 (Ala Leste). Destranca a porta blindada da Enfermaria & Quarentena ([E] diante do pórtico).',
+    keyBadge: 'MED-04',
+    keyColor: '#ff5a6e',
+    stackable: false,
+    usable: true,
+    actionLabel: 'Destrancar porta',
+    droppable: false,
+  },
+  key_vegetation_room: {
+    id: 'key_vegetation_room',
+    kind: 'key',
+    name: 'Chave — Sala de Vegetação',
+    category: 'Chave de Sala Especial',
+    description:
+      'Chave botânica ECO-05 (Ala Sul). Destranca a porta blindada da Sala de Vegetação ([E] diante do pórtico).',
+    keyBadge: 'ECO-05',
+    keyColor: '#6ce85b',
+    stackable: false,
+    usable: true,
+    actionLabel: 'Destrancar porta',
+    droppable: false,
+  },
+  key_library_room: {
+    id: 'key_library_room',
+    kind: 'key',
+    name: 'Chave — Biblioteca & Arquivos',
+    category: 'Chave de Sala Especial',
+    description:
+      'Chave de acervo ARC-06 (Ala Sudeste). Destranca a porta blindada da Biblioteca & Arquivos ([E] diante do pórtico).',
+    keyBadge: 'ARC-06',
+    keyColor: '#d89c52',
+    stackable: false,
+    usable: true,
+    actionLabel: 'Destrancar porta',
+    droppable: false,
+  },
+  key_reactor_hall: {
+    id: 'key_reactor_hall',
+    kind: 'key',
+    name: 'Chave — Salão dos Reatores',
+    category: 'Chave de Sala Especial',
+    description:
+      'Chave de alta tensão REA-07 (Ala Nordeste). Destranca a porta blindada do Salão dos Reatores ([E] diante do pórtico).',
+    keyBadge: 'REA-07',
+    keyColor: '#ff9238',
+    stackable: false,
+    usable: true,
+    actionLabel: 'Destrancar porta',
     droppable: false,
   },
   field_radar: {
@@ -207,6 +312,18 @@ export const ITEM_CATALOG: Record<string, InventoryItemDef> = {
     stackable: false,
     usable: true,
     actionLabel: 'Alternar [M]',
+    droppable: false,
+  },
+  field_walkie_talkie: {
+    id: 'field_walkie_talkie',
+    kind: 'walkie',
+    name: 'Rádio comunicador VHF',
+    category: 'Comunicação',
+    description:
+      'Transceptor tático VHF de longo alcance. Permite conversar por voz com seus amigos em qualquer distância do complexo e das Salas Especiais, ignorando o bloqueio das paredes. Pressione [R] para ligar ou silenciar o canal.',
+    stackable: false,
+    usable: true,
+    actionLabel: 'Alternar [R]',
     droppable: false,
   },
   torn_log_04: {
@@ -289,6 +406,7 @@ function buildItemIcons(): Record<InventoryItemKind, string> {
     'flare',
     'key',
     'radar',
+    'walkie',
     'note',
   ];
 
@@ -516,6 +634,30 @@ function buildItemIcons(): Record<InventoryItemKind, string> {
       box(10, 24, 3, 3, '#ab8f54');
       box(15, 24, 3, 2, '#252c27');
       box(20, 24, 2, 2, '#59b889');
+    } else if (kind === 'walkie') {
+      // Rádio Comunicador VHF de Longa Distância (Walkie-Talkie tático com antena, grade de alto-falante, LCD e PTT laranja)
+      box(10, 2, 2, 8, '#95a19b');
+      px(10, 1, '#f0a648'); // ponteira da antena chicote
+      box(9, 9, 4, 2, '#3a423e'); // base da antena
+      box(18, 8, 4, 3, '#b89a58'); // knob seletor de frequência
+      // Corpo blindado do transceptor + tecla lateral PTT laranja
+      box(8, 10, 15, 19, '#2a3330');
+      box(9, 10, 13, 18, '#394541');
+      box(6, 13, 2, 6, '#dc6f28'); // botão PTT lateral
+      // Grade acústica do alto-falante superior
+      box(10, 12, 11, 7, '#1b2220');
+      line(11, 13, 19, 13, '#52635d');
+      line(11, 15, 19, 15, '#52635d');
+      line(11, 17, 19, 17, '#52635d');
+      // Visor LCD VHF retroiluminado + LED verde de sinal ativo
+      box(10, 20, 11, 4, '#0c241b');
+      line(11, 21, 18, 21, '#5ff5ad');
+      line(11, 22, 16, 22, '#3bc985');
+      px(20, 11, '#58ff9a');
+      // Teclado numérico inferior
+      box(11, 25, 2, 2, '#697872');
+      box(15, 25, 2, 2, '#697872');
+      box(19, 25, 2, 2, '#697872');
     } else {
       // Página arrancada de caderno com orelha dobrada e mancha seca de sangue
       box(7, 4, 17, 22, '#bfb49f');
@@ -1647,7 +1789,7 @@ export class DoomInventory {
             <div>
               <div class="inv-pocket-header">
                 <span>Bolsos</span>
-                <span data-slot-counter>1 / 12</span>
+                <span data-slot-counter>1 / 20</span>
               </div>
               <div class="inv-grid" data-inv-grid style="margin-top: 8px;"></div>
             </div>
@@ -1857,9 +1999,9 @@ export class DoomInventory {
         } else if (e.code === 'ArrowLeft' || e.code === 'KeyA') {
           nextIdx = (this.selectedIndex + TOTAL_SLOTS - 1) % TOTAL_SLOTS;
         } else if (e.code === 'ArrowDown' || e.code === 'KeyS') {
-          nextIdx = (this.selectedIndex + 4) % TOTAL_SLOTS;
+          nextIdx = (this.selectedIndex + 5) % TOTAL_SLOTS;
         } else if (e.code === 'ArrowUp' || e.code === 'KeyW') {
-          nextIdx = (this.selectedIndex + TOTAL_SLOTS - 4) % TOTAL_SLOTS;
+          nextIdx = (this.selectedIndex + TOTAL_SLOTS - 5) % TOTAL_SLOTS;
         } else if (e.code === 'Enter' || e.code === 'KeyE') {
           e.preventDefault();
           this.useSelectedItem();
@@ -2374,7 +2516,7 @@ export class DoomInventory {
    * Notifica a HUB quando o jogador aciona Lanterna [F] ou Radar [M]/[N], destacando o slot!
    */
   notifyEquipmentShortcutUsed(
-    gear: 'lantern' | 'radar' | 'radar_zoom',
+    gear: 'lantern' | 'radar' | 'radar_zoom' | 'walkie',
     isActive: boolean
   ): void {
     if (gear === 'lantern') {
@@ -2388,6 +2530,14 @@ export class DoomInventory {
       this.wakeShortcutsHub(
         2600,
         isActive ? '[M] Radar topográfico ativo · [N] zoom' : '[M] Radar oculto'
+      );
+    } else if (gear === 'walkie') {
+      this.pulseHubSlotTrigger('R');
+      this.wakeShortcutsHub(
+        2800,
+        isActive
+          ? '[R] Rádio VHF ligado · Voz a longa distância ativa'
+          : '[R] Rádio VHF silenciado'
       );
     } else {
       this.pulseHubSlotTrigger('M');
@@ -2515,7 +2665,8 @@ export class DoomInventory {
       !def.usable ||
       def.kind === 'lantern' ||
       def.kind === 'key' ||
-      def.kind === 'radar'
+      def.kind === 'radar' ||
+      def.kind === 'walkie'
     ) {
       return;
     }
@@ -2582,6 +2733,13 @@ export class DoomInventory {
         );
       } else if (def.kind === 'radar') {
         this.wakeShortcutsHub(3600, '[M] Radar topográfico disponível');
+      } else if (def.kind === 'walkie') {
+        this.wakeShortcutsHub(
+          3800,
+          '[R] Rádio VHF sintonizado · Voz a longa distância ativa'
+        );
+      } else if (def.kind === 'key') {
+        this.wakeShortcutsHub(3600, `${def.name} coletada`);
       }
     }
     if (this.isOpen) {
@@ -2896,7 +3054,8 @@ export class DoomInventory {
         entry &&
           (entry.def.kind === 'lantern' ||
             entry.def.kind === 'knife' ||
-            entry.def.kind === 'radar')
+            entry.def.kind === 'radar' ||
+            entry.def.kind === 'walkie')
       );
       const dotActive = Boolean(
         entry &&
@@ -2904,6 +3063,8 @@ export class DoomInventory {
             this.latestVitals.flashlightEquipped) ||
             (entry.def.kind === 'radar' &&
               Boolean(this.latestVitals.radarActive)) ||
+            (entry.def.kind === 'walkie' &&
+              Boolean(this.latestVitals.walkieActive)) ||
             entry.def.kind === 'knife')
       );
       const boundShortcut = entry ? this.getShortcutForItem(entry.def.id) : -1;
@@ -2939,6 +3100,11 @@ export class DoomInventory {
               : ''
           }
           <img class="inv-slot-sprite" src="${iconSrc}" alt="${entry.def.name}" />
+          ${
+            entry.def.keyBadge
+              ? `<span class="inv-slot-key-tag" style="color: ${entry.def.keyColor ?? '#f2d98d'}; border-color: ${entry.def.keyColor ?? '#f2d98d'}55;">${entry.def.keyBadge}</span>`
+              : ''
+          }
           ${
             entry.quantity > 1
               ? `<span class="inv-slot-qty">×${entry.quantity}</span>`
@@ -3124,12 +3290,18 @@ export class DoomInventory {
       }
     }
 
-    if (def.id === 'sector_b_key') {
-      this.callbacks.onUseKey?.();
+    if (def.kind === 'key') {
+      const unlocked = Boolean(this.callbacks.onUseKey?.(def.id));
       this.sound.playInventorySelect(true);
-      if (!fromQuickShortcut) {
+      if (unlocked) {
+        this.consumeAt(slotIndex, 1);
+        if (!fromQuickShortcut) {
+          this.feedbackEl.textContent = 'Porta da Sala Especial destrancada!';
+          this.callbacks.onCloseRequest();
+        }
+      } else if (!fromQuickShortcut) {
         this.feedbackEl.textContent =
-          'Chave empunhada pelo operador. Nenhuma fechadura compatível por perto.';
+          'Chave empunhada. Aproxime-se da porta blindada correspondente e aperte [E] para destrancar.';
         this.callbacks.onCloseRequest();
       }
       return true;
@@ -3141,6 +3313,17 @@ export class DoomInventory {
         this.feedbackEl.textContent = nowActive
           ? 'Radar topográfico ligado no canto superior direito.'
           : 'Radar topográfico recolhido.';
+        this.renderGrid();
+      }
+      return true;
+    }
+
+    if (def.id === 'field_walkie_talkie') {
+      const nowActive = this.callbacks.onToggleWalkieTalkie?.() ?? false;
+      if (!fromQuickShortcut) {
+        this.feedbackEl.textContent = nowActive
+          ? 'Rádio comunicador VHF ligado — transmissão de voz a longa distância ativa.'
+          : 'Rádio comunicador VHF silenciado.';
         this.renderGrid();
       }
       return true;
@@ -3159,6 +3342,8 @@ export class DoomInventory {
     const lowBat = bat > 0 && bat <= 22;
     const hasRadar = this.hasItem('field_radar');
     const radarOn = Boolean(this.latestVitals.radarActive);
+    const hasWalkie = this.hasItem('field_walkie_talkie');
+    const walkieOn = Boolean(this.latestVitals.walkieActive);
     const lanternOn = Boolean(this.latestVitals.flashlightEquipped) && bat > 0.5;
 
     const quickSigParts: string[] = [];
@@ -3173,7 +3358,7 @@ export class DoomInventory {
 
     const sig = `${lanternOn ? 1 : 0}|${litFive}|${lowBat ? 1 : 0}|${
       hasRadar ? 1 : 0
-    }|${radarOn ? 1 : 0}|${quickSigParts.join(',')}`;
+    }|${radarOn ? 1 : 0}|${hasWalkie ? 1 : 0}|${walkieOn ? 1 : 0}|${quickSigParts.join(',')}`;
 
     if (!force && sig === this.lastHubRenderSignature) {
       this.syncHubInteractiveClasses();
@@ -3249,6 +3434,37 @@ export class DoomInventory {
         this.notifyEquipmentShortcutUsed('radar', nextActive);
       });
       this.hubBarEl.appendChild(radarCell);
+    }
+
+    // 2b. Atalho fixo [R] Rádio Comunicador VHF (exibido assim que coletado no complexo)
+    if (hasWalkie) {
+      const walkieCell = document.createElement('div');
+      walkieCell.className = `hub-slot fixed-gear${
+        this.triggeredHubSlotKey === 'R' ? ' triggered' : ''
+      }`;
+      walkieCell.dataset.hubFixed = 'R';
+      walkieCell.title = `[R] Rádio comunicador VHF (${
+        walkieOn ? 'ativo · voz a longa distância' : 'silenciado'
+      })`;
+      walkieCell.innerHTML = `
+        <span class="hub-slot-key">[R]</span>
+        <span class="hub-slot-dot${walkieOn ? ' on-green' : ''}"></span>
+        <img class="hub-slot-sprite" src="${this.icons.walkie}" alt="Rádio VHF" />
+      `;
+      walkieCell.addEventListener('mouseenter', () => {
+        this.wakeShortcutsHub(
+          2600,
+          walkieOn
+            ? '[R] Rádio VHF · Voz a longa distância ativa'
+            : '[R] Rádio VHF · silenciado'
+        );
+      });
+      walkieCell.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const nextActive = this.callbacks.onToggleWalkieTalkie?.() ?? false;
+        this.notifyEquipmentShortcutUsed('walkie', nextActive);
+      });
+      this.hubBarEl.appendChild(walkieCell);
     }
 
     // Separador vertical tático entre equipamentos fixos e atalhos configuráveis [1–3]
@@ -3339,6 +3555,15 @@ export class DoomInventory {
       this.callbacks.onOpenRequest?.();
     });
     this.hubBarEl.appendChild(tabBtn);
+  }
+
+  consumeItemById(itemId: string, count = 1): boolean {
+    const idx = this.slots.findIndex(
+      (s) => s !== null && s.def.id === itemId && s.quantity >= count
+    );
+    if (idx < 0) return false;
+    this.consumeAt(idx, count);
+    return true;
   }
 
   private consumeAt(slotIndex: number, count: number): void {

@@ -15,6 +15,7 @@ import {
   isThemedRoomDoorCell,
   isThemedRoomThresholdCell,
   RoomFurniturePlacement,
+  SPECIAL_ROOM_KEY_ITEM_IDS,
 } from './DoomRooms';
 
 export interface GridCoord {
@@ -320,8 +321,10 @@ export function buildRandomCrateLootPool(
 ): string[] {
   const uniqueEssentials = [
     'field_radar',
+    'field_walkie_talkie',
     'rusty_knife',
     'sector_b_key',
+    ...SPECIAL_ROOM_KEY_ITEM_IDS,
     'torn_log_04',
     'arachnid_report_09',
   ];

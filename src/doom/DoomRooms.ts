@@ -7,8 +7,16 @@ import {
   LABYRINTH_MAP,
   WALL_HEIGHT,
 } from './DoomMazeBuilder';
-import { createDoomSurfaceMaterial, DoomSharedUniforms } from './DoomShader';
-import { DoomTextureSet } from './DoomTextures';
+import {
+  createDoomPropMaterial,
+  createDoomSurfaceMaterial,
+  DoomSharedUniforms,
+} from './DoomShader';
+import {
+  createSpecialRoomDoorIconTexture,
+  createSpecialRoomMiniMapTexture,
+  DoomTextureSet,
+} from './DoomTextures';
 
 export type DoomRoomId =
   | 'computer_room'
@@ -18,6 +26,16 @@ export type DoomRoomId =
   | 'vegetation_room'
   | 'library_room'
   | 'reactor_hall';
+
+export type SpecialRoomKeyItemId =
+  | 'key_computer_room'
+  | 'key_biology_lab'
+  | 'key_crew_quarters'
+  | 'key_medical_ward'
+  | 'key_vegetation_room'
+  | 'key_library_room'
+  | 'reactor_hall_key_alias_unused'
+  | 'key_reactor_hall';
 
 export type RoomFurnitureKind =
   | 'server_rack_bank'
@@ -47,11 +65,21 @@ export interface ThemedRoomDefinition {
   id: DoomRoomId;
   name: string;
   subtitle: string;
-  /** Limites em células de grade da Ala Externa (100% fora de 0..28 x 0..28!) */
+  /** Código setorial exibido na placa luminosa do pórtico (ex: CPU-01) */
+  doorCode: string;
+  /** Cor temática hexadecimal do ícone, chave e mini-mapa mural */
+  accentHex: number;
+  /** ID exclusivo da chave necessária para destrancar esta Sala Especial */
+  keyItemId: string;
+  /** Nome legível da chave específica desta Sala Especial */
+  keyName: string;
+  /** Limites em células de grade da Ala Externa 7x7 (100% fora de 0..28 x 0..28 e desconectada das demais!) */
   minGx: number;
   maxGx: number;
   minGz: number;
   maxGz: number;
+  /** Planta baixa interna 7x7 ('.' = corredor/sub-sala, '#' = parede interna annexWall, 'C' = núcleo sólido) */
+  miniMap: ReadonlyArray<string>;
   /** Célula do muro perimetral (0 ou 28) aberta como Pórtico Blindado de Acesso */
   doorGx: number;
   doorGz: number;
@@ -86,24 +114,68 @@ export interface DoomAnnexLightSpec {
   phase: number;
 }
 
-/** Limites estendidos de grade abrangendo o mapa 29x29 (0..28) + todas as 7 Salas Externas (-5..33) */
-export const ANNEX_MIN_GRID = -6;
-export const ANNEX_MAX_GRID = 34;
+export interface SpecialRoomDoorInstance {
+  room: ThemedRoomDefinition;
+  keyItemId: string;
+  keyName: string;
+  doorWorldPos: THREE.Vector3;
+  unlocked: boolean;
+  openProgress: number;
+  collider: StaticColliderBox;
+  leftLeaf: THREE.Group;
+  rightLeaf: THREE.Group;
+  ledMaterials: THREE.ShaderMaterial[];
+}
+
+export interface DoomSpecialRoomDoorController {
+  readonly doors: ReadonlyArray<SpecialRoomDoorInstance>;
+  isUnlocked(roomId: DoomRoomId): boolean;
+  unlockRoom(roomId: DoomRoomId): boolean;
+  findNearbyLockedDoor(
+    playerPos: THREE.Vector3,
+    maxDistance?: number
+  ): SpecialRoomDoorInstance | null;
+  findMatchingDoorForKey(
+    keyItemId: string,
+    playerPos: THREE.Vector3,
+    maxDistance?: number
+  ): SpecialRoomDoorInstance | null;
+  update(dt: number): void;
+  dispose(): void;
+}
+
+/** Limites estendidos de grade abrangendo o mapa 29x29 (0..28) + todas as 7 Salas Externas 7x7 (-7..35) */
+export const ANNEX_MIN_GRID = -8;
+export const ANNEX_MAX_GRID = 36;
 
 /**
- * Catálogo oficial das 7 Salas Especiais Externas ("Fora do Mapa" — Alas Anexas ao redor do perímetro 29x29):
- * Cada sala projeta-se para fora da muralha externa através de um pórtico blindado exclusivo
- * e possui arquitetura 3D própria com novas texturas de Parede, Chão e Teto!
+ * Catálogo oficial das 7 Salas Especiais Externas 7x7 ("Fora do Mapa" — Mini-Mapas Anexos Isolados):
+ * - Nenhuma sala toca ou se conecta a outra sala especial (>= 1 célula de vazio estrutural entre todas);
+ * - Cada sala possui um mini-mapa interno 7x7 próprio com sub-câmaras, divisórias e corredores;
+ * - Todas começam TRANCADAS por portas blindadas duplas, exigindo sua chave específica!
  */
 export const THEMED_ROOMS: ReadonlyArray<ThemedRoomDefinition> = [
   {
     id: 'computer_room',
     name: 'SALA DOS COMPUTADORES',
-    subtitle: 'Ala Norte — Mainframe Central, Servidores & Telemetria CRT',
-    minGx: 9,
-    maxGx: 13,
-    minGz: -5,
+    subtitle: 'Ala Norte — Mainframe Central, Cofre de Fitas & Telemetria CRT',
+    doorCode: 'CPU-01',
+    accentHex: 0x42d4ff,
+    keyItemId: 'key_computer_room',
+    keyName: 'Chave — Sala dos Computadores',
+    minGx: 8,
+    maxGx: 14,
+    minGz: -7,
     maxGz: -1,
+    miniMap: [
+      '..#.#..',
+      '.......',
+      '..#.#..',
+      '###.###',
+      '..#.#..',
+      '.......',
+      '..#.#..',
+    ],
     doorGx: 11,
     doorGz: 0,
     innerGx: 11,
@@ -113,11 +185,24 @@ export const THEMED_ROOMS: ReadonlyArray<ThemedRoomDefinition> = [
   {
     id: 'reactor_hall',
     name: 'SALÃO DOS REATORES',
-    subtitle: 'Ala Nordeste — Núcleo Tokamak & Bancos de Capacitores',
-    minGx: 23,
-    maxGx: 27,
-    minGz: -5,
+    subtitle: 'Ala Nordeste — Anel Tokamak, Galerias Blindadas & Capacitores',
+    doorCode: 'REA-07',
+    accentHex: 0xff9238,
+    keyItemId: 'key_reactor_hall',
+    keyName: 'Chave — Salão dos Reatores',
+    minGx: 22,
+    maxGx: 28,
+    minGz: -7,
     maxGz: -1,
+    miniMap: [
+      '..#.#..',
+      '.......',
+      '#.#.#.#',
+      '.......',
+      '.#.C.#.',
+      '.#...#.',
+      '.......',
+    ],
     doorGx: 25,
     doorGz: 0,
     innerGx: 25,
@@ -127,11 +212,24 @@ export const THEMED_ROOMS: ReadonlyArray<ThemedRoomDefinition> = [
   {
     id: 'biology_lab',
     name: 'LABORATÓRIO BIOLÓGICO',
-    subtitle: 'Ala Noroeste — Contenção Xenobiológica & Tanques de Espécimes',
-    minGx: -5,
+    subtitle: 'Ala Noroeste — Câmaras Xenobiológicas, Criogenia & Autópsia',
+    doorCode: 'BIO-02',
+    accentHex: 0x3ef09a,
+    keyItemId: 'key_biology_lab',
+    keyName: 'Chave — Laboratório Biológico',
+    minGx: -7,
     maxGx: -1,
-    minGz: 3,
-    maxGz: 7,
+    minGz: 2,
+    maxGz: 8,
+    miniMap: [
+      '..#..#.',
+      '.....#.',
+      '#.##.#.',
+      '.......',
+      '#.##.#.',
+      '.....#.',
+      '..#..#.',
+    ],
     doorGx: 0,
     doorGz: 5,
     innerGx: 1,
@@ -141,11 +239,24 @@ export const THEMED_ROOMS: ReadonlyArray<ThemedRoomDefinition> = [
   {
     id: 'crew_quarters',
     name: 'QUARTOS DA EQUIPE',
-    subtitle: 'Ala Oeste — Dormitórios de Beliches, Armários & Refeitório',
-    minGx: -5,
+    subtitle: 'Ala Oeste — Cabines de Beliches, Vestiário & Refeitório',
+    doorCode: 'HAB-03',
+    accentHex: 0xf4b942,
+    keyItemId: 'key_crew_quarters',
+    keyName: 'Chave — Quartos da Equipe',
+    minGx: -7,
     maxGx: -1,
     minGz: 10,
-    maxGz: 14,
+    maxGz: 16,
+    miniMap: [
+      '..#.#..',
+      '.......',
+      '###...#',
+      '.....#.',
+      '..##...',
+      '#....#.',
+      '#.#..#.',
+    ],
     doorGx: 0,
     doorGz: 11,
     innerGx: 1,
@@ -155,11 +266,24 @@ export const THEMED_ROOMS: ReadonlyArray<ThemedRoomDefinition> = [
   {
     id: 'medical_ward',
     name: 'ENFERMARIA & QUARENTENA',
-    subtitle: 'Ala Leste — Leitos Clínicos, Triagem & Suprimentos Médicos',
+    subtitle: 'Ala Leste — Isolamento Clínico, UTI, Farmácia & Cirurgia',
+    doorCode: 'MED-04',
+    accentHex: 0xff5a6e,
+    keyItemId: 'key_medical_ward',
+    keyName: 'Chave — Enfermaria & Quarentena',
     minGx: 29,
-    maxGx: 33,
-    minGz: 10,
-    maxGz: 14,
+    maxGx: 35,
+    minGz: 9,
+    maxGz: 15,
+    miniMap: [
+      '.#..#..',
+      '...#..#',
+      '##.#.##',
+      '.......',
+      '##.#.##',
+      '...#..#',
+      '.#..#..',
+    ],
     doorGx: 28,
     doorGz: 12,
     innerGx: 27,
@@ -169,11 +293,24 @@ export const THEMED_ROOMS: ReadonlyArray<ThemedRoomDefinition> = [
   {
     id: 'library_room',
     name: 'BIBLIOTECA & ARQUIVOS',
-    subtitle: 'Ala Sudeste — Acervo Científico, Estantes de Carvalho & Leitura',
+    subtitle: 'Ala Sudeste — Labirinto de Estantes, Salão de Leitura & Cofre Raro',
+    doorCode: 'ARC-06',
+    accentHex: 0xd89c52,
+    keyItemId: 'key_library_room',
+    keyName: 'Chave — Biblioteca & Arquivos',
     minGx: 29,
-    maxGx: 33,
-    minGz: 18,
-    maxGz: 22,
+    maxGx: 35,
+    minGz: 17,
+    maxGz: 23,
+    miniMap: [
+      '...#...',
+      '.#.#.#.',
+      '.#...#.',
+      '....#..',
+      '.#...#.',
+      '.#.#.#.',
+      '...#...',
+    ],
     doorGx: 28,
     doorGz: 20,
     innerGx: 27,
@@ -183,11 +320,24 @@ export const THEMED_ROOMS: ReadonlyArray<ThemedRoomDefinition> = [
   {
     id: 'vegetation_room',
     name: 'SALA DE VEGETAÇÃO',
-    subtitle: 'Ala Sul — Biodomo Hidropônico Subterrâneo & Flora Experimental',
-    minGx: 4,
-    maxGx: 8,
+    subtitle: 'Ala Sul — Terraços Hidropônicos, Estufa Central & Banco de Sementes',
+    doorCode: 'ECO-05',
+    accentHex: 0x6ce85b,
+    keyItemId: 'key_vegetation_room',
+    keyName: 'Chave — Sala de Vegetação',
+    minGx: 3,
+    maxGx: 9,
     minGz: 29,
-    maxGz: 33,
+    maxGz: 35,
+    miniMap: [
+      '..#.#..',
+      '.......',
+      '#.#.#.#',
+      '.......',
+      '.##.##.',
+      '.......',
+      '..#.#..',
+    ],
     doorGx: 6,
     doorGz: 28,
     innerGx: 6,
@@ -195,6 +345,56 @@ export const THEMED_ROOMS: ReadonlyArray<ThemedRoomDefinition> = [
     outwardDir: 'S',
   },
 ];
+
+export const SPECIAL_ROOM_KEY_ITEM_IDS: ReadonlyArray<string> = THEMED_ROOMS.map(
+  (r) => r.keyItemId
+);
+
+/** Estado global sincronizado das portas trancadas/destrancadas das Salas Especiais da partida atual */
+const unlockedRoomIds = new Set<DoomRoomId>();
+
+export function resetThemedRoomLocks(): void {
+  unlockedRoomIds.clear();
+}
+
+export function unlockThemedRoom(roomId: DoomRoomId): boolean {
+  if (unlockedRoomIds.has(roomId)) return false;
+  unlockedRoomIds.add(roomId);
+  return true;
+}
+
+export function isThemedRoomUnlocked(roomId: DoomRoomId): boolean {
+  return unlockedRoomIds.has(roomId);
+}
+
+export function getThemedRoomByKeyItemId(
+  itemId: string
+): ThemedRoomDefinition | null {
+  for (const r of THEMED_ROOMS) {
+    if (r.keyItemId === itemId) return r;
+  }
+  return null;
+}
+
+/**
+ * Retorna o caractere da planta baixa interna 7x7 (`'.'`, `'#'` ou `'C'`) de uma Sala Especial,
+ * ou `null` caso `(gx, gz)` não pertença ao interior 7x7 de nenhuma sala.
+ */
+export function getThemedRoomMiniMapTile(
+  gx: number,
+  gz: number
+): '.' | '#' | 'C' | null {
+  for (const r of THEMED_ROOMS) {
+    if (gx >= r.minGx && gx <= r.maxGx && gz >= r.minGz && gz <= r.maxGz) {
+      const row = r.miniMap[gz - r.minGz];
+      const ch = row?.[gx - r.minGx];
+      if (ch === '#') return '#';
+      if (ch === 'C') return 'C';
+      return '.';
+    }
+  }
+  return null;
+}
 
 /**
  * Retorna a Sala Especial correspondente à célula `(gx, gz)` (incluindo seu pórtico de entrada),
@@ -248,27 +448,28 @@ export function isThemedRoomThresholdCell(gx: number, gz: number): boolean {
 }
 
 /**
- * Indica se uma célula `(gx, gz)` é transitável considerando tanto o labirinto 29x29
- * quanto os 7 pórticos perimetrais e o interior das 7 Salas Externas!
+ * Indica se uma célula `(gx, gz)` é transitável considerando o labirinto 29x29,
+ * o estado de trancamento dos 7 pórticos blindados e o mini-mapa interno 7x7 de cada Sala Especial!
  */
-export function isWalkableArenaCell(gx: number, gz: number): boolean {
+export function isWalkableArenaCell(
+  gx: number,
+  gz: number,
+  options?: { ignoreRoomLocks?: boolean }
+): boolean {
   const rows = LABYRINTH_MAP.length;
   const cols = LABYRINTH_MAP[0].length;
   if (gx >= 0 && gx < cols && gz >= 0 && gz < rows) {
     if (!isSolidCell(LABYRINTH_MAP, gx, gz)) return true;
-    return isThemedRoomDoorCell(gx, gz);
+    const doorRoom = getThemedRoomByDoorCell(gx, gz);
+    if (!doorRoom) return false;
+    return options?.ignoreRoomLocks ? true : unlockedRoomIds.has(doorRoom.id);
   }
-  const room = getThemedRoomAtCell(gx, gz);
-  if (!room) return false;
-  // No Salão dos Reatores, o centro exato (25, -3) abriga o Núcleo Tokamak sólido
-  if (room.id === 'reactor_hall' && gx === 25 && gz === -3) {
-    return false;
-  }
-  return true;
+  const tile = getThemedRoomMiniMapTile(gx, gz);
+  return tile === '.';
 }
 
 // ============================================================================
-// GERADOR DE MOBILIÁRIO 3D ESPECÍFICO NAS SALAS EXTERNAS
+// GERADOR DE MOBILIÁRIO 3D ESPECÍFICO NAS SALAS EXTERNAS 7x7
 // ============================================================================
 
 interface Aabb2D {
@@ -362,89 +563,92 @@ interface RawRoomFurnitureSpec {
   kind: RoomFurnitureKind;
   gx: number;
   gz: number;
-  /** Parede da sala onde encosta ('N' | 'S' | 'W' | 'E') ou ilha central ('CENTER') */
+  /** Parede externa ou divisória '#' onde encosta ('N' | 'S' | 'W' | 'E') ou ilha central ('CENTER') */
   attach: 'N' | 'S' | 'W' | 'E' | 'CENTER';
   /** Rotação opcional para peças centrais */
   centerYaw?: number;
 }
 
 const CURATED_ROOM_SPECS: ReadonlyArray<RawRoomFurnitureSpec> = [
-  // 1. SALA DOS COMPUTADORES — Ala Norte (gx 9..13, gz -5..-1, entrada em (11, -1))
-  { roomId: 'computer_room', kind: 'server_rack_bank', gx: 9, gz: -5, attach: 'N' },
-  { roomId: 'computer_room', kind: 'server_rack_bank', gx: 11, gz: -5, attach: 'N' },
-  { roomId: 'computer_room', kind: 'server_rack_bank', gx: 13, gz: -5, attach: 'N' },
-  { roomId: 'computer_room', kind: 'server_rack_bank', gx: 9, gz: -3, attach: 'W' },
-  { roomId: 'computer_room', kind: 'server_rack_bank', gx: 13, gz: -3, attach: 'E' },
-  { roomId: 'computer_room', kind: 'crt_workstation_desk', gx: 10, gz: -4, attach: 'CENTER', centerYaw: 0 },
-  { roomId: 'computer_room', kind: 'crt_workstation_desk', gx: 12, gz: -4, attach: 'CENTER', centerYaw: 0 },
-  { roomId: 'computer_room', kind: 'crt_workstation_desk', gx: 9, gz: -1, attach: 'S' },
-  { roomId: 'computer_room', kind: 'crt_workstation_desk', gx: 13, gz: -1, attach: 'S' },
+  // 1. SALA DOS COMPUTADORES — Ala Norte 7x7 (gx 8..14, gz -7..-1, entrada em (11, -1))
+  { roomId: 'computer_room', kind: 'server_rack_bank', gx: 8, gz: -7, attach: 'N' },
+  { roomId: 'computer_room', kind: 'server_rack_bank', gx: 9, gz: -7, attach: 'N' },
+  { roomId: 'computer_room', kind: 'server_rack_bank', gx: 8, gz: -6, attach: 'W' },
+  { roomId: 'computer_room', kind: 'server_rack_bank', gx: 14, gz: -6, attach: 'E' },
+  { roomId: 'computer_room', kind: 'server_rack_bank', gx: 13, gz: -7, attach: 'N' },
+  { roomId: 'computer_room', kind: 'crt_workstation_desk', gx: 14, gz: -7, attach: 'N' },
+  { roomId: 'computer_room', kind: 'crt_workstation_desk', gx: 8, gz: -3, attach: 'N' },
+  { roomId: 'computer_room', kind: 'crt_workstation_desk', gx: 14, gz: -3, attach: 'N' },
+  { roomId: 'computer_room', kind: 'crt_workstation_desk', gx: 8, gz: -1, attach: 'S' },
+  { roomId: 'computer_room', kind: 'server_rack_bank', gx: 14, gz: -1, attach: 'S' },
 
-  // 2. SALÃO DOS REATORES — Ala Nordeste (gx 23..27, gz -5..-1, entrada em (25, -1), núcleo Tokamak em (25, -3))
-  { roomId: 'reactor_hall', kind: 'reactor_capacitor_console', gx: 23, gz: -5, attach: 'N' },
-  { roomId: 'reactor_hall', kind: 'crt_workstation_desk', gx: 25, gz: -5, attach: 'N' },
-  { roomId: 'reactor_hall', kind: 'reactor_capacitor_console', gx: 27, gz: -5, attach: 'N' },
-  { roomId: 'reactor_hall', kind: 'reactor_capacitor_console', gx: 23, gz: -3, attach: 'W' },
-  { roomId: 'reactor_hall', kind: 'reactor_capacitor_console', gx: 27, gz: -3, attach: 'E' },
-  { roomId: 'reactor_hall', kind: 'crt_workstation_desk', gx: 23, gz: -1, attach: 'S' },
-  { roomId: 'reactor_hall', kind: 'crt_workstation_desk', gx: 27, gz: -1, attach: 'S' },
+  // 2. SALÃO DOS REATORES — Ala Nordeste 7x7 (gx 22..28, gz -7..-1, entrada em (25, -1), Tokamak em (25, -3))
+  { roomId: 'reactor_hall', kind: 'reactor_capacitor_console', gx: 22, gz: -7, attach: 'N' },
+  { roomId: 'reactor_hall', kind: 'reactor_capacitor_console', gx: 23, gz: -7, attach: 'E' },
+  { roomId: 'reactor_hall', kind: 'crt_workstation_desk', gx: 25, gz: -7, attach: 'N' },
+  { roomId: 'reactor_hall', kind: 'reactor_capacitor_console', gx: 28, gz: -7, attach: 'N' },
+  { roomId: 'reactor_hall', kind: 'reactor_capacitor_console', gx: 22, gz: -3, attach: 'W' },
+  { roomId: 'reactor_hall', kind: 'reactor_capacitor_console', gx: 28, gz: -3, attach: 'E' },
+  { roomId: 'reactor_hall', kind: 'crt_workstation_desk', gx: 22, gz: -1, attach: 'S' },
+  { roomId: 'reactor_hall', kind: 'crt_workstation_desk', gx: 28, gz: -1, attach: 'S' },
 
-  // 3. LABORATÓRIO BIOLÓGICO — Ala Noroeste (gx -5..-1, gz 3..7, entrada em (-1, 5))
-  { roomId: 'biology_lab', kind: 'bio_specimen_tank', gx: -5, gz: 3, attach: 'N' },
-  { roomId: 'biology_lab', kind: 'bio_specimen_tank', gx: -3, gz: 3, attach: 'N' },
-  { roomId: 'biology_lab', kind: 'xenobio_lab_bench', gx: -1, gz: 3, attach: 'N' },
-  { roomId: 'biology_lab', kind: 'cryo_biohazard_cabinet', gx: -5, gz: 4, attach: 'W' },
-  { roomId: 'biology_lab', kind: 'autopsy_surgical_table', gx: -3, gz: 5, attach: 'CENTER', centerYaw: Math.PI * 0.5 },
-  { roomId: 'biology_lab', kind: 'cryo_biohazard_cabinet', gx: -5, gz: 6, attach: 'W' },
-  { roomId: 'biology_lab', kind: 'bio_specimen_tank', gx: -5, gz: 7, attach: 'S' },
-  { roomId: 'biology_lab', kind: 'bio_specimen_tank', gx: -3, gz: 7, attach: 'S' },
-  { roomId: 'biology_lab', kind: 'xenobio_lab_bench', gx: -1, gz: 7, attach: 'S' },
+  // 3. LABORATÓRIO BIOLÓGICO — Ala Noroeste 7x7 (gx -7..-1, gz 2..8, entrada em (-1, 5))
+  { roomId: 'biology_lab', kind: 'cryo_biohazard_cabinet', gx: -7, gz: 2, attach: 'N' },
+  { roomId: 'biology_lab', kind: 'bio_specimen_tank', gx: -4, gz: 2, attach: 'N' },
+  { roomId: 'biology_lab', kind: 'xenobio_lab_bench', gx: -3, gz: 2, attach: 'N' },
+  { roomId: 'biology_lab', kind: 'cryo_biohazard_cabinet', gx: -1, gz: 2, attach: 'N' },
+  { roomId: 'biology_lab', kind: 'bio_specimen_tank', gx: -6, gz: 2, attach: 'E' },
+  { roomId: 'biology_lab', kind: 'autopsy_surgical_table', gx: -4, gz: 5, attach: 'N' },
+  { roomId: 'biology_lab', kind: 'cryo_biohazard_cabinet', gx: -7, gz: 8, attach: 'S' },
+  { roomId: 'biology_lab', kind: 'bio_specimen_tank', gx: -4, gz: 8, attach: 'S' },
+  { roomId: 'biology_lab', kind: 'xenobio_lab_bench', gx: -3, gz: 8, attach: 'S' },
+  { roomId: 'biology_lab', kind: 'bio_specimen_tank', gx: -1, gz: 8, attach: 'S' },
 
-  // 4. QUARTOS DA EQUIPE — Ala Oeste (gx -5..-1, gz 10..14, entrada em (-1, 11))
-  { roomId: 'crew_quarters', kind: 'astronaut_bunk_bed', gx: -5, gz: 10, attach: 'N' },
-  { roomId: 'crew_quarters', kind: 'astronaut_bunk_bed', gx: -3, gz: 10, attach: 'N' },
-  { roomId: 'crew_quarters', kind: 'cabin_nightstand_desk', gx: -1, gz: 10, attach: 'N' },
-  { roomId: 'crew_quarters', kind: 'astronaut_bunk_bed', gx: -5, gz: 12, attach: 'W' },
-  { roomId: 'crew_quarters', kind: 'crew_mess_table', gx: -3, gz: 12, attach: 'CENTER', centerYaw: 0 },
-  { roomId: 'crew_quarters', kind: 'crew_locker_bank', gx: -1, gz: 13, attach: 'E' },
-  { roomId: 'crew_quarters', kind: 'astronaut_bunk_bed', gx: -5, gz: 14, attach: 'S' },
-  { roomId: 'crew_quarters', kind: 'cabin_nightstand_desk', gx: -3, gz: 14, attach: 'S' },
-  { roomId: 'crew_quarters', kind: 'crew_locker_bank', gx: -1, gz: 14, attach: 'S' },
+  // 4. QUARTOS DA EQUIPE — Ala Oeste 7x7 (gx -7..-1, gz 10..16, entrada em (-1, 11))
+  { roomId: 'crew_quarters', kind: 'astronaut_bunk_bed', gx: -7, gz: 10, attach: 'N' },
+  { roomId: 'crew_quarters', kind: 'cabin_nightstand_desk', gx: -6, gz: 10, attach: 'E' },
+  { roomId: 'crew_quarters', kind: 'astronaut_bunk_bed', gx: -4, gz: 10, attach: 'N' },
+  { roomId: 'crew_quarters', kind: 'crew_locker_bank', gx: -2, gz: 10, attach: 'N' },
+  { roomId: 'crew_quarters', kind: 'crew_mess_table', gx: -2, gz: 12, attach: 'E' },
+  { roomId: 'crew_quarters', kind: 'astronaut_bunk_bed', gx: -7, gz: 14, attach: 'W' },
+  { roomId: 'crew_quarters', kind: 'crew_locker_bank', gx: -1, gz: 13, attach: 'N' },
+  { roomId: 'crew_quarters', kind: 'astronaut_bunk_bed', gx: -4, gz: 16, attach: 'S' },
+  { roomId: 'crew_quarters', kind: 'cabin_nightstand_desk', gx: -3, gz: 16, attach: 'S' },
+  { roomId: 'crew_quarters', kind: 'crew_locker_bank', gx: -1, gz: 16, attach: 'S' },
 
-  // 5. ENFERMARIA & QUARENTENA — Ala Leste (gx 29..33, gz 10..14, entrada em (29, 12))
-  { roomId: 'medical_ward', kind: 'medical_supply_cabinet', gx: 29, gz: 10, attach: 'N' },
-  { roomId: 'medical_ward', kind: 'medical_gurney_bed', gx: 31, gz: 10, attach: 'N' },
-  { roomId: 'medical_ward', kind: 'medical_gurney_bed', gx: 33, gz: 10, attach: 'N' },
-  { roomId: 'medical_ward', kind: 'vitals_monitor_cart', gx: 31, gz: 12, attach: 'CENTER', centerYaw: -Math.PI * 0.5 },
-  { roomId: 'medical_ward', kind: 'medical_supply_cabinet', gx: 33, gz: 12, attach: 'E' },
-  { roomId: 'medical_ward', kind: 'medical_supply_cabinet', gx: 29, gz: 14, attach: 'S' },
-  { roomId: 'medical_ward', kind: 'medical_gurney_bed', gx: 31, gz: 14, attach: 'S' },
-  { roomId: 'medical_ward', kind: 'medical_gurney_bed', gx: 33, gz: 14, attach: 'S' },
-  { roomId: 'medical_ward', kind: 'vitals_monitor_cart', gx: 33, gz: 13, attach: 'E' },
+  // 5. ENFERMARIA & QUARENTENA — Ala Leste 7x7 (gx 29..35, gz 9..15, entrada em (29, 12))
+  { roomId: 'medical_ward', kind: 'medical_supply_cabinet', gx: 29, gz: 9, attach: 'N' },
+  { roomId: 'medical_ward', kind: 'medical_gurney_bed', gx: 32, gz: 9, attach: 'N' },
+  { roomId: 'medical_ward', kind: 'vitals_monitor_cart', gx: 34, gz: 9, attach: 'W' },
+  { roomId: 'medical_ward', kind: 'medical_gurney_bed', gx: 35, gz: 9, attach: 'N' },
+  { roomId: 'medical_ward', kind: 'vitals_monitor_cart', gx: 30, gz: 12, attach: 'N' },
+  { roomId: 'medical_ward', kind: 'medical_supply_cabinet', gx: 29, gz: 15, attach: 'S' },
+  { roomId: 'medical_ward', kind: 'medical_gurney_bed', gx: 32, gz: 15, attach: 'S' },
+  { roomId: 'medical_ward', kind: 'medical_gurney_bed', gx: 35, gz: 15, attach: 'S' },
 
-  // 6. BIBLIOTECA & ARQUIVOS — Ala Sudeste (gx 29..33, gz 18..22, entrada em (29, 20))
-  { roomId: 'library_room', kind: 'archive_catalog_cabinet', gx: 29, gz: 18, attach: 'N' },
-  { roomId: 'library_room', kind: 'oak_bookshelf_tall', gx: 31, gz: 18, attach: 'N' },
-  { roomId: 'library_room', kind: 'oak_bookshelf_tall', gx: 33, gz: 18, attach: 'N' },
-  { roomId: 'library_room', kind: 'oak_bookshelf_tall', gx: 33, gz: 19, attach: 'E' },
-  { roomId: 'library_room', kind: 'library_reading_table', gx: 31, gz: 19, attach: 'CENTER', centerYaw: 0 },
-  { roomId: 'library_room', kind: 'library_reading_table', gx: 31, gz: 21, attach: 'CENTER', centerYaw: 0 },
-  { roomId: 'library_room', kind: 'oak_bookshelf_tall', gx: 33, gz: 21, attach: 'E' },
-  { roomId: 'library_room', kind: 'archive_catalog_cabinet', gx: 29, gz: 22, attach: 'S' },
-  { roomId: 'library_room', kind: 'oak_bookshelf_tall', gx: 31, gz: 22, attach: 'S' },
-  { roomId: 'library_room', kind: 'oak_bookshelf_tall', gx: 33, gz: 22, attach: 'S' },
+  // 6. BIBLIOTECA & ARQUIVOS — Ala Sudeste 7x7 (gx 29..35, gz 17..23, entrada em (29, 20))
+  { roomId: 'library_room', kind: 'archive_catalog_cabinet', gx: 29, gz: 17, attach: 'N' },
+  { roomId: 'library_room', kind: 'oak_bookshelf_tall', gx: 30, gz: 17, attach: 'N' },
+  { roomId: 'library_room', kind: 'oak_bookshelf_tall', gx: 33, gz: 17, attach: 'N' },
+  { roomId: 'library_room', kind: 'oak_bookshelf_tall', gx: 35, gz: 17, attach: 'N' },
+  { roomId: 'library_room', kind: 'library_reading_table', gx: 32, gz: 19, attach: 'N' },
+  { roomId: 'library_room', kind: 'library_reading_table', gx: 32, gz: 21, attach: 'S' },
+  { roomId: 'library_room', kind: 'archive_catalog_cabinet', gx: 29, gz: 23, attach: 'S' },
+  { roomId: 'library_room', kind: 'oak_bookshelf_tall', gx: 30, gz: 23, attach: 'S' },
+  { roomId: 'library_room', kind: 'oak_bookshelf_tall', gx: 33, gz: 23, attach: 'S' },
+  { roomId: 'library_room', kind: 'oak_bookshelf_tall', gx: 35, gz: 23, attach: 'S' },
 
-  // 7. SALA DE VEGETAÇÃO — Ala Sul (gx 4..8, gz 29..33, entrada em (6, 29))
-  { roomId: 'vegetation_room', kind: 'irrigation_nutrient_tank', gx: 4, gz: 29, attach: 'N' },
-  { roomId: 'vegetation_room', kind: 'irrigation_nutrient_tank', gx: 8, gz: 29, attach: 'N' },
-  { roomId: 'vegetation_room', kind: 'hydroponic_tree_planter', gx: 4, gz: 30, attach: 'W' },
-  { roomId: 'vegetation_room', kind: 'hydroponic_tree_planter', gx: 8, gz: 30, attach: 'E' },
-  { roomId: 'vegetation_room', kind: 'hydroponic_tree_planter', gx: 6, gz: 31, attach: 'CENTER', centerYaw: Math.PI },
-  { roomId: 'vegetation_room', kind: 'botanical_fern_trough', gx: 4, gz: 32, attach: 'W' },
-  { roomId: 'vegetation_room', kind: 'botanical_fern_trough', gx: 8, gz: 32, attach: 'E' },
-  { roomId: 'vegetation_room', kind: 'hydroponic_tree_planter', gx: 4, gz: 33, attach: 'S' },
-  { roomId: 'vegetation_room', kind: 'botanical_fern_trough', gx: 6, gz: 33, attach: 'S' },
-  { roomId: 'vegetation_room', kind: 'hydroponic_tree_planter', gx: 8, gz: 33, attach: 'S' },
+  // 7. SALA DE VEGETAÇÃO — Ala Sul 7x7 (gx 3..9, gz 29..35, entrada em (6, 29))
+  { roomId: 'vegetation_room', kind: 'irrigation_nutrient_tank', gx: 3, gz: 29, attach: 'N' },
+  { roomId: 'vegetation_room', kind: 'irrigation_nutrient_tank', gx: 9, gz: 29, attach: 'N' },
+  { roomId: 'vegetation_room', kind: 'hydroponic_tree_planter', gx: 3, gz: 30, attach: 'W' },
+  { roomId: 'vegetation_room', kind: 'hydroponic_tree_planter', gx: 9, gz: 30, attach: 'E' },
+  { roomId: 'vegetation_room', kind: 'botanical_fern_trough', gx: 3, gz: 33, attach: 'W' },
+  { roomId: 'vegetation_room', kind: 'botanical_fern_trough', gx: 9, gz: 33, attach: 'E' },
+  { roomId: 'vegetation_room', kind: 'hydroponic_tree_planter', gx: 3, gz: 35, attach: 'S' },
+  { roomId: 'vegetation_room', kind: 'botanical_fern_trough', gx: 4, gz: 35, attach: 'E' },
+  { roomId: 'vegetation_room', kind: 'botanical_fern_trough', gx: 8, gz: 35, attach: 'W' },
+  { roomId: 'vegetation_room', kind: 'hydroponic_tree_planter', gx: 9, gz: 35, attach: 'S' },
 ];
 
 export function generateThemedRoomFurnishings(_opts: {
@@ -474,6 +678,7 @@ export function generateThemedRoomFurnishings(_opts: {
     const room = THEMED_ROOMS.find((r) => r.id === spec.roomId);
     if (!room) continue;
     if (isThemedRoomThresholdCell(spec.gx, spec.gz)) continue;
+    if (getThemedRoomMiniMapTile(spec.gx, spec.gz) !== '.') continue;
 
     const dims = getFurnitureDimensions(spec.kind);
     const cellCenter = gridCellToWorld(spec.gx, spec.gz);
@@ -483,12 +688,20 @@ export function generateThemedRoomFurnishings(_opts: {
 
     if (spec.attach !== 'CENTER') {
       const dir = attachMap[spec.attach];
-      // Revestimento interno extra (0.20m) na parede que encosta no perímetro do labirinto; 0.08m nas demais paredes externas
+      // Revestimento interno extra (0.22m) apenas na parede perimetral que encosta no labirinto 29x29; 0.08m nas demais paredes externas e divisórias '#'
       const touchesEntrySide =
-        (room.outwardDir === 'N' && spec.attach === 'S') ||
-        (room.outwardDir === 'S' && spec.attach === 'N') ||
-        (room.outwardDir === 'W' && spec.attach === 'E') ||
-        (room.outwardDir === 'E' && spec.attach === 'W');
+        (room.outwardDir === 'N' &&
+          spec.attach === 'S' &&
+          spec.gz === room.maxGz) ||
+        (room.outwardDir === 'S' &&
+          spec.attach === 'N' &&
+          spec.gz === room.minGz) ||
+        (room.outwardDir === 'W' &&
+          spec.attach === 'E' &&
+          spec.gx === room.maxGx) ||
+        (room.outwardDir === 'E' &&
+          spec.attach === 'W' &&
+          spec.gx === room.minGx);
       const wallLining = touchesEntrySide ? 0.22 : 0.08;
       const distFromEdge = wallLining + dims.depth * 0.5;
       wx = cellCenter.x + dir.nx * (halfCell - distFromEdge);
@@ -1165,12 +1378,12 @@ function addSolidCollider(
 }
 
 /**
- * Constrói a arquitetura 3D completa de cada Sala Externa (Fora do Mapa):
- * - Piso exclusivo (`annexFloor`) + incrustações temáticas sem Z-fighting;
- * - Teto arquitetônico caixotado em dois níveis (`3.20m` na sanca perimetral -> `3.74m` no vão central `annexCeiling`);
- * - Paredes modulares (`annexWall`) nos 4 lados com pilastras 3D, rodapés e vigamento aéreo;
- * - Pórtico Blindado de Acesso atravessando a muralha externa do mapa 29x29;
- * - Luminárias suspensas + marcos arquitetônicos temáticos (como o Núcleo Tokamak no Salão dos Reatores!).
+ * Constrói a arquitetura 3D completa de cada Sala Especial Externa 7x7 (Fora do Mapa):
+ * - Piso exclusivo (`annexFloor`) + incrustações temáticas por câmara sem Z-fighting;
+ * - Teto arquitetônico (`annexCeiling`) + sancas/cornijas e nervuras escalonadas (ZERO Z-fighting — corrige image-22 e image-23);
+ * - Paredes externas + paredes divisórias internas `'#'` do mini-mapa 7x7 (`annexWall`) com rodapés e colisores;
+ * - Pórtico Blindado de Acesso sem coplanaridade na verga (corrige image-21);
+ * - Luminárias suspensas em células transitáveis + marcos arquitetônicos temáticos.
  */
 function emitAnnexRoomsArchitecture(
   b: GeoBuckets,
@@ -1182,8 +1395,7 @@ function emitAnnexRoomsArchitecture(
   const halfMapW = cols * CELL_SIZE * 0.5;
   const halfMapD = rows * CELL_SIZE * 0.5;
 
-  const vaultTopY = WALL_HEIGHT; // 3.20m no domo central caixotado (alinhado ao teto estrutural sem vazamentos!)
-  const soffitY = 2.86; // Sanca perimetral rebaixada de 3.0m ao redor do caixotão central!
+  const vaultTopY = WALL_HEIGHT; // 3.20m
   const portalClearW = 2.16;
   const portalClearH = 2.58;
   const jambW = (CELL_SIZE - portalClearW) * 0.5; // 0.42m
@@ -1197,16 +1409,15 @@ function emitAnnexRoomsArchitecture(
     const roomMinZ = r.minGz * CELL_SIZE - halfMapD;
     const roomMaxZ = (r.maxGz + 1) * CELL_SIZE - halfMapD;
 
-    const roomW = roomMaxX - roomMinX; // 15.0m
-    const roomD = roomMaxZ - roomMinZ; // 15.0m
+    const roomW = roomMaxX - roomMinX; // 21.0m (7x7 células)
+    const roomD = roomMaxZ - roomMinZ; // 21.0m (7x7 células)
     const roomCx = (roomMinX + roomMaxX) * 0.5;
     const roomCz = (roomMinZ + roomMaxZ) * 0.5;
     const doorWorld = gridCellToWorld(r.doorGx, r.doorGz);
 
     const worldXf: LocalXf = { cx: 0, cz: 0, yaw: 0 };
-    const roomCenterXf: LocalXf = { cx: roomCx, cz: roomCz, yaw: 0 };
 
-    // 1. PISO EXCLUSIVO DA SALA EXTERNA (`annexFloor`) — estritamente fora de [-halfMapW..+halfMapW, -halfMapD..+halfMapD]
+    // 1. PISO (`annexFloor`) e TETO (`annexCeiling`) EXCLUSIVOS DA SALA EXTERNA 7x7
     pushWorldPlaneXZ(
       b.annexFloor,
       roomW - 0.01,
@@ -1216,134 +1427,335 @@ function emitAnnexRoomsArchitecture(
       roomCz,
       false
     );
-
-    // Tapetes / pisos embutidos temáticos no coração da sala
-    switch (r.id) {
-      case 'computer_room':
-        pushRoomBox(b.techFloor, roomCenterXf, 10.6, 0.016, 10.6, 0, 0.008, 0);
-        pushRoomBox(b.darkIron, roomCenterXf, 10.8, 0.022, 0.09, 0, 0.011, -5.34);
-        pushRoomBox(b.darkIron, roomCenterXf, 10.8, 0.022, 0.09, 0, 0.011, 5.34);
-        break;
-      case 'reactor_hall':
-        pushRoomBox(b.techFloor, roomCenterXf, 11.2, 0.016, 11.2, 0, 0.008, 0);
-        break;
-      case 'biology_lab':
-      case 'medical_ward':
-        pushRoomBox(b.labTile, roomCenterXf, 11.4, 0.016, 11.4, 0, 0.008, 0);
-        break;
-      case 'library_room':
-        pushRoomBox(b.oakWood, roomCenterXf, 13.4, 0.012, 13.4, 0, 0.006, 0);
-        pushRoomBox(b.libraryRug, roomCenterXf, 8.6, 0.02, 10.2, 0.4, 0.012, 0);
-        break;
-      case 'vegetation_room':
-        pushRoomBox(b.mossSoil, roomCenterXf, 10.8, 0.018, 10.8, 0, 0.009, 0);
-        pushRoomBox(b.weatheredWood, roomCenterXf, 11.04, 0.05, 0.12, 0, 0.025, -5.44);
-        pushRoomBox(b.weatheredWood, roomCenterXf, 11.04, 0.05, 0.12, 0, 0.025, 5.44);
-        pushRoomBox(b.weatheredWood, roomCenterXf, 0.12, 0.05, 10.8, -5.44, 0.025, 0);
-        pushRoomBox(b.weatheredWood, roomCenterXf, 0.12, 0.05, 10.8, 5.44, 0.025, 0);
-        break;
-      case 'crew_quarters':
-        pushRoomBox(b.oakWood, roomCenterXf, 10.8, 0.015, 10.8, 0, 0.0075, 0);
-        break;
-    }
-
-    // 2. TETO ARQUITETÔNICO EM DOIS NÍVEIS (`annexCeiling`):
-    // Sanca perimetral de 3.0m a y = 3.20m + Domo/Caixotão central 9.0m x 9.0m elevado a y = 3.74m!
-    const baySpan = 9.0; // 3x3 células centrais
-    const soffitBand = (roomW - baySpan) * 0.5; // 3.0m
-    // 4 faixas de sanca perimetral em y = 3.20m
     pushWorldPlaneXZ(
       b.annexCeiling,
-      roomW,
-      soffitBand,
-      roomCx,
-      soffitY,
-      roomMinZ + soffitBand * 0.5,
-      true
-    );
-    pushWorldPlaneXZ(
-      b.annexCeiling,
-      roomW,
-      soffitBand,
-      roomCx,
-      soffitY,
-      roomMaxZ - soffitBand * 0.5,
-      true
-    );
-    pushWorldPlaneXZ(
-      b.annexCeiling,
-      soffitBand,
-      baySpan,
-      roomMinX + soffitBand * 0.5,
-      soffitY,
-      roomCz,
-      true
-    );
-    pushWorldPlaneXZ(
-      b.annexCeiling,
-      soffitBand,
-      baySpan,
-      roomMaxX - soffitBand * 0.5,
-      soffitY,
-      roomCz,
-      true
-    );
-    // Teto central elevado em y = 3.74m
-    pushWorldPlaneXZ(
-      b.annexCeiling,
-      baySpan,
-      baySpan,
+      roomW - 0.01,
+      roomD - 0.01,
       roomCx,
       vaultTopY,
       roomCz,
       true
     );
 
-    // Claraboia/fáscia vertical contornando a transição 3.20m -> 3.74m + vigas cruzadas 3D
-    const fasciaH = vaultTopY - soffitY;
-    const fasciaMidY = soffitY + fasciaH * 0.5;
     const trimMatBucket =
       r.id === 'library_room' || r.id === 'vegetation_room'
         ? b.weatheredWood
         : b.metalTrim;
-    pushRoomBox(trimMatBucket, roomCenterXf, baySpan + 0.18, fasciaH, 0.14, 0, fasciaMidY, -baySpan * 0.5);
-    pushRoomBox(trimMatBucket, roomCenterXf, baySpan + 0.18, fasciaH, 0.14, 0, fasciaMidY, baySpan * 0.5);
-    pushRoomBox(trimMatBucket, roomCenterXf, 0.14, fasciaH, baySpan - 0.1, -baySpan * 0.5, fasciaMidY, 0);
-    pushRoomBox(trimMatBucket, roomCenterXf, 0.14, fasciaH, baySpan - 0.1, baySpan * 0.5, fasciaMidY, 0);
-
-    // Treliças/vigas mestras cruzando o teto elevado
-    for (const offset of [-1.5, 1.5]) {
-      pushRoomBox(trimMatBucket, roomCenterXf, baySpan - 0.12, 0.16, 0.2, 0, vaultTopY - 0.1, offset);
-      pushRoomBox(b.darkIron, roomCenterXf, 0.18, 0.14, baySpan - 0.12, offset, vaultTopY - 0.11, 0);
-    }
-
-    // 4 Luminárias Arquitetônicas Suspensas no teto da sala + fontes reais de luz pontual
     const isCoolLight =
-      r.id === 'computer_room' || r.id === 'biology_lab' || r.id === 'reactor_hall';
+      r.id === 'computer_room' ||
+      r.id === 'biology_lab' ||
+      r.id === 'reactor_hall';
     const lampGlowBucket = isCoolLight ? b.crtScreen : b.warmLampGlow;
-    for (const [lxOff, lzOff] of [
-      [-3.0, -3.0],
-      [3.0, -3.0],
-      [-3.0, 3.0],
-      [3.0, 3.0],
-    ] as const) {
-      // Hastes pendentes + moldura metálica + difusor luminoso
-      pushRoomCyl(b.darkIron, roomCenterXf, 0.025, 0.025, 0.36, 6, lxOff - 0.36, vaultTopY - 0.18, lzOff);
-      pushRoomCyl(b.darkIron, roomCenterXf, 0.025, 0.025, 0.36, 6, lxOff + 0.36, vaultTopY - 0.18, lzOff);
-      pushRoomBox(b.darkIron, roomCenterXf, 1.04, 0.08, 0.54, lxOff, vaultTopY - 0.38, lzOff);
-      pushRoomBox(lampGlowBucket, roomCenterXf, 0.92, 0.03, 0.42, lxOff, vaultTopY - 0.425, lzOff);
+
+    const isRoomWallOrOutside = (gx: number, gz: number): boolean => {
+      if (gx === r.doorGx && gz === r.doorGz) return false;
+      if (gx < r.minGx || gx > r.maxGx || gz < r.minGz || gz > r.maxGz) {
+        return true;
+      }
+      return getThemedRoomMiniMapTile(gx, gz) === '#';
+    };
+
+    const openCellsWorld: THREE.Vector3[] = [];
+
+    // 2. MINI-MAPA INTERNO 7x7: DIVISÓRIAS '#', PISOS TEMÁTICOS, SANCAS ESCALONADAS E NERVURAS SEM Z-FIGHTING
+    const intWallH = WALL_HEIGHT - 0.008; // 0.004..3.196 -> jamais toca piso (0.000) ou teto (3.200)!
+    const intWallMidY = WALL_HEIGHT * 0.5;
+
+    for (let gz = r.minGz; gz <= r.maxGz; gz++) {
+      for (let gx = r.minGx; gx <= r.maxGx; gx++) {
+        const tile = getThemedRoomMiniMapTile(gx, gz);
+        const cellW = gridCellToWorld(gx, gz);
+        const cellXf: LocalXf = { cx: cellW.x, cz: cellW.z, yaw: 0 };
+
+        if (tile === '#') {
+          // Bloco divisório interno sólido da Sala Especial (`annexWall`)
+          pushRoomBox(
+            b.annexWall,
+            worldXf,
+            CELL_SIZE,
+            intWallH,
+            CELL_SIZE,
+            cellW.x,
+            intWallMidY,
+            cellW.z
+          );
+          addSolidCollider(
+            colliders,
+            `room-arch-${r.id}-miniwall-${gx}-${gz}`,
+            cellW.x,
+            cellW.z,
+            CELL_SIZE,
+            CELL_SIZE,
+            WALL_HEIGHT
+          );
+
+          // Rodapés metálicos limpos apenas nas faces voltadas para corredores/sub-salas transitáveis '.'
+          const dirs = [
+            { dx: 0, dz: -1, ox: 0, oz: -1.518, sx: 2.92, sz: 0.036 },
+            { dx: 0, dz: 1, ox: 0, oz: 1.518, sx: 2.92, sz: 0.036 },
+            { dx: -1, dz: 0, ox: -1.518, oz: 0, sx: 0.036, sz: 2.92 },
+            { dx: 1, dz: 0, ox: 1.518, oz: 0, sx: 0.036, sz: 2.92 },
+          ] as const;
+          for (const d of dirs) {
+            if (getThemedRoomMiniMapTile(gx + d.dx, gz + d.dz) === '.') {
+              pushRoomBox(
+                b.darkIron,
+                cellXf,
+                d.sx,
+                0.15,
+                d.sz,
+                d.ox,
+                0.08,
+                d.oz
+              );
+            }
+          }
+          continue;
+        }
+
+        if (tile === '.') {
+          openCellsWorld.push(new THREE.Vector3(cellW.x, 0, cellW.z));
+        }
+
+        // Tapetes / pisos embutidos temáticos APENAS nas células abertas (com alturas escalonadas sem Z-fighting!)
+        const insetSpan = CELL_SIZE - 0.36; // 2.64m dentro da célula 3x3
+        switch (r.id) {
+          case 'computer_room':
+          case 'reactor_hall':
+            if (tile === '.') {
+              pushRoomBox(
+                b.techFloor,
+                cellXf,
+                insetSpan,
+                0.012,
+                insetSpan,
+                0,
+                0.006,
+                0
+              );
+            }
+            break;
+          case 'biology_lab':
+          case 'medical_ward':
+            pushRoomBox(
+              b.labTile,
+              cellXf,
+              insetSpan,
+              0.012,
+              insetSpan,
+              0,
+              0.006,
+              0
+            );
+            break;
+          case 'library_room':
+            pushRoomBox(
+              b.oakWood,
+              cellXf,
+              insetSpan,
+              0.01,
+              insetSpan,
+              0,
+              0.005,
+              0
+            );
+            if (gx >= r.minGx + 2 && gx <= r.maxGx - 2) {
+              // Tapete elevado claramente acima do assoalho de carvalho (bottomY = 0.011 > topY = 0.010)
+              pushRoomBox(
+                b.libraryRug,
+                cellXf,
+                insetSpan - 0.36,
+                0.012,
+                insetSpan - 0.36,
+                0,
+                0.017,
+                0
+              );
+            }
+            break;
+          case 'vegetation_room':
+            if ((gx + gz) % 2 === 0) {
+              pushRoomBox(
+                b.mossSoil,
+                cellXf,
+                insetSpan - 0.16,
+                0.014,
+                insetSpan - 0.16,
+                0,
+                0.007,
+                0
+              );
+            }
+            break;
+          case 'crew_quarters':
+            pushRoomBox(
+              b.oakWood,
+              cellXf,
+              insetSpan,
+              0.012,
+              insetSpan,
+              0,
+              0.006,
+              0
+            );
+            break;
+        }
+
+        // Cornijas/fáscias superiores contornando paredes adjacentes (bottomY = 2.94m, topY = 3.194m -> ZERO coplanaridade com teto 3.200m!)
+        const wallN = isRoomWallOrOutside(gx, gz - 1);
+        const wallS = isRoomWallOrOutside(gx, gz + 1);
+        const wallW = isRoomWallOrOutside(gx - 1, gz);
+        const wallE = isRoomWallOrOutside(gx + 1, gz);
+        const corniceH = 0.254;
+        const corniceMidY = vaultTopY - 0.006 - corniceH * 0.5; // 3.067m (2.940..3.194)
+        const corniceSpan = CELL_SIZE - 0.38; // Recuado 0.19m nas pontas para nunca cruzar nos cantos!
+        if (wallN) {
+          pushRoomBox(
+            trimMatBucket,
+            cellXf,
+            corniceSpan,
+            corniceH,
+            0.15,
+            0,
+            corniceMidY,
+            -CELL_SIZE * 0.5 + 0.085
+          );
+        }
+        if (wallS) {
+          pushRoomBox(
+            trimMatBucket,
+            cellXf,
+            corniceSpan,
+            corniceH,
+            0.15,
+            0,
+            corniceMidY,
+            CELL_SIZE * 0.5 - 0.085
+          );
+        }
+        if (wallW) {
+          pushRoomBox(
+            trimMatBucket,
+            cellXf,
+            0.15,
+            corniceH,
+            corniceSpan,
+            -CELL_SIZE * 0.5 + 0.085,
+            corniceMidY,
+            0
+          );
+        }
+        if (wallE) {
+          pushRoomBox(
+            trimMatBucket,
+            cellXf,
+            0.15,
+            corniceH,
+            corniceSpan,
+            CELL_SIZE * 0.5 - 0.085,
+            corniceMidY,
+            0
+          );
+        }
+
+        // Nervura transversal recuada (bottomY = 3.07m > 2.94m, contida em 2.36m -> NUNCA cruza outras vigas! Corrige image-23!)
+        if ((gx + gz) % 2 === 0) {
+          pushRoomBox(
+            b.darkIron,
+            cellXf,
+            CELL_SIZE - 0.64,
+            0.12,
+            0.16,
+            0,
+            vaultTopY - 0.07,
+            0
+          );
+        }
+      }
     }
 
+    // 4 Luminárias Arquitetônicas Suspensas garantidamente em células abertas '.' da sala
+    const lampTargetCoords: Array<[number, number]> = [
+      [r.minGx + 1, r.minGz + 1],
+      [r.maxGx - 1, r.minGz + 1],
+      [r.minGx + 1, r.maxGz - 1],
+      [r.maxGx - 1, r.maxGz - 1],
+    ];
+    const findNearestOpenCell = (tgx: number, tgz: number): THREE.Vector3 => {
+      if (getThemedRoomMiniMapTile(tgx, tgz) === '.') {
+        const w = gridCellToWorld(tgx, tgz);
+        return new THREE.Vector3(w.x, 0, w.z);
+      }
+      const tw = gridCellToWorld(tgx, tgz);
+      let best = openCellsWorld[0] ?? new THREE.Vector3(roomCx, 0, roomCz);
+      let bestDist = Infinity;
+      for (const c of openCellsWorld) {
+        const d = Math.hypot(c.x - tw.x, c.z - tw.z);
+        if (d < bestDist) {
+          bestDist = d;
+          best = c;
+        }
+      }
+      return best;
+    };
+
+    const chosenLampWorlds = lampTargetCoords.map(([lgx, lgz]) =>
+      findNearestOpenCell(lgx, lgz)
+    );
+    const emittedLampKeys = new Set<string>();
+    for (const lw of chosenLampWorlds) {
+      const key = `${lw.x.toFixed(1)},${lw.z.toFixed(1)}`;
+      if (emittedLampKeys.has(key)) continue;
+      emittedLampKeys.add(key);
+      const lXf: LocalXf = { cx: lw.x, cz: lw.z, yaw: 0 };
+      pushRoomCyl(
+        b.darkIron,
+        lXf,
+        0.024,
+        0.024,
+        0.3,
+        6,
+        -0.34,
+        vaultTopY - 0.22,
+        0
+      );
+      pushRoomCyl(
+        b.darkIron,
+        lXf,
+        0.024,
+        0.024,
+        0.3,
+        6,
+        0.34,
+        vaultTopY - 0.22,
+        0
+      );
+      pushRoomBox(b.darkIron, lXf, 0.96, 0.07, 0.48, 0, vaultTopY - 0.4, 0);
+      pushRoomBox(
+        lampGlowBucket,
+        lXf,
+        0.84,
+        0.028,
+        0.36,
+        0,
+        vaultTopY - 0.452,
+        0
+      );
+    }
+
+    // Exatamente 3 luzes dinâmicas por Sala Especial (7 x 3 = 21 annexLights!)
+    const lightA = chosenLampWorlds[0] ?? new THREE.Vector3(roomCx, 0, roomCz);
+    const lightB = chosenLampWorlds[3] ?? new THREE.Vector3(roomCx, 0, roomCz);
     annexLights.push(
       {
-        position: new THREE.Vector3(roomCx - 3.2, 2.74, roomCz - 3.2),
-        baseIntensity: 0.66,
+        position: new THREE.Vector3(lightA.x, 2.68, lightA.z),
+        baseIntensity: 0.68,
         flicker: false,
         phase: rIdx * 1.3 + 0.4,
       },
       {
-        position: new THREE.Vector3(roomCx + 3.2, 2.74, roomCz + 3.2),
-        baseIntensity: 0.66,
+        position: new THREE.Vector3(lightB.x, 2.68, lightB.z),
+        baseIntensity: 0.68,
         flicker: rIdx % 2 === 1,
         phase: rIdx * 1.9 + 1.7,
       },
@@ -1355,153 +1767,342 @@ function emitAnnexRoomsArchitecture(
       }
     );
 
-    // 3. AS 4 PAREDES MODULARES (`annexWall`) + PÓRTICO BLINDADO DE ACESSO + COLISORES SÓLIDOS
-    const wallH = WALL_HEIGHT;
-    const wallMidY = wallH * 0.5;
+    // 3. AS 4 PAREDES PERIMETRAIS (`annexWall`) + VERGA ESCALONADA SEM Z-FIGHTING + COLISORES SÓLIDOS
+    const wallH = WALL_HEIGHT - 0.008;
+    const wallMidY = WALL_HEIGHT * 0.5;
+    const soffitTrimTopY = portalClearH + 0.08; // 2.66m (separa a verga superior de y=2.58m! Corrige image-21!)
+    const cladLintelH = WALL_HEIGHT - 0.004 - soffitTrimTopY;
+    const cladLintelMidY = soffitTrimTopY + cladLintelH * 0.5;
 
     // Parede Norte da Sala
     if (r.outwardDir === 'S') {
-      // Sala ao Sul: a face Norte (roomMinZ) encosta na muralha Sul do mapa em (doorGx, 28)
       const leftSpan = doorWorld.x - portalClearW * 0.5 - roomMinX;
       const rightSpan = roomMaxX - (doorWorld.x + portalClearW * 0.5);
       const zClad = roomMinZ + entryCladT * 0.5 + 0.004;
       if (leftSpan > 0.05) {
         const cx = roomMinX + leftSpan * 0.5;
-        pushRoomBox(b.annexWall, worldXf, leftSpan, wallH, entryCladT, cx, wallMidY, zClad);
-        addSolidCollider(colliders, `room-arch-${r.id}-entryL`, cx, zClad, leftSpan, entryCladT, wallH);
+        pushRoomBox(
+          b.annexWall,
+          worldXf,
+          leftSpan,
+          wallH,
+          entryCladT,
+          cx,
+          wallMidY,
+          zClad
+        );
+        addSolidCollider(
+          colliders,
+          `room-arch-${r.id}-entryL`,
+          cx,
+          zClad,
+          leftSpan,
+          entryCladT,
+          WALL_HEIGHT
+        );
       }
       if (rightSpan > 0.05) {
         const cx = roomMaxX - rightSpan * 0.5;
-        pushRoomBox(b.annexWall, worldXf, rightSpan, wallH, entryCladT, cx, wallMidY, zClad);
-        addSolidCollider(colliders, `room-arch-${r.id}-entryR`, cx, zClad, rightSpan, entryCladT, wallH);
+        pushRoomBox(
+          b.annexWall,
+          worldXf,
+          rightSpan,
+          wallH,
+          entryCladT,
+          cx,
+          wallMidY,
+          zClad
+        );
+        addSolidCollider(
+          colliders,
+          `room-arch-${r.id}-entryR`,
+          cx,
+          zClad,
+          rightSpan,
+          entryCladT,
+          WALL_HEIGHT
+        );
       }
       pushRoomBox(
         b.annexWall,
         worldXf,
-        portalClearW,
-        wallH - portalClearH,
+        portalClearW - 0.02,
+        cladLintelH,
         entryCladT,
         doorWorld.x,
-        portalClearH + (wallH - portalClearH) * 0.5,
+        cladLintelMidY,
         zClad
       );
     } else {
       const zOut = roomMinZ - outerWallT * 0.5;
-      pushRoomBox(b.annexWall, worldXf, roomW + outerWallT * 2, wallH, outerWallT, roomCx, wallMidY, zOut);
-      addSolidCollider(colliders, `room-arch-${r.id}-N`, roomCx, zOut, roomW + outerWallT * 2, outerWallT, wallH);
+      pushRoomBox(
+        b.annexWall,
+        worldXf,
+        roomW + outerWallT * 2,
+        wallH,
+        outerWallT,
+        roomCx,
+        wallMidY,
+        zOut
+      );
+      addSolidCollider(
+        colliders,
+        `room-arch-${r.id}-N`,
+        roomCx,
+        zOut,
+        roomW + outerWallT * 2,
+        outerWallT,
+        WALL_HEIGHT
+      );
     }
 
     // Parede Sul da Sala
     if (r.outwardDir === 'N') {
-      // Sala ao Norte: a face Sul (roomMaxZ) encosta na muralha Norte do mapa em (doorGx, 0)
       const leftSpan = doorWorld.x - portalClearW * 0.5 - roomMinX;
       const rightSpan = roomMaxX - (doorWorld.x + portalClearW * 0.5);
       const zClad = roomMaxZ - entryCladT * 0.5 - 0.004;
       if (leftSpan > 0.05) {
         const cx = roomMinX + leftSpan * 0.5;
-        pushRoomBox(b.annexWall, worldXf, leftSpan, wallH, entryCladT, cx, wallMidY, zClad);
-        addSolidCollider(colliders, `room-arch-${r.id}-entryL`, cx, zClad, leftSpan, entryCladT, wallH);
+        pushRoomBox(
+          b.annexWall,
+          worldXf,
+          leftSpan,
+          wallH,
+          entryCladT,
+          cx,
+          wallMidY,
+          zClad
+        );
+        addSolidCollider(
+          colliders,
+          `room-arch-${r.id}-entryL`,
+          cx,
+          zClad,
+          leftSpan,
+          entryCladT,
+          WALL_HEIGHT
+        );
       }
       if (rightSpan > 0.05) {
         const cx = roomMaxX - rightSpan * 0.5;
-        pushRoomBox(b.annexWall, worldXf, rightSpan, wallH, entryCladT, cx, wallMidY, zClad);
-        addSolidCollider(colliders, `room-arch-${r.id}-entryR`, cx, zClad, rightSpan, entryCladT, wallH);
+        pushRoomBox(
+          b.annexWall,
+          worldXf,
+          rightSpan,
+          wallH,
+          entryCladT,
+          cx,
+          wallMidY,
+          zClad
+        );
+        addSolidCollider(
+          colliders,
+          `room-arch-${r.id}-entryR`,
+          cx,
+          zClad,
+          rightSpan,
+          entryCladT,
+          WALL_HEIGHT
+        );
       }
       pushRoomBox(
         b.annexWall,
         worldXf,
-        portalClearW,
-        wallH - portalClearH,
+        portalClearW - 0.02,
+        cladLintelH,
         entryCladT,
         doorWorld.x,
-        portalClearH + (wallH - portalClearH) * 0.5,
+        cladLintelMidY,
         zClad
       );
     } else {
       const zOut = roomMaxZ + outerWallT * 0.5;
-      pushRoomBox(b.annexWall, worldXf, roomW + outerWallT * 2, wallH, outerWallT, roomCx, wallMidY, zOut);
-      addSolidCollider(colliders, `room-arch-${r.id}-S`, roomCx, zOut, roomW + outerWallT * 2, outerWallT, wallH);
+      pushRoomBox(
+        b.annexWall,
+        worldXf,
+        roomW + outerWallT * 2,
+        wallH,
+        outerWallT,
+        roomCx,
+        wallMidY,
+        zOut
+      );
+      addSolidCollider(
+        colliders,
+        `room-arch-${r.id}-S`,
+        roomCx,
+        zOut,
+        roomW + outerWallT * 2,
+        outerWallT,
+        WALL_HEIGHT
+      );
     }
 
     // Parede Oeste da Sala
     if (r.outwardDir === 'E') {
-      // Sala a Leste: a face Oeste (roomMinX) encosta na muralha Leste do mapa em (28, doorGz)
       const topSpan = doorWorld.z - portalClearW * 0.5 - roomMinZ;
       const botSpan = roomMaxZ - (doorWorld.z + portalClearW * 0.5);
       const xClad = roomMinX + entryCladT * 0.5 + 0.004;
       if (topSpan > 0.05) {
         const cz = roomMinZ + topSpan * 0.5;
-        pushRoomBox(b.annexWall, worldXf, entryCladT, wallH, topSpan, xClad, wallMidY, cz);
-        addSolidCollider(colliders, `room-arch-${r.id}-entryL`, xClad, cz, entryCladT, topSpan, wallH);
+        pushRoomBox(
+          b.annexWall,
+          worldXf,
+          entryCladT,
+          wallH,
+          topSpan,
+          xClad,
+          wallMidY,
+          cz
+        );
+        addSolidCollider(
+          colliders,
+          `room-arch-${r.id}-entryL`,
+          xClad,
+          cz,
+          entryCladT,
+          topSpan,
+          WALL_HEIGHT
+        );
       }
       if (botSpan > 0.05) {
         const cz = roomMaxZ - botSpan * 0.5;
-        pushRoomBox(b.annexWall, worldXf, entryCladT, wallH, botSpan, xClad, wallMidY, cz);
-        addSolidCollider(colliders, `room-arch-${r.id}-entryR`, xClad, cz, entryCladT, botSpan, wallH);
+        pushRoomBox(
+          b.annexWall,
+          worldXf,
+          entryCladT,
+          wallH,
+          botSpan,
+          xClad,
+          wallMidY,
+          cz
+        );
+        addSolidCollider(
+          colliders,
+          `room-arch-${r.id}-entryR`,
+          xClad,
+          cz,
+          entryCladT,
+          botSpan,
+          WALL_HEIGHT
+        );
       }
       pushRoomBox(
         b.annexWall,
         worldXf,
         entryCladT,
-        wallH - portalClearH,
-        portalClearW,
+        cladLintelH,
+        portalClearW - 0.02,
         xClad,
-        portalClearH + (wallH - portalClearH) * 0.5,
+        cladLintelMidY,
         doorWorld.z
       );
     } else {
       const xOut = roomMinX - outerWallT * 0.5;
-      pushRoomBox(b.annexWall, worldXf, outerWallT, wallH, roomD, xOut, wallMidY, roomCz);
-      addSolidCollider(colliders, `room-arch-${r.id}-W`, xOut, roomCz, outerWallT, roomD, wallH);
+      pushRoomBox(
+        b.annexWall,
+        worldXf,
+        outerWallT,
+        wallH,
+        roomD,
+        xOut,
+        wallMidY,
+        roomCz
+      );
+      addSolidCollider(
+        colliders,
+        `room-arch-${r.id}-W`,
+        xOut,
+        roomCz,
+        outerWallT,
+        roomD,
+        WALL_HEIGHT
+      );
     }
 
     // Parede Leste da Sala
     if (r.outwardDir === 'W') {
-      // Sala a Oeste: a face Leste (roomMaxX) encosta na muralha Oeste do mapa em (0, doorGz)
       const topSpan = doorWorld.z - portalClearW * 0.5 - roomMinZ;
       const botSpan = roomMaxZ - (doorWorld.z + portalClearW * 0.5);
       const xClad = roomMaxX - entryCladT * 0.5 - 0.004;
       if (topSpan > 0.05) {
         const cz = roomMinZ + topSpan * 0.5;
-        pushRoomBox(b.annexWall, worldXf, entryCladT, wallH, topSpan, xClad, wallMidY, cz);
-        addSolidCollider(colliders, `room-arch-${r.id}-entryL`, xClad, cz, entryCladT, topSpan, wallH);
+        pushRoomBox(
+          b.annexWall,
+          worldXf,
+          entryCladT,
+          wallH,
+          topSpan,
+          xClad,
+          wallMidY,
+          cz
+        );
+        addSolidCollider(
+          colliders,
+          `room-arch-${r.id}-entryL`,
+          xClad,
+          cz,
+          entryCladT,
+          topSpan,
+          WALL_HEIGHT
+        );
       }
       if (botSpan > 0.05) {
         const cz = roomMaxZ - botSpan * 0.5;
-        pushRoomBox(b.annexWall, worldXf, entryCladT, wallH, botSpan, xClad, wallMidY, cz);
-        addSolidCollider(colliders, `room-arch-${r.id}-entryR`, xClad, cz, entryCladT, botSpan, wallH);
+        pushRoomBox(
+          b.annexWall,
+          worldXf,
+          entryCladT,
+          wallH,
+          botSpan,
+          xClad,
+          wallMidY,
+          cz
+        );
+        addSolidCollider(
+          colliders,
+          `room-arch-${r.id}-entryR`,
+          xClad,
+          cz,
+          entryCladT,
+          botSpan,
+          WALL_HEIGHT
+        );
       }
       pushRoomBox(
         b.annexWall,
         worldXf,
         entryCladT,
-        wallH - portalClearH,
-        portalClearW,
+        cladLintelH,
+        portalClearW - 0.02,
         xClad,
-        portalClearH + (wallH - portalClearH) * 0.5,
+        cladLintelMidY,
         doorWorld.z
       );
     } else {
       const xOut = roomMaxX + outerWallT * 0.5;
-      pushRoomBox(b.annexWall, worldXf, outerWallT, wallH, roomD, xOut, wallMidY, roomCz);
-      addSolidCollider(colliders, `room-arch-${r.id}-E`, xOut, roomCz, outerWallT, roomD, wallH);
+      pushRoomBox(
+        b.annexWall,
+        worldXf,
+        outerWallT,
+        wallH,
+        roomD,
+        xOut,
+        wallMidY,
+        roomCz
+      );
+      addSolidCollider(
+        colliders,
+        `room-arch-${r.id}-E`,
+        xOut,
+        roomCz,
+        outerWallT,
+        roomD,
+        WALL_HEIGHT
+      );
     }
 
-    // Pilastras estruturais 3D nos 4 cantos internos da Sala Externa
-    for (const [cxSign, czSign] of [
-      [-1, -1],
-      [1, -1],
-      [-1, 1],
-      [1, 1],
-    ] as const) {
-      const px = roomCx + cxSign * (roomW * 0.5 - 0.14);
-      const pz = roomCz + czSign * (roomD * 0.5 - 0.14);
-      pushRoomBox(trimMatBucket, worldXf, 0.26, soffitY, 0.26, px, soffitY * 0.5, pz);
-      pushRoomBox(b.darkIron, worldXf, 0.32, 0.22, 0.32, px, 0.11, pz);
-      pushRoomBox(b.darkIron, worldXf, 0.32, 0.18, 0.32, px, soffitY - 0.09, pz);
-    }
-
-    // 4. PÓRTICO BLINDADO DE ESCLUSA NA CÉLULA PERIMETRAL (doorGx, doorGz)
+    // 4. PÓRTICO BLINDADO DE ESCLUSA NA CÉLULA PERIMETRAL (doorGx, doorGz) — ZERO Z-FIGHTING (corrige image-21!)
     const isNS = r.outwardDir === 'N' || r.outwardDir === 'S';
     const doorXf: LocalXf = {
       cx: doorWorld.x,
@@ -1510,11 +2111,46 @@ function emitAnnexRoomsArchitecture(
     };
     const jambOffset = portalClearW * 0.5 + jambW * 0.5; // 1.29m
     for (const side of [-1, 1] as const) {
-      // Batente blindado maciço ocupando os 3.0m de espessura da muralha perimetral
-      pushRoomBox(b.metalTrim, doorXf, jambW, WALL_HEIGHT, CELL_SIZE - 0.01, side * jambOffset, WALL_HEIGHT * 0.5, 0);
-      pushRoomBox(b.darkIron, doorXf, jambW + 0.05, 0.24, CELL_SIZE, side * jambOffset, 0.12, 0);
-      pushRoomBox(b.darkIron, doorXf, jambW + 0.04, WALL_HEIGHT - 0.3, 0.26, side * jambOffset, WALL_HEIGHT * 0.5, -1.24);
-      pushRoomBox(b.darkIron, doorXf, jambW + 0.04, WALL_HEIGHT - 0.3, 0.26, side * jambOffset, WALL_HEIGHT * 0.5, 1.24);
+      pushRoomBox(
+        b.metalTrim,
+        doorXf,
+        jambW,
+        WALL_HEIGHT - 0.01,
+        CELL_SIZE - 0.02,
+        side * jambOffset,
+        WALL_HEIGHT * 0.5,
+        0
+      );
+      pushRoomBox(
+        b.darkIron,
+        doorXf,
+        jambW + 0.04,
+        0.22,
+        CELL_SIZE - 0.01,
+        side * jambOffset,
+        0.115,
+        0
+      );
+      pushRoomBox(
+        b.darkIron,
+        doorXf,
+        jambW + 0.036,
+        WALL_HEIGHT - 0.34,
+        0.24,
+        side * jambOffset,
+        WALL_HEIGHT * 0.5,
+        -1.22
+      );
+      pushRoomBox(
+        b.darkIron,
+        doorXf,
+        jambW + 0.036,
+        WALL_HEIGHT - 0.34,
+        0.24,
+        side * jambOffset,
+        WALL_HEIGHT * 0.5,
+        1.22
+      );
 
       if (isNS) {
         addSolidCollider(
@@ -1538,70 +2174,165 @@ function emitAnnexRoomsArchitecture(
         );
       }
     }
-    // Verga superior blindada sobre o vão de 2.58m + visor luminoso sinalizando a entrada da Sala Nova!
-    const lintelH = WALL_HEIGHT - portalClearH;
+
+    // Sanca inferior do pórtico (y = 2.58..2.66m) EXCLUSIVA em darkIron + Verga superior (y = 2.66..3.195m) em metalTrim!
+    pushRoomBox(
+      b.darkIron,
+      doorXf,
+      portalClearW - 0.008,
+      0.08,
+      CELL_SIZE - 0.04,
+      0,
+      portalClearH + 0.04,
+      0
+    );
+    const upperLintelH = WALL_HEIGHT - 0.005 - soffitTrimTopY;
     pushRoomBox(
       b.metalTrim,
       doorXf,
-      portalClearW + 0.02,
-      lintelH,
-      CELL_SIZE - 0.01,
+      portalClearW - 0.004,
+      upperLintelH,
+      CELL_SIZE - 0.02,
       0,
-      portalClearH + lintelH * 0.5,
+      soffitTrimTopY + upperLintelH * 0.5,
       0
     );
-    pushRoomBox(b.darkIron, doorXf, portalClearW + 0.06, 0.09, CELL_SIZE + 0.02, 0, portalClearH + 0.045, 0);
-    // Painéis luminosos de identificação nos dois lados da verga do pórtico
-    pushRoomBox(lampGlowBucket, doorXf, 1.42, 0.16, 0.04, 0, portalClearH + 0.28, -1.5);
-    pushRoomBox(lampGlowBucket, doorXf, 1.42, 0.16, 0.04, 0, portalClearH + 0.28, 1.5);
+    // Molduras metálicas 3D ressaltadas para as placas de ícone (corredor interno + face da Sala Especial)
+    const corridorSign = r.outwardDir === 'N' || r.outwardDir === 'W' ? 1 : -1;
+    const corridorPlaqueZ = corridorSign * 1.526;
+    const annexPlaqueZ = -corridorSign * (1.5 + entryCladT + 0.03);
+    pushRoomBox(
+      b.darkIron,
+      doorXf,
+      1.38,
+      0.42,
+      0.044,
+      0,
+      portalClearH + 0.31,
+      corridorPlaqueZ
+    );
+    pushRoomBox(
+      b.darkIron,
+      doorXf,
+      1.38,
+      0.42,
+      0.044,
+      0,
+      portalClearH + 0.31,
+      annexPlaqueZ
+    );
     // Soleira metálica chanfrada no piso do pórtico
-    pushRoomBox(b.darkIron, doorXf, portalClearW, 0.024, 0.42, 0, 0.012, 0);
+    pushRoomBox(b.darkIron, doorXf, portalClearW - 0.01, 0.024, 0.44, 0, 0.012, 0);
 
     // 5. MARCOS ARQUITETÔNICOS EXCLUSIVOS DE CADA SALA EXTERNA
     if (r.id === 'reactor_hall') {
-      // NÚCLEO TOKAMAK DE FUSÃO / CONTENÇÃO MAGNÉTICA CENTRAL em (25, -3)
-      pushRoomCyl(b.darkIron, roomCenterXf, 1.28, 1.38, 0.24, 16, 0, 0.12, 0);
-      pushRoomCyl(b.metalTrim, roomCenterXf, 1.06, 1.16, 0.22, 16, 0, 0.34, 0);
-      // Coluna central de plasma bioluminescente + anéis magnéticos toroidais
-      pushRoomCyl(b.bioFluid, roomCenterXf, 0.68, 0.68, 2.28, 16, 0, 1.56, 0);
-      pushRoomCyl(b.crtScreen, roomCenterXf, 0.74, 0.74, 0.24, 16, 0, 1.56, 0);
+      // NÚCLEO TOKAMAK DE FUSÃO / CONTENÇÃO MAGNÉTICA em (25, -3)
+      const tokamakW = gridCellToWorld(25, -3);
+      const tokamakXf: LocalXf = { cx: tokamakW.x, cz: tokamakW.z, yaw: 0 };
+      pushRoomCyl(b.darkIron, tokamakXf, 1.22, 1.32, 0.24, 16, 0, 0.12, 0);
+      pushRoomCyl(b.metalTrim, tokamakXf, 1.02, 1.12, 0.22, 16, 0, 0.34, 0);
+      pushRoomCyl(b.bioFluid, tokamakXf, 0.64, 0.64, 2.26, 16, 0, 1.56, 0);
+      pushRoomCyl(b.crtScreen, tokamakXf, 0.7, 0.7, 0.24, 16, 0, 1.56, 0);
       for (const ringY of [0.72, 1.26, 1.88, 2.42]) {
-        pushRoomCyl(b.darkIron, roomCenterXf, 0.92, 0.92, 0.14, 16, 0, ringY, 0);
+        pushRoomCyl(b.darkIron, tokamakXf, 0.88, 0.88, 0.14, 16, 0, ringY, 0);
       }
-      // 6 Bobinas C verticais abraçando o núcleo até o teto de 3.20m
       for (let c = 0; c < 6; c++) {
         const ang = (c * Math.PI) / 3;
-        const bx = Math.cos(ang) * 0.98;
-        const bz = Math.sin(ang) * 0.98;
-        pushRoomBox(b.metalTrim, roomCenterXf, 0.18, 2.52, 0.28, bx, 1.54, bz, 0, -ang, 0);
+        const bx = Math.cos(ang) * 0.94;
+        const bz = Math.sin(ang) * 0.94;
+        pushRoomBox(
+          b.metalTrim,
+          tokamakXf,
+          0.17,
+          2.5,
+          0.26,
+          bx,
+          1.54,
+          bz,
+          0,
+          -ang,
+          0
+        );
       }
-      pushRoomCyl(b.darkIron, roomCenterXf, 1.14, 0.96, 0.44, 16, 0, 2.98, 0);
-      addSolidCollider(colliders, 'room-arch-reactor-tokamak', roomCx, roomCz, 2.32, 2.32, WALL_HEIGHT);
+      pushRoomCyl(b.darkIron, tokamakXf, 1.1, 0.92, 0.42, 16, 0, 2.97, 0);
+      addSolidCollider(
+        colliders,
+        'room-arch-reactor-tokamak',
+        tokamakW.x,
+        tokamakW.z,
+        2.28,
+        2.28,
+        WALL_HEIGHT
+      );
     } else if (r.id === 'computer_room') {
-      // Calhas aéreas de cabos de dados interligando as fileiras de servidores
-      pushRoomBox(b.darkIron, roomCenterXf, 11.4, 0.08, 0.36, 0, 2.62, -2.8);
-      pushRoomBox(b.darkIron, roomCenterXf, 11.4, 0.08, 0.36, 0, 2.62, 0.2);
-      pushRoomBox(b.metalTrim, roomCenterXf, 0.34, 0.08, 8.8, -2.8, 2.7, -1.2);
-      pushRoomBox(b.metalTrim, roomCenterXf, 0.34, 0.08, 8.8, 2.8, 2.7, -1.2);
+      // Calhas aéreas de cabos na espinha central aberta (gx = 11, gz = -6..-2)
+      const spineW = gridCellToWorld(11, -3);
+      const spineXf: LocalXf = { cx: spineW.x, cz: spineW.z, yaw: 0 };
+      pushRoomBox(b.darkIron, spineXf, 0.42, 0.08, 11.4, 0, 2.66, -1.5);
     } else if (r.id === 'library_room') {
-      // Lustre clássico suspenso de latão e madeira no centro do Salão de Leitura
-      pushRoomCyl(b.darkIron, roomCenterXf, 0.04, 0.04, 0.64, 8, 0, vaultTopY - 0.32, 0);
-      pushRoomCyl(b.weatheredWood, roomCenterXf, 0.62, 0.56, 0.1, 12, 0, vaultTopY - 0.66, 0);
+      // Lustre clássico suspenso no Salão de Leitura aberto em (31, 20)
+      const salonW = gridCellToWorld(31, 20);
+      const salonXf: LocalXf = { cx: salonW.x, cz: salonW.z, yaw: 0 };
+      pushRoomCyl(
+        b.darkIron,
+        salonXf,
+        0.04,
+        0.04,
+        0.58,
+        8,
+        0,
+        vaultTopY - 0.3,
+        0
+      );
+      pushRoomCyl(
+        b.weatheredWood,
+        salonXf,
+        0.58,
+        0.52,
+        0.1,
+        12,
+        0,
+        vaultTopY - 0.62,
+        0
+      );
       for (const [lx, lz] of [
-        [-0.52, 0],
-        [0.52, 0],
-        [0, -0.52],
-        [0, 0.52],
+        [-0.48, 0],
+        [0.48, 0],
+        [0, -0.48],
+        [0, 0.48],
       ] as const) {
-        pushRoomCyl(b.warmLampGlow, roomCenterXf, 0.1, 0.14, 0.18, 8, lx, vaultTopY - 0.58, lz);
+        pushRoomCyl(
+          b.warmLampGlow,
+          salonXf,
+          0.09,
+          0.13,
+          0.16,
+          8,
+          lx,
+          vaultTopY - 0.54,
+          lz
+        );
       }
     } else if (r.id === 'vegetation_room') {
-      // Pérgola hidropônica aérea com tubulação de névoa e trepadeiras pendentes
-      for (const gzOff of [-2.4, 0, 2.4]) {
-        pushRoomCyl(b.metalTrim, roomCenterXf, 0.045, 0.045, 10.6, 8, 0, 2.74, gzOff, 0, 0, Math.PI * 0.5);
-        pushRoomBox(b.foliage, roomCenterXf, 0.42, 0.56, 0.28, -1.8, 2.52, gzOff, 0, 0.3, 0.08);
-        pushRoomBox(b.foliage, roomCenterXf, 0.38, 0.5, 0.26, 2.1, 2.55, gzOff, 0, -0.25, -0.06);
-      }
+      // Tubulação de névoa e folhagem pendente na Estufa Central aberta em (6, 31)
+      const groveW = gridCellToWorld(6, 31);
+      const groveXf: LocalXf = { cx: groveW.x, cz: groveW.z, yaw: 0 };
+      pushRoomCyl(
+        b.metalTrim,
+        groveXf,
+        0.045,
+        0.045,
+        2.3,
+        8,
+        0,
+        2.74,
+        0,
+        0,
+        0,
+        Math.PI * 0.5
+      );
+      pushRoomBox(b.foliage, groveXf, 0.38, 0.5, 0.26, -0.6, 2.52, 0, 0, 0.3, 0.08);
+      pushRoomBox(b.foliage, groveXf, 0.36, 0.48, 0.24, 0.6, 2.54, 0, 0, -0.25, -0.06);
     }
   }
 }
@@ -2257,9 +2988,305 @@ function mergeRoomGeos(
   return merged;
 }
 
+function getVestibuleMiniMapMount(r: ThemedRoomDefinition): {
+  x: number;
+  z: number;
+  yaw: number;
+  doorSide: 'N' | 'S' | 'W' | 'E';
+} {
+  switch (r.id) {
+    case 'computer_room': {
+      const c = gridCellToWorld(11, -1);
+      return { x: c.x - 1.465, z: c.z, yaw: Math.PI * 0.5, doorSide: 'S' };
+    }
+    case 'reactor_hall': {
+      const c = gridCellToWorld(26, -1);
+      return { x: c.x, z: c.z + 1.29, yaw: Math.PI, doorSide: 'S' };
+    }
+    case 'biology_lab': {
+      const c = gridCellToWorld(-1, 4);
+      return { x: c.x + 1.29, z: c.z, yaw: -Math.PI * 0.5, doorSide: 'E' };
+    }
+    case 'crew_quarters': {
+      const c = gridCellToWorld(-1, 11);
+      return { x: c.x, z: c.z + 1.465, yaw: Math.PI, doorSide: 'E' };
+    }
+    case 'medical_ward': {
+      const c = gridCellToWorld(29, 12);
+      return { x: c.x, z: c.z - 1.465, yaw: 0, doorSide: 'W' };
+    }
+    case 'library_room': {
+      const c = gridCellToWorld(29, 19);
+      return { x: c.x - 1.29, z: c.z, yaw: Math.PI * 0.5, doorSide: 'W' };
+    }
+    case 'vegetation_room': {
+      const c = gridCellToWorld(6, 29);
+      return { x: c.x - 1.465, z: c.z, yaw: Math.PI * 0.5, doorSide: 'N' };
+    }
+  }
+}
+
+function createWhitePixelTexture(): THREE.DataTexture {
+  const data = new Uint8Array([255, 255, 255, 255]);
+  const tex = new THREE.DataTexture(data, 1, 1, THREE.RGBAFormat);
+  tex.magFilter = THREE.NearestFilter;
+  tex.minFilter = THREE.NearestFilter;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+function buildSpecialRoomDoorsAndPlaques(
+  parentGroup: THREE.Group,
+  mats: RoomMaterials,
+  sharedUniforms: DoomSharedUniforms,
+  colliders: StaticColliderBox[]
+): DoomSpecialRoomDoorController {
+  resetThemedRoomLocks();
+
+  const portalClearW = 2.16;
+  const portalClearH = 2.58;
+  const entryCladT = 0.18;
+
+  const disposableGeometries: THREE.BufferGeometry[] = [];
+  const disposableMaterials: THREE.Material[] = [];
+  const disposableTextures: THREE.Texture[] = [];
+
+  const whiteTex = createWhitePixelTexture();
+  disposableTextures.push(whiteTex);
+
+  const plaquePlaneGeo = new THREE.PlaneGeometry(1.3, 0.36);
+  const miniMapPlaneGeo = new THREE.PlaneGeometry(0.76, 0.76);
+  const miniMapFrameGeo = new THREE.BoxGeometry(0.86, 0.86, 0.048);
+  const leafMainGeo = new THREE.BoxGeometry(1.075, portalClearH - 0.03, 0.22);
+  const leafInsetGeo = new THREE.BoxGeometry(0.84, 1.96, 0.25);
+  const leafBarGeo = new THREE.BoxGeometry(1.06, 0.16, 0.27);
+  const leafLedGeo = new THREE.BoxGeometry(0.22, 0.08, 0.285);
+  disposableGeometries.push(
+    plaquePlaneGeo,
+    miniMapPlaneGeo,
+    miniMapFrameGeo,
+    leafMainGeo,
+    leafInsetGeo,
+    leafBarGeo,
+    leafLedGeo
+  );
+
+  const doors: SpecialRoomDoorInstance[] = [];
+
+  for (const r of THEMED_ROOMS) {
+    const doorWorld = gridCellToWorld(r.doorGx, r.doorGz);
+    const isNS = r.outwardDir === 'N' || r.outwardDir === 'S';
+    const doorYaw = isNS ? 0 : Math.PI * 0.5;
+    const corridorSign = r.outwardDir === 'N' || r.outwardDir === 'W' ? 1 : -1;
+
+    // 1. PLACAS LUMINOSAS DE ÍCONE + CÓDIGO SETORIAL (NOS DOIS LADOS DO PÓRTICO — CORRIGE image-21!)
+    const iconTex = createSpecialRoomDoorIconTexture(
+      r.id,
+      r.doorCode,
+      r.accentHex
+    );
+    disposableTextures.push(iconTex);
+    const iconMat = createDoomSurfaceMaterial(iconTex, sharedUniforms, {
+      useLocalUv: true,
+      fullBright: true,
+      baseLight: 0.95,
+    });
+    disposableMaterials.push(iconMat);
+
+    const doorGroup = new THREE.Group();
+    doorGroup.name = `MazeRoomPortal_${r.id}`;
+    doorGroup.position.set(doorWorld.x, 0, doorWorld.z);
+    doorGroup.rotation.y = doorYaw;
+    parentGroup.add(doorGroup);
+
+    const corridorPlaque = new THREE.Mesh(plaquePlaneGeo, iconMat);
+    corridorPlaque.name = `MazeRoomDoorPlaque_${r.id}_corridor`;
+    corridorPlaque.position.set(
+      0,
+      portalClearH + 0.31,
+      corridorSign * (1.526 + 0.026)
+    );
+    corridorPlaque.rotation.y = corridorSign > 0 ? 0 : Math.PI;
+    doorGroup.add(corridorPlaque);
+
+    const annexPlaque = new THREE.Mesh(plaquePlaneGeo, iconMat);
+    annexPlaque.name = `MazeRoomDoorPlaque_${r.id}_annex`;
+    annexPlaque.position.set(
+      0,
+      portalClearH + 0.31,
+      -corridorSign * (1.5 + entryCladT + 0.03 + 0.026)
+    );
+    annexPlaque.rotation.y = -corridorSign > 0 ? 0 : Math.PI;
+    doorGroup.add(annexPlaque);
+
+    // 2. TERMINAL MURAL DE MINI-MAPA INTERNO 7x7 NO VESTÍBULO DA SALA ESPECIAL
+    const miniTex = createSpecialRoomMiniMapTexture(
+      r.miniMap,
+      getVestibuleMiniMapMount(r).doorSide,
+      r.accentHex
+    );
+    disposableTextures.push(miniTex);
+    const miniMat = createDoomSurfaceMaterial(miniTex, sharedUniforms, {
+      useLocalUv: true,
+      fullBright: true,
+      baseLight: 0.94,
+    });
+    disposableMaterials.push(miniMat);
+
+    const mount = getVestibuleMiniMapMount(r);
+    const miniGroup = new THREE.Group();
+    miniGroup.name = `MazeRoomMiniMap_${r.id}`;
+    miniGroup.position.set(mount.x, 1.54, mount.z);
+    miniGroup.rotation.y = mount.yaw;
+
+    const frameMesh = new THREE.Mesh(miniMapFrameGeo, mats.darkIron);
+    miniGroup.add(frameMesh);
+    const screenMesh = new THREE.Mesh(miniMapPlaneGeo, miniMat);
+    screenMesh.position.z = 0.028;
+    miniGroup.add(screenMesh);
+    parentGroup.add(miniGroup);
+
+    // 3. PORTA BLINDADA DUPLA DE CONTENÇÃO (COMEÇA FECHADA E TRANCADA!)
+    const ledMat = createDoomPropMaterial(whiteTex, sharedUniforms, {
+      baseLight: 0.95,
+      emissiveBoost: 0.65,
+      tint: new THREE.Color(0xff3344),
+    });
+    disposableMaterials.push(ledMat);
+
+    const buildDoorLeaf = (side: -1 | 1): THREE.Group => {
+      const leaf = new THREE.Group();
+      leaf.position.set(side * 0.54, portalClearH * 0.5, 0);
+
+      const mainPanel = new THREE.Mesh(leafMainGeo, mats.metalTrim);
+      leaf.add(mainPanel);
+
+      const armorInset = new THREE.Mesh(leafInsetGeo, mats.darkIron);
+      leaf.add(armorInset);
+
+      const lockBar = new THREE.Mesh(leafBarGeo, mats.darkIron);
+      lockBar.position.y = -0.06;
+      leaf.add(lockBar);
+
+      const ledIndicator = new THREE.Mesh(leafLedGeo, ledMat);
+      ledIndicator.position.set(-side * 0.3, 0.14, 0);
+      leaf.add(ledIndicator);
+
+      return leaf;
+    };
+
+    const leftLeaf = buildDoorLeaf(-1);
+    const rightLeaf = buildDoorLeaf(1);
+    leftLeaf.name = `MazeRoomBlastDoor_${r.id}_L`;
+    rightLeaf.name = `MazeRoomBlastDoor_${r.id}_R`;
+    doorGroup.add(leftLeaf);
+    doorGroup.add(rightLeaf);
+
+    const sx = isNS ? portalClearW + 0.08 : 0.44;
+    const sz = isNS ? 0.44 : portalClearW + 0.08;
+    const lockCollider: StaticColliderBox = {
+      id: `room-door-lock-${r.id}`,
+      box: new THREE.Box3(
+        new THREE.Vector3(doorWorld.x - sx * 0.5, 0, doorWorld.z - sz * 0.5),
+        new THREE.Vector3(
+          doorWorld.x + sx * 0.5,
+          WALL_HEIGHT,
+          doorWorld.z + sz * 0.5
+        )
+      ),
+    };
+    colliders.push(lockCollider);
+
+    doors.push({
+      room: r,
+      keyItemId: r.keyItemId,
+      keyName: r.keyName,
+      doorWorldPos: new THREE.Vector3(doorWorld.x, 0, doorWorld.z),
+      unlocked: false,
+      openProgress: 0,
+      collider: lockCollider,
+      leftLeaf,
+      rightLeaf,
+      ledMaterials: [ledMat],
+    });
+  }
+
+  const controller: DoomSpecialRoomDoorController = {
+    doors,
+    isUnlocked(roomId: DoomRoomId): boolean {
+      return doors.some((d) => d.room.id === roomId && d.unlocked);
+    },
+    unlockRoom(roomId: DoomRoomId): boolean {
+      const inst = doors.find((d) => d.room.id === roomId);
+      if (!inst || inst.unlocked) return false;
+      inst.unlocked = true;
+      unlockThemedRoom(roomId);
+      // Desativa imediatamente o colisor físico para travessia livre
+      inst.collider.box.min.set(0, 60, 0);
+      inst.collider.box.max.set(0, 60.05, 0);
+      for (const m of inst.ledMaterials) {
+        m.uniforms.uTint.value.setHex(0x32f08c);
+      }
+      return true;
+    },
+    findNearbyLockedDoor(
+      playerPos: THREE.Vector3,
+      maxDistance = 2.85
+    ): SpecialRoomDoorInstance | null {
+      let best: SpecialRoomDoorInstance | null = null;
+      let bestDist = maxDistance;
+      for (const d of doors) {
+        if (d.unlocked) continue;
+        const dist = Math.hypot(
+          playerPos.x - d.doorWorldPos.x,
+          playerPos.z - d.doorWorldPos.z
+        );
+        if (dist <= bestDist) {
+          bestDist = dist;
+          best = d;
+        }
+      }
+      return best;
+    },
+    findMatchingDoorForKey(
+      keyItemId: string,
+      playerPos: THREE.Vector3,
+      maxDistance = 3.1
+    ): SpecialRoomDoorInstance | null {
+      for (const d of doors) {
+        if (d.unlocked || d.keyItemId !== keyItemId) continue;
+        const dist = Math.hypot(
+          playerPos.x - d.doorWorldPos.x,
+          playerPos.z - d.doorWorldPos.z
+        );
+        if (dist <= maxDistance) return d;
+      }
+      return null;
+    },
+    update(dt: number): void {
+      const step = Math.min(1, Math.max(0, dt) * 1.85);
+      for (const d of doors) {
+        if (!d.unlocked || d.openProgress >= 1) continue;
+        d.openProgress = Math.min(1, d.openProgress + step);
+        const eased = 1 - Math.pow(1 - d.openProgress, 3);
+        const slideOffset = 0.54 + eased * 1.02;
+        d.leftLeaf.position.x = -slideOffset;
+        d.rightLeaf.position.x = slideOffset;
+      }
+    },
+    dispose(): void {
+      for (const g of disposableGeometries) g.dispose();
+      for (const m of disposableMaterials) m.dispose();
+      for (const t of disposableTextures) t.dispose();
+    },
+  };
+
+  return controller;
+}
+
 /**
- * Constrói todas as 7 Salas Especiais Externas 3D (arquitetura própria fora do mapa 29x29
- * com novas texturas de Parede, Chão e Teto, pórticos blindados, mobiliário 3D aprimorado e colisores).
+ * Constrói todas as 7 Salas Especiais Externas 3D 7x7 (mini-mapas internos desconectados,
+ * placas de ícone sem Z-fighting, portas blindadas trancadas por chaves específicas e mobiliário 3D).
  */
 export function buildDoomThemedRooms(
   parentGroup: THREE.Group,
@@ -2267,7 +3294,10 @@ export function buildDoomThemedRooms(
   textures: DoomTextureSet,
   sharedUniforms: DoomSharedUniforms,
   colliders: StaticColliderBox[]
-): DoomAnnexLightSpec[] {
+): {
+  annexLights: DoomAnnexLightSpec[];
+  specialRoomDoors: DoomSpecialRoomDoorController;
+} {
   const mats = createRoomMaterials(textures, sharedUniforms);
   const buckets: GeoBuckets = {
     annexWall: [],
@@ -2344,5 +3374,12 @@ export function buildDoomThemedRooms(
     }
   }
 
-  return annexLights;
+  const specialRoomDoors = buildSpecialRoomDoorsAndPlaques(
+    parentGroup,
+    mats,
+    sharedUniforms,
+    colliders
+  );
+
+  return { annexLights, specialRoomDoors };
 }

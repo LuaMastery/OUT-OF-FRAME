@@ -57,9 +57,14 @@ import {
 import {
   ANNEX_MIN_GRID,
   getThemedRoomAtCell,
+  getThemedRoomByKeyItemId,
+  getThemedRoomMiniMapTile,
   isThemedRoomDoorCell,
+  isThemedRoomUnlocked,
   isWalkableArenaCell,
+  resetThemedRoomLocks,
   THEMED_ROOMS,
+  unlockThemedRoom,
 } from '../src/doom/DoomRooms';
 import {
   DEFAULT_DOOM_SETTINGS,
@@ -93,7 +98,11 @@ import {
   buildDoomMapObstacles,
   ObstaclePlacement,
 } from '../src/doom/DoomObstacles';
-import { createDoomTextures } from '../src/doom/DoomTextures';
+import {
+  createDoomTextures,
+  createSpecialRoomDoorIconTexture,
+  createSpecialRoomMiniMapTexture,
+} from '../src/doom/DoomTextures';
 import { DoomWorldItems } from '../src/doom/DoomWorldItems';
 import {
   computeFootstepLayerProfile,
@@ -117,14 +126,20 @@ import {
 } from '../src/multiplayer/MultiplayerService';
 import { DoomMultiplayerCoordinator } from '../src/multiplayer/DoomMultiplayerCoordinator';
 import {
+  applyChunkMicroFade,
+  buildRetro8BitQuantizerCurve,
   computeProximityVoiceAcousticParams,
   computeSpiderVoiceHearingAlert,
   countLabyrinthWallsBetween,
+  createInitialVoiceGateState,
   decodeMuLawBase64ToPcm,
+  downsamplePcmWithAntiAlias,
   encodePcmToMuLawBase64,
   FULL_VOLUME_VOICE_DISTANCE,
   MAX_PROXIMITY_VOICE_DISTANCE,
   ProximityVoiceChatManager,
+  RelaySeqDeduplicator,
+  stepVoiceGateState,
 } from '../src/multiplayer/ProximityVoiceChat';
 import { BINARY_MENU_ITEMS } from '../src/terminal/TerminalBoot';
 
@@ -3984,7 +3999,7 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
 
       const gridEl = viewportEl.querySelector('[data-inv-grid]')!;
       const quickRowEl = viewportEl.querySelector('[data-quick-row]')!;
-      expect(gridEl.children.length).toBe(12);
+      expect(gridEl.children.length).toBe(20);
       expect(quickRowEl.children.length).toBe(3);
 
       const knifePocketNodeBefore = gridEl.children[1];
@@ -4707,10 +4722,14 @@ describe('Obstáculos Táticos 3D no Mapa (Barris de Ferro, Madeira, Prateleiras
 
 describe('Salas Especiais 3D (Computadores, Lab Biológico, Quartos, Enfermaria, Vegetação, Biblioteca & Reatores)', () => {
   it('constrói todas as 7 Salas Especiais FORA do mapa 29x29 como salas novas anexas, com texturas próprias (parede, chão e teto), modelagem 3D aprimorada, portas transitáveis e navegação completa', () => {
+    resetThemedRoomLocks();
     expect(THEMED_ROOMS.length).toBe(7);
 
-    // 1. Verifica que TODAS as 7 salas são pedaços novos FORA do mapa 29x29 (gx < 0 || gx > 28 || gz < 0 || gz > 28)
+    // 1. Verifica que TODAS as 7 salas são mini-mapas 7x7 FORA do mapa 29x29, isoladas entre si e TRANCADAS por padrão!
     for (const r of THEMED_ROOMS) {
+      expect(r.maxGx - r.minGx).toBe(6);
+      expect(r.maxGz - r.minGz).toBe(6);
+      expect(r.miniMap.length).toBe(7);
       for (let gz = r.minGz; gz <= r.maxGz; gz++) {
         for (let gx = r.minGx; gx <= r.maxGx; gx++) {
           const outsideCore29x29 = gx < 0 || gx > 28 || gz < 0 || gz > 28;
@@ -4719,7 +4738,8 @@ describe('Salas Especiais 3D (Computadores, Lab Biológico, Quartos, Enfermaria,
         }
       }
       expect(isThemedRoomDoorCell(r.doorGx, r.doorGz)).toBe(true);
-      expect(isWalkableArenaCell(r.doorGx, r.doorGz)).toBe(true);
+      expect(isThemedRoomUnlocked(r.id)).toBe(false);
+      expect(isWalkableArenaCell(r.doorGx, r.doorGz)).toBe(false);
       expect(isWalkableArenaCell(r.innerGx, r.innerGz)).toBe(true);
     }
 
@@ -4848,23 +4868,44 @@ describe('Salas Especiais 3D (Computadores, Lab Biológico, Quartos, Enfermaria,
       expect(mesh!.geometry.getAttribute('position').count).toBeGreaterThan(12);
     }
 
-    // 4. Travessia Física Pelas 7 Portas Perimetrais + Bloqueio nas Paredes Externas do Vazio!
+    // 4. Comportas começam TRANCADAS bloqueando passagem; ao destrancar cada sala com sua chave, a passagem abre 100%!
     for (const r of THEMED_ROOMS) {
       const innerWorld = gridCellToWorld(r.innerGx, r.innerGz);
       const stepDx = r.doorGx - r.innerGx;
       const stepDz = r.doorGz - r.innerGz;
       const vestWorld = gridCellToWorld(r.doorGx + stepDx, r.doorGz + stepDz);
 
-      // Caminhar desde o corredor interno atravessando o pórtico blindado até dentro da sala nova é 100% livre!
+      // Enquanto trancada, a comporta blindada bloqueia fisicamente o avanço incremental!
+      expect(maze.specialRoomDoors.isUnlocked(r.id)).toBe(false);
+      const blockedWalk = new THREE.Vector3(innerWorld.x, 0, innerWorld.z);
+      const incX = (vestWorld.x - innerWorld.x) / 24;
+      const incZ = (vestWorld.z - innerWorld.z) / 24;
+      for (let s = 1; s <= 24; s++) {
+        blockedWalk.x += incX;
+        blockedWalk.z += incZ;
+        resolveCylinderWorldCollisions(
+          blockedWalk,
+          new THREE.Vector3(),
+          0.52,
+          1.8,
+          maze.colliders
+        );
+      }
+      expect(
+        Math.hypot(blockedWalk.x - vestWorld.x, blockedWalk.z - vestWorld.z)
+      ).toBeGreaterThan(2.5);
+
+      // Destranca a sala especial específica e avança a abertura pneumática das folhas da porta!
+      expect(maze.specialRoomDoors.unlockRoom(r.id)).toBe(true);
+      maze.specialRoomDoors.update(1.0);
+      expect(isWalkableArenaCell(r.doorGx, r.doorGz)).toBe(true);
+
+      // Agora caminhar incrementalmente desde o corredor interno atravessando o pórtico até dentro da sala é 100% livre!
       const walkPos = new THREE.Vector3(innerWorld.x, 0, innerWorld.z);
       const totalSteps = 24;
       for (let s = 1; s <= totalSteps; s++) {
-        const t = s / totalSteps;
-        walkPos.set(
-          innerWorld.x + (vestWorld.x - innerWorld.x) * t,
-          0,
-          innerWorld.z + (vestWorld.z - innerWorld.z) * t
-        );
+        walkPos.x += (vestWorld.x - innerWorld.x) / totalSteps;
+        walkPos.z += (vestWorld.z - innerWorld.z) / totalSteps;
         resolveCylinderWorldCollisions(
           walkPos,
           new THREE.Vector3(),
@@ -5014,6 +5055,7 @@ describe('Salas Especiais 3D (Computadores, Lab Biológico, Quartos, Enfermaria,
       new THREE.Vector3(lairWorld.x, 0, lairWorld.z)
     );
     expect(dragFromAnnex.totalLength).toBeGreaterThan(25);
+    resetThemedRoomLocks();
   });
 });
 
@@ -6024,6 +6066,443 @@ describe('Ragdoll Verlet 3D Desmaiado, 4 Tentáculos da Aranha & Casulo de Teia 
     }
   });
 });
+
+describe('Salas Especiais 7x7 Isoladas c/ Chaves, Rádio VHF de Longa Distância & Motor de Voz 8-Bit Aprimorado', () => {
+  it('isola as 7 Salas Especiais em mini-mapas 7x7 independentes com divisórias internas, ícones de porta sem Z-fighting e 7 chaves exclusivas nas caixas', () => {
+    resetThemedRoomLocks();
+
+    // 1. Nenhuma Sala Especial se conecta ou encosta em outra (distância mínima >= 2 células entre quaisquer duas)
+    for (let i = 0; i < THEMED_ROOMS.length; i++) {
+      const a = THEMED_ROOMS[i];
+      let internalWallCount = 0;
+      for (let gz = a.minGz; gz <= a.maxGz; gz++) {
+        for (let gx = a.minGx; gx <= a.maxGx; gx++) {
+          const tile = getThemedRoomMiniMapTile(gx, gz);
+          if (tile === '#' || tile === 'C') {
+            internalWallCount++;
+            expect(isWalkableArenaCell(gx, gz)).toBe(false);
+          }
+        }
+      }
+      expect(internalWallCount).toBeGreaterThanOrEqual(8);
+
+      const matchedByKey = getThemedRoomByKeyItemId(a.keyItemId);
+      expect(matchedByKey?.id).toBe(a.id);
+
+      for (let j = i + 1; j < THEMED_ROOMS.length; j++) {
+        const b = THEMED_ROOMS[j];
+        const gapX = Math.max(0, Math.max(a.minGx - b.maxGx, b.minGx - a.maxGx));
+        const gapZ = Math.max(0, Math.max(a.minGz - b.maxGz, b.minGz - a.maxGz));
+        expect(Math.max(gapX, gapZ)).toBeGreaterThanOrEqual(2);
+      }
+    }
+
+    // 2. Todas as 7 chaves exclusivas + o Rádio Comunicador VHF nascem garantidamente nas 25 caixas do labirinto!
+    const layout = createRandomArenaLayout({
+      worldSeed: hashArenaSeed('oof-keys-and-walkie-v1'),
+      playerSeed: 77,
+    });
+    expect(layout.cratePlacements.length).toBe(25);
+    const lootIds = new Set(
+      layout.cratePlacements.map((c) => c.itemId).filter(Boolean)
+    );
+    expect(lootIds.has('field_walkie_talkie')).toBe(true);
+    for (const r of THEMED_ROOMS) {
+      expect(lootIds.has(r.keyItemId)).toBe(true);
+    }
+
+    // 3. Texturas dedicadas de ícone de porta (128x40) e placa de mini-mapa 7x7 (64x64) geram pixels válidos
+    for (const r of THEMED_ROOMS) {
+      const doorTex = createSpecialRoomDoorIconTexture(
+        r.id,
+        r.doorCode,
+        r.accentHex
+      );
+      expect(doorTex.image.width).toBe(128);
+      expect(doorTex.image.height).toBe(40);
+
+      const mapTex = createSpecialRoomMiniMapTexture(r.miniMap, 'N', r.accentHex);
+      expect(mapTex.image.width).toBe(64);
+      expect(mapTex.image.height).toBe(64);
+      doorTex.dispose();
+      mapTex.dispose();
+    }
+
+    // 4. Destrancar 1 sala específica mantém todas as outras 6 trancadas!
+    expect(unlockThemedRoom('biology_lab')).toBe(true);
+    expect(isThemedRoomUnlocked('biology_lab')).toBe(true);
+    expect(isThemedRoomUnlocked('computer_room')).toBe(false);
+    expect(isThemedRoomUnlocked('reactor_hall')).toBe(false);
+    resetThemedRoomLocks();
+  });
+
+  it('habilita o Rádio Comunicador VHF (field_walkie_talkie) para falar com amigos a longa distância através de todo o labirinto', () => {
+    // Sem rádio: aliado a 65 metros e atrás de 6 paredes fica 100% inaudível
+    const noRadioFar = computeProximityVoiceAcousticParams(65.0, 6, 'none');
+    expect(noRadioFar.audible).toBe(false);
+    expect(noRadioFar.gain).toBe(0);
+    expect(noRadioFar.viaRadio).toBe(false);
+
+    // Com Rádio VHF (simplex ou duplex): voz chega clara de qualquer canto ou Sala Especial!
+    const simplexFar = computeProximityVoiceAcousticParams(65.0, 6, 'simplex');
+    expect(simplexFar.audible).toBe(true);
+    expect(simplexFar.viaRadio).toBe(true);
+    expect(simplexFar.gain).toBeCloseTo(0.78, 2);
+    expect(simplexFar.lowpassHz).toBe(2600);
+
+    const duplexFar = computeProximityVoiceAcousticParams(85.0, 9, 'duplex');
+    expect(duplexFar.audible).toBe(true);
+    expect(duplexFar.viaRadio).toBe(true);
+    expect(duplexFar.gain).toBeCloseTo(0.88, 2);
+    expect(duplexFar.lowpassHz).toBe(2950);
+
+    // De perto sem paredes (1.5m), a voz presencial direta prevalece sobre o rádio (gain 1.0 > 0.88)
+    const closeDirect = computeProximityVoiceAcousticParams(1.5, 0, 'duplex');
+    expect(closeDirect.audible).toBe(true);
+    expect(closeDirect.viaRadio).toBe(false);
+    expect(closeDirect.gain).toBeCloseTo(1.0, 3);
+
+    // Verifica catálogo do Rádio Comunicador VHF + prop 3D em 1ª pessoa + todas as 7 chaves
+    expect(ITEM_CATALOG.field_walkie_talkie).toBeDefined();
+    expect(ITEM_CATALOG.field_walkie_talkie.kind).toBe('walkie');
+    for (const r of THEMED_ROOMS) {
+      expect(ITEM_CATALOG[r.keyItemId]).toBeDefined();
+      expect(ITEM_CATALOG[r.keyItemId].kind).toBe('key');
+    }
+
+    const fl = new DoomFlashlight(16 / 9);
+    fl.triggerQuickItemAction('walkie');
+    expect(fl.isLeftArmAnimating).toBe(true);
+    fl.update(0.12, 0, 0, () => {});
+    expect(fl.isLeftArmAnimating).toBe(true);
+  });
+
+  it('aprimora o efeito de voz 8-bit eliminando 100% duplicações de pacotes e cortes bruscos no meio da fala', () => {
+    // 1. Gate Vocal com Histerese + Hangover: pausas naturais entre sílabas (250ms) NUNCA cortam a voz!
+    let gate = createInitialVoiceGateState();
+    expect(gate.gateOpen).toBe(false);
+
+    // Jogador começa a falar normalmente em modo OPEN (nível 0.18 por 120ms)
+    for (let i = 0; i < 6; i++) {
+      gate = stepVoiceGateState(gate, 0.18, 0.02, true, false);
+    }
+    expect(gate.gateOpen).toBe(true);
+
+    // Queda momentânea de energia entre sílabas/respiração por 260ms -> gate permanece 100% ABERTO (sem picotar!)
+    for (let i = 0; i < 13; i++) {
+      gate = stepVoiceGateState(gate, 0.0, 0.02, true, false);
+      expect(gate.gateOpen).toBe(true);
+    }
+
+    // Jogador retoma a próxima palavra -> continua aberto sem corte algum!
+    gate = stepVoiceGateState(gate, 0.16, 0.02, true, false);
+    expect(gate.gateOpen).toBe(true);
+
+    // Após silêncio real prolongado (> 550ms), fecha suavemente
+    for (let i = 0; i < 35; i++) {
+      gate = stepVoiceGateState(gate, 0.0, 0.02, true, false);
+    }
+    expect(gate.gateOpen).toBe(false);
+
+    // Em Push-to-Talk ([B] segurado), até um sussurro baixinho (0.02) abre e sustenta por >500ms!
+    let pttGate = createInitialVoiceGateState();
+    for (let i = 0; i < 5; i++) {
+      pttGate = stepVoiceGateState(pttGate, 0.022, 0.02, true, true);
+    }
+    expect(pttGate.gateOpen).toBe(true);
+
+    // 2. RelaySeqDeduplicator bloqueia 100% pacotes duplicados (BroadcastChannel + Supabase Realtime)
+    const dedup = new RelaySeqDeduplicator(64);
+    expect(dedup.accept(1)).toBe(true);
+    expect(dedup.accept(1)).toBe(false); // Cópia duplicada rejeitada!
+    expect(dedup.accept(2)).toBe(true);
+    expect(dedup.accept(2)).toBe(false); // Cópia duplicada rejeitada!
+    expect(dedup.accept(30)).toBe(true);
+    expect(dedup.accept(2)).toBe(false); // Pacote atrasado descartado (>24 atrás)
+
+    // 3. Curva do Processador Retro 8-Bit EVA Comm: silêncio absoluto na zona morta + simetria + sem NaN
+    const curve = buildRetro8BitQuantizerCurve(56, 1.18, 2048);
+    expect(curve.length).toBe(2048);
+    const midIdx = Math.floor(curve.length / 2);
+    expect(curve[midIdx]).toBe(0);
+    expect(Math.abs(curve[0] + curve[curve.length - 1])).toBeLessThan(1e-5);
+    for (let i = 1; i < curve.length; i++) {
+      expect(Number.isFinite(curve[i])).toBe(true);
+      expect(curve[i]).toBeGreaterThanOrEqual(curve[i - 1] - 1e-6);
+    }
+
+    // 4. Downsampler anti-aliasing + micro-fade cosseno sem cliques nas bordas
+    const src48k = new Float32Array(2048);
+    for (let i = 0; i < src48k.length; i++) {
+      src48k[i] = Math.sin((2 * Math.PI * 440 * i) / 48_000) * 0.6;
+    }
+    const down8k = downsamplePcmWithAntiAlias(src48k, 48_000, 8_512);
+    expect(down8k.length).toBeGreaterThan(340);
+    applyChunkMicroFade(down8k, 8_512, 0.003);
+    expect(down8k[0]).toBe(0);
+    expect(Math.abs(down8k[down8k.length - 1])).toBeLessThan(0.05);
+  });
+
+  it('impede voz duplicada WebRTC+Relay, descarta chunks repetidos e reutiliza transceiver sem bugar o microfone dos amigos', async () => {
+    const prevWin = (globalThis as Record<string, unknown>).window;
+    const prevRtc = (globalThis as Record<string, unknown>).RTCPeerConnection;
+
+    let startedBufferCount = 0;
+    let stoppedBufferCount = 0;
+    let addTrackCalls = 0;
+    let replaceTrackCalls = 0;
+    let createdPc: {
+      iceConnectionState: string;
+      connectionState: string;
+      oniceconnectionstatechange?: () => void;
+      ontrack?: (ev: unknown) => void;
+    } | null = null;
+
+    const makeParam = (v = 0) => ({
+      value: v,
+      setValueAtTime: vi.fn((nv: number) => {
+        v = nv;
+      }),
+      setTargetAtTime: vi.fn((nv: number) => {
+        v = nv;
+      }),
+    });
+
+    class MockAudioCtx {
+      state = 'running';
+      currentTime = 1.0;
+      sampleRate = 48_000;
+      destination = {};
+      listener = {
+        positionX: makeParam(0),
+        positionY: makeParam(0),
+        positionZ: makeParam(0),
+        forwardX: makeParam(0),
+        forwardY: makeParam(0),
+        forwardZ: makeParam(-1),
+        upX: makeParam(0),
+        upY: makeParam(1),
+        upZ: makeParam(0),
+      };
+      resume = vi.fn(() => Promise.resolve());
+      close = vi.fn(() => Promise.resolve());
+      createGain() {
+        return { gain: makeParam(0), connect: vi.fn(), disconnect: vi.fn() };
+      }
+      createBiquadFilter() {
+        return {
+          type: 'lowpass',
+          frequency: makeParam(1000),
+          Q: makeParam(1),
+          gain: makeParam(0),
+          connect: vi.fn(),
+          disconnect: vi.fn(),
+        };
+      }
+      createWaveShaper() {
+        return {
+          curve: null as Float32Array | null,
+          oversample: 'none',
+          connect: vi.fn(),
+          disconnect: vi.fn(),
+        };
+      }
+      createDynamicsCompressor() {
+        return {
+          threshold: makeParam(-18),
+          knee: makeParam(12),
+          ratio: makeParam(4),
+          attack: makeParam(0.003),
+          release: makeParam(0.15),
+          connect: vi.fn(),
+          disconnect: vi.fn(),
+        };
+      }
+      createPanner() {
+        return {
+          panningModel: 'HRTF',
+          distanceModel: 'linear',
+          refDistance: 1,
+          maxDistance: 10000,
+          rolloffFactor: 0,
+          coneInnerAngle: 360,
+          coneOuterAngle: 360,
+          positionX: makeParam(0),
+          positionY: makeParam(0),
+          positionZ: makeParam(0),
+          connect: vi.fn(),
+          disconnect: vi.fn(),
+        };
+      }
+      createAnalyser() {
+        return {
+          fftSize: 512,
+          smoothingTimeConstant: 0.4,
+          getFloatTimeDomainData: vi.fn((arr: Float32Array) => arr.fill(0.08)),
+          connect: vi.fn(),
+          disconnect: vi.fn(),
+        };
+      }
+      createMediaStreamSource() {
+        return { connect: vi.fn(), disconnect: vi.fn() };
+      }
+      createMediaStreamDestination() {
+        return {
+          stream: {
+            getAudioTracks: () => [{ kind: 'audio', enabled: true, stop: vi.fn() }],
+          },
+        };
+      }
+      createBuffer(_ch: number, len: number, rate: number) {
+        const data = new Float32Array(len);
+        return {
+          duration: len / rate,
+          getChannelData: () => data,
+        };
+      }
+      createBufferSource() {
+        const node = {
+          buffer: null as unknown,
+          onended: null as (() => void) | null,
+          connect: vi.fn(),
+          disconnect: vi.fn(),
+          start: vi.fn(() => {
+            startedBufferCount++;
+          }),
+          stop: vi.fn(() => {
+            stoppedBufferCount++;
+          }),
+        };
+        return node;
+      }
+    }
+
+    class MockRTCPeerConnection {
+      signalingState = 'stable';
+      iceConnectionState = 'checking';
+      connectionState = 'connecting';
+      oniceconnectionstatechange?: () => void;
+      onconnectionstatechange?: () => void;
+      ontrack?: (ev: unknown) => void;
+      private readonly transceivers: Array<{
+        direction: string;
+        receiver: { track: { kind: string } };
+        sender: { track: null | { kind: string }; replaceTrack: (t: unknown) => Promise<void> };
+      }> = [];
+      constructor() {
+        createdPc = this;
+      }
+      addTransceiver(kind: string, init?: { direction?: string }) {
+        const tr = {
+          direction: init?.direction ?? 'sendrecv',
+          receiver: { track: { kind } },
+          sender: {
+            track: null,
+            replaceTrack: vi.fn(async () => {
+              replaceTrackCalls++;
+            }),
+          },
+        };
+        this.transceivers.push(tr);
+        return tr;
+      }
+      getTransceivers() {
+        return this.transceivers;
+      }
+      addTrack() {
+        addTrackCalls++;
+      }
+      close() {}
+    }
+
+    const navDesc = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+    (globalThis as Record<string, unknown>).window = {
+      AudioContext: MockAudioCtx,
+    };
+    Object.defineProperty(globalThis, 'navigator', {
+      configurable: true,
+      value: {
+        mediaDevices: {
+          getUserMedia: vi.fn(async () => ({
+            getTracks: () => [{ kind: 'audio', enabled: true, stop: vi.fn() }],
+            getAudioTracks: () => [{ kind: 'audio', enabled: true, stop: vi.fn() }],
+          })),
+        },
+      },
+    });
+    (globalThis as Record<string, unknown>).RTCPeerConnection = MockRTCPeerConnection;
+
+    try {
+      const mgr = new ProximityVoiceChatManager({
+        localPlayerId: 'player-a',
+        sendSignal: () => {},
+        sendRelayChunk: () => {},
+      });
+
+      // Inicializa peer ANTES de ligar o microfone local (caso real que antes duplicava trilha com addTrack!)
+      mgr.update(
+        0.016,
+        new THREE.Vector3(4.5, 1.6, 4.5),
+        0,
+        0,
+        [{ id: 'player-b', pos: new THREE.Vector3(6.0, 0, 4.5), dead: false }],
+        false
+      );
+
+      // Envia chunk seq=1 DUAS vezes (simulando BroadcastChannel + Supabase entregando o mesmo pacote)
+      const sampleWave = new Float32Array(320).fill(0.25);
+      const b64 = encodePcmToMuLawBase64(sampleWave);
+      mgr.handleIncomingRelayChunk({
+        fromId: 'player-b',
+        seq: 1,
+        sampleRate: 8512,
+        muLawB64: b64,
+      });
+      mgr.handleIncomingRelayChunk({
+        fromId: 'player-b',
+        seq: 1,
+        sampleRate: 8512,
+        muLawB64: b64,
+      });
+      // Tocou EXATAMENTE 1 vez (cópia duplicada descartada!)
+      expect(startedBufferCount).toBe(1);
+
+      // Agora o canal WebRTC conecta: corta imediatamente a fila de Relay e ignora novos chunks de Relay!
+      expect(createdPc).not.toBeNull();
+      createdPc!.iceConnectionState = 'connected';
+      createdPc!.ontrack?.({
+        track: { kind: 'audio', readyState: 'live' },
+        streams: [{}],
+      });
+      createdPc!.oniceconnectionstatechange?.();
+      expect(stoppedBufferCount).toBe(1);
+
+      mgr.handleIncomingRelayChunk({
+        fromId: 'player-b',
+        seq: 2,
+        sampleRate: 8512,
+        muLawB64: b64,
+      });
+      // Nenhum novo chunk de Relay é tocado enquanto WebRTC está ativo (ZERO voz duplicada!)
+      expect(startedBufferCount).toBe(1);
+
+      // Jogador A ativa o microfone agora -> usa replaceTrack no transceiver existente (0 chamadas a addTrack!)
+      const ok = await mgr.ensureMicrophoneInitialized();
+      expect(ok).toBe(true);
+      expect(replaceTrackCalls).toBe(1);
+      expect(addTrackCalls).toBe(0);
+
+      mgr.destroy();
+    } finally {
+      (globalThis as Record<string, unknown>).window = prevWin;
+      if (navDesc) {
+        Object.defineProperty(globalThis, 'navigator', navDesc);
+      }
+      (globalThis as Record<string, unknown>).RTCPeerConnection = prevRtc;
+    }
+  });
+});
+
 
 
 

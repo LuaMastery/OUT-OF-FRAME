@@ -1084,3 +1084,378 @@ export function createDoomTextures(): DoomTextureSet {
     annexCeiling,
   };
 }
+
+export type SpecialRoomIconKind =
+  | 'computer_room'
+  | 'biology_lab'
+  | 'crew_quarters'
+  | 'medical_ward'
+  | 'vegetation_room'
+  | 'library_room'
+  | 'reactor_hall';
+
+const PIXEL_FONT_5X7: Record<string, readonly string[]> = {
+  A: ['01110', '10001', '10001', '11111', '10001', '10001', '10001'],
+  B: ['11110', '10001', '10001', '11110', '10001', '10001', '11110'],
+  C: ['01111', '10000', '10000', '10000', '10000', '10000', '01111'],
+  D: ['11110', '10001', '10001', '10001', '10001', '10001', '11110'],
+  E: ['11111', '10000', '10000', '11110', '10000', '10000', '11111'],
+  H: ['10001', '10001', '10001', '11111', '10001', '10001', '10001'],
+  I: ['11111', '00100', '00100', '00100', '00100', '00100', '11111'],
+  M: ['10001', '11011', '10101', '10001', '10001', '10001', '10001'],
+  O: ['01110', '10001', '10001', '10001', '10001', '10001', '01110'],
+  P: ['11110', '10001', '10001', '11110', '10000', '10000', '10000'],
+  R: ['11110', '10001', '10001', '11110', '10100', '10010', '10001'],
+  U: ['10001', '10001', '10001', '10001', '10001', '10001', '01110'],
+  '-': ['00000', '00000', '00000', '11111', '00000', '00000', '00000'],
+  '0': ['01110', '10011', '10101', '10101', '11001', '10001', '01110'],
+  '1': ['00100', '01100', '00100', '00100', '00100', '00100', '01110'],
+  '2': ['01110', '10001', '00001', '00110', '01000', '10000', '11111'],
+  '3': ['11110', '00001', '00001', '01110', '00001', '00001', '11110'],
+  '4': ['10010', '10010', '10010', '11111', '00010', '00010', '00010'],
+  '5': ['11111', '10000', '11110', '00001', '00001', '10001', '01110'],
+  '6': ['01110', '10000', '11110', '10001', '10001', '10001', '01110'],
+  '7': ['11111', '00001', '00010', '00100', '01000', '01000', '01000'],
+};
+
+const ICON_BITMAP_16X16: Record<SpecialRoomIconKind, readonly string[]> = {
+  computer_room: [
+    '0111111111111110',
+    '1100000000000011',
+    '1011111111111101',
+    '1010000000000101',
+    '1010111101100101',
+    '1010100000000101',
+    '1010111011110101',
+    '1010000000000101',
+    '1010110111000101',
+    '1011111111111101',
+    '1100000000000011',
+    '0111111111111110',
+    '0000001111000000',
+    '0000011111100000',
+    '0011111111111100',
+    '0000000000000000',
+  ],
+  biology_lab: [
+    '0000011111100000',
+    '0000001111000000',
+    '0000001001000000',
+    '0000001001000000',
+    '0000011001100000',
+    '0000110000110000',
+    '0001100110011000',
+    '0011001001001100',
+    '0010011111100100',
+    '0110111011110110',
+    '0101111110111010',
+    '1101101111111011',
+    '1011111101111101',
+    '1111111111111111',
+    '0111111111111110',
+    '0000000000000000',
+  ],
+  crew_quarters: [
+    '0000000110000000',
+    '0000011111100000',
+    '0001111001111000',
+    '0111100000011110',
+    '1110000000000111',
+    '0010111000000100',
+    '0010111011110100',
+    '0010000000000100',
+    '0011111111111100',
+    '0010000000000100',
+    '0010111011110100',
+    '0010111000000100',
+    '0011111111111100',
+    '0010000000000100',
+    '0011000000001100',
+    '0000000000000000',
+  ],
+  medical_ward: [
+    '0000111111110000',
+    '0011100000011100',
+    '0110001111000110',
+    '0100001111000010',
+    '1100001111000011',
+    '1001111111111001',
+    '1001111111111001',
+    '1001111111111001',
+    '1001111111111001',
+    '1100001111000011',
+    '0100001111000010',
+    '0110001111000110',
+    '0011100000011100',
+    '0000111111110000',
+    '0000000000000000',
+    '0000000000000000',
+  ],
+  vegetation_room: [
+    '0000000001111110',
+    '0000000111111110',
+    '0000011111101110',
+    '0000111111011100',
+    '0001111101111100',
+    '0011111011111000',
+    '0011110111110000',
+    '0111101111100000',
+    '0111011111000000',
+    '0110111100000000',
+    '0001110000000000',
+    '0011000000000000',
+    '0110011111100000',
+    '0111110000110000',
+    '0011000000000000',
+    '0000000000000000',
+  ],
+  library_room: [
+    '0000000000000000',
+    '0111111001111110',
+    '1100001111000011',
+    '1011110110111101',
+    '1000000110000001',
+    '1011110110111101',
+    '1000000110000001',
+    '1011100110011101',
+    '1000000110000001',
+    '1011110110111101',
+    '1000000110000001',
+    '1100001111000011',
+    '0111111001111110',
+    '0000001111000000',
+    '0000000000000000',
+    '0000000000000000',
+  ],
+  reactor_hall: [
+    '0000011111100000',
+    '0000111111110000',
+    '0000011111100000',
+    '0000001111000000',
+    '0000000000000000',
+    '0000001111000000',
+    '0110011001100110',
+    '1111001111001111',
+    '1111100000011111',
+    '1111100000011111',
+    '0111000000001110',
+    '0010000000000100',
+    '0000000000000000',
+    '0011111111111100',
+    '0000000000000000',
+    '0000000000000000',
+  ],
+};
+
+/**
+ * Gera uma textura pixel-art nítida (128x40) para a placa luminosa de identificação
+ * acima da porta blindada de cada Sala Especial (ícone temático + código setorial).
+ */
+export function createSpecialRoomDoorIconTexture(
+  kind: SpecialRoomIconKind,
+  code: string,
+  accentHex: number
+): THREE.DataTexture {
+  const W = 128;
+  const H = 40;
+  const ar = ((accentHex >> 16) & 0xff) / 255;
+  const ag = ((accentHex >> 8) & 0xff) / 255;
+  const ab = (accentHex & 0xff) / 255;
+
+  const tex = makePixelTexture(W, H, (px) => {
+    for (let y = 0; y < H; y++) {
+      const scan = y % 2 === 0 ? 1.0 : 0.88;
+      for (let x = 0; x < W; x++) {
+        if (x < 2 || x >= W - 2 || y < 2 || y >= H - 2) {
+          px(x, y, 28, 32, 38);
+          continue;
+        }
+        if (x === 2 || x === W - 3 || y === 2 || y === H - 3) {
+          px(x, y, 52 + ar * 68, 56 + ag * 68, 62 + ab * 68);
+          continue;
+        }
+        px(
+          x,
+          y,
+          (14 + ar * 20) * scan,
+          (17 + ag * 22) * scan,
+          (22 + ab * 24) * scan
+        );
+      }
+    }
+
+    // Rebites nos 4 cantos internos
+    const rivets = [
+      [5, 5],
+      [W - 6, 5],
+      [5, H - 6],
+      [W - 6, H - 6],
+    ];
+    for (const [rx, ry] of rivets) {
+      px(rx, ry, 108, 114, 122);
+      px(rx + 1, ry, 72, 76, 82);
+    }
+
+    // Badge quadrado esquerdo (x=8..39, y=4..35) com o ícone 16x16 escalado 2x (32x32)
+    for (let y = 5; y < 35; y++) {
+      for (let x = 8; x < 40; x++) {
+        if (x === 8 || x === 39 || y === 5 || y === 34) {
+          px(x, y, 42 + ar * 115, 46 + ag * 115, 50 + ab * 115);
+        } else {
+          px(x, y, 18 + ar * 34, 21 + ag * 36, 26 + ab * 38);
+        }
+      }
+    }
+
+    const icon = ICON_BITMAP_16X16[kind];
+    for (let iy = 0; iy < 16; iy++) {
+      const row = icon[iy] ?? '';
+      for (let ix = 0; ix < 16; ix++) {
+        if (row[ix] !== '1') continue;
+        const sx = 9 + ix * 2;
+        const sy = 6 + iy * 2;
+        const cr = 135 + ar * 120;
+        const cg = 135 + ag * 120;
+        const cb = 135 + ab * 120;
+        px(sx, sy, cr, cg, cb);
+        px(sx + 1, sy, cr * 0.94, cg * 0.94, cb * 0.94);
+        px(sx, sy + 1, cr * 0.9, cg * 0.9, cb * 0.9);
+        px(sx + 1, sy + 1, cr * 0.85, cg * 0.85, cb * 0.85);
+      }
+    }
+
+    // Barra divisória vertical (x=44)
+    for (let y = 7; y < H - 7; y++) {
+      px(44, y, 50 + ar * 95, 55 + ag * 95, 60 + ab * 95);
+    }
+
+    // Código alfanumérico (ex: CPU-01) escalado 2x (10x14 por glifo)
+    const upper = code.toUpperCase();
+    let cursorX = 50;
+    const textTopY = 9;
+    for (let i = 0; i < upper.length; i++) {
+      const glyph = PIXEL_FONT_5X7[upper[i]];
+      if (!glyph) {
+        cursorX += 8;
+        continue;
+      }
+      for (let gy = 0; gy < 7; gy++) {
+        const grow = glyph[gy];
+        for (let gx = 0; gx < 5; gx++) {
+          if (grow[gx] !== '1') continue;
+          const dx = cursorX + gx * 2;
+          const dy = textTopY + gy * 2;
+          const tr = 155 + ar * 100;
+          const tg = 155 + ag * 100;
+          const tb = 155 + ab * 100;
+          px(dx, dy, tr, tg, tb);
+          px(dx + 1, dy, tr, tg, tb);
+          px(dx, dy + 1, tr * 0.88, tg * 0.88, tb * 0.88);
+          px(dx + 1, dy + 1, tr * 0.88, tg * 0.88, tb * 0.88);
+        }
+      }
+      cursorX += 12;
+    }
+
+    // Trilho inferior tático pontilhado abaixo do código
+    for (let x = 50; x < 120; x++) {
+      const dash = Math.floor((x - 50) / 6) % 2 === 0;
+      if (!dash) continue;
+      px(x, 28, 60 + ar * 140, 64 + ag * 140, 68 + ab * 140);
+      px(x, 29, 45 + ar * 100, 48 + ag * 100, 52 + ab * 100);
+    }
+  });
+
+  tex.wrapS = THREE.ClampToEdgeWrapping;
+  tex.wrapT = THREE.ClampToEdgeWrapping;
+  return tex;
+}
+
+/**
+ * Gera uma textura tática (64x64) com a planta baixa (mini-mapa 7x7) da Sala Especial
+ * para os terminais murais internos de navegação de cada setor anexo.
+ */
+export function createSpecialRoomMiniMapTexture(
+  miniMap: readonly string[],
+  doorSide: 'N' | 'S' | 'W' | 'E',
+  accentHex: number
+): THREE.DataTexture {
+  const S = 64;
+  const ar = ((accentHex >> 16) & 0xff) / 255;
+  const ag = ((accentHex >> 8) & 0xff) / 255;
+  const ab = (accentHex & 0xff) / 255;
+
+  const tex = makePixelTexture(S, S, (px) => {
+    for (let y = 0; y < S; y++) {
+      const scan = y % 2 === 0 ? 1.0 : 0.86;
+      for (let x = 0; x < S; x++) {
+        if (x < 3 || x >= S - 3 || y < 3 || y >= S - 3) {
+          px(x, y, 22, 26, 30);
+          continue;
+        }
+        if (x === 3 || x === S - 4 || y === 3 || y === S - 4) {
+          px(x, y, 50 + ar * 90, 54 + ag * 90, 58 + ab * 90);
+          continue;
+        }
+        px(x, y, 10 * scan, 15 * scan, 18 * scan);
+      }
+    }
+
+    // Grade 7x7 ocupando 49x49 pixels (7x7 px por célula, margem = 7..55)
+    const origin = 7;
+    const cellPx = 7;
+    for (let r = 0; r < 7; r++) {
+      const row = miniMap[r] ?? '.......';
+      for (let c = 0; c < 7; c++) {
+        const ch = row[c] ?? '.';
+        const x0 = origin + c * cellPx;
+        const y0 = origin + r * cellPx;
+        for (let dy = 0; dy < cellPx; dy++) {
+          for (let dx = 0; dx < cellPx; dx++) {
+            const border = dx === 0 || dy === 0 || dx === cellPx - 1 || dy === cellPx - 1;
+            if (ch === '#') {
+              const v = border ? 0.55 : 0.92;
+              px(
+                x0 + dx,
+                y0 + dy,
+                (55 + ar * 135) * v,
+                (60 + ag * 135) * v,
+                (65 + ab * 135) * v
+              );
+            } else if (ch === 'C') {
+              px(x0 + dx, y0 + dy, 235, 145, 55);
+            } else {
+              const gridLine = dx === 0 || dy === 0;
+              const f = gridLine ? 0.22 : 0.36;
+              px(
+                x0 + dx,
+                y0 + dy,
+                16 + ar * 110 * f,
+                22 + ag * 120 * f,
+                26 + ab * 120 * f
+              );
+            }
+          }
+        }
+      }
+    }
+
+    // Indicador brilhante da porta de entrada
+    const markRect = (mx: number, my: number, mw: number, mh: number) => {
+      for (let yy = my; yy < my + mh; yy++) {
+        for (let xx = mx; xx < mx + mw; xx++) {
+          px(xx, yy, 245, 225, 110);
+        }
+      }
+    };
+    if (doorSide === 'S') markRect(28, 55, 7, 3);
+    else if (doorSide === 'N') markRect(28, 5, 7, 3);
+    else if (doorSide === 'E') markRect(55, 28, 3, 7);
+    else if (doorSide === 'W') markRect(5, 28, 3, 7);
+  });
+
+  tex.wrapS = THREE.ClampToEdgeWrapping;
+  tex.wrapT = THREE.ClampToEdgeWrapping;
+  return tex;
+}
+

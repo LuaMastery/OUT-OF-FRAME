@@ -65,6 +65,8 @@ interface RemoteAllyEntity {
   afk: boolean;
   voiceSpeaking: boolean;
   voiceLevel: number;
+  radioActive: boolean;
+  wasRadioSpeaking: boolean;
   lastAfkNoticeMs: number;
   joinedAtWallMs: number;
   lastSeenMs: number;
@@ -94,6 +96,7 @@ export interface MultiplayerCoordinatorHooks {
     playerPos: THREE.Vector3
   ) => void;
   onRemoteWebTrapCut: (x: number, z: number) => void;
+  onRemoteRoomUnlocked?: (roomId: string, senderName: string) => void;
   onNotifyHud: (text: string) => void;
   onRadioChatClosed?: () => void;
   onLeaveRoomRequested: () => void;
@@ -135,7 +138,9 @@ export class DoomMultiplayerCoordinator {
     id: string;
     pos: THREE.Vector3;
     dead: boolean;
+    radioActive?: boolean;
   }> = [];
+  private localRadioActive = false;
 
   private latestSpiderPacket: NetworkSpiderPacket | null = null;
   private latestSpiderReceivedPerfMs = -Infinity;
@@ -820,6 +825,17 @@ export class DoomMultiplayerCoordinator {
     return false;
   }
 
+  broadcastRoomUnlocked(roomId: string, roomName: string): void {
+    this.client.broadcastWorldEvent({
+      kind: 'room_unlocked',
+      senderId: this.session.localPlayerId,
+      senderName: this.session.localPlayerName,
+      roomId,
+      roomName,
+      ts: Date.now(),
+    });
+  }
+
   hasTrappedAllyInRescueRange(
     localPos: THREE.Vector3,
     spiderPos?: THREE.Vector3,
@@ -1019,6 +1035,7 @@ export class DoomMultiplayerCoordinator {
       abductionSpiderPos?: THREE.Vector3 | null;
       cocoonLocked?: boolean;
       devourSecondsLeft?: number;
+      walkieTalkieActive?: boolean;
       dead: boolean;
       afk?: boolean;
     },
@@ -1109,26 +1126,45 @@ export class DoomMultiplayerCoordinator {
 
     // Silencia o microfone caso o jogador tenha morrido permanentemente!
     this.voiceChat.setForceSilenced(localState.dead);
+    const localRadioActive = Boolean(localState.walkieTalkieActive) && !localState.dead;
+    if (this.localRadioActive !== localRadioActive) {
+      this.localRadioActive = localRadioActive;
+      this.renderSquadHud();
+    }
 
-    // Atualiza espacialização 3D HRTF + abafamento por paredes das vozes dos amigos
+    // Atualiza espacialização 3D HRTF + abafamento por paredes + canal VHF de longa distância!
     this.remoteVoicePeersScratch.length = 0;
     for (const ally of this.allies.values()) {
       this.remoteVoicePeersScratch.push({
         id: ally.id,
         pos: ally.currentPos,
         dead: ally.dead,
+        radioActive: ally.radioActive,
       });
+
+      const allyDist = camera.position.distanceTo(ally.currentPos);
+      const radioLink = localRadioActive || ally.radioActive;
+      const nowRadioTalking =
+        !ally.dead &&
+        ally.voiceSpeaking &&
+        radioLink &&
+        allyDist > MAX_PROXIMITY_VOICE_DISTANCE * 0.72;
+      if (nowRadioTalking !== ally.wasRadioSpeaking) {
+        ally.wasRadioSpeaking = nowRadioTalking;
+        this.sound.playRadioSquelch?.(nowRadioTalking);
+      }
     }
     this.voiceChat.update(
       dt,
       camera.position,
       localState.yaw,
       localState.pitch,
-      this.remoteVoicePeersScratch
+      this.remoteVoicePeersScratch,
+      localRadioActive
     );
     this.refreshVoiceHudBar();
 
-    // 1. Transmite pose 3D do jogador local (~16 Hz quando ativo; inclui estado AFK, arrasto e voz!)
+    // 1. Transmite pose 3D do jogador local (~16 Hz quando ativo; inclui estado AFK, arrasto, voz e Rádio VHF!)
     this.poseSendAccum += dt;
     if (this.poseSendAccum >= 0.062) {
       this.poseSendAccum = 0;
@@ -1161,6 +1197,7 @@ export class DoomMultiplayerCoordinator {
           : undefined,
         voiceSpeaking: this.voiceChat.isSpeaking,
         voiceLevel: Number(this.voiceChat.voiceLevel.toFixed(3)),
+        radioActive: localRadioActive,
         dead: localState.dead,
         afk: nextLocalAfk,
       });
@@ -1326,9 +1363,16 @@ export class DoomMultiplayerCoordinator {
             : 'none';
 
         const allyAudibleSpeak =
-          ally.voiceSpeaking && dist <= MAX_PROXIMITY_VOICE_DISTANCE;
+          ally.voiceSpeaking &&
+          (dist <= MAX_PROXIMITY_VOICE_DISTANCE ||
+            this.localRadioActive ||
+            ally.radioActive);
         ally.labelEl.classList.toggle('speaking', allyAudibleSpeak);
-        const micTag = allyAudibleSpeak ? '🔊 ' : '';
+        const micTag = allyAudibleSpeak
+          ? dist > MAX_PROXIMITY_VOICE_DISTANCE
+            ? '📻 '
+            : '🔊 '
+          : '';
 
         if (isBeingDragged) {
           ally.labelTextEl.textContent = `${micTag}🕷️ ${ally.name} — RAGDOLL PUXADO PELOS TENTÁCULOS! [SINALIZADOR / FACA]`;
@@ -1573,6 +1617,8 @@ export class DoomMultiplayerCoordinator {
         afk: Boolean(pkt.afk),
         voiceSpeaking: Boolean(pkt.voiceSpeaking),
         voiceLevel: pkt.voiceLevel ?? 0,
+        radioActive: Boolean(pkt.radioActive),
+        wasRadioSpeaking: false,
         lastAfkNoticeMs: 0,
         joinedAtWallMs: Date.now(),
         lastSeenMs: performance.now(),
@@ -1631,6 +1677,11 @@ export class DoomMultiplayerCoordinator {
     ent.dead = pkt.dead;
     ent.voiceSpeaking = Boolean(pkt.voiceSpeaking);
     ent.voiceLevel = pkt.voiceLevel ?? 0;
+    const prevRadio = ent.radioActive;
+    ent.radioActive = Boolean(pkt.radioActive);
+    if (prevRadio !== ent.radioActive) {
+      this.renderSquadHud();
+    }
     ent.lastSeenMs = performance.now();
     this.applyAllyAfkTransition(ent, Boolean(pkt.afk));
   }
@@ -1912,6 +1963,14 @@ export class DoomMultiplayerCoordinator {
           performance.now() * 0.001
         );
       }
+    } else if (ev.kind === 'room_unlocked') {
+      if (ev.senderId !== this.session.localPlayerId) {
+        this.hooks.onRemoteRoomUnlocked?.(ev.roomId, ev.senderName);
+        this.pushRadioFeed(
+          `🔓 ${ev.senderName} destrancou ${ev.roomName}!`,
+          false
+        );
+      }
     }
   }
 
@@ -2035,7 +2094,13 @@ export class DoomMultiplayerCoordinator {
       : 'oof-coop-ally-row';
     const selfName = document.createElement('span');
     selfName.className = 'oof-coop-ally-name';
-    const selfSpeakPrefix = this.voiceChat.isSpeaking ? '🔊 ' : '● ';
+    const selfSpeakPrefix = this.voiceChat.isSpeaking
+      ? this.localRadioActive
+        ? '📻 '
+        : '🔊 '
+      : this.localRadioActive
+        ? '📻 '
+        : '● ';
     selfName.textContent = `${selfSpeakPrefix}${this.session.localPlayerName} (Você)`;
     const selfStatus = document.createElement('span');
     if (this.localCocoonLocked) {
@@ -2058,7 +2123,13 @@ export class DoomMultiplayerCoordinator {
       row.className = ally.afk ? 'oof-coop-ally-row afk' : 'oof-coop-ally-row';
       const nameSpan = document.createElement('span');
       nameSpan.className = 'oof-coop-ally-name';
-      const allySpeakPrefix = ally.voiceSpeaking ? '🔊 ' : '◆ ';
+      const allySpeakPrefix = ally.voiceSpeaking
+        ? ally.radioActive || this.localRadioActive
+          ? '📻 '
+          : '🔊 '
+        : ally.radioActive
+          ? '📻 '
+          : '◆ ';
       nameSpan.textContent = `${allySpeakPrefix}${ally.name}`;
 
       const hpSpan = document.createElement('span');

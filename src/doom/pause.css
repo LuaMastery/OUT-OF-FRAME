@@ -835,4 +835,58 @@
   margin-top: 1px;
 }
 
+/* ==========================================================================
+   PROMPT DE COMPORTA TRANCADA DAS SALAS ESPECIAIS ([E] DESTRANCAR / CHAVE)
+   ========================================================================== */
+.doom-door-lock-prompt {
+  position: absolute;
+  top: calc(56% + 34px);
+  left: 50%;
+  transform: translate(-50%, 6px);
+  z-index: 35;
+  pointer-events: none;
+  padding: 6px 13px 7px;
+  background: rgba(11, 13, 17, 0.88);
+  border: 1px solid rgba(255, 108, 92, 0.55);
+  border-left: 3px solid #ff5244;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.65);
+  font-family: 'Courier New', monospace;
+  text-align: center;
+  opacity: 0;
+  transition:
+    opacity 0.16s ease,
+    transform 0.16s ease;
+  max-width: min(410px, 84vw);
+}
+
+.doom-door-lock-prompt.is-visible {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+.doom-door-lock-prompt.can-unlock {
+  border-color: rgba(102, 232, 152, 0.62);
+  border-left-color: #4ef098;
+}
+
+.doom-door-lock-title {
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  color: #ffd5ce;
+  text-transform: uppercase;
+}
+
+.doom-door-lock-prompt.can-unlock .doom-door-lock-title {
+  color: #caffdf;
+}
+
+.doom-door-lock-sub {
+  font-size: 9.8px;
+  letter-spacing: 0.05em;
+  color: #b5aba0;
+  margin-top: 2px;
+}
+
+
 

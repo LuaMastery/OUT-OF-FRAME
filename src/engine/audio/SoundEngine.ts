@@ -3295,6 +3295,70 @@ export class SoundEngine {
     tone.stop(now + 0.036);
   }
 
+  /** Destravamento eletromagnético + sopro pneumático de comporta blindada (ou bip de acesso negado) */
+  playBlastDoorUnlock(unlocked: boolean): void {
+    if (!this.isRunning() || !this.ctx || !this.worldDryBus) return;
+    const now = this.ctx.currentTime;
+
+    if (!unlocked) {
+      for (const delay of [0, 0.09]) {
+        const t = now + delay;
+        const osc = this.ctx.createOscillator();
+        const g = this.ctx.createGain();
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(195, t);
+        g.gain.setValueAtTime(0.055, t);
+        g.gain.exponentialRampToValueAtTime(0.0008, t + 0.068);
+        osc.connect(g);
+        g.connect(this.worldDryBus);
+        osc.start(t);
+        osc.stop(t + 0.072);
+      }
+      return;
+    }
+
+    // 1. Bip duplo de autorização da chave codificada
+    for (const [delay, freq] of [
+      [0, 740],
+      [0.065, 1_110],
+    ] as const) {
+      const t = now + delay;
+      const osc = this.ctx.createOscillator();
+      const g = this.ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(freq, t);
+      g.gain.setValueAtTime(0.062, t);
+      g.gain.exponentialRampToValueAtTime(0.0008, t + 0.09);
+      osc.connect(g);
+      g.connect(this.worldDryBus);
+      if (this.reverbSend) g.connect(this.reverbSend);
+      osc.start(t);
+      osc.stop(t + 0.095);
+    }
+
+    // 2. Destravamento metálico pesado + sopro hidráulico da comporta deslizando
+    this.triggerFilteredNoise(
+      this.worldDryBus,
+      now + 0.12,
+      0.045,
+      360,
+      2.2,
+      0.11,
+      'gritty',
+      this.reverbSend ?? undefined
+    );
+    this.triggerFilteredNoise(
+      this.worldDryBus,
+      now + 0.16,
+      0.46,
+      1_450,
+      1.3,
+      0.075,
+      'pink',
+      this.reverbSend ?? undefined
+    );
+  }
+
   /** Sinalizador acústico tático 3D (`[V]`): tom duplo limpo para posição ou alerta urgente para PERIGO! */
   playTacticalPingSound(danger: boolean, pan = 0): void {
     if (!this.isRunning() || !this.ctx || !this.worldDryBus) return;

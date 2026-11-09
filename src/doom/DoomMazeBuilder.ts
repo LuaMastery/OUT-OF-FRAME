@@ -8,6 +8,7 @@ import { buildDoomMapObstacles } from './DoomObstacles';
 import {
   buildDoomThemedRooms,
   DoomAnnexLightSpec,
+  DoomSpecialRoomDoorController,
   isThemedRoomDoorCell,
 } from './DoomRooms';
 import {
@@ -116,6 +117,7 @@ export interface DoomMazeResult {
   spawnYaw: number;
   lights: DoomLightSource[];
   annexLights: DoomAnnexLightSpec[];
+  specialRoomDoors: DoomSpecialRoomDoorController;
   lightPanelEmissionAttr: THREE.BufferAttribute | null;
   arenaLayout: DoomArenaLayout;
 }
@@ -1409,8 +1411,8 @@ export function buildDoomLabyrinth(
     }
   }
 
-  // 5b. SALAS ESPECIAIS EXTERNAS 3D ("Fora do Mapa" — Alas Anexas com parede, chão e teto próprios + pórticos blindados)
-  const annexLights = buildDoomThemedRooms(
+  // 5b. SALAS ESPECIAIS EXTERNAS 3D ("Fora do Mapa" — Alas 7x7 com mini-mapa interno, placas de ícone e portas trancadas)
+  const { annexLights, specialRoomDoors } = buildDoomThemedRooms(
     root,
     arenaLayout.roomFurniturePlacements,
     textures,
@@ -1449,6 +1451,7 @@ export function buildDoomLabyrinth(
     spawnYaw,
     lights,
     annexLights,
+    specialRoomDoors,
     lightPanelEmissionAttr,
     arenaLayout,
   };
