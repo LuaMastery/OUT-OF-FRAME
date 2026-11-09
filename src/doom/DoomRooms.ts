@@ -793,6 +793,11 @@ interface RoomMaterials {
   lampShade: THREE.ShaderMaterial;
   bankerShade: THREE.ShaderMaterial;
   bookshelf: THREE.ShaderMaterial;
+  libraryBookRed: THREE.ShaderMaterial;
+  libraryBookGreen: THREE.ShaderMaterial;
+  libraryBookBlue: THREE.ShaderMaterial;
+  libraryBookOchre: THREE.ShaderMaterial;
+  libraryGlobe: THREE.ShaderMaterial;
   libraryRug: THREE.ShaderMaterial;
   foliage: THREE.ShaderMaterial;
   mossSoil: THREE.ShaderMaterial;
@@ -928,6 +933,33 @@ function createRoomMaterials(
           cb + shade + goldBand * 0.35 + n * 0.6
         );
       }
+    }
+  });
+
+  // Couro e lona das lombadas individuais; cada livro tem sua própria geometria.
+  const bookTexture = (rgb: readonly [number, number, number], seed: number) =>
+    makeRoomPixelTex(16, 16, (px) => {
+      for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) {
+        const wear = (hash2i(x, y, seed) - 0.5) * 13;
+        px(x, y, rgb[0] + wear, rgb[1] + wear, rgb[2] + wear);
+      }
+    });
+  const libraryBookTextures = [
+    bookTexture([112, 39, 31], 451), bookTexture([47, 83, 56], 452),
+    bookTexture([38, 53, 84], 453), bookTexture([145, 103, 46], 454),
+  ];
+  // Superfície cartográfica simplificada, com oceanos, ilhas e linhas de latitude.
+  const globeTex = makeRoomPixelTex(128, 64, (px) => {
+    for (let y = 0; y < 64; y++) for (let x = 0; x < 128; x++) {
+      const continent = [[28, 24, 15, 11], [44, 40, 8, 17], [70, 24, 14, 8],
+        [72, 40, 9, 15], [94, 24, 18, 11], [108, 43, 8, 6]].some(([cx, cy, rx, ry]) => {
+          const dx = (x - cx) / rx, dy = (y - cy) / ry;
+          return dx * dx + dy * dy < 0.72 + hash2i(x >> 2, y >> 2, 462) * 0.34;
+        });
+      const grid = x % 16 === 0 || y % 12 === 0 ? 10 : 0;
+      const noise = (hash2i(x, y, 463) - .5) * 8;
+      if (continent) px(x, y, 125 + grid + noise, 112 + grid + noise, 73 + grid + noise);
+      else px(x, y, 45 + grid + noise, 82 + grid + noise, 91 + grid + noise);
     }
   });
 
@@ -1194,6 +1226,11 @@ function createRoomMaterials(
       useLocalUv: true,
       baseLight: 0.22,
     }),
+    libraryBookRed: createDoomSurfaceMaterial(libraryBookTextures[0], sharedUniforms, { useLocalUv: true, baseLight: 0.24 }),
+    libraryBookGreen: createDoomSurfaceMaterial(libraryBookTextures[1], sharedUniforms, { useLocalUv: true, baseLight: 0.24 }),
+    libraryBookBlue: createDoomSurfaceMaterial(libraryBookTextures[2], sharedUniforms, { useLocalUv: true, baseLight: 0.24 }),
+    libraryBookOchre: createDoomSurfaceMaterial(libraryBookTextures[3], sharedUniforms, { useLocalUv: true, baseLight: 0.24 }),
+    libraryGlobe: createDoomSurfaceMaterial(globeTex, sharedUniforms, { useLocalUv: true, baseLight: 0.24 }),
     libraryRug: createDoomSurfaceMaterial(rugTex, sharedUniforms, {
       useLocalUv: true,
       baseLight: 0.22,
@@ -1465,6 +1502,19 @@ function pushRoomSphere(
   radius: number, x: number, y: number, z: number
 ): void {
   const geometry = new THREE.SphereGeometry(radius, 16, 10);
+  geometry.translate(x, y, z);
+  if (xf.yaw) geometry.rotateY(xf.yaw);
+  geometry.translate(xf.cx, 0, xf.cz);
+  bucket.push(geometry);
+}
+
+/** Aro vazado para meridianos e luminárias, com a mesma transformação do móvel. */
+function pushRoomTorus(
+  bucket: THREE.BufferGeometry[], xf: LocalXf, radius: number, tube: number,
+  x: number, y: number, z: number, rx = 0, ry = 0, rz = 0
+): void {
+  const geometry = new THREE.TorusGeometry(radius, tube, 6, 32);
+  geometry.applyMatrix4(new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(rx, ry, rz, 'YXZ')));
   geometry.translate(x, y, z);
   if (xf.yaw) geometry.rotateY(xf.yaw);
   geometry.translate(xf.cx, 0, xf.cz);
@@ -2413,48 +2463,19 @@ function emitAnnexRoomsArchitecture(
       const spineXf: LocalXf = { cx: spineW.x, cz: spineW.z, yaw: 0 };
       pushRoomBox(b.darkIron, spineXf, 0.42, 0.08, 11.4, 0, 2.66, -1.5);
     } else if (r.id === 'library_room') {
-      // Lustre clássico suspenso no Salão de Leitura aberto em (31, 20)
+      // Lustre vazado: canopla, haste, aro, raios e quatro velas apoiadas.
       const salonW = gridCellToWorld(31, 20);
       const salonXf: LocalXf = { cx: salonW.x, cz: salonW.z, yaw: 0 };
-      pushRoomCyl(
-        b.darkIron,
-        salonXf,
-        0.04,
-        0.04,
-        0.58,
-        8,
-        0,
-        vaultTopY - 0.3,
-        0
-      );
-      pushRoomCyl(
-        b.weatheredWood,
-        salonXf,
-        0.58,
-        0.52,
-        0.1,
-        12,
-        0,
-        vaultTopY - 0.62,
-        0
-      );
-      for (const [lx, lz] of [
-        [-0.48, 0],
-        [0.48, 0],
-        [0, -0.48],
-        [0, 0.48],
-      ] as const) {
-        pushRoomCyl(
-          b.warmLampGlow,
-          salonXf,
-          0.09,
-          0.13,
-          0.16,
-          8,
-          lx,
-          vaultTopY - 0.54,
-          lz
-        );
+      const ringY = vaultTopY - 0.62;
+      pushRoomCyl(b.darkIron, salonXf, 0.09, 0.12, 0.04, 12, 0, vaultTopY - 0.02, 0);
+      pushRoomCyl(b.darkIron, salonXf, 0.025, 0.025, 0.58, 10, 0, vaultTopY - 0.33, 0);
+      pushRoomCyl(b.metalTrim, salonXf, 0.10, 0.10, 0.07, 12, 0, ringY, 0);
+      pushRoomTorus(b.darkIron, salonXf, 0.48, 0.024, 0, ringY, 0, Math.PI / 2);
+      for (const [lx, lz] of [[-0.48, 0], [0.48, 0], [0, -0.48], [0, 0.48]] as const) {
+        pushRoomRod(b.darkIron, salonXf, 0.014, new THREE.Vector3(0, ringY, 0), new THREE.Vector3(lx, ringY, lz));
+        pushRoomCyl(b.metalTrim, salonXf, 0.085, 0.07, 0.035, 10, lx, ringY + 0.035, lz);
+        pushRoomCyl(b.cleanLinen, salonXf, 0.035, 0.035, 0.14, 10, lx, ringY + 0.12, lz);
+        pushRoomCyl(b.warmLampGlow, salonXf, 0.012, 0.035, 0.075, 8, lx, ringY + 0.227, lz);
       }
     } else if (r.id === 'vegetation_room') {
       // Tubulação de névoa e folhagem pendente na Estufa Central aberta em (6, 31)
@@ -2992,88 +3013,123 @@ function emitRoomFurniturePiece(
     }
 
     case 'oak_bookshelf_tall': {
-      // Estante monumental clássica da Biblioteca (2.36m) com pilastras entalhadas, volumes salientes 3D e escada de correr em trilho!
-      const w = 1.6;
-      const d = 0.62;
-      const h = 2.34;
-      pushRoomBox(b.weatheredWood, xf, w + 0.06, 0.15, d + 0.06, 0, 0.075, -0.03);
-      pushRoomBox(b.oakWood, xf, w, h - 0.22, d - 0.06, 0, 1.18, -0.06);
-      pushRoomBox(b.bookshelf, xf, w - 0.14, h - 0.3, 0.09, 0, 1.18, d * 0.5 - 0.08);
-      // Prateleiras intermediárias salientes em madeira escura + pilastras
-      for (const sy of [0.64, 1.16, 1.68]) {
-        pushRoomBox(b.weatheredWood, xf, w - 0.06, 0.045, d - 0.02, 0, sy, -0.02);
+      // Estante de carvalho com fundo real, compartimentos abertos e lombadas individuais.
+      pushRoomBox(b.weatheredWood, xf, 1.64, 0.12, 0.68, 0, 0.06, 0);
+      pushRoomBox(b.oakWood, xf, 1.50, 2.10, 0.04, 0, 1.18, -0.30);
+      for (const x of [-0.775, 0.775]) {
+        pushRoomBox(b.weatheredWood, xf, 0.09, 2.15, 0.62, x, 1.195, -0.01);
+        pushRoomBox(b.oakWood, xf, 0.035, 1.92, 0.018, x, 1.19, 0.309);
       }
-      for (const px of [-w * 0.5 + 0.048, 0, w * 0.5 - 0.048]) {
-        pushRoomBox(b.weatheredWood, xf, 0.09, h - 0.16, d, px, 1.18, -0.02);
+      pushRoomBox(b.weatheredWood, xf, 0.06, 2.10, 0.60, 0, 1.18, -0.01);
+      for (const y of [0.16, 0.65, 1.14, 1.63, 2.12]) {
+        pushRoomBox(b.weatheredWood, xf, 1.50, 0.055, 0.60, 0, y, -0.01);
+        pushRoomBox(b.metalTrim, xf, 1.48, 0.012, 0.012, 0, y + 0.005, 0.297);
       }
-      // Cornija clássica superior escalonada + livros inclinados 3D
-      pushRoomBox(b.weatheredWood, xf, w + 0.1, 0.13, d + 0.1, 0, h - 0.04, 0);
-      pushRoomBox(b.bookshelf, xf, 0.22, 0.26, 0.18, -0.36, 0.8, 0.2, 0, 0, 0.18);
-      // Trilho metálico superior + escada inclinada de biblioteca com degraus 100% alinhados às longarinas!
-      pushRoomCyl(b.metalTrim, xf, 0.018, 0.018, w - 0.04, 6, 0, 2.08, 0.31, 0, 0, Math.PI * 0.5);
-      pushRoomBox(b.weatheredWood, xf, 0.038, 2.08, 0.045, 0.32, 1.04, 0.34, -0.1, 0, 0);
-      pushRoomBox(b.weatheredWood, xf, 0.038, 2.08, 0.045, 0.62, 1.04, 0.34, -0.1, 0, 0);
-      for (let step = 0; step < 6; step++) {
-        const ly = 0.28 + step * 0.3;
-        const lz = 0.34 + (1.04 - ly) * Math.tan(0.1);
-        pushRoomBox(b.weatheredWood, xf, 0.28, 0.028, 0.046, 0.47, ly, lz);
+      pushRoomBox(b.oakWood, xf, 1.60, 0.08, 0.64, 0, 2.20, -0.01);
+      pushRoomBox(b.weatheredWood, xf, 1.64, 0.08, 0.70, 0, 2.28, 0);
+      pushRoomBox(b.metalTrim, xf, 1.48, 0.012, 0.012, 0, 2.23, 0.324);
+      const books = [b.libraryBookRed, b.libraryBookGreen, b.libraryBookBlue, b.libraryBookOchre];
+      for (let row = 0; row < 4; row++) {
+        const base = 0.1875 + row * 0.49;
+        for (const side of [-1, 1]) for (let i = 0; i < 8; i++) {
+          const x = side * (0.075 + i * 0.08);
+          const height = 0.31 + ((row * 3 + i * 5 + (side > 0 ? 1 : 0)) % 5) * 0.022;
+          const width = 0.065 + (i % 3) * 0.004;
+          const depth = 0.27 + (i % 3) * 0.025;
+          const z = 0.20 - depth / 2;
+          pushRoomBox(books[(row + i + (side > 0 ? 2 : 0)) % books.length], xf, width, height, depth, x, base + height / 2, z);
+          // Filetes dourados ficam à frente da lombada, sem faces coplanares.
+          for (const band of [0.075, height - 0.065]) {
+            pushRoomBox(b.metalTrim, xf, width * 0.78, 0.009, 0.006, x, base + band, 0.203);
+          }
+        }
+      }
+      // Escada estreita recuada dentro do volume de colisão, com degraus unidos às longarinas.
+      pushRoomCyl(b.metalTrim, xf, 0.015, 0.015, 1.44, 8, 0, 2.06, 0.315, 0, 0, Math.PI / 2);
+      const ladderAngle = -0.055, ladderCenterY = 1.08, ladderCenterZ = 0.293;
+      for (const x of [0.33, 0.61]) {
+        pushRoomBox(b.weatheredWood, xf, 0.036, 2.00, 0.035, x, ladderCenterY, ladderCenterZ, ladderAngle);
+        pushRoomBox(b.darkIron, xf, 0.04, 0.08, 0.045, x, 0.04, 0.348 - 0.015);
+      }
+      for (let step = 0; step < 7; step++) {
+        const y = 0.24 + step * 0.27;
+        const z = ladderCenterZ + (y - ladderCenterY) * Math.sin(ladderAngle);
+        pushRoomBox(b.oakWood, xf, 0.26, 0.03, 0.035, 0.47, y, z);
       }
       break;
     }
 
     case 'library_reading_table': {
-      // Mesa nobre de leitura da Biblioteca com 2 abajures de banqueiro, tomos abertos e 4 cadeiras de espaldar alto!
+      // Tampo moldurado, aventais separados e pés com travessas realmente apoiados.
       pushRoomBox(b.oakWood, xf, 1.48, 0.08, 0.98, 0, 0.77, 0);
-      pushRoomBox(b.weatheredWood, xf, 1.38, 0.09, 0.88, 0, 0.7, 0);
-      for (const sx of [-0.62, 0.62]) {
-        for (const sz of [-0.4, 0.4]) {
-          pushRoomBox(b.weatheredWood, xf, 0.095, 0.74, 0.095, sx, 0.37, sz);
+      for (const z of [-0.44, 0.44]) pushRoomBox(b.weatheredWood, xf, 1.30, 0.12, 0.045, 0, 0.67, z);
+      for (const x of [-0.62, 0.62]) {
+        for (const z of [-0.4, 0.4]) {
+          pushRoomBox(b.weatheredWood, xf, 0.095, 0.74, 0.095, x, 0.37, z);
+          pushRoomBox(b.oakWood, xf, 0.11, 0.05, 0.11, x, 0.025, z);
         }
-        pushRoomBox(b.weatheredWood, xf, 0.07, 0.06, 0.78, sx, 0.18, 0);
+        pushRoomBox(b.weatheredWood, xf, 0.07, 0.06, 0.78, x, 0.18, 0);
+        pushRoomBox(b.weatheredWood, xf, 0.045, 0.12, 0.68, x, 0.67, 0);
       }
       pushRoomBox(b.weatheredWood, xf, 1.24, 0.06, 0.07, 0, 0.18, 0);
-
-      // Livros abertos, pilhas encadernadas e 2 abajures clássicos verdes/dourados
-      pushRoomBox(b.cleanLinen, xf, 0.36, 0.04, 0.26, -0.34, 0.83, 0.27, 0, 0.12, 0);
-      pushRoomBox(b.bookshelf, xf, 0.28, 0.14, 0.22, 0.48, 0.88, -0.31, 0, -0.18, 0);
+      // Livro aberto com capa, duas páginas e vinco; volumes empilhados com miolos claros.
+      pushRoomBox(b.libraryBookRed, xf, 0.38, 0.012, 0.27, -0.34, 0.816, 0.27);
+      for (const x of [-0.435, -0.245]) {
+        pushRoomBox(b.cleanLinen, xf, 0.176, 0.018, 0.24, x, 0.831, 0.27);
+        for (const z of [0.19, 0.23, 0.27, 0.31, 0.35])
+          pushRoomBox(b.weatheredWood, xf, 0.13, 0.0015, 0.003, x, 0.841, z);
+      }
+      pushRoomBox(b.darkIron, xf, 0.008, 0.006, 0.24, -0.34, 0.842, 0.27);
+      for (const [y, material, w, d] of [[0.82, b.libraryBookBlue, 0.29, 0.22], [0.875, b.libraryBookGreen, 0.25, 0.20]] as const) {
+        pushRoomBox(material, xf, w, 0.05, d, 0.47, y + 0.025, -0.30);
+        pushRoomBox(b.cleanLinen, xf, w - 0.035, 0.032, 0.009, 0.47, y + 0.025, -0.30 + d / 2 + 0.004);
+      }
       for (const lx of [-0.36, 0.36]) {
         pushRoomCyl(b.metalTrim, xf, 0.085, 0.105, 0.04, 12, lx, 0.83, 0);
         pushRoomCyl(b.metalTrim, xf, 0.018, 0.018, 0.25, 10, lx, 0.975, 0);
-        // Semicilindro verde aberto para baixo, em vez de dois blocos sobrepostos.
         pushRoomLampShell(b.bankerShade, xf, 0.095, 0.095, 0.26, lx, 1.10, 0, Math.PI * 0.5, Math.PI);
         pushRoomBox(b.warmLampGlow, xf, 0.22, 0.008, 0.15, lx, 1.104, 0);
       }
-
-      // 4 cadeiras clássicas de carvalho (2 de cada lado)
-      for (const czSign of [-1, 1]) {
-        for (const cxOff of [-0.36, 0.36]) {
-          pushRoomBox(b.weatheredWood, xf, 0.42, 0.05, 0.38, cxOff, 0.45, czSign * 0.42);
-          pushRoomBox(b.weatheredWood, xf, 0.42, 0.5, 0.05, cxOff, 0.7, czSign * 0.58);
-          for (const legX of [-0.17, 0.17]) for (const legZ of [0.28, 0.56]) {
-            pushRoomBox(b.weatheredWood, xf, 0.05, 0.425, 0.05, cxOff + legX, 0.2125, czSign * legZ);
-          }
+      // Assentos, travessas e encostos vazados para as quatro cadeiras recolhidas.
+      for (const sign of [-1, 1]) for (const x of [-0.36, 0.36]) {
+        pushRoomBox(b.oakWood, xf, 0.42, 0.05, 0.38, x, 0.45, sign * 0.42);
+        for (const dx of [-0.17, 0.17]) for (const z of [0.28, 0.56]) {
+          pushRoomBox(b.weatheredWood, xf, 0.05, 0.425, 0.05, x + dx, 0.2125, sign * z);
         }
+        for (const dx of [-0.17, 0.17])
+          pushRoomBox(b.weatheredWood, xf, 0.05, 0.49, 0.05, x + dx, 0.72, sign * 0.56);
+        for (const y of [0.53, 0.91])
+          pushRoomBox(b.weatheredWood, xf, 0.34, 0.06, 0.05, x, y, sign * 0.56);
+        for (const dx of [-0.085, 0, 0.085])
+          pushRoomBox(b.oakWood, xf, 0.035, 0.32, 0.025, x + dx, 0.72, sign * 0.56);
+        pushRoomBox(b.weatheredWood, xf, 0.31, 0.035, 0.035, x, 0.20, sign * 0.56);
       }
       break;
     }
 
     case 'archive_catalog_cabinet': {
-      // Fichário catalográfico de carvalho (12 gavetas com porta-etiquetas) + caixas de arquivo e globo terrestre no topo
+      // Fichário: 12 frentes separadas, porta-etiquetas e puxadores salientes.
       pushRoomBox(b.weatheredWood, xf, 1.48, 0.1, 0.66, 0, 0.05, 0);
-      pushRoomBox(b.oakWood, xf, 1.44, 1.5, 0.62, 0, 0.84, 0);
-      pushRoomBox(b.weatheredWood, xf, 1.5, 0.08, 0.68, 0, 1.62, 0);
-      for (const rowY of [0.32, 0.68, 1.04, 1.38]) {
-        for (const colX of [-0.44, 0, 0.44]) {
-          pushRoomBox(b.weatheredWood, xf, 0.39, 0.27, 0.035, colX, rowY, 0.315);
-          pushRoomBox(b.cleanLinen, xf, 0.14, 0.06, 0.042, colX, rowY + 0.045, 0.325);
-          pushRoomBox(b.metalTrim, xf, 0.085, 0.03, 0.05, colX, rowY - 0.045, 0.33);
-        }
+      pushRoomBox(b.oakWood, xf, 1.44, 1.50, 0.58, 0, 0.84, -0.02);
+      pushRoomBox(b.weatheredWood, xf, 1.50, 0.08, 0.68, 0, 1.62, 0);
+      for (const y of [0.32, 0.68, 1.04, 1.38]) for (const x of [-0.44, 0, 0.44]) {
+        pushRoomBox(b.weatheredWood, xf, 0.39, 0.27, 0.025, x, y, 0.295);
+        pushRoomBox(b.oakWood, xf, 0.34, 0.22, 0.008, x, y, 0.312);
+        pushRoomBox(b.metalTrim, xf, 0.16, 0.078, 0.008, x, y + 0.045, 0.320);
+        pushRoomBox(b.cleanLinen, xf, 0.128, 0.045, 0.005, x, y + 0.045, 0.327);
+        pushRoomBox(b.darkIron, xf, 0.09, 0.018, 0.012, x, y - 0.052, 0.324);
+        for (const dx of [-0.043, 0.043]) pushRoomCyl(b.metalTrim, xf, 0.012, 0.012, 0.009, 8, x + dx, y - 0.052, 0.334, Math.PI / 2);
       }
-      // Caixas de pergaminhos + pequeno globo científico no topo
-      pushRoomBox(b.bookshelf, xf, 0.46, 0.18, 0.34, -0.34, 1.75, -0.04, 0, 0.08, 0);
-      pushRoomCyl(b.metalTrim, xf, 0.09, 0.11, 0.04, 8, 0.38, 1.68, 0);
-      pushRoomCyl(b.metalTrim, xf, 0.018, 0.018, 0.06, 8, 0.38, 1.73, 0);
-      pushRoomSphere(b.foliage, xf, 0.14, 0.38, 1.90, 0);
+      // Caixa de arquivos com tampa e cintas; globo em suporte e meridiano metálico.
+      pushRoomBox(b.libraryBookOchre, xf, 0.44, 0.14, 0.30, -0.34, 1.73, -0.04);
+      pushRoomBox(b.weatheredWood, xf, 0.46, 0.035, 0.32, -0.34, 1.8175, -0.04);
+      for (const x of [-0.48, -0.20]) pushRoomBox(b.darkIron, xf, 0.024, 0.145, 0.006, x, 1.73, 0.113);
+      pushRoomBox(b.cleanLinen, xf, 0.13, 0.045, 0.006, -0.34, 1.73, 0.116);
+      pushRoomCyl(b.metalTrim, xf, 0.085, 0.105, 0.04, 12, 0.38, 1.68, 0);
+      pushRoomCyl(b.darkIron, xf, 0.018, 0.018, 0.04, 10, 0.38, 1.72, 0);
+      pushRoomSphere(b.libraryGlobe, xf, 0.12, 0.38, 1.84, 0);
+      pushRoomTorus(b.metalTrim, xf, 0.133, 0.006, 0.38, 1.84, 0, 0, 0, 0.20);
+      pushRoomTorus(b.metalTrim, xf, 0.124, 0.004, 0.38, 1.84, 0, Math.PI / 2, 0, 0.20);
       break;
     }
 
@@ -3572,6 +3628,11 @@ export function buildDoomThemedRooms(
     lampShade: [],
     bankerShade: [],
     bookshelf: [],
+    libraryBookRed: [],
+    libraryBookGreen: [],
+    libraryBookBlue: [],
+    libraryBookOchre: [],
+    libraryGlobe: [],
     libraryRug: [],
     foliage: [],
     mossSoil: [],
@@ -3677,7 +3738,7 @@ export function buildDoomThemedRooms(
     mats.specimenGlass.dispose();
     (mats.cryoWindow.uniforms.uMap.value as THREE.Texture).dispose();
     mats.cryoWindow.dispose();
-    for (const shade of [mats.lampShade, mats.bankerShade]) {
+    for (const shade of [mats.lampShade, mats.bankerShade, mats.libraryBookRed, mats.libraryBookGreen, mats.libraryBookBlue, mats.libraryBookOchre, mats.libraryGlobe]) {
       (shade.uniforms.uMap.value as THREE.Texture).dispose();
       shade.dispose();
     }
