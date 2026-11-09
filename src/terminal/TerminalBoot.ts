@@ -6,8 +6,15 @@ import {
 } from '../multiplayer/MultiplayerService';
 import { CursorProximityFX } from './CursorProximityFX';
 import { TitleGameBackdrop } from './TitleGameBackdrop';
+import {
+  createTitleParticleLayer,
+  TITLE_PARTICLES_TOTAL_MS,
+  TitleParticleLayer,
+} from './TitleParticles';
+import { playTitleTerminalIntro, TitleTerminalIntroHandle } from './TitleTerminalIntro';
+import { TITLE_MENU_ITEMS, TITLE_MENU_MARKUP } from './titleMenuMarkup';
 
-export const TITLE_MENU_ITEMS = ['INICIAR', 'MULTIPLAYER', 'SAIR'] as const;
+export { TITLE_MENU_ITEMS };
 
 export type TerminalPhase =
   | 'idle'
@@ -112,6 +119,9 @@ export class TerminalBootController {
   private mainMenuButtons: HTMLButtonElement[] = [];
   private titleBackdrop: TitleGameBackdrop | null = null;
   private titleBackdropStartFrame = 0;
+  private titleParticles: TitleParticleLayer | null = null;
+  private titleIntro: TitleTerminalIntroHandle | null = null;
+  private titleIntroTimer = 0;
   private timers: number[] = [];
   private menuIndex = 0;
 
@@ -177,31 +187,12 @@ export class TerminalBootController {
     this.mainMenuEl.className = 'oof-title-screen';
     this.mainMenuEl.setAttribute('aria-label', 'Menu principal de OUT-OF-FRAME');
     this.mainMenuEl.hidden = true;
-    this.mainMenuEl.innerHTML = `
-      <div class="oof-title-screen__background" aria-hidden="true"></div>
-      <div class="oof-title-screen__veil" aria-hidden="true"></div>
-      <div class="oof-title-screen__topline" aria-hidden="true"><span>O.O.F. / ARQUIVO 01</span><span>SISTEMA DE CONTENÇÃO</span></div>
-      <div class="oof-title-screen__content">
-        <div class="oof-title-screen__heading">
-          <p class="oof-title-screen__eyebrow"><span></span> SINAL ATIVO / SETOR DESCONHECIDO</p>
-          <h1 aria-label="OUT-OF-FRAME"><span>OUT-OF-</span><span>FRAME</span></h1>
-          <p class="oof-title-screen__subtitle">UM COMPLEXO. NENHUMA SAÍDA.</p>
-        </div>
-        <nav class="oof-title-screen__nav" aria-label="Opções do jogo">
-          <button type="button" data-title-index="0"><span class="oof-title-screen__number">01</span><span class="oof-title-screen__option"><strong>INICIAR</strong><small>EXPLORAR SOZINHO</small></span><span class="oof-title-screen__arrow" aria-hidden="true">↗</span></button>
-          <button type="button" data-title-index="1"><span class="oof-title-screen__number">02</span><span class="oof-title-screen__option"><strong>MULTIPLAYER</strong><small>ENTRAR EM UMA EQUIPE</small></span><span class="oof-title-screen__arrow" aria-hidden="true">↗</span></button>
-          <button type="button" data-title-index="2"><span class="oof-title-screen__number">03</span><span class="oof-title-screen__option"><strong>SAIR</strong><small>VOLTAR AO TERMINAL</small></span><span class="oof-title-screen__arrow" aria-hidden="true">↗</span></button>
-        </nav>
-      </div>
-      <div class="oof-title-screen__footer" aria-hidden="true">
-        <span>OUT-OF-FRAME <b> / </b> SOBREVIVA AO DESCONHECIDO</span>
-        <span>SETAS PARA NAVEGAR <b> · </b> ENTER PARA SELECIONAR</span>
-      </div>
-    `;
+    this.mainMenuEl.innerHTML = TITLE_MENU_MARKUP;
     this.mainMenuButtons = Array.from(this.mainMenuEl.querySelectorAll<HTMLButtonElement>('[data-title-index]'));
     this.mainMenuButtons.forEach((button, index) => {
       button.addEventListener('pointerenter', (event) => {
         if (this.phase !== 'title_menu' || this.multiplayerModal?.visible || event.pointerType === 'touch') return;
+        this.finishTitleIntro();
         if (this.menuIndex !== index) {
           this.menuIndex = index;
           this.syncMainMenuSelection();
@@ -210,6 +201,7 @@ export class TerminalBootController {
       });
       button.addEventListener('focus', () => {
         if (this.phase !== 'title_menu' || this.multiplayerModal?.visible) return;
+        this.finishTitleIntro();
         this.menuIndex = index;
         this.syncMainMenuSelection();
       });
@@ -513,6 +505,8 @@ export class TerminalBootController {
         }
       } else if (this.phase === 'title_menu') {
         const count = TITLE_MENU_ITEMS.length;
+        // Qualquer tecla conclui a impressão do terminal antes de navegar.
+        this.finishTitleIntro();
         if (e.key === 'ArrowUp' || e.code === 'KeyW') {
           e.preventDefault();
           this.menuIndex = (this.menuIndex - 1 + count) % count;
@@ -1179,7 +1173,43 @@ export class TerminalBootController {
       // Uma URL inválida não impede abrir o menu.
     }
     this.mainMenuEl.hidden = false;
-    this.syncMainMenuSelection(true);
+
+    // 1. As partículas se condensam e formam o fundo do jogo.
+    this.playTitleParticles();
+
+    // 2. Somente depois da condensação o terminal imprime o texto e as opções.
+    window.clearTimeout(this.titleIntroTimer);
+    this.titleIntroTimer = window.setTimeout(() => {
+      this.titleIntroTimer = 0;
+      if (this.phase !== 'title_menu') return;
+      this.startTitleTerminalIntro();
+    }, TITLE_PARTICLES_TOTAL_MS);
+  }
+
+  /** Reinicia o campo de partículas que forma o cenário do jogo. */
+  private playTitleParticles(): void {
+    this.titleParticles?.destroy();
+    this.titleParticles = null;
+    const container = this.mainMenuEl.querySelector<HTMLElement>('.oof-title-screen__particles');
+    if (!container) return;
+    container.innerHTML = '';
+    try {
+      this.titleParticles = createTitleParticleLayer(container);
+    } catch (error) {
+      // Sem canvas 2D o menu continua utilizável, sem imagem fabricada.
+      console.warn('Não foi possível exibir as partículas do menu:', error);
+    }
+  }
+
+  /** O terminal digita o título e, em seguida, cada opção do menu. */
+  private startTitleTerminalIntro(): void {
+    this.titleIntro?.destroy();
+    this.titleIntro = playTitleTerminalIntro(this.mainMenuEl, this.sound, {
+      onComplete: () => {
+        this.syncMainMenuSelection(true);
+      },
+    });
+    this.syncMainMenuSelection(false);
     this.titleBackdropStartFrame = requestAnimationFrame(() => {
       this.titleBackdropStartFrame = 0;
       if (this.phase !== 'title_menu' || this.titleBackdrop) return;
@@ -1195,10 +1225,21 @@ export class TerminalBootController {
     });
   }
 
+  /** Conclui imediatamente a abertura do menu (clique, tecla ou saída). */
+  private finishTitleIntro(): void {
+    if (this.titleIntroTimer) {
+      window.clearTimeout(this.titleIntroTimer);
+      this.titleIntroTimer = 0;
+      this.startTitleTerminalIntro();
+    }
+    this.titleIntro?.skip();
+  }
+
   private returnToDesktopFromTitle(): void {
     this.sound.stopCoalesceDrone();
     this.mainMenuEl.hidden = true;
     this.disposeTitleBackdrop();
+    this.disposeTitleEffects();
     document.body.classList.remove('tui-dragging-window');
     this.phase = 'desktop';
     this.sound.keyBackspace();
@@ -1234,6 +1275,7 @@ export class TerminalBootController {
   }
 
   private executeMenuSelection(): void {
+    this.finishTitleIntro();
     if (this.menuIndex === 0) {
       // INICIAR (Modo Solo) — mantém o SoundEngine vivo para crossfade contínuo com o Labirinto DOOM!
       this.destroy(false);
@@ -1255,6 +1297,18 @@ export class TerminalBootController {
     }
   }
 
+  private disposeTitleEffects(): void {
+    if (this.titleIntroTimer) {
+      window.clearTimeout(this.titleIntroTimer);
+      this.titleIntroTimer = 0;
+    }
+    this.titleIntro?.destroy();
+    this.titleIntro = null;
+    this.titleParticles?.destroy();
+    this.titleParticles = null;
+    this.mainMenuEl.classList.remove('oof-title-screen--booting');
+  }
+
   private disposeTitleBackdrop(): void {
     if (this.titleBackdropStartFrame) cancelAnimationFrame(this.titleBackdropStartFrame);
     this.titleBackdropStartFrame = 0;
@@ -1263,6 +1317,7 @@ export class TerminalBootController {
   }
 
   destroy(disposeAudio = false): void {
+    this.disposeTitleEffects();
     this.disposeTitleBackdrop();
     this.clearTimers();
     this.clearZoomLayer();
