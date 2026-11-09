@@ -12,6 +12,7 @@ import {
   WALL_HEIGHT,
   worldToGridCell,
 } from './DoomMazeBuilder';
+import { isThemedRoomDoorCell } from './DoomRooms';
 import { createDoomPropMaterial, DoomSharedUniforms } from './DoomShader';
 
 export interface SpiderWebTrap {
@@ -1149,10 +1150,13 @@ export class DoomSpiderWebManager {
     floorWeb.userData = { webPart: 'floor_orb_web' };
     group.add(floorWeb);
 
-    const solidN = isSolidCell(LABYRINTH_MAP, gx, gz - 1);
-    const solidS = isSolidCell(LABYRINTH_MAP, gx, gz + 1);
-    const solidW = isSolidCell(LABYRINTH_MAP, gx - 1, gz);
-    const solidE = isSolidCell(LABYRINTH_MAP, gx + 1, gz);
+    const isSolidForWeb = (cx: number, cz: number): boolean =>
+      isSolidCell(LABYRINTH_MAP, cx, cz) && !isThemedRoomDoorCell(cx, cz);
+
+    const solidN = isSolidForWeb(gx, gz - 1);
+    const solidS = isSolidForWeb(gx, gz + 1);
+    const solidW = isSolidForWeb(gx - 1, gz);
+    const solidE = isSolidForWeb(gx + 1, gz);
 
     const WALL_D = CELL_SIZE * 0.5 + 0.01; // 1.51m: crava 1cm dentro da face sólida da parede (±1.50m) eliminando qualquer fresta!
 
@@ -1453,7 +1457,7 @@ export class DoomSpiderWebManager {
         for (const diagSign of [-1, 1]) {
           const dx = -wxDir + tx * diagSign;
           const dz = -wzDir + tz * diagSign;
-          if (isSolidCell(LABYRINTH_MAP, gx + dx, gz + dz)) {
+          if (isSolidForWeb(gx + dx, gz + dz)) {
             group.add(
               buildCatenarySilkGroup(
                 new THREE.Vector3(
@@ -1484,7 +1488,7 @@ export class DoomSpiderWebManager {
         ];
         let anchoredAnyPillar = false;
         for (const [dx, dz] of diagCorners) {
-          if (!isSolidCell(LABYRINTH_MAP, gx + dx, gz + dz)) continue;
+          if (!isSolidForWeb(gx + dx, gz + dz)) continue;
           anchoredAnyPillar = true;
           const px = dx * (CELL_SIZE * 0.5 - 0.01);
           const pz = dz * (CELL_SIZE * 0.5 - 0.01);

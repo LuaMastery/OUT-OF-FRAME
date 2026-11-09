@@ -12,6 +12,8 @@ import {
 } from './DoomObstacles';
 import {
   generateThemedRoomFurnishings,
+  isThemedRoomDoorCell,
+  isThemedRoomThresholdCell,
   RoomFurniturePlacement,
 } from './DoomRooms';
 
@@ -493,6 +495,7 @@ export function createRandomArenaLayout(
   for (let gz = 1; gz < LABYRINTH_MAP.length - 1; gz++) {
     for (let gx = 1; gx < LABYRINTH_MAP[gz].length - 1; gx++) {
       if (isSolidCell(LABYRINTH_MAP, gx, gz)) continue;
+      if (isThemedRoomThresholdCell(gx, gz)) continue;
       if (reservedLairKeys.has(`${gx},${gz}`)) continue;
       if (usedRoomFurnitureKeys.has(`${gx},${gz}`)) continue;
       if (Math.hypot(gx - lairCell.gx, gz - lairCell.gz) < 3.0) continue;
@@ -524,6 +527,7 @@ export function createRandomArenaLayout(
     for (let gx = 1; gx < LABYRINTH_MAP[gz].length - 1; gx++) {
       const ch = LABYRINTH_MAP[gz][gx];
       if (ch !== '.' && ch !== 'P') continue;
+      if (isThemedRoomThresholdCell(gx, gz)) continue;
       if (isNearReactorCollar(gx, gz)) continue;
       if (reservedLairKeys.has(`${gx},${gz}`)) continue;
       if (usedRoomFurnitureKeys.has(`${gx},${gz}`)) continue;
@@ -541,6 +545,7 @@ export function createRandomArenaLayout(
         const adjGz = gz + nz;
         if (adjGz < 0 || adjGz >= LABYRINTH_MAP.length) continue;
         if (adjGx < 0 || adjGx >= LABYRINTH_MAP[adjGz].length) continue;
+        if (isThemedRoomDoorCell(adjGx, adjGz)) continue;
         const adjCh = LABYRINTH_MAP[adjGz][adjGx];
         if (adjCh !== '#' && adjCh !== 'B') continue;
         if (timberAxis === 'WE' && nx !== 0) continue;

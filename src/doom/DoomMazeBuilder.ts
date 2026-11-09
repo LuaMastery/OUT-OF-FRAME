@@ -5,7 +5,11 @@ import {
   getOrCreateSceneArenaLayout,
 } from './DoomArenaRandomizer';
 import { buildDoomMapObstacles } from './DoomObstacles';
-import { buildDoomThemedRooms } from './DoomRooms';
+import {
+  buildDoomThemedRooms,
+  DoomAnnexLightSpec,
+  isThemedRoomDoorCell,
+} from './DoomRooms';
 import {
   createDoomSurfaceMaterial,
   DoomSharedUniforms,
@@ -111,6 +115,7 @@ export interface DoomMazeResult {
   spawnPosition: THREE.Vector3;
   spawnYaw: number;
   lights: DoomLightSource[];
+  annexLights: DoomAnnexLightSpec[];
   lightPanelEmissionAttr: THREE.BufferAttribute | null;
   arenaLayout: DoomArenaLayout;
 }
@@ -587,10 +592,18 @@ export function buildDoomLabyrinth(
           continue;
         }
 
-        const solidN = isSolidCell(LABYRINTH_MAP, gx, gz - 1);
-        const solidS = isSolidCell(LABYRINTH_MAP, gx, gz + 1);
-        const solidW = isSolidCell(LABYRINTH_MAP, gx - 1, gz);
-        const solidE = isSolidCell(LABYRINTH_MAP, gx + 1, gz);
+        const solidN =
+          isSolidCell(LABYRINTH_MAP, gx, gz - 1) &&
+          !isThemedRoomDoorCell(gx, gz - 1);
+        const solidS =
+          isSolidCell(LABYRINTH_MAP, gx, gz + 1) &&
+          !isThemedRoomDoorCell(gx, gz + 1);
+        const solidW =
+          isSolidCell(LABYRINTH_MAP, gx - 1, gz) &&
+          !isThemedRoomDoorCell(gx - 1, gz);
+        const solidE =
+          isSolidCell(LABYRINTH_MAP, gx + 1, gz) &&
+          !isThemedRoomDoorCell(gx + 1, gz);
         const isSouthStone = gz >= STONE_SECTOR_START_ROW;
 
         // Verifica se é possível erguer um quadro de madeira de mina sem jamais tocar em luminárias 'L'
@@ -965,7 +978,10 @@ export function buildDoomLabyrinth(
         continue;
       }
 
-      if (!isSolidCell(LABYRINTH_MAP, gx, gz)) {
+      if (
+        !isSolidCell(LABYRINTH_MAP, gx, gz) ||
+        isThemedRoomDoorCell(gx, gz)
+      ) {
         continue;
       }
 
@@ -1393,8 +1409,8 @@ export function buildDoomLabyrinth(
     }
   }
 
-  // 5b. SALAS ESPECIAIS 3D (Sala dos Computadores, Lab Biológico, Quartos, Enfermaria, Vegetação, Biblioteca e Reatores)
-  buildDoomThemedRooms(
+  // 5b. SALAS ESPECIAIS EXTERNAS 3D ("Fora do Mapa" — Alas Anexas com parede, chão e teto próprios + pórticos blindados)
+  const annexLights = buildDoomThemedRooms(
     root,
     arenaLayout.roomFurniturePlacements,
     textures,
@@ -1412,7 +1428,16 @@ export function buildDoomLabyrinth(
   );
 
   syncNearestDoomLightsToUniforms(
-    lights.map((l) => ({ position: l.position, intensity: l.baseIntensity })),
+    [
+      ...lights.map((l) => ({
+        position: l.position,
+        intensity: l.baseIntensity,
+      })),
+      ...annexLights.map((l) => ({
+        position: l.position,
+        intensity: l.baseIntensity,
+      })),
+    ],
     spawnPosition,
     sharedUniforms,
     MAX_DOOM_LIGHTS
@@ -1423,6 +1448,7 @@ export function buildDoomLabyrinth(
     spawnPosition,
     spawnYaw,
     lights,
+    annexLights,
     lightPanelEmissionAttr,
     arenaLayout,
   };

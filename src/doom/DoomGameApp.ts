@@ -41,7 +41,11 @@ import {
   DragPolylinePath,
   sampleDragPolyline,
 } from './DoomRagdoll';
-import { DoomRoomId, getThemedRoomAtCell } from './DoomRooms';
+import {
+  DoomAnnexLightSpec,
+  DoomRoomId,
+  getThemedRoomAtCell,
+} from './DoomRooms';
 import {
   DoomGameSettings,
   DoomSettingsStore,
@@ -307,6 +311,7 @@ export class DoomGameApp {
 
   private colliders: StaticColliderBox[] = [];
   private lights: DoomLightSource[] = [];
+  private annexLights: DoomAnnexLightSpec[] = [];
   private lightPanelEmissionAttr: THREE.BufferAttribute | null = null;
   private prevLightDimState: boolean[] = [];
 
@@ -519,6 +524,7 @@ export class DoomGameApp {
 
     this.colliders = maze.colliders;
     this.lights = maze.lights;
+    this.annexLights = maze.annexLights;
     this.lightPanelEmissionAttr = maze.lightPanelEmissionAttr;
     this.prevLightDimState = maze.lights.map(() => false);
     this.position.copy(maze.spawnPosition);
@@ -3572,7 +3578,8 @@ export class DoomGameApp {
     let nearestDist = Infinity;
     let nearestJustFlickered = false;
 
-    while (this.rankedLightScratch.length < this.lights.length) {
+    const totalLightPool = this.lights.length + this.annexLights.length;
+    while (this.rankedLightScratch.length < totalLightPool) {
       this.rankedLightScratch.push({
         position: new THREE.Vector3(),
         intensity: 0,
@@ -3619,7 +3626,25 @@ export class DoomGameApp {
       slot.d2 = d2;
     }
 
-    this.rankedLightScratch.length = this.lights.length;
+    for (let j = 0; j < this.annexLights.length; j++) {
+      const aSrc = this.annexLights[j];
+      const sample = allowFlicker
+        ? evaluateDoomLightFlicker(aSrc, this.elapsed)
+        : {
+            intensity: aSrc.baseIntensity,
+            isDim: false,
+            panelEmission: 1.0,
+          };
+      const dx = aSrc.position.x - this.position.x;
+      const dz = aSrc.position.z - this.position.z;
+      const d2 = dx * dx + dz * dz;
+      const slot = this.rankedLightScratch[this.lights.length + j];
+      slot.position = aSrc.position;
+      slot.intensity = sample.intensity;
+      slot.d2 = d2;
+    }
+
+    this.rankedLightScratch.length = totalLightPool;
     this.rankedLightScratch.sort((a, b) => a.d2 - b.d2);
 
     const flares = this.worldItems.getActiveFlares();

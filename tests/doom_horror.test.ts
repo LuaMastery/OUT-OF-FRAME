@@ -44,6 +44,7 @@ import {
   DoomRadar,
   getSectorNameForCell,
   RADAR_CANVAS_SIZE,
+  RADAR_EXTENDED_SPAN_CELLS,
   renderRadarMinimapCanvas,
 } from '../src/doom/DoomRadar';
 import { DoomPauseMenu } from '../src/doom/DoomPauseMenu';
@@ -54,7 +55,10 @@ import {
   sampleDragPolyline,
 } from '../src/doom/DoomRagdoll';
 import {
+  ANNEX_MIN_GRID,
   getThemedRoomAtCell,
+  isThemedRoomDoorCell,
+  isWalkableArenaCell,
   THEMED_ROOMS,
 } from '../src/doom/DoomRooms';
 import {
@@ -1191,11 +1195,13 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
 
     // Verifica que os 24 anéis prováveis + feixe + cone direcional foram desenhados, além do núcleo branco na posição exata do jogador!
     expect(arcCalls).toBeGreaterThanOrEqual(26);
+    const extMinWorld = -((29 * 3) / 2) + ANNEX_MIN_GRID * 3;
+    const extSpanWorld = RADAR_EXTENDED_SPAN_CELLS * 3;
     const expectedPxX = Math.round(
-      ((radarCrate.position.x + (29 * 3) / 2) / (29 * 3)) * RADAR_CANVAS_SIZE
+      ((radarCrate.position.x - extMinWorld) / extSpanWorld) * RADAR_CANVAS_SIZE
     );
     const expectedPxY = Math.round(
-      ((radarCrate.position.z + (29 * 3) / 2) / (29 * 3)) * RADAR_CANVAS_SIZE
+      ((radarCrate.position.z - extMinWorld) / extSpanWorld) * RADAR_CANVAS_SIZE
     );
     const playerCoreDraw = drawOps.find(
       (op) =>
@@ -4667,30 +4673,47 @@ describe('Obstáculos Táticos 3D no Mapa (Barris de Ferro, Madeira, Prateleiras
 });
 
 describe('Salas Especiais 3D (Computadores, Lab Biológico, Quartos, Enfermaria, Vegetação, Biblioteca & Reatores)', () => {
-  it('constrói todas as 7 Salas Especiais com mobiliário 3D próprio, texturas pixel-art exclusivas, colisores sólidos e rótulos no Radar', () => {
+  it('constrói todas as 7 Salas Especiais FORA do mapa 29x29 como salas novas anexas, com texturas próprias (parede, chão e teto), modelagem 3D aprimorada, portas transitáveis e navegação completa', () => {
     expect(THEMED_ROOMS.length).toBe(7);
 
-    // 1. Verifica mapeamento espacial e nomes no Radar sem quebrar pontos clássicos
-    expect(getThemedRoomAtCell(12, 1)?.id).toBe('computer_room');
-    expect(getThemedRoomAtCell(7, 4)?.id).toBe('biology_lab');
-    expect(getThemedRoomAtCell(4, 11)?.id).toBe('crew_quarters');
-    expect(getThemedRoomAtCell(24, 11)?.id).toBe('medical_ward');
-    expect(getThemedRoomAtCell(6, 19)?.id).toBe('vegetation_room');
-    expect(getThemedRoomAtCell(22, 20)?.id).toBe('library_room');
-    expect(getThemedRoomAtCell(22, 5)?.id).toBe('reactor_hall');
+    // 1. Verifica que TODAS as 7 salas são pedaços novos FORA do mapa 29x29 (gx < 0 || gx > 28 || gz < 0 || gz > 28)
+    for (const r of THEMED_ROOMS) {
+      for (let gz = r.minGz; gz <= r.maxGz; gz++) {
+        for (let gx = r.minGx; gx <= r.maxGx; gx++) {
+          const outsideCore29x29 = gx < 0 || gx > 28 || gz < 0 || gz > 28;
+          expect(outsideCore29x29).toBe(true);
+          expect(getThemedRoomAtCell(gx, gz)?.id).toBe(r.id);
+        }
+      }
+      expect(isThemedRoomDoorCell(r.doorGx, r.doorGz)).toBe(true);
+      expect(isWalkableArenaCell(r.doorGx, r.doorGz)).toBe(true);
+      expect(isWalkableArenaCell(r.innerGx, r.innerGz)).toBe(true);
+    }
 
-    expect(getSectorNameForCell(12, 1)).toBe('SALA DOS COMPUTADORES');
-    expect(getSectorNameForCell(7, 4)).toBe('LABORATÓRIO BIOLÓGICO');
-    expect(getSectorNameForCell(4, 11)).toBe('QUARTOS DA EQUIPE');
-    expect(getSectorNameForCell(24, 11)).toBe('ENFERMARIA & QUARENTENA');
-    expect(getSectorNameForCell(6, 19)).toBe('SALA DE VEGETAÇÃO');
-    expect(getSectorNameForCell(22, 20)).toBe('BIBLIOTECA & ARQUIVOS');
-    expect(getSectorNameForCell(22, 5)).toBe('SALÃO DOS REATORES');
+    // Verifica coordenadas externas exatas + rótulos no Radar sem quebrar os setores clássicos internos
+    expect(getThemedRoomAtCell(11, -3)?.id).toBe('computer_room');
+    expect(getThemedRoomAtCell(25, -3)?.id).toBe('reactor_hall');
+    expect(getThemedRoomAtCell(-3, 5)?.id).toBe('biology_lab');
+    expect(getThemedRoomAtCell(-3, 12)?.id).toBe('crew_quarters');
+    expect(getThemedRoomAtCell(31, 12)?.id).toBe('medical_ward');
+    expect(getThemedRoomAtCell(31, 20)?.id).toBe('library_room');
+    expect(getThemedRoomAtCell(6, 31)?.id).toBe('vegetation_room');
+    // Dentro do mapa 29x29 NÃO há mais salas especiais recortadas de corredores!
+    expect(getThemedRoomAtCell(12, 1)).toBeNull();
+    expect(getThemedRoomAtCell(7, 4)).toBeNull();
+
+    expect(getSectorNameForCell(11, -3)).toBe('SALA DOS COMPUTADORES');
+    expect(getSectorNameForCell(-3, 5)).toBe('LABORATÓRIO BIOLÓGICO');
+    expect(getSectorNameForCell(-3, 12)).toBe('QUARTOS DA EQUIPE');
+    expect(getSectorNameForCell(31, 12)).toBe('ENFERMARIA & QUARENTENA');
+    expect(getSectorNameForCell(6, 31)).toBe('SALA DE VEGETAÇÃO');
+    expect(getSectorNameForCell(31, 20)).toBe('BIBLIOTECA & ARQUIVOS');
+    expect(getSectorNameForCell(25, -3)).toBe('SALÃO DOS REATORES');
     expect(getSectorNameForCell(2, 1)).toBe('ESCLUSA NOROESTE');
     expect(getSectorNameForCell(14, 11)).toBe('ÁTRIO CENTRAL');
     expect(getSectorNameForCell(14, 23)).toBe('GRANDE NINHO SUL');
 
-    // 2. Determinismo 100% no Co-op e presença de todos os móveis temáticos
+    // 2. Determinismo 100% no Co-op e presença de todos os 20 arquétipos de móveis 3D aprimorados fora do mapa
     const worldSeed = hashArenaSeed('oof-special-rooms-suite-v1');
     const hostLayout = createRandomArenaLayout({
       worldSeed,
@@ -4701,10 +4724,13 @@ describe('Salas Especiais 3D (Computadores, Lab Biológico, Quartos, Enfermaria,
       playerSeed: 9009,
     });
 
-    expect(hostLayout.roomFurniturePlacements.length).toBeGreaterThanOrEqual(45);
+    expect(hostLayout.roomFurniturePlacements.length).toBeGreaterThanOrEqual(55);
     expect(hostLayout.roomFurniturePlacements).toEqual(
       guestLayout.roomFurniturePlacements
     );
+    for (const fp of hostLayout.roomFurniturePlacements) {
+      expect(fp.gx < 0 || fp.gx > 28 || fp.gz < 0 || fp.gz > 28).toBe(true);
+    }
 
     const roomsWithFurniture = new Set(
       hostLayout.roomFurniturePlacements.map((p) => p.roomId)
@@ -4741,12 +4767,33 @@ describe('Salas Especiais 3D (Computadores, Lab Biológico, Quartos, Enfermaria,
       expect(furnitureKinds.has(expectedKind)).toBe(true);
     }
 
-    // 3. Constrói a cena 3D completa e valida malhas e texturas dedicadas das salas
+    // 3. Constrói a cena 3D completa e valida as 3 NOVAS TEXTURAS EXCLUSIVAS (parede, chão e teto) + malhas 3D
     const scene = new THREE.Scene();
     const shared = createDoomSharedUniforms();
     const textures = createDoomTextures();
+    expect(textures.annexWall).toBeDefined();
+    expect(textures.annexFloor).toBeDefined();
+    expect(textures.annexCeiling).toBeDefined();
+    expect(textures.annexWall).not.toBe(textures.startanWall);
+    expect(textures.annexFloor).not.toBe(textures.floorTile);
+    expect(textures.annexCeiling).not.toBe(textures.ceilingGrate);
+
     const maze = buildDoomLabyrinth(scene, textures, shared, hostLayout);
     const items = new DoomWorldItems(scene, shared, hostLayout);
+    expect(maze.annexLights.length).toBe(21);
+
+    for (const [meshName, expectedTex, expectedLocalUv] of [
+      ['MazeRoom_annexWall', textures.annexWall, 1],
+      ['MazeRoom_annexFloor', textures.annexFloor, 0],
+      ['MazeRoom_annexCeiling', textures.annexCeiling, 0],
+    ] as const) {
+      const mesh = scene.getObjectByName(meshName) as THREE.Mesh | undefined;
+      expect(mesh).toBeDefined();
+      expect(mesh!.geometry.getAttribute('position').count).toBeGreaterThan(24);
+      const mat = mesh!.material as THREE.ShaderMaterial;
+      expect(mat.uniforms.uMap.value).toBe(expectedTex);
+      expect(mat.uniforms.uUseLocalUv.value).toBe(expectedLocalUv);
+    }
 
     for (const roomMeshName of [
       'MazeRoom_serverRack',
@@ -4768,7 +4815,66 @@ describe('Salas Especiais 3D (Computadores, Lab Biológico, Quartos, Enfermaria,
       expect(mesh!.geometry.getAttribute('position').count).toBeGreaterThan(12);
     }
 
-    // 4. Zero sobreposição entre móveis de sala, 25 caixotes de itens, obstáculos de corredor e spawn
+    // 4. Travessia Física Pelas 7 Portas Perimetrais + Bloqueio nas Paredes Externas do Vazio!
+    for (const r of THEMED_ROOMS) {
+      const innerWorld = gridCellToWorld(r.innerGx, r.innerGz);
+      const stepDx = r.doorGx - r.innerGx;
+      const stepDz = r.doorGz - r.innerGz;
+      const vestWorld = gridCellToWorld(r.doorGx + stepDx, r.doorGz + stepDz);
+
+      // Caminhar desde o corredor interno atravessando o pórtico blindado até dentro da sala nova é 100% livre!
+      const walkPos = new THREE.Vector3(innerWorld.x, 0, innerWorld.z);
+      const totalSteps = 24;
+      for (let s = 1; s <= totalSteps; s++) {
+        const t = s / totalSteps;
+        walkPos.set(
+          innerWorld.x + (vestWorld.x - innerWorld.x) * t,
+          0,
+          innerWorld.z + (vestWorld.z - innerWorld.z) * t
+        );
+        resolveCylinderWorldCollisions(
+          walkPos,
+          new THREE.Vector3(),
+          0.52,
+          1.8,
+          maze.colliders
+        );
+      }
+      expect(
+        Math.hypot(walkPos.x - vestWorld.x, walkPos.z - vestWorld.z)
+      ).toBeLessThan(0.05);
+
+      // E a parede de fundo externa (`room-arch-*`) bloqueia qualquer tentativa de sair para o vazio!
+      const archColliders = maze.colliders.filter((c) =>
+        c.id.startsWith('room-arch-')
+      );
+      const farGx = stepDx !== 0 ? (stepDx < 0 ? r.minGx : r.maxGx) : r.doorGx;
+      const farGz = stepDz !== 0 ? (stepDz < 0 ? r.minGz : r.maxGz) : r.doorGz;
+      const farWorld = gridCellToWorld(farGx, farGz);
+      const tryEscape = new THREE.Vector3(
+        farWorld.x + stepDx * 0.8,
+        0,
+        farWorld.z + stepDz * 0.8
+      );
+      for (let s = 0; s < 16; s++) {
+        tryEscape.x += stepDx * 0.08;
+        tryEscape.z += stepDz * 0.08;
+        resolveCylinderWorldCollisions(
+          tryEscape,
+          new THREE.Vector3(),
+          0.52,
+          1.8,
+          archColliders
+        );
+      }
+      const distFromFarCellCenter =
+        (tryEscape.x - farWorld.x) * stepDx +
+        (tryEscape.z - farWorld.z) * stepDz;
+      // Parede externa fica a 1.50m do centro da célula final -> cilindro de raio 0.52m para exatamente em ~0.98m!
+      expect(distFromFarCellCenter).toBeLessThanOrEqual(1.02);
+    }
+
+    // 5. Zero sobreposição entre móveis de sala, 25 caixotes de itens, obstáculos de corredor e spawn
     const roomKeys = new Set(
       hostLayout.roomFurniturePlacements.map((p) => `${p.gx},${p.gz}`)
     );
@@ -4795,7 +4901,7 @@ describe('Salas Especiais 3D (Computadores, Lab Biológico, Quartos, Enfermaria,
       }
     }
 
-    // 5. Colisão sólida real contra a Mesa de Leitura da Biblioteca & oclusão de visão da Aranha!
+    // 6. Colisão contra a Mesa de Leitura, oclusão de visão e navegação da Aranha + Ragdoll dentro das Salas Externas!
     const readingTable = hostLayout.roomFurniturePlacements.find(
       (p) => p.kind === 'library_reading_table'
     )!;
@@ -4839,10 +4945,12 @@ describe('Salas Especiais 3D (Computadores, Lab Biológico, Quartos, Enfermaria,
         to: THREE.Vector3,
         crouching: boolean
       ) => boolean;
+      buildGridPathTo: (tx: number, tz: number) => void;
+      pathWaypoints: Array<{ x: number; z: number }>;
     };
 
     const serverRack = hostLayout.roomFurniturePlacements.find(
-      (p) => p.kind === 'server_rack_bank'
+      (p) => p.kind === 'server_rack_bank' && Math.abs(Math.sin(p.yaw)) > 0.7
     )!;
     const spiderEye = new THREE.Vector3(
       serverRack.worldX,
@@ -4857,6 +4965,22 @@ describe('Salas Especiais 3D (Computadores, Lab Biológico, Quartos, Enfermaria,
     expect(spiderAny.hasLineOfSight(spiderEye, crouchedBehindRack, true)).toBe(
       false
     );
+
+    // Aranha traça rota BFS desde dentro do labirinto até o coração da Biblioteca Anexa (31, 20)!
+    const libCenter = gridCellToWorld(31, 20);
+    spiderAny.buildGridPathTo(libCenter.x, libCenter.z);
+    expect(spiderAny.pathWaypoints.length).toBeGreaterThan(3);
+    const finalWp = spiderAny.pathWaypoints[spiderAny.pathWaypoints.length - 1];
+    expect(Math.hypot(finalWp.x - libCenter.x, finalWp.z - libCenter.z)).toBeLessThan(0.1);
+
+    // E o arrasto físico em Ragdoll acha caminho desde dentro da Sala dos Computadores (11, -3) até o Ninho!
+    const compWorld = gridCellToWorld(11, -3);
+    const lairWorld = gridCellToWorld(hostLayout.lairCell.gx, hostLayout.lairCell.gz);
+    const dragFromAnnex = computeWalkableDragPolyline(
+      new THREE.Vector3(compWorld.x, 0, compWorld.z),
+      new THREE.Vector3(lairWorld.x, 0, lairWorld.z)
+    );
+    expect(dragFromAnnex.totalLength).toBeGreaterThan(25);
   });
 });
 

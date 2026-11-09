@@ -20,6 +20,12 @@ import {
   worldToGridCell,
 } from './DoomMazeBuilder';
 import {
+  ANNEX_MAX_GRID,
+  ANNEX_MIN_GRID,
+  isThemedRoomDoorCell,
+  isWalkableArenaCell,
+} from './DoomRooms';
+import {
   createSpiderChitinMaterial,
   createSpiderEyeMaterial,
   DoomSharedUniforms,
@@ -2435,25 +2441,30 @@ export class DoomSpider {
     wx: number,
     wz: number
   ): { gx: number; gz: number } {
-    const rows = LABYRINTH_MAP.length;
-    const cols = LABYRINTH_MAP[0].length;
     const raw = worldToGridCell(wx, wz);
-    const gx0 = Math.max(1, Math.min(cols - 2, raw.gx));
-    const gz0 = Math.max(1, Math.min(rows - 2, raw.gz));
-    if (!isSolidCell(LABYRINTH_MAP, gx0, gz0)) {
+    const gx0 = Math.max(ANNEX_MIN_GRID, Math.min(ANNEX_MAX_GRID, raw.gx));
+    const gz0 = Math.max(ANNEX_MIN_GRID, Math.min(ANNEX_MAX_GRID, raw.gz));
+    if (isWalkableArenaCell(gx0, gz0)) {
       return { gx: gx0, gz: gz0 };
     }
 
     let bestGx = 1;
     let bestGz = 1;
     let bestDistSq = Infinity;
-    for (let radius = 1; radius <= 6; radius++) {
+    for (let radius = 1; radius <= 8; radius++) {
       for (let dz = -radius; dz <= radius; dz++) {
         for (let dx = -radius; dx <= radius; dx++) {
           const nx = gx0 + dx;
           const nz = gz0 + dz;
-          if (nx < 1 || nx >= cols - 1 || nz < 1 || nz >= rows - 1) continue;
-          if (isSolidCell(LABYRINTH_MAP, nx, nz)) continue;
+          if (
+            nx < ANNEX_MIN_GRID ||
+            nx > ANNEX_MAX_GRID ||
+            nz < ANNEX_MIN_GRID ||
+            nz > ANNEX_MAX_GRID
+          ) {
+            continue;
+          }
+          if (!isWalkableArenaCell(nx, nz)) continue;
           const cw = gridCellToWorld(nx, nz);
           const dSq = (cw.x - wx) * (cw.x - wx) + (cw.z - wz) * (cw.z - wz);
           if (dSq < bestDistSq) {
@@ -2512,8 +2523,7 @@ export class DoomSpider {
   }
 
   private buildGridPathTo(targetX: number, targetZ: number): void {
-    const rows = LABYRINTH_MAP.length;
-    const cols = LABYRINTH_MAP[0].length;
+    const extSpan = ANNEX_MAX_GRID - ANNEX_MIN_GRID + 1;
     const start = this.findNearestWalkableCell(this.bodyPos.x, this.bodyPos.z);
     const goal = this.findNearestWalkableCell(targetX, targetZ);
 
@@ -2525,7 +2535,7 @@ export class DoomSpider {
     const goalCenter = gridCellToWorld(gxGoal, gzGoal);
     const rawGoalCell = worldToGridCell(targetX, targetZ);
     const safeTarget =
-      !isSolidCell(LABYRINTH_MAP, rawGoalCell.gx, rawGoalCell.gz) &&
+      isWalkableArenaCell(rawGoalCell.gx, rawGoalCell.gz) &&
       this.hasClearBodySweep(goalCenter.x, goalCenter.z, targetX, targetZ, 0.52)
         ? { x: targetX, z: targetZ }
         : { x: goalCenter.x, z: goalCenter.z };
@@ -2547,13 +2557,14 @@ export class DoomSpider {
       return;
     }
 
-    const total = rows * cols;
+    const total = extSpan * extSpan;
     const visited = new Uint8Array(total);
     const parent = new Int16Array(total).fill(-1);
     const queue: number[] = [];
 
-    const startIdx = sz * cols + sx;
-    const goalIdx = gzGoal * cols + gxGoal;
+    const startIdx = (sz - ANNEX_MIN_GRID) * extSpan + (sx - ANNEX_MIN_GRID);
+    const goalIdx =
+      (gzGoal - ANNEX_MIN_GRID) * extSpan + (gxGoal - ANNEX_MIN_GRID);
     visited[startIdx] = 1;
     queue.push(startIdx);
 
@@ -2572,14 +2583,22 @@ export class DoomSpider {
         found = true;
         break;
       }
-      const cx = cur % cols;
-      const cz = Math.floor(cur / cols);
+      const cx = (cur % extSpan) + ANNEX_MIN_GRID;
+      const cz = Math.floor(cur / extSpan) + ANNEX_MIN_GRID;
 
       for (const [ox, oz] of dirs) {
         const nx = cx + ox;
         const nz = cz + oz;
-        if (isSolidCell(LABYRINTH_MAP, nx, nz)) continue;
-        const nIdx = nz * cols + nx;
+        if (
+          nx < ANNEX_MIN_GRID ||
+          nx > ANNEX_MAX_GRID ||
+          nz < ANNEX_MIN_GRID ||
+          nz > ANNEX_MAX_GRID
+        ) {
+          continue;
+        }
+        if (!isWalkableArenaCell(nx, nz)) continue;
+        const nIdx = (nz - ANNEX_MIN_GRID) * extSpan + (nx - ANNEX_MIN_GRID);
         if (visited[nIdx]) continue;
         visited[nIdx] = 1;
         parent[nIdx] = cur;
@@ -2596,8 +2615,8 @@ export class DoomSpider {
     const cells: Array<{ x: number; z: number }> = [];
     let trace = goalIdx;
     while (trace !== -1) {
-      const tx = trace % cols;
-      const tz = Math.floor(trace / cols);
+      const tx = (trace % extSpan) + ANNEX_MIN_GRID;
+      const tz = Math.floor(trace / extSpan) + ANNEX_MIN_GRID;
       cells.push(gridCellToWorld(tx, tz));
       if (trace === startIdx) break;
       trace = parent[trace];
@@ -2689,14 +2708,14 @@ export class DoomSpider {
         const gx = anchorCell.gx + dx;
         const gz = anchorCell.gz + dz;
         if (
-          gz <= 0 ||
-          gz >= LABYRINTH_MAP.length - 1 ||
-          gx <= 0 ||
-          gx >= LABYRINTH_MAP[gz].length - 1
+          gz < ANNEX_MIN_GRID ||
+          gz > ANNEX_MAX_GRID ||
+          gx < ANNEX_MIN_GRID ||
+          gx > ANNEX_MAX_GRID
         ) {
           continue;
         }
-        if (isSolidCell(LABYRINTH_MAP, gx, gz)) continue;
+        if (!isWalkableArenaCell(gx, gz)) continue;
         const distFromSpider = Math.abs(gx - curCell.gx) + Math.abs(gz - curCell.gz);
         const distFromAnchor = Math.abs(dx) + Math.abs(dz);
         if (distFromSpider >= 3 && distFromAnchor <= 9) {
@@ -2738,6 +2757,10 @@ export class DoomSpider {
   ): boolean {
     if (
       turningCornerSoon ||
+      gx <= 0 ||
+      gx >= LABYRINTH_MAP[0].length - 1 ||
+      gz <= 0 ||
+      gz >= LABYRINTH_MAP.length - 1 ||
       isArchCell(LABYRINTH_MAP, gx, gz) ||
       isSolidCell(LABYRINTH_MAP, gx, gz)
     ) {
@@ -3125,7 +3148,13 @@ export class DoomSpider {
 
   private updateSurfaceAttachment(dt: number, elapsed: number): void {
     const { gx, gz } = worldToGridCell(this.bodyPos.x, this.bodyPos.z);
-    const inArch = isArchCell(LABYRINTH_MAP, gx, gz);
+    const inArch =
+      isArchCell(LABYRINTH_MAP, gx, gz) ||
+      isThemedRoomDoorCell(gx, gz) ||
+      gx <= 0 ||
+      gx >= LABYRINTH_MAP[0].length - 1 ||
+      gz <= 0 ||
+      gz >= LABYRINTH_MAP.length - 1;
     const bob = Math.sin(elapsed * 2.4) * 0.045;
 
     if (this.surfaceMode === 'WALL') {

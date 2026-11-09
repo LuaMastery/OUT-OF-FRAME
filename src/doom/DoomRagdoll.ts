@@ -2,11 +2,14 @@ import * as THREE from 'three';
 import { StaticColliderBox } from '../engine/physics/SpatialSweep';
 import {
   gridCellToWorld,
-  isSolidCell,
-  LABYRINTH_MAP,
   WALL_HEIGHT,
   worldToGridCell,
 } from './DoomMazeBuilder';
+import {
+  ANNEX_MAX_GRID,
+  ANNEX_MIN_GRID,
+  isWalkableArenaCell,
+} from './DoomRooms';
 
 export interface RagdollParticle {
   pos: THREE.Vector3;
@@ -717,47 +720,46 @@ export function computeWalkableDragPolyline(
   startWorld: THREE.Vector3,
   lairCenter: THREE.Vector3
 ): DragPolylinePath {
-  const rows = LABYRINTH_MAP.length;
-  const cols = LABYRINTH_MAP[0].length;
+  const extSpan = ANNEX_MAX_GRID - ANNEX_MIN_GRID + 1;
   const startCell = worldToGridCell(startWorld.x, startWorld.z);
   const endCell = worldToGridCell(lairCenter.x, lairCenter.z);
 
   const clampWalkable = (gx: number, gz: number): { gx: number; gz: number } => {
-    const cx = Math.max(1, Math.min(cols - 2, gx));
-    const cz = Math.max(1, Math.min(rows - 2, gz));
-    if (!isSolidCell(LABYRINTH_MAP, cx, cz)) return { gx: cx, gz: cz };
-    for (let r = 1; r <= 4; r++) {
+    const cx = Math.max(ANNEX_MIN_GRID, Math.min(ANNEX_MAX_GRID, gx));
+    const cz = Math.max(ANNEX_MIN_GRID, Math.min(ANNEX_MAX_GRID, gz));
+    if (isWalkableArenaCell(cx, cz)) return { gx: cx, gz: cz };
+    for (let r = 1; r <= 6; r++) {
       for (let dz = -r; dz <= r; dz++) {
         for (let dx = -r; dx <= r; dx++) {
           const nx = cx + dx;
           const nz = cz + dz;
           if (
-            nx > 0 &&
-            nx < cols - 1 &&
-            nz > 0 &&
-            nz < rows - 1 &&
-            !isSolidCell(LABYRINTH_MAP, nx, nz)
+            nx >= ANNEX_MIN_GRID &&
+            nx <= ANNEX_MAX_GRID &&
+            nz >= ANNEX_MIN_GRID &&
+            nz <= ANNEX_MAX_GRID &&
+            isWalkableArenaCell(nx, nz)
           ) {
             return { gx: nx, gz: nz };
           }
         }
       }
     }
-    return { gx: cx, gz: cz };
+    return { gx: 1, gz: 1 };
   };
 
   const s = clampWalkable(startCell.gx, startCell.gz);
   const e = clampWalkable(endCell.gx, endCell.gz);
 
-  const totalCells = rows * cols;
+  const totalCells = extSpan * extSpan;
   const visited = new Uint8Array(totalCells);
   const parent = new Int32Array(totalCells).fill(-1);
   const queue = new Int32Array(totalCells);
   let head = 0;
   let tail = 0;
 
-  const sIdx = s.gz * cols + s.gx;
-  const eIdx = e.gz * cols + e.gx;
+  const sIdx = (s.gz - ANNEX_MIN_GRID) * extSpan + (s.gx - ANNEX_MIN_GRID);
+  const eIdx = (e.gz - ANNEX_MIN_GRID) * extSpan + (e.gx - ANNEX_MIN_GRID);
   visited[sIdx] = 1;
   queue[tail++] = sIdx;
 
@@ -771,14 +773,21 @@ export function computeWalkableDragPolyline(
   while (head < tail) {
     const cur = queue[head++];
     if (cur === eIdx) break;
-    const cgx = cur % cols;
-    const cgz = (cur / cols) | 0;
+    const cgx = (cur % extSpan) + ANNEX_MIN_GRID;
+    const cgz = ((cur / extSpan) | 0) + ANNEX_MIN_GRID;
     for (const [dx, dz] of dirs) {
       const ngx = cgx + dx;
       const ngz = cgz + dz;
-      if (ngx <= 0 || ngx >= cols - 1 || ngz <= 0 || ngz >= rows - 1) continue;
-      if (isSolidCell(LABYRINTH_MAP, ngx, ngz)) continue;
-      const nIdx = ngz * cols + ngx;
+      if (
+        ngx < ANNEX_MIN_GRID ||
+        ngx > ANNEX_MAX_GRID ||
+        ngz < ANNEX_MIN_GRID ||
+        ngz > ANNEX_MAX_GRID
+      ) {
+        continue;
+      }
+      if (!isWalkableArenaCell(ngx, ngz)) continue;
+      const nIdx = (ngz - ANNEX_MIN_GRID) * extSpan + (ngx - ANNEX_MIN_GRID);
       if (visited[nIdx]) continue;
       visited[nIdx] = 1;
       parent[nIdx] = cur;
@@ -800,8 +809,8 @@ export function computeWalkableDragPolyline(
     cellChain.reverse();
     for (let i = 0; i < cellChain.length - 1; i++) {
       const idx = cellChain[i];
-      const gx = idx % cols;
-      const gz = (idx / cols) | 0;
+      const gx = (idx % extSpan) + ANNEX_MIN_GRID;
+      const gz = ((idx / extSpan) | 0) + ANNEX_MIN_GRID;
       const w = gridCellToWorld(gx, gz);
       rawPoints.push(new THREE.Vector3(w.x, 0, w.z));
     }

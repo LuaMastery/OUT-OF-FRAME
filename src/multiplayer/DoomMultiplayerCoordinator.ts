@@ -2,12 +2,11 @@ import * as THREE from 'three';
 import { DoomAstronaut } from '../doom/DoomAstronaut';
 import {
   CELL_SIZE,
-  isSolidCell,
   isStoneSectorWorld,
-  LABYRINTH_MAP,
   worldToGridCell,
 } from '../doom/DoomMazeBuilder';
 import { getSectorNameForCell, RadarAllyBlip } from '../doom/DoomRadar';
+import { isWalkableArenaCell } from '../doom/DoomRooms';
 import { DoomSharedUniforms } from '../doom/DoomShader';
 import {
   SpiderCinematicMode,
@@ -517,7 +516,7 @@ export class DoomMultiplayerCoordinator {
       const py = Math.max(0.15, Math.min(2.95, cameraPos.y + cameraDir.y * d));
       const pz = cameraPos.z + cameraDir.z * d;
       const { gx, gz } = worldToGridCell(px, pz);
-      if (isSolidCell(LABYRINTH_MAP, gx, gz)) {
+      if (!isWalkableArenaCell(gx, gz)) {
         break;
       }
       hitPos.set(px, py, pz);
@@ -1705,7 +1704,7 @@ export class DoomMultiplayerCoordinator {
           break;
         }
         const cell = worldToGridCell(sx, sz);
-        if (isSolidCell(LABYRINTH_MAP, cell.gx, cell.gz)) {
+        if (!isWalkableArenaCell(cell.gx, cell.gz)) {
           hitDist = Math.max(0.45, d - 0.35);
           break;
         }

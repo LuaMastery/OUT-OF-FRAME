@@ -71,6 +71,9 @@ export interface DoomTextureSet {
   cratePlanks: THREE.DataTexture;
   ironBarrel: THREE.DataTexture;
   oakStave: THREE.DataTexture;
+  annexWall: THREE.DataTexture;
+  annexFloor: THREE.DataTexture;
+  annexCeiling: THREE.DataTexture;
 }
 
 /**
@@ -854,6 +857,213 @@ export function createDoomTextures(): DoomTextureSet {
     }
   });
 
+  // 14. ANNEX WALL (128x128) — Painéis arquitetônicos modulares das Alas Externas (Salas Novas Fora do Mapa)
+  const annexWall = makePixelTexture(S, S, (px) => {
+    const rand = mulberry32(199401);
+    for (let y = 0; y < S; y++) {
+      const colPanel = 64;
+      for (let x = 0; x < S; x++) {
+        const lx = x % colPanel;
+        const grit = (rand() - 0.5) * 6;
+        const patina = (hash2i(x >> 2, y >> 2, 941) - 0.5) * 8;
+
+        // Sanca técnica superior com aletas de ventilação (y = 0..13)
+        if (y < 14) {
+          let v = 46 + grit * 0.7;
+          if (y === 0 || y === 13) v = 26;
+          else if (y === 1) v += 12;
+          else if (
+            y >= 4 &&
+            y <= 9 &&
+            lx >= 10 &&
+            lx <= 53 &&
+            y % 2 === 0
+          ) {
+            v = 20;
+          }
+          px(x, y, v * 0.94, v * 1.0, v * 1.08);
+          continue;
+        }
+
+        // Rodapé blindado escuro inferior com chanfro e rebites (y = 112..127)
+        if (y >= 112) {
+          let v = 38 + grit * 0.7;
+          if (y === 112) v = 64;
+          else if (y === 113) v = 24;
+          else if (y === 127) v = 20;
+          if (y === 118 && (lx === 8 || lx === 55)) {
+            px(x, y, 86, 92, 98);
+            continue;
+          }
+          px(x, y, v * 0.92, v * 0.96, v * 1.04);
+          continue;
+        }
+
+        // Trilho/dado central de serviço com friso anodizado âmbar-bronze (y = 58..70)
+        if (y >= 58 && y <= 70) {
+          if (y === 58 || y === 70) {
+            px(x, y, 26, 30, 34);
+            continue;
+          }
+          if (y === 63 || y === 65) {
+            const brass = 118 + grit;
+            px(x, y, brass * 1.08, brass * 0.86, brass * 0.52);
+            continue;
+          }
+          if (y === 64) {
+            px(x, y, 36, 44, 48);
+            continue;
+          }
+          const rail = 52 + grit * 0.6 + (y === 59 ? 12 : y === 69 ? -10 : 0);
+          px(x, y, rail * 0.94, rail * 1.0, rail * 1.08);
+          continue;
+        }
+
+        // Junta vertical entre módulos de 64px
+        if (lx === 0 || lx === colPanel - 1) {
+          const seam = lx === 0 ? 28 : 42;
+          px(x, y, seam, seam + 4, seam + 8);
+          continue;
+        }
+
+        // Painéis arquitetônicos compostos em titânio-ardósia claro com rebaixo chanfrado
+        const isUpper = y < 58;
+        const py0 = isUpper ? 14 : 71;
+        const py1 = isUpper ? 57 : 111;
+        const ly = y - py0;
+        const ph = py1 - py0 + 1;
+
+        const brush = Math.sin(x * 0.9 + (y >> 1) * 0.15) * 2.5;
+        let base = 96 + grit + patina + brush;
+
+        // Moldura externa do módulo
+        if (lx === 1 || ly === 0) base += 15;
+        if (lx === colPanel - 2 || ly === ph - 1) base -= 14;
+
+        // Rebaixo interno chanfrado do painel
+        const inset =
+          lx >= 6 && lx <= colPanel - 7 && ly >= 5 && ly <= ph - 6;
+        if (inset) {
+          base -= 7;
+          if (lx === 6 || ly === 5) base -= 14;
+          else if (lx === colPanel - 7 || ly === ph - 6) base += 11;
+        }
+
+        // Parafusos sextavados nos 4 cantos de cada cassete
+        if (
+          (lx === 4 || lx === colPanel - 5) &&
+          (ly === 3 || ly === ph - 4)
+        ) {
+          px(x, y, 56, 62, 68);
+          continue;
+        }
+
+        px(x, y, base * 0.96, base * 1.01, base * 1.06);
+      }
+    }
+  });
+
+  // 15. ANNEX FLOOR (128x128) — Ladrilhos octogonais chanfrados com pastilhas metálicas das Salas Externas
+  const annexFloor = makePixelTexture(S, S, (px) => {
+    const rand = mulberry32(199402);
+    for (let y = 0; y < S; y++) {
+      const ty = y % 32;
+      const tileRow = Math.floor(y / 32);
+      for (let x = 0; x < S; x++) {
+        const tx = x % 32;
+        const tileCol = Math.floor(x / 32);
+        const grit = (rand() - 0.5) * 6;
+
+        // Pastilha losangular de bronze-aço nos cruzamentos entre 4 ladrilhos
+        const cornerDist = Math.min(
+          tx + ty,
+          31 - tx + ty,
+          tx + (31 - ty),
+          31 - tx + (31 - ty)
+        );
+        if (cornerDist <= 4) {
+          if (cornerDist === 4) {
+            px(x, y, 22, 25, 28);
+          } else {
+            const ins = 78 + grit + (cornerDist === 0 ? 14 : 0);
+            px(x, y, ins * 1.08, ins * 0.92, ins * 0.66);
+          }
+          continue;
+        }
+
+        // Rejunte técnico profundo
+        if (tx === 0 || ty === 0 || tx === 31 || ty === 31) {
+          const j = tx === 0 || ty === 0 ? 24 : 34;
+          px(x, y, j, j + 3, j + 5);
+          continue;
+        }
+
+        const checker = (tileRow + tileCol) % 2 === 0 ? 5 : -4;
+        const spec = (hash2i(x, y, 977) - 0.5) * 8;
+        let v = 74 + checker + grit + spec;
+
+        // Bisel 3D em cada ladrilho 32x32
+        if (tx === 1 || ty === 1) v += 13;
+        if (tx === 30 || ty === 30) v -= 12;
+
+        // Friso interno antiderrapante discreto
+        if (
+          (tx === 5 || tx === 26 || ty === 5 || ty === 26) &&
+          tx >= 5 &&
+          tx <= 26 &&
+          ty >= 5 &&
+          ty <= 26
+        ) {
+          v -= 7;
+        }
+
+        px(x, y, v * 0.93, v * 0.99, v * 1.05);
+      }
+    }
+  });
+
+  // 16. ANNEX CEILING (128x128) — Teto arquitetônico caixotado acústico das Salas Externas
+  const annexCeiling = makePixelTexture(S, S, (px) => {
+    const rand = mulberry32(199403);
+    for (let y = 0; y < S; y++) {
+      const ly = y % 64;
+      for (let x = 0; x < S; x++) {
+        const lx = x % 64;
+        const grit = (rand() - 0.5) * 5;
+
+        // Vigas T principais entre caixotões 64x64
+        if (lx < 4 || lx >= 60 || ly < 4 || ly >= 60) {
+          let beam = 68 + grit;
+          if (lx === 0 || ly === 0) beam = 32;
+          else if (lx === 2 || ly === 2) beam += 14;
+          // Chapas angulares rebitadas nos cruzamentos das vigas
+          if ((lx < 7 || lx >= 57) && (ly < 7 || ly >= 57)) {
+            beam += 8;
+          }
+          px(x, y, beam * 0.95, beam * 1.0, beam * 1.07);
+          continue;
+        }
+
+        // Degrau intermediário do caixotão (4..10)
+        if (lx < 11 || lx >= 53 || ly < 11 || ly >= 53) {
+          let step = 50 + grit;
+          if (lx === 4 || ly === 4) step = 28;
+          else if (lx === 10 || ly === 10) step += 10;
+          px(x, y, step * 0.94, step * 0.99, step * 1.05);
+          continue;
+        }
+
+        // Miolo acústico microperfurado rebaixado
+        const perf = lx % 4 === 1 && ly % 4 === 1 ? -15 : 0;
+        let core = 62 + grit + perf;
+        if (lx === 11 || ly === 11) core -= 12;
+        if (lx === 52 || ly === 52) core += 8;
+
+        px(x, y, core * 0.95, core * 1.0, core * 1.06);
+      }
+    }
+  });
+
   return {
     startanWall,
     stoneWall,
@@ -869,5 +1079,8 @@ export function createDoomTextures(): DoomTextureSet {
     cratePlanks,
     ironBarrel,
     oakStave,
+    annexWall,
+    annexFloor,
+    annexCeiling,
   };
 }

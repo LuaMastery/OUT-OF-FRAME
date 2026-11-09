@@ -9,7 +9,11 @@ import {
 } from './DoomMazeBuilder';
 import { createDoomSurfaceMaterial, DoomSharedUniforms } from './DoomShader';
 import { DoomTextureSet } from './DoomTextures';
-import { getThemedRoomAtCell } from './DoomRooms';
+import {
+  getThemedRoomAtCell,
+  isThemedRoomDoorCell,
+  isThemedRoomThresholdCell,
+} from './DoomRooms';
 
 export type DoomObstacleKind =
   | 'iron_barrel_cluster'
@@ -344,16 +348,10 @@ export function generateArenaObstacles(
     if (usedCrateCellKeys.has(key)) return false;
     if (webTrapKeys.has(key)) return false;
     if (isNearReactorCollar(gx, gz)) return false;
+    if (isThemedRoomThresholdCell(gx, gz)) return false;
     if (Math.hypot(gx - lairCell.gx, gz - lairCell.gz) <= 2.4) return false;
     const room = getThemedRoomAtCell(gx, gz);
-    if (
-      room &&
-      (room.id === 'library_room' ||
-        room.id === 'biology_lab' ||
-        room.id === 'vegetation_room')
-    ) {
-      return false;
-    }
+    if (room) return false;
     return true;
   };
 
@@ -368,10 +366,18 @@ export function generateArenaObstacles(
       if (CEILING_LIGHT_CELL_KEYS.has(`${gx},${gz}`)) continue;
       if (getTimberPostAxis(gx, gz) !== null) continue;
 
-      const solidN = isSolidCell(LABYRINTH_MAP, gx, gz - 1);
-      const solidS = isSolidCell(LABYRINTH_MAP, gx, gz + 1);
-      const solidW = isSolidCell(LABYRINTH_MAP, gx - 1, gz);
-      const solidE = isSolidCell(LABYRINTH_MAP, gx + 1, gz);
+      const solidN =
+        isSolidCell(LABYRINTH_MAP, gx, gz - 1) &&
+        !isThemedRoomDoorCell(gx, gz - 1);
+      const solidS =
+        isSolidCell(LABYRINTH_MAP, gx, gz + 1) &&
+        !isThemedRoomDoorCell(gx, gz + 1);
+      const solidW =
+        isSolidCell(LABYRINTH_MAP, gx - 1, gz) &&
+        !isThemedRoomDoorCell(gx - 1, gz);
+      const solidE =
+        isSolidCell(LABYRINTH_MAP, gx + 1, gz) &&
+        !isThemedRoomDoorCell(gx + 1, gz);
 
       // Corredor reto Leste-Oeste (paredes N e S sólidas, sem luminária 'L')
       if (
@@ -575,6 +581,7 @@ export function generateArenaObstacles(
       for (const wd of wallDirs) {
         const wgx = gx + wd.nx;
         const wgz = gz + wd.nz;
+        if (isThemedRoomDoorCell(wgx, wgz)) continue;
         const wallCh = LABYRINTH_MAP[wgz]?.[wgx];
         if (wallCh !== '#' && wallCh !== 'B') continue;
         if (timberAxis === 'WE' && wd.nx !== 0) continue;

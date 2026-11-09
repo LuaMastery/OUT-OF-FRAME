@@ -1,13 +1,17 @@
 import {
   CELL_SIZE,
   isArchCell,
-  isSolidCell,
   LABYRINTH_MAP,
   LAIR_GRID_CELL,
   STONE_SECTOR_START_ROW,
   worldToGridCell,
 } from './DoomMazeBuilder';
-import { getThemedRoomAtCell } from './DoomRooms';
+import {
+  ANNEX_MAX_GRID,
+  ANNEX_MIN_GRID,
+  getThemedRoomAtCell,
+  isWalkableArenaCell,
+} from './DoomRooms';
 
 export type RadarScaleMode = 'FULL' | 'LOCAL';
 
@@ -43,7 +47,8 @@ export interface RadarRenderState {
   allies?: readonly RadarAllyBlip[];
 }
 
-export const RADAR_CANVAS_SIZE = 203; // 29 células × 7 px = 203 px exatos!
+export const RADAR_CANVAS_SIZE = 203; // Monitor CRT quadrado de 203x203 px
+export const RADAR_EXTENDED_SPAN_CELLS = ANNEX_MAX_GRID - ANNEX_MIN_GRID + 1; // 41x41 (inclui as 7 Salas Anexas fora do mapa 29x29!)
 
 /**
  * Nome tático do setor atual na planta 29x29 para orientação imediata do jogador.
@@ -109,92 +114,116 @@ export function renderRadarMinimapCanvas(
   const S = RADAR_CANVAS_SIZE;
   const rows = LABYRINTH_MAP.length;
   const cols = LABYRINTH_MAP[0].length;
-  const totalWorldW = cols * CELL_SIZE;
-  const totalWorldD = rows * CELL_SIZE;
-  const halfW = totalWorldW * 0.5;
-  const halfD = totalWorldD * 0.5;
+  const coreHalfW = cols * CELL_SIZE * 0.5;
+  const coreHalfD = rows * CELL_SIZE * 0.5;
+  const extMinWorldX = -coreHalfW + ANNEX_MIN_GRID * CELL_SIZE;
+  const extMinWorldZ = -coreHalfD + ANNEX_MIN_GRID * CELL_SIZE;
+  const totalWorldW = RADAR_EXTENDED_SPAN_CELLS * CELL_SIZE;
+  const totalWorldD = RADAR_EXTENDED_SPAN_CELLS * CELL_SIZE;
 
   // Fundo escuro fosforescente de monitor CRT tático
   ctx.fillStyle = '#050a08';
   ctx.fillRect(0, 0, S, S);
 
-  // Conversão de coordenadas mundo (metros) -> pixel do radar conforme escala (FULL 29x29 ou LOCAL 13.5x13.5)
+  // Conversão de coordenadas mundo (metros) -> pixel do radar conforme escala (FULL 41x41 com Salas Anexas ou LOCAL 13.5x13.5)
   const localSpanMeters = 13.5 * CELL_SIZE;
   const pxPerMeter =
     state.mode === 'FULL' ? S / totalWorldW : S / localSpanMeters;
 
   const worldToPxX = (wx: number): number =>
     state.mode === 'FULL'
-      ? ((wx + halfW) / totalWorldW) * S
+      ? ((wx - extMinWorldX) / totalWorldW) * S
       : (wx - state.playerX) * pxPerMeter + S * 0.5;
 
   const worldToPxY = (wz: number): number =>
     state.mode === 'FULL'
-      ? ((wz + halfD) / totalWorldD) * S
+      ? ((wz - extMinWorldZ) / totalWorldD) * S
       : (wz - state.playerZ) * pxPerMeter + S * 0.5;
 
   const cellPx = CELL_SIZE * pxPerMeter;
 
-  // 1. PLANTA TOPOGRÁFICA DO COMPLEXO (corredores visitados vs varredura estrutural não visitada)
-  for (let gz = 0; gz < rows; gz++) {
-    const cz0 = -halfD + gz * CELL_SIZE;
+  const isExtendedMask =
+    state.exploredMask.length >=
+    RADAR_EXTENDED_SPAN_CELLS * RADAR_EXTENDED_SPAN_CELLS;
+  const isCellExplored = (gx: number, gz: number): boolean => {
+    if (isExtendedMask) {
+      const idx =
+        (gz - ANNEX_MIN_GRID) * RADAR_EXTENDED_SPAN_CELLS +
+        (gx - ANNEX_MIN_GRID);
+      return state.exploredMask[idx] === 1;
+    }
+    if (gx >= 0 && gx < cols && gz >= 0 && gz < rows) {
+      return state.exploredMask[gz * cols + gx] === 1;
+    }
+    return false;
+  };
+
+  // 1. PLANTA TOPOGRÁFICA DO COMPLEXO + 7 SALAS ESPECIAIS ANEXAS FORA DO MAPA
+  for (let gz = ANNEX_MIN_GRID; gz <= ANNEX_MAX_GRID; gz++) {
+    const cz0 = -coreHalfD + gz * CELL_SIZE;
     const py0 = Math.floor(worldToPxY(cz0));
     const py1 = Math.ceil(worldToPxY(cz0 + CELL_SIZE));
     if (py1 < 0 || py0 >= S) continue;
 
-    const isStone = gz >= STONE_SECTOR_START_ROW;
+    const inCoreZ = gz >= 0 && gz < rows;
+    const isStone = inCoreZ && gz >= STONE_SECTOR_START_ROW;
 
-    for (let gx = 0; gx < cols; gx++) {
-      const cx0 = -halfW + gx * CELL_SIZE;
+    for (let gx = ANNEX_MIN_GRID; gx <= ANNEX_MAX_GRID; gx++) {
+      const cx0 = -coreHalfW + gx * CELL_SIZE;
       const px0 = Math.floor(worldToPxX(cx0));
       const px1 = Math.ceil(worldToPxX(cx0 + CELL_SIZE));
       if (px1 < 0 || px0 >= S) continue;
 
-      const ch = LABYRINTH_MAP[gz][gx];
-      const solid = isSolidCell(LABYRINTH_MAP, gx, gz);
-      const explored = state.exploredMask[gz * cols + gx] === 1;
+      const inCore = inCoreZ && gx >= 0 && gx < cols;
+      const walkable = isWalkableArenaCell(gx, gz);
+      const room = getThemedRoomAtCell(gx, gz);
+      const explored = isCellExplored(gx, gz);
       const w = Math.max(1, px1 - px0);
       const h = Math.max(1, py1 - py0);
 
-      if (solid) {
-        if (ch === 'M') {
-          // Colunas blindadas estruturais destacadas para referência espacial rápida
-          ctx.fillStyle = explored ? '#26443a' : '#152620';
-          ctx.fillRect(px0, py0, w, h);
-        } else {
-          ctx.fillStyle = isStone ? '#090907' : '#060c09';
+      if (!walkable) {
+        if (inCore) {
+          const ch = LABYRINTH_MAP[gz][gx];
+          if (ch === 'M') {
+            ctx.fillStyle = explored ? '#26443a' : '#152620';
+            ctx.fillRect(px0, py0, w, h);
+          } else {
+            ctx.fillStyle = isStone ? '#090907' : '#060c09';
+            ctx.fillRect(px0, py0, w, h);
+          }
+        } else if (room && room.id === 'reactor_hall') {
+          // Núcleo central Tokamak blindado dentro do Salão dos Reatores Anexo
+          ctx.fillStyle = explored ? '#24484d' : '#14282b';
           ctx.fillRect(px0, py0, w, h);
         }
         continue;
       }
 
-      // Corredor / salão transitável: visível em todo o mapa para o jogador nunca se perder,
-      // com brilho mais vivo nas galerias já percorridas e nuance sutil nas Salas Especiais!
-      const room = getThemedRoomAtCell(gx, gz);
-      if (isArchCell(LABYRINTH_MAP, gx, gz)) {
+      // Corredor / salão transitável ou Sala Especial Anexa fora do mapa 29x29!
+      if (inCore && isArchCell(LABYRINTH_MAP, gx, gz)) {
         ctx.fillStyle = explored ? '#2d5746' : '#183026';
       } else if (room) {
         switch (room.id) {
           case 'computer_room':
-            ctx.fillStyle = explored ? '#183b40' : '#0c1f22';
+            ctx.fillStyle = explored ? '#1b474d' : '#0f282c';
             break;
           case 'biology_lab':
-            ctx.fillStyle = explored ? '#1b4238' : '#0e241e';
+            ctx.fillStyle = explored ? '#1e4b3f' : '#102a23';
             break;
           case 'vegetation_room':
-            ctx.fillStyle = explored ? '#204523' : '#112512';
+            ctx.fillStyle = explored ? '#254e28' : '#142b16';
             break;
           case 'library_room':
-            ctx.fillStyle = explored ? '#3b291d' : '#1e150f';
+            ctx.fillStyle = explored ? '#443022' : '#241912';
             break;
           case 'crew_quarters':
-            ctx.fillStyle = explored ? '#25392a' : '#131e16';
+            ctx.fillStyle = explored ? '#2a4230' : '#16241a';
             break;
           case 'medical_ward':
-            ctx.fillStyle = explored ? '#1d3c3b' : '#0f2020';
+            ctx.fillStyle = explored ? '#214645' : '#122726';
             break;
           default:
-            ctx.fillStyle = explored ? '#1c3b2e' : '#0e2019';
+            ctx.fillStyle = explored ? '#224739' : '#12271f';
             break;
         }
       } else if (isStone) {
@@ -204,25 +233,29 @@ export function renderRadarMinimapCanvas(
       }
       ctx.fillRect(px0, py0, w, h);
 
-      // Contorno nítido de 1px apenas nas bordas com paredes sólidas (leitura limpa de planta baixa!)
-      const edgeColor = explored
-        ? isStone
-          ? '#6f693c'
-          : '#3e8a68'
-        : isStone
-          ? '#3b3922'
-          : '#214a38';
+      // Contorno nítido de 1px apenas nas bordas com paredes sólidas / cascos das Salas Anexas!
+      const edgeColor = room
+        ? explored
+          ? '#52b49a'
+          : '#2d6858'
+        : explored
+          ? isStone
+            ? '#6f693c'
+            : '#3e8a68'
+          : isStone
+            ? '#3b3922'
+            : '#214a38';
       ctx.fillStyle = edgeColor;
-      if (isSolidCell(LABYRINTH_MAP, gx, gz - 1)) {
+      if (!isWalkableArenaCell(gx, gz - 1)) {
         ctx.fillRect(px0, py0, w, 1);
       }
-      if (isSolidCell(LABYRINTH_MAP, gx, gz + 1)) {
+      if (!isWalkableArenaCell(gx, gz + 1)) {
         ctx.fillRect(px0, py1 - 1, w, 1);
       }
-      if (isSolidCell(LABYRINTH_MAP, gx - 1, gz)) {
+      if (!isWalkableArenaCell(gx - 1, gz)) {
         ctx.fillRect(px0, py0, 1, h);
       }
-      if (isSolidCell(LABYRINTH_MAP, gx + 1, gz)) {
+      if (!isWalkableArenaCell(gx + 1, gz)) {
         ctx.fillRect(px1 - 1, py0, 1, h);
       }
     }
@@ -392,9 +425,9 @@ export class DoomRadar {
     lairCell: { gx: number; gz: number } = LAIR_GRID_CELL
   ) {
     this.lairCell = lairCell;
-    const rows = LABYRINTH_MAP.length;
-    const cols = LABYRINTH_MAP[0].length;
-    this.exploredMask = new Uint8Array(rows * cols);
+    this.exploredMask = new Uint8Array(
+      RADAR_EXTENDED_SPAN_CELLS * RADAR_EXTENDED_SPAN_CELLS
+    );
 
     if (typeof document === 'undefined' || !parentViewport) {
       return;
@@ -494,8 +527,6 @@ export class DoomRadar {
    * Marca células próximas ao jogador como visitadas mesmo antes ou depois de coletar o radar.
    */
   markExploredAtWorld(wx: number, wz: number): void {
-    const rows = LABYRINTH_MAP.length;
-    const cols = LABYRINTH_MAP[0].length;
     const { gx, gz } = worldToGridCell(wx, wz);
 
     for (let dz = -2; dz <= 2; dz++) {
@@ -503,8 +534,16 @@ export class DoomRadar {
         if (dx * dx + dz * dz > 5) continue;
         const nx = gx + dx;
         const nz = gz + dz;
-        if (nz >= 0 && nz < rows && nx >= 0 && nx < cols) {
-          this.exploredMask[nz * cols + nx] = 1;
+        if (
+          nz >= ANNEX_MIN_GRID &&
+          nz <= ANNEX_MAX_GRID &&
+          nx >= ANNEX_MIN_GRID &&
+          nx <= ANNEX_MAX_GRID
+        ) {
+          this.exploredMask[
+            (nz - ANNEX_MIN_GRID) * RADAR_EXTENDED_SPAN_CELLS +
+              (nx - ANNEX_MIN_GRID)
+          ] = 1;
         }
       }
     }
@@ -534,8 +573,10 @@ export class DoomRadar {
     this.lastDrawMs = nowMs;
 
     const { gx, gz } = worldToGridCell(playerX, playerZ);
-    const clampedGx = Math.max(0, Math.min(LABYRINTH_MAP[0].length - 1, gx));
-    const clampedGz = Math.max(0, Math.min(LABYRINTH_MAP.length - 1, gz));
+    const clampedGx = Math.max(ANNEX_MIN_GRID, Math.min(ANNEX_MAX_GRID, gx));
+    const clampedGz = Math.max(ANNEX_MIN_GRID, Math.min(ANNEX_MAX_GRID, gz));
+    const fmtCoord = (v: number): string =>
+      v < 0 ? `-${String(Math.abs(v)).padStart(2, '0')}` : String(v).padStart(2, '0');
 
     if (this.sectorEl) {
       this.sectorEl.textContent = getSectorNameForCell(
@@ -545,7 +586,8 @@ export class DoomRadar {
       );
     }
     if (this.coordsEl) {
-      this.coordsEl.textContent = `SETOR [${String(clampedGx).padStart(2, '0')},${String(clampedGz).padStart(2, '0')}]`;
+      const prefix = getThemedRoomAtCell(clampedGx, clampedGz) ? 'ALA' : 'SETOR';
+      this.coordsEl.textContent = `${prefix} [${fmtCoord(clampedGx)},${fmtCoord(clampedGz)}]`;
     }
     if (this.signalsCountEl) {
       this.signalsCountEl.textContent =

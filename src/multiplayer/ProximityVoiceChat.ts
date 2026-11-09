@@ -1,10 +1,9 @@
 import * as THREE from 'three';
 import {
   CELL_SIZE,
-  isSolidCell,
-  LABYRINTH_MAP,
   worldToGridCell,
 } from '../doom/DoomMazeBuilder';
+import { isWalkableArenaCell } from '../doom/DoomRooms';
 
 export type VoiceActivationMode = 'PTT' | 'OPEN' | 'MUTED';
 
@@ -77,7 +76,7 @@ export function countLabyrinthWallsBetween(
     const sx = ax + dx * t;
     const sz = az + dz * t;
     const cell = worldToGridCell(sx, sz);
-    const solid = isSolidCell(LABYRINTH_MAP, cell.gx, cell.gz);
+    const solid = !isWalkableArenaCell(cell.gx, cell.gz);
     if (solid && !insideSolid) {
       wallBarriers++;
       insideSolid = true;
