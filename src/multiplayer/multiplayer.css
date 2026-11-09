@@ -1204,3 +1204,76 @@
     display: none;
   }
 }
+
+/* ==========================================================================
+   BANNER TÁTICO DE CAPTURA DE ALIADO & RESGATE EXCLUSIVO NO NINHO
+   ========================================================================== */
+.oof-coop-capture-banner {
+  position: absolute;
+  top: calc(16px + var(--safe-top, 0px));
+  left: 50%;
+  transform: translate(-50%, -8px);
+  z-index: 37;
+  pointer-events: none;
+  padding: 7px 15px 8px;
+  background: rgba(16, 11, 9, 0.91);
+  border: 1px solid rgba(255, 168, 76, 0.68);
+  border-left: 4px solid #ff9b38;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.72);
+  font-family: 'Courier New', monospace;
+  text-align: center;
+  opacity: 0;
+  transition:
+    opacity 0.18s ease,
+    transform 0.18s ease,
+    border-color 0.2s ease;
+  max-width: min(500px, 78vw);
+}
+
+.oof-coop-capture-banner.is-visible {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+.oof-coop-capture-banner.phase-capturing {
+  background: rgba(28, 16, 7, 0.92);
+  border-color: rgba(255, 180, 72, 0.78);
+  border-left-color: #ffab3d;
+}
+
+.oof-coop-capture-banner.phase-doomed {
+  background: rgba(29, 9, 11, 0.93);
+  border-color: rgba(255, 86, 82, 0.78);
+  border-left-color: #ff4242;
+}
+
+.oof-coop-capture-banner.phase-nest-rescue {
+  background: rgba(10, 24, 18, 0.92);
+  border-color: rgba(88, 236, 158, 0.72);
+  border-left-color: #4ef09a;
+}
+
+.oof-coop-capture-title {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: #ffe3b3;
+  text-transform: uppercase;
+}
+
+.oof-coop-capture-banner.phase-doomed .oof-coop-capture-title {
+  color: #ffd0ce;
+}
+
+.oof-coop-capture-banner.phase-nest-rescue .oof-coop-capture-title {
+  color: #caffdf;
+}
+
+.oof-coop-capture-sub {
+  font-size: 10.2px;
+  letter-spacing: 0.04em;
+  color: #dfd2be;
+  margin-top: 2px;
+  line-height: 1.3;
+}
+

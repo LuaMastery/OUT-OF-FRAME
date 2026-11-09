@@ -278,6 +278,14 @@ export type NetworkWorldEvent =
       roomId: string;
       roomName: string;
       ts: number;
+    }
+  | {
+      kind: 'futile_spider_strike';
+      strikerId: string;
+      strikerName: string;
+      victimId: string;
+      victimName: string;
+      ts: number;
     };
 
 interface LocalMirrorRoomRecord {

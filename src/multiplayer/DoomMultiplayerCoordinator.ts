@@ -67,6 +67,8 @@ interface RemoteAllyEntity {
   voiceLevel: number;
   radioActive: boolean;
   wasRadioSpeaking: boolean;
+  strikeAttemptedDuringCapture: boolean;
+  captureAlertAnnounced: boolean;
   lastAfkNoticeMs: number;
   joinedAtWallMs: number;
   lastSeenMs: number;
@@ -171,6 +173,10 @@ export class DoomMultiplayerCoordinator {
   private readonly chatBoxEl: HTMLDivElement;
   private readonly chatInputEl: HTMLInputElement;
   private readonly worldLabelsLayerEl: HTMLDivElement;
+  private readonly captureBannerEl: HTMLDivElement;
+  private readonly captureTitleEl: HTMLDivElement;
+  private readonly captureSubEl: HTMLDivElement;
+  private lastFutileStrikeMs = 0;
 
   private roster: RoomPlayerSummary[] = [];
   private readonly projVec = new THREE.Vector3();
@@ -197,6 +203,16 @@ export class DoomMultiplayerCoordinator {
     this.worldLabelsLayerEl = document.createElement('div');
     this.worldLabelsLayerEl.className = 'oof-coop-world-labels';
     this.viewportEl.appendChild(this.worldLabelsLayerEl);
+
+    // Banner central de alerta quando um aliado está sendo capturado ou levado até o Ninho!
+    this.captureBannerEl = document.createElement('div');
+    this.captureBannerEl.className = 'oof-coop-capture-banner';
+    this.captureTitleEl = document.createElement('div');
+    this.captureTitleEl.className = 'oof-coop-capture-title';
+    this.captureSubEl = document.createElement('div');
+    this.captureSubEl.className = 'oof-coop-capture-sub';
+    this.captureBannerEl.append(this.captureTitleEl, this.captureSubEl);
+    this.viewportEl.appendChild(this.captureBannerEl);
 
     // HUD compacto do Esquadrão & Sala no canto superior esquerdo
     this.hudRootEl = document.createElement('div');
@@ -715,14 +731,18 @@ export class DoomMultiplayerCoordinator {
   }
 
   /**
-   * Interrompe o ataque/arrasto da Aranha usando Sinalizador ou Faca, salvando o amigo antes do ninho!
+   * Golpe desesperado contra a Aranha enquanto ela captura/arrasta um amigo:
+   * - Quando a Aranha captura um amigo, JÁ ERA: ela NÃO solta no corredor e VAI levá-lo até o Ninho!
+   * - Registra o impacto inútil na carapaça blindada, toca alerta sonoro/visual e avisa que o resgate
+   *   só poderá ser feito lá no Ninho!
+   * Retorna `true` se o golpe atingiu a carapaça da Aranha (sem libertar o amigo).
    */
-  tryInterruptSpiderAbduction(
+  tryStrikeCapturingSpider(
     localPos: THREE.Vector3,
     spiderPos: THREE.Vector3,
-    weapon: 'knife' | 'flare'
+    _weapon: 'knife' | 'flare' | 'shove' = 'knife'
   ): boolean {
-    const maxDist = weapon === 'flare' ? 5.6 : 3.85;
+    const maxDist = 4.25;
     for (const ally of this.allies.values()) {
       if (ally.dead || (!ally.inSequence && !ally.beingDragged)) continue;
       const distToAlly = Math.hypot(
@@ -743,28 +763,30 @@ export class DoomMultiplayerCoordinator {
       if (
         Math.min(distToAlly, distToSpider, distToAbductionSpider) <= maxDist
       ) {
-        ally.inSequence = false;
-        ally.beingDragged = false;
-        ally.abductionMode = null;
-        ally.abductionCooldownUntilPerfMs = performance.now() + 2600;
-        this.hooks.onSpiderInterruptedAndFlees(localPos);
-        this.client.broadcastWorldEvent({
-          kind: 'interrupt_abduction',
-          rescuerId: this.session.localPlayerId,
-          rescuerName: this.session.localPlayerName,
-          targetPlayerId: ally.id,
-          weapon,
-          x: localPos.x,
-          z: localPos.z,
-          ts: Date.now(),
-        });
-        this.pushRadioFeed(
-          weapon === 'flare'
-            ? `🔥 Seu sinalizador cegou a Aranha e SALVOU ${ally.name}!`
-            : `🗡️ Você golpeou a Aranha e SALVOU ${ally.name} do arrasto!`,
-          false
-        );
-        this.renderSquadHud();
+        ally.strikeAttemptedDuringCapture = true;
+        const nowMs = performance.now();
+        if (nowMs - this.lastFutileStrikeMs >= 950) {
+          this.lastFutileStrikeMs = nowMs;
+          this.sound.playBlastDoorUnlock?.(false);
+          this.sound.playSpiderScream?.(
+            0,
+            Math.min(distToAlly, distToSpider, distToAbductionSpider),
+            0
+          );
+          this.client.broadcastWorldEvent({
+            kind: 'futile_spider_strike',
+            strikerId: this.session.localPlayerId,
+            strikerName: this.session.localPlayerName,
+            victimId: ally.id,
+            victimName: ally.name,
+            ts: Date.now(),
+          });
+          this.pushRadioFeed(
+            `💀 JÁ ERA! A carapaça resistiu ao golpe — ela VAI levar ${ally.name} até o NINHO! Salve-o LÁ!`,
+            true
+          );
+          this.renderSquadHud();
+        }
         return true;
       }
     }
@@ -772,29 +794,50 @@ export class DoomMultiplayerCoordinator {
   }
 
   /**
-   * Permite que um aliado salve outro jogador sendo arrastado pela Aranha OU preso em teia/ninho
-   * ao chegar perto e usar Faca [1] ou Interagir [E]!
+   * Mantido por compatibilidade: uma vez capturado pela Aranha, é impossível interromper o arrasto
+   * antes de ela depositar o amigo no Ninho! Retorna sempre `false` (não soltou), acionando o ricochete.
+   */
+  tryInterruptSpiderAbduction(
+    localPos: THREE.Vector3,
+    spiderPos: THREE.Vector3,
+    weapon: 'knife' | 'flare'
+  ): boolean {
+    this.tryStrikeCapturingSpider(localPos, spiderPos, weapon);
+    return false;
+  }
+
+  /**
+   * Permite que um aliado:
+   * 1) Se o amigo estiver sendo capturado/arrastado pela Aranha, tente golpeá-la (descobrindo que JÁ ERA — ela o levará ao Ninho);
+   * 2) Salve de verdade o amigo SOMENTE quando ele já estiver preso no Casulo do Ninho (`cocoonLocked`)
+   *    ou numa armadilha comum de piso antes da Aranha pegá-lo!
    */
   tryRescueNearbyTrappedAlly(
     localPos: THREE.Vector3,
     spiderPos?: THREE.Vector3,
     hasKnife = false
   ): boolean {
-    if (
-      spiderPos &&
-      hasKnife &&
-      this.tryInterruptSpiderAbduction(localPos, spiderPos, 'knife')
-    ) {
-      return true;
+    if (spiderPos) {
+      const struckCapturingSpider = this.tryStrikeCapturingSpider(
+        localPos,
+        spiderPos,
+        hasKnife ? 'knife' : 'shove'
+      );
+      if (struckCapturingSpider) {
+        return false;
+      }
     }
 
     for (const ally of this.allies.values()) {
-      if ((!ally.ensnared && !ally.cocoonLocked) || ally.dead) continue;
+      // NUNCA permite cortar/resgatar enquanto a Aranha está capturando ou levando até o Ninho!
+      if (ally.dead || ally.inSequence || ally.beingDragged) continue;
+      if (!ally.ensnared && !ally.cocoonLocked) continue;
+
       const d = Math.hypot(
         ally.currentPos.x - localPos.x,
         ally.currentPos.z - localPos.z
       );
-      if (d <= 3.35) {
+      if (d <= 3.45) {
         const wasCocoon = ally.cocoonLocked;
         ally.ensnared = false;
         ally.cocoonLocked = false;
@@ -814,7 +857,7 @@ export class DoomMultiplayerCoordinator {
         });
         this.pushRadioFeed(
           wasCocoon
-            ? `🗡️ Você rasgou o casulo do Ninho e SALVOU ${ally.name} antes de ser devorado!`
+            ? `🗡️ Você chegou ao Ninho, rasgou o casulo e SALVOU ${ally.name} antes de ser devorado!`
             : `Você cortou a teia e salvou ${ally.name}!`,
           false
         );
@@ -839,28 +882,29 @@ export class DoomMultiplayerCoordinator {
   hasTrappedAllyInRescueRange(
     localPos: THREE.Vector3,
     spiderPos?: THREE.Vector3,
-    hasKnife = false
+    _hasKnife = false
   ): boolean {
     const abd = this.getActiveRemoteAbduction();
     if (
       abd &&
-      hasKnife &&
       spiderPos &&
-      (Math.hypot(spiderPos.x - localPos.x, spiderPos.z - localPos.z) <= 3.6 ||
+      (Math.hypot(spiderPos.x - localPos.x, spiderPos.z - localPos.z) <= 4.1 ||
         Math.hypot(
           abd.victimPos.x - localPos.x,
           abd.victimPos.z - localPos.z
-        ) <= 3.6)
+        ) <= 4.1)
     ) {
+      // Habilita o botão de ação para o jogador TENTAR golpear a Aranha durante a captura!
       return true;
     }
     for (const ally of this.allies.values()) {
-      if ((!ally.ensnared && !ally.cocoonLocked) || ally.dead) continue;
+      if (ally.dead || ally.inSequence || ally.beingDragged) continue;
+      if (!ally.ensnared && !ally.cocoonLocked) continue;
       if (
         Math.hypot(
           ally.currentPos.x - localPos.x,
           ally.currentPos.z - localPos.z
-        ) <= 3.35
+        ) <= 3.45
       ) {
         return true;
       }
@@ -1343,7 +1387,9 @@ export class DoomMultiplayerCoordinator {
       const dist = this.projVec.distanceTo(camera.position);
       this.projVec.project(camera);
 
-      if (this.projVec.z < 1.0 && dist < 38) {
+      const maxLabelDist =
+        ally.inSequence || ally.beingDragged || ally.cocoonLocked ? 72 : 38;
+      if (this.projVec.z < 1.0 && dist < maxLabelDist) {
         const sx = (this.projVec.x * 0.5 + 0.5) * viewW;
         const sy = (-this.projVec.y * 0.5 + 0.5) * viewH;
         ally.labelEl.style.display = 'flex';
@@ -1374,13 +1420,17 @@ export class DoomMultiplayerCoordinator {
             : '🔊 '
           : '';
 
-        if (isBeingDragged) {
-          ally.labelTextEl.textContent = `${micTag}🕷️ ${ally.name} — RAGDOLL PUXADO PELOS TENTÁCULOS! [SINALIZADOR / FACA]`;
-        } else if (ally.inSequence) {
-          ally.labelTextEl.textContent = `${micTag}🕷️ ${ally.name} — NAS GARRAS DA ARANHA! [SINALIZADOR / FACA]`;
+        if (
+          ally.inSequence &&
+          ally.abductionMode === 'STRIKE_ATTACK' &&
+          !ally.strikeAttemptedDuringCapture
+        ) {
+          ally.labelTextEl.textContent = `${micTag}⚔️ ${ally.name} SENDO CAPTURADO! TENTE GOLPEAR A ARANHA [FACA / E]!`;
+        } else if (isBeingDragged || ally.inSequence) {
+          ally.labelTextEl.textContent = `${micTag}💀 JÁ ERA! LEVANDO ${ally.name} ATÉ O NINHO — SALVE-O LÁ!`;
         } else if (ally.cocoonLocked) {
           const secs = Math.max(1, Math.ceil(ally.devourSecondsLeft || 1));
-          ally.labelTextEl.textContent = `${micTag}🕸️ ${ally.name} — PRESO NA TEIA! SALVE COM [E / FACA] (${secs}s P/ DEVORAR!)`;
+          ally.labelTextEl.textContent = `${micTag}🕸️ NINHO: SALVE ${ally.name} COM [E / FACA] (${secs}s P/ DEVORAR!)`;
         } else if (ally.ensnared) {
           ally.labelTextEl.textContent = `${micTag}🕸️ ${ally.name} — PRESO NA TEIA! [E / FACA]`;
         } else if (ally.afk) {
@@ -1392,6 +1442,10 @@ export class DoomMultiplayerCoordinator {
         ally.labelEl.style.display = 'none';
       }
     }
+
+    this.updateAllyCaptureBanner(
+      hideHud || localState.dead || localState.inSequence || nowCocoon
+    );
 
     // 4. Atualiza Pings Táticos 3D ativos
     for (let i = this.pings.length - 1; i >= 0; i--) {
@@ -1426,6 +1480,67 @@ export class DoomMultiplayerCoordinator {
     }
   }
 
+  private updateAllyCaptureBanner(suppress: boolean): void {
+    if (suppress) {
+      this.captureBannerEl.classList.remove(
+        'is-visible',
+        'phase-capturing',
+        'phase-doomed',
+        'phase-nest-rescue'
+      );
+      return;
+    }
+
+    let capturingAlly: RemoteAllyEntity | null = null;
+    let draggedAlly: RemoteAllyEntity | null = null;
+    let cocoonAlly: RemoteAllyEntity | null = null;
+
+    for (const ally of this.allies.values()) {
+      if (ally.dead) continue;
+      if (
+        ally.inSequence &&
+        ally.abductionMode === 'STRIKE_ATTACK' &&
+        !ally.strikeAttemptedDuringCapture
+      ) {
+        capturingAlly = ally;
+        break;
+      }
+      if (ally.inSequence || ally.beingDragged) {
+        draggedAlly = ally;
+      } else if (ally.cocoonLocked) {
+        cocoonAlly = ally;
+      }
+    }
+
+    if (capturingAlly) {
+      this.captureBannerEl.className =
+        'oof-coop-capture-banner is-visible phase-capturing';
+      this.captureTitleEl.textContent = `⚔️ ${capturingAlly.name} ESTÁ SENDO CAPTURADO PELA ARANHA!`;
+      this.captureSubEl.textContent =
+        'Chegue perto e TENTE GOLPEAR A ARANHA [Faca / Clique / E]!';
+    } else if (draggedAlly) {
+      this.captureBannerEl.className =
+        'oof-coop-capture-banner is-visible phase-doomed';
+      this.captureTitleEl.textContent = draggedAlly.strikeAttemptedDuringCapture
+        ? `💀 JÁ ERA! SEU GOLPE NÃO FEZ A ARANHA LARGAR ${draggedAlly.name}!`
+        : `💀 JÁ ERA — A ARANHA CAPTUROU ${draggedAlly.name}!`;
+      this.captureSubEl.textContent = `Ela VAI levar ${draggedAlly.name} até o NINHO — siga-a até lá para conseguir salvá-lo!`;
+    } else if (cocoonAlly) {
+      const secs = Math.max(1, Math.ceil(cocoonAlly.devourSecondsLeft || 1));
+      this.captureBannerEl.className =
+        'oof-coop-capture-banner is-visible phase-nest-rescue';
+      this.captureTitleEl.textContent = `🕸️ ${cocoonAlly.name} ESTÁ PRESO NO NINHO! (${secs}s)`;
+      this.captureSubEl.textContent = `Vá até o NINHO e corte o casulo [E / Faca] para salvar ${cocoonAlly.name}!`;
+    } else {
+      this.captureBannerEl.classList.remove(
+        'is-visible',
+        'phase-capturing',
+        'phase-doomed',
+        'phase-nest-rescue'
+      );
+    }
+  }
+
   destroy(): void {
     this.voiceChat.destroy();
     this.client.disconnect();
@@ -1437,6 +1552,7 @@ export class DoomMultiplayerCoordinator {
       p.markerEl.remove();
     }
     this.pings.length = 0;
+    this.captureBannerEl.remove();
     this.hudRootEl.remove();
     this.worldLabelsLayerEl.remove();
   }
@@ -1619,6 +1735,8 @@ export class DoomMultiplayerCoordinator {
         voiceLevel: pkt.voiceLevel ?? 0,
         radioActive: Boolean(pkt.radioActive),
         wasRadioSpeaking: false,
+        strikeAttemptedDuringCapture: false,
+        captureAlertAnnounced: false,
         lastAfkNoticeMs: 0,
         joinedAtWallMs: Date.now(),
         lastSeenMs: performance.now(),
@@ -1662,6 +1780,23 @@ export class DoomMultiplayerCoordinator {
       ent.beingDragged = Boolean(pkt.beingDragged);
       ent.abductionMode = pkt.abductionMode ?? null;
       ent.abductionProgress = pkt.abductionProgress ?? 0;
+    }
+
+    const nowBeingCapturedOrDragged =
+      !pkt.dead && (ent.inSequence || ent.beingDragged);
+    if (nowBeingCapturedOrDragged && !ent.captureAlertAnnounced) {
+      ent.captureAlertAnnounced = true;
+      ent.strikeAttemptedDuringCapture = false;
+      this.sound.playRadarPing(true);
+      this.pushRadioFeed(
+        `⚔️ ${ent.name} está sendo capturado pela Aranha! Tentem golpeá-la!`,
+        true
+      );
+      this.renderSquadHud();
+    } else if (!nowBeingCapturedOrDragged && ent.captureAlertAnnounced) {
+      ent.captureAlertAnnounced = false;
+      ent.strikeAttemptedDuringCapture = false;
+      this.renderSquadHud();
     }
     if (
       typeof pkt.abductionSpiderX === 'number' &&
@@ -1970,6 +2105,25 @@ export class DoomMultiplayerCoordinator {
           `🔓 ${ev.senderName} destrancou ${ev.roomName}!`,
           false
         );
+      }
+    } else if (ev.kind === 'futile_spider_strike') {
+      if (ev.strikerId !== this.session.localPlayerId) {
+        const victimAlly = this.allies.get(ev.victimId);
+        if (victimAlly) {
+          victimAlly.strikeAttemptedDuringCapture = true;
+        }
+        this.sound.playBlastDoorUnlock?.(false);
+        if (ev.victimId === this.session.localPlayerId) {
+          this.pushRadioFeed(
+            `💀 ${ev.strikerName} tentou golpear a Aranha, mas JÁ ERA — ela está levando você até o NINHO!`,
+            true
+          );
+        } else {
+          this.pushRadioFeed(
+            `💀 ${ev.strikerName} golpeou a Aranha, mas JÁ ERA — ela não largou ${ev.victimName}! Sigam até o NINHO!`,
+            true
+          );
+        }
       }
     }
   }

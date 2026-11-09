@@ -3345,6 +3345,7 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
       attrs: Map<string, string>;
       children: MockEl[];
       readonly firstChild: MockEl | null;
+      readonly firstElementChild: MockEl | null;
       parent: MockEl | null;
       listeners: Map<string, Array<(ev: Record<string, unknown>) => void>>;
       classList: {
@@ -3396,6 +3397,9 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
         attrs: new Map(),
         children: [],
         get firstChild() {
+          return el.children[0] ?? null;
+        },
+        get firstElementChild() {
           return el.children[0] ?? null;
         },
         parent: null,
@@ -3683,6 +3687,221 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
       coordinator.closeRadioChatInput(false);
       expect(coordinator.isChatTyping).toBe(false);
       expect(closedCallbackCount).toBe(1);
+
+      // 5. Captura de aliado: pede para TENTAR golpear a Aranha durante captura, mas JÁ ERA —
+      //    ela NUNCA solta no caminho e só permite salvar lá no NINHO (cocoonLocked)!
+      if (typeof BroadcastChannel !== 'undefined') {
+        const camTest = new THREE.PerspectiveCamera(75, 16 / 9, 0.1, 100);
+        camTest.position.set(10, 1.6, 10);
+        const allyWorldPos = new THREE.Vector3(11.2, 0, 10);
+        const spiderWorldPos = new THREE.Vector3(11.5, 1.3, 10);
+
+        guestClient.broadcastPlayerPose({
+          x: allyWorldPos.x,
+          y: 0,
+          z: allyWorldPos.z,
+          yaw: 0,
+          pitch: 0,
+          speed: 0,
+          bobPhase: 0,
+          crouch: 0,
+          flashlightOn: false,
+          flashDirX: 0,
+          flashDirY: 0,
+          flashDirZ: -1,
+          health: 60,
+          bleeding: true,
+          ensnared: false,
+          inSequence: true,
+          beingDragged: false,
+          abductionMode: 'STRIKE_ATTACK',
+          abductionProgress: 0.35,
+          abductionSpiderX: spiderWorldPos.x,
+          abductionSpiderY: spiderWorldPos.y,
+          abductionSpiderZ: spiderWorldPos.z,
+          cocoonLocked: false,
+          dead: false,
+        });
+        await new Promise((r) => setTimeout(r, 35));
+
+        coordinator.update(
+          0.016,
+          2.0,
+          camTest,
+          {
+            pos: new THREE.Vector3(10, 0, 10),
+            yaw: 0,
+            pitch: 0,
+            speed: 0,
+            bobPhase: 0,
+            crouch: 0,
+            flashlightOn: true,
+            flashDir: new THREE.Vector3(0, 0, -1),
+            health: 100,
+            bleeding: false,
+            ensnared: false,
+            inSequence: false,
+            dead: false,
+          },
+          {
+            x: spiderWorldPos.x,
+            y: spiderWorldPos.y,
+            z: spiderWorldPos.z,
+            upX: 0,
+            upY: 1,
+            upZ: 0,
+            fwdX: 0,
+            fwdY: 0,
+            fwdZ: -1,
+            state: 'POUNCE',
+            surfaceMode: 'FLOOR',
+          },
+          false
+        );
+
+        const captureBanner = viewportEl.children.find((c) =>
+          c.className.includes('oof-coop-capture-banner')
+        )!;
+        expect(captureBanner).toBeDefined();
+        expect(captureBanner.className).toContain('phase-capturing');
+        expect(captureBanner.children[0].textContent).toContain(
+          'ESTÁ SENDO CAPTURADO'
+        );
+        expect(captureBanner.children[1].textContent).toContain(
+          'TENTE GOLPEAR A ARANHA'
+        );
+        expect(
+          coordinator.hasTrappedAllyInRescueRange(
+            new THREE.Vector3(10, 0, 10),
+            spiderWorldPos,
+            true
+          )
+        ).toBe(true);
+
+        // Jogador tenta golpear a Aranha: NÃO liberta o amigo (JÁ ERA!) e muda o banner para phase-doomed!
+        const rescuedMidCapture = coordinator.tryRescueNearbyTrappedAlly(
+          new THREE.Vector3(10, 0, 10),
+          spiderWorldPos,
+          true
+        );
+        expect(rescuedMidCapture).toBe(false);
+        expect(coordinator.getActiveRemoteAbduction()).not.toBeNull();
+
+        coordinator.update(
+          0.016,
+          2.1,
+          camTest,
+          {
+            pos: new THREE.Vector3(10, 0, 10),
+            yaw: 0,
+            pitch: 0,
+            speed: 0,
+            bobPhase: 0,
+            crouch: 0,
+            flashlightOn: true,
+            flashDir: new THREE.Vector3(0, 0, -1),
+            health: 100,
+            bleeding: false,
+            ensnared: false,
+            inSequence: false,
+            dead: false,
+          },
+          {
+            x: spiderWorldPos.x,
+            y: spiderWorldPos.y,
+            z: spiderWorldPos.z,
+            upX: 0,
+            upY: 1,
+            upZ: 0,
+            fwdX: 0,
+            fwdY: 0,
+            fwdZ: -1,
+            state: 'POUNCE',
+            surfaceMode: 'FLOOR',
+          },
+          false
+        );
+        expect(captureBanner.className).toContain('phase-doomed');
+        expect(captureBanner.children[0].textContent).toContain('JÁ ERA');
+        expect(captureBanner.children[1].textContent).toContain('NINHO');
+
+        // Agora a Aranha chegou ao NINHO e depositou o amigo no casulo (cocoonLocked: true, inSequence: false) ->
+        // SOMENTE LÁ NO NINHO o resgate funciona!
+        const nestPos = new THREE.Vector3(42, 0, 69);
+        guestClient.broadcastPlayerPose({
+          x: nestPos.x,
+          y: 0,
+          z: nestPos.z,
+          yaw: 0,
+          pitch: 0,
+          speed: 0,
+          bobPhase: 0,
+          crouch: 0,
+          flashlightOn: false,
+          flashDirX: 0,
+          flashDirY: 0,
+          flashDirZ: -1,
+          health: 22,
+          bleeding: true,
+          ensnared: true,
+          inSequence: false,
+          beingDragged: false,
+          abductionMode: null,
+          abductionProgress: 0,
+          cocoonLocked: true,
+          devourSecondsLeft: 40,
+          dead: false,
+        });
+        await new Promise((r) => setTimeout(r, 35));
+
+        coordinator.update(
+          0.5,
+          3.0,
+          camTest,
+          {
+            pos: new THREE.Vector3(41, 0, 69),
+            yaw: 0,
+            pitch: 0,
+            speed: 0,
+            bobPhase: 0,
+            crouch: 0,
+            flashlightOn: true,
+            flashDir: new THREE.Vector3(0, 0, -1),
+            health: 100,
+            bleeding: false,
+            ensnared: false,
+            inSequence: false,
+            dead: false,
+          },
+          {
+            x: 10,
+            y: 0,
+            z: 10,
+            upX: 0,
+            upY: 1,
+            upZ: 0,
+            fwdX: 0,
+            fwdY: 0,
+            fwdZ: -1,
+            state: 'PATROL',
+            surfaceMode: 'FLOOR',
+          },
+          false
+        );
+        expect(captureBanner.className).toContain('phase-nest-rescue');
+        expect(captureBanner.children[0].textContent).toContain('NINHO');
+
+        const savedAtNest = coordinator.tryRescueNearbyTrappedAlly(
+          new THREE.Vector3(41, 0, 69),
+          new THREE.Vector3(10, 0, 10),
+          true
+        );
+        expect(savedAtNest).toBe(true);
+        await new Promise((r) => setTimeout(r, 35));
+        expect(
+          receivedEvents.some((ev) => ev.kind === 'rescue_ally')
+        ).toBe(true);
+      }
 
       coordinator.destroy();
       guestClient.disconnect();

@@ -665,12 +665,15 @@ export class DoomGameApp {
             res.cutTrapPos.z
           );
         }
-        const interruptedDrag =
-          this.multiplayer?.tryInterruptSpiderAbduction(
+        const struckSpiderCarapace =
+          this.multiplayer?.tryStrikeCapturingSpider(
             this.position,
             this.spider.position,
             'knife'
           ) ?? false;
+        if (struckSpiderCarapace) {
+          this.cameraShake = Math.max(this.cameraShake, 0.09);
+        }
         const rescuedAlly =
           this.multiplayer?.tryRescueNearbyTrappedAlly(
             this.position,
@@ -685,7 +688,6 @@ export class DoomGameApp {
           cutWeb:
             res.cutActiveSnare ||
             res.cutNearbyTrap ||
-            interruptedDrag ||
             rescuedAlly,
         };
       },
@@ -2232,10 +2234,10 @@ export class DoomGameApp {
     const activeDragPath = this.dragPath;
 
     // ------------------------------------------------------------------------
-    // ESTÁGIO 1 (0.00s -> 1.25s): BOTE BRUTAL, QUEDA EM RAGDOLL & TENTÁCULOS AGARRANDO!
+    // ESTÁGIO 1 (0.00s -> 2.15s): BOTE BRUTAL, CAPTURA EM CURSO & TENTÁCULOS AGARRANDO!
     // ------------------------------------------------------------------------
-    if (t < 1.25) {
-      const u = t / 1.25;
+    if (t < 2.15) {
+      const u = t / 2.15;
       const lungePos = new THREE.Vector3()
         .copy(this.strikeSpiderPos)
         .lerp(
@@ -2318,10 +2320,10 @@ export class DoomGameApp {
     this.sharedUniforms.uFlashlightIntensity.value = 0;
 
     // ------------------------------------------------------------------------
-    // ESTÁGIO 2 (1.25s -> 1.95s): DESMAIO & TENTÁCULOS TENSIONANDO O RAGDOLL
+    // ESTÁGIO 2 (2.15s -> 2.85s): DESMAIO & TENTÁCULOS TENSIONANDO O RAGDOLL
     // ------------------------------------------------------------------------
-    if (t < 1.95) {
-      const u = (t - 1.25) / 0.7;
+    if (t < 2.85) {
+      const u = (t - 2.15) / 0.7;
       this.inventory.setAbductionScreenFX(
         0,
         0.88 + 0.1 * Math.min(1, u * 1.8),
@@ -2382,10 +2384,10 @@ export class DoomGameApp {
     }
 
     // ------------------------------------------------------------------------
-    // ESTÁGIO 3 (1.95s -> 5.15s): TENTÁCULOS PUXANDO O RAGDOLL PELOS CORREDORES ATÉ A TEIA!
+    // ESTÁGIO 3 (2.85s -> 6.05s): TENTÁCULOS PUXANDO O RAGDOLL PELOS CORREDORES ATÉ A TEIA!
     // ------------------------------------------------------------------------
-    if (t < 5.15) {
-      const u = (t - 1.95) / 3.2;
+    if (t < 6.05) {
+      const u = (t - 2.85) / 3.2;
       const pullCycles = u * 5.0;
       const pullStep = Math.floor(pullCycles);
       if (pullStep !== this.lastDragPullStep) {
@@ -2497,10 +2499,10 @@ export class DoomGameApp {
     }
 
     // ------------------------------------------------------------------------
-    // ESTÁGIO 4 (5.15s -> 6.35s): TENTÁCULOS PRENDENDO O RAGDOLL NA TEIA & TECENDO CASULO!
+    // ESTÁGIO 4 (6.05s -> 7.25s): TENTÁCULOS PRENDENDO O RAGDOLL NA TEIA & TECENDO CASULO!
     // ------------------------------------------------------------------------
-    if (t < 6.35) {
-      const u = (t - 5.15) / 1.2;
+    if (t < 7.25) {
+      const u = (t - 6.05) / 1.2;
       const dragDir = this.webManager.dragDirection;
       this.position.copy(this.webManager.lairCenter);
       const spiderOverLair = new THREE.Vector3(
@@ -2555,7 +2557,7 @@ export class DoomGameApp {
     }
 
     // ------------------------------------------------------------------------
-    // ESTÁGIO 5 (6.35s -> 7.65s): DESPERTAR PRESO NA TEIA DO NINHO!
+    // ESTÁGIO 5 (7.25s -> 8.55s): DESPERTAR PRESO NA TEIA DO NINHO!
     // ------------------------------------------------------------------------
     this.localRagdoll.resetInactive();
     this.astronaut.updateSupineAbductionPose(this.position, this.yaw, 0, false);
@@ -2595,7 +2597,7 @@ export class DoomGameApp {
       this.sound.playWakeUpGasp();
     }
 
-    const uWake = Math.min(1, (t - 6.35) / 1.3);
+    const uWake = Math.min(1, (t - 7.25) / 1.3);
     const wakeEase = uWake * uWake * (3 - 2 * uWake);
 
     const lidClosed = Math.max(0, 1 - wakeEase * 1.15);
@@ -2612,7 +2614,7 @@ export class DoomGameApp {
     this.syncCustomSequenceCamera(this.position, eyeY);
     this.sound.playTensionHeartbeat(0.85);
 
-    if (t >= 7.65) {
+    if (t >= 8.55) {
       this.activeSequence = 'NONE';
       this.spider.ensureExitedCinematic(
         this.multiplayer?.getObserverWorldPositions(
@@ -2709,9 +2711,7 @@ export class DoomGameApp {
         isPushToTalkActive: Boolean(this.multiplayer?.localVoiceSpeaking),
       });
       this.updateHorrorSequence(dt);
-      const beingDragged =
-        this.currentAbductionMode === 'DRAGGING_TO_WEB' ||
-        this.currentAbductionMode === 'STRIKE_ATTACK';
+      const beingDragged = this.currentAbductionMode === 'DRAGGING_TO_WEB';
       this.multiplayer?.update(
         dt,
         this.elapsed,
@@ -2729,13 +2729,13 @@ export class DoomGameApp {
           bleeding: this.playerBleeding,
           ensnared:
             this.currentAbductionMode === 'WEBBING_IN_LAIR' ||
-            this.seqTime >= 6.35,
-          cocoonLocked: Boolean(this.multiplayer) && this.seqTime >= 6.35,
+            this.seqTime >= 7.25,
+          cocoonLocked: Boolean(this.multiplayer) && this.seqTime >= 7.25,
           devourSecondsLeft: this.cocoonDevourTimerSec,
           walkieTalkieActive:
             this.walkieTalkieActive &&
             this.inventory.hasItem('field_walkie_talkie'),
-          inSequence: this.seqTime < 6.35,
+          inSequence: this.seqTime < 7.25,
           beingDragged,
           abductionMode: this.currentAbductionMode,
           abductionProgress: this.currentAbductionProgress,
@@ -3168,33 +3168,7 @@ export class DoomGameApp {
     const localVoiceLvl = this.multiplayer?.localVoiceLevel ?? 0;
 
     let spiderOut: { cameraShakeAmount: number; playerDistance: number };
-    const remoteAbduction =
-      this.multiplayer?.getActiveRemoteAbduction() ?? null;
     const activeFlares = this.worldItems.getActiveFlares();
-
-    // Se houver um sinalizador aceso perto de um aliado sendo arrastado, salva-o automaticamente!
-    if (remoteAbduction && this.multiplayer) {
-      for (const flItem of activeFlares) {
-        if (
-          Math.hypot(
-            flItem.position.x - remoteAbduction.spiderPos.x,
-            flItem.position.z - remoteAbduction.spiderPos.z
-          ) <= 5.2 ||
-          Math.hypot(
-            flItem.position.x - remoteAbduction.victimPos.x,
-            flItem.position.z - remoteAbduction.victimPos.z
-          ) <= 5.2
-        ) {
-          this.multiplayer.tryInterruptSpiderAbduction(
-            flItem.position,
-            remoteAbduction.spiderPos,
-            'flare'
-          );
-          break;
-        }
-      }
-    }
-
     const updatedRemoteAbduction =
       this.multiplayer?.getActiveRemoteAbduction() ?? null;
 
@@ -3352,11 +3326,34 @@ export class DoomGameApp {
     this.syncCamera(bobOffset);
 
     if (interactPressed && this.multiplayer) {
-      this.multiplayer.tryRescueNearbyTrappedAlly(
+      const struckSpider = this.multiplayer.tryStrikeCapturingSpider(
         this.position,
         this.spider.position,
-        hasKnife
+        hasKnife ? 'knife' : 'shove'
       );
+      if (struckSpider) {
+        if (hasKnife) {
+          this.flashlight.triggerQuickItemAction('knife');
+          this.sound.playItemUse('blade');
+        } else {
+          this.astronaut.setArmInUse('left', true);
+        }
+        this.cameraShake = Math.max(this.cameraShake, 0.09);
+      } else {
+        const rescued = this.multiplayer.tryRescueNearbyTrappedAlly(
+          this.position,
+          this.spider.position,
+          hasKnife
+        );
+        if (rescued) {
+          if (hasKnife) {
+            this.flashlight.triggerQuickItemAction('knife');
+          } else {
+            this.astronaut.setArmInUse('left', true);
+          }
+          this.sound.playWebCut();
+        }
+      }
     }
 
     const camForward = new THREE.Vector3(0, 0, -1).applyQuaternion(
