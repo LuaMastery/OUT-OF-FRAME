@@ -2,6 +2,8 @@ import * as THREE from 'three';
 import {
   DoomArenaLayout,
   getOrCreateSceneArenaLayout,
+  planShotgunRoomPlacements,
+  ShotgunRoomPlacement,
 } from './DoomArenaRandomizer';
 import { DoomInventory } from './DoomInventory';
 import { gridCellToWorld } from './DoomMazeBuilder';
@@ -9,6 +11,11 @@ import { ProbableEquipmentSignal } from './DoomRadar';
 import { getThemedRoomByKeyItemId } from './DoomRooms';
 import { createDoomPropMaterial, DoomSharedUniforms } from './DoomShader';
 import { buildShotgunPickup, createShotgunPickupMaterials, type ShotgunPickupId } from './DoomShotgunPickups';
+import {
+  getAvailableShotgunPartIds,
+  SHOTGUN_PART_IDS,
+  type ShotgunPartId,
+} from './DoomShotgun';
 
 interface WorldPickupInstance {
   id: string;
@@ -74,6 +81,7 @@ export class DoomWorldItems {
   private readonly arenaLayout: DoomArenaLayout;
   private readonly sharedUniforms: DoomSharedUniforms;
   private readonly shotgunMaterials: ReturnType<typeof createShotgunPickupMaterials>;
+  private spawnedShotgunPartIds: ShotgunPartId[] = [];
 
   private readonly matCrateWood: THREE.ShaderMaterial;
   private readonly matDarkIron: THREE.ShaderMaterial;
@@ -631,8 +639,68 @@ export class DoomWorldItems {
       }
     });
 
-    // Peças soltas no piso de quatro salas especiais, não em caixotes.
-    for (const p of this.arenaLayout.shotgunRoomPlacements) {
+    // Peças soltas no piso das salas especiais, não em caixotes.
+    this.spawnShotgunParts(this.arenaLayout.shotgunRoomPlacements);
+    this.spawnedShotgunPartIds = this.arenaLayout.shotgunRoomPlacements.map((p) => p.itemId);
+  }
+
+  /**
+   * Ajusta as peças da shotgun ao número real de jogadores do servidor.
+   *
+   * O mundo recebe uma peça por jogador no momento da criação; se mais gente
+   * entrar depois, as peças que faltam aparecem nas salas especiais ainda sem
+   * peça. Peças já recolhidas nunca são removidas, então ninguém perde o que
+   * conquistou.
+   */
+  syncShotgunPartSlots(desiredSlotCount: number): number {
+    const parts = getAvailableShotgunPartIds(desiredSlotCount);
+    if (parts.length <= this.spawnedShotgunPartIds.length) {
+      return this.spawnedShotgunPartIds.length;
+    }
+    const usedRooms = new Set(this.arenaLayout.shotgunRoomPlacements.map((p) => p.roomId));
+    const extra: ShotgunRoomPlacement[] = [];
+    for (const itemId of parts) {
+      if (this.spawnedShotgunPartIds.includes(itemId)) continue;
+      const placement = this.findFreeShotgunRoomPlacement(itemId, usedRooms);
+      if (!placement) break;
+      usedRooms.add(placement.roomId);
+      extra.push(placement);
+    }
+    if (extra.length) this.spawnShotgunParts(extra);
+    this.spawnedShotgunPartIds = [...this.spawnedShotgunPartIds, ...extra.map((p) => p.itemId)];
+    return this.spawnedShotgunPartIds.length;
+  }
+
+  /** Quantidade de peças da shotgun efetivamente presentes no mundo. */
+  getShotgunPartSlotCount(): number {
+    return this.spawnedShotgunPartIds.length;
+  }
+
+  /** Salas especiais ainda sem peça, escolhidas de forma determinística. */
+  private findFreeShotgunRoomPlacement(
+    itemId: ShotgunPartId,
+    usedRooms: ReadonlySet<string>
+  ): ShotgunRoomPlacement | null {
+    const free = this.arenaLayout.shotgunRoomPlacements.find(
+      (p) => !usedRooms.has(p.roomId) && !this.spawnedShotgunPartIds.includes(p.itemId)
+    );
+    if (free) {
+      return { ...free, itemId };
+    }
+    // Sem sala livre no layout original: procura outra sala sem peça no mesmo
+    // mundo. O plano completo (4 peças) garante até quatro salas distintas.
+    const candidates = planShotgunRoomPlacements(
+      this.arenaLayout.worldSeed,
+      this.arenaLayout.roomFurniturePlacements,
+      SHOTGUN_PART_IDS.length
+    );
+    const spare = candidates.find((p) => !usedRooms.has(p.roomId));
+    return spare ? { ...spare, itemId } : null;
+  }
+
+  /** Cria os modelos 3D das peças nas posições indicadas. */
+  private spawnShotgunParts(placements: readonly ShotgunRoomPlacement[]): void {
+    for (const p of placements) {
       const pos = gridCellToWorld(p.gx, p.gz);
       const group = new THREE.Group();
       group.name = `RoomShotgun_${p.itemId}`;

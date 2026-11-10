@@ -21,6 +21,7 @@ import {
 import {
   createRandomArenaLayout,
   createRandomArenaSeed,
+  DoomArenaLayout,
   hashArenaSeed,
 } from './DoomArenaRandomizer';
 import { DoomAstronaut } from './DoomAstronaut';
@@ -35,7 +36,7 @@ import {
 } from './DoomDance';
 import { DoomDanceMenu } from './DoomDanceMenu';
 import { DoomFlashlight } from './DoomFlashlight';
-import { DoomShotgunViewmodel, SHOTGUN_ITEM_ID, SHOTGUN_AMMO_ITEM_ID, SHOTGUN_PART_IDS, shotgunImpactDistance, computeShotgunBlastDamage } from './DoomShotgun';
+import { DoomShotgunViewmodel, SHOTGUN_ITEM_ID, SHOTGUN_AMMO_ITEM_ID, shotgunImpactDistance, computeShotgunBlastDamage } from './DoomShotgun';
 import { DoomInventory, ITEM_CATALOG } from './DoomInventory';
 import { QUICK_ITEM_DURATIONS, QuickHandheldKind } from './DoomItemAction';
 import { DoomTaserViewmodel, TASER_ITEM_ID, TASER_RECHARGE_SECONDS, TASER_STUN_SECONDS, taserImpactDistance, advanceTaserRecharge } from './DoomTaser';
@@ -316,6 +317,7 @@ export class DoomGameApp {
   private readonly astronaut: DoomAstronaut;
   private readonly flashlight: DoomFlashlight;
   private readonly shotgun: DoomShotgunViewmodel;
+  private arenaLayout!: DoomArenaLayout;
   private readonly taser: DoomTaserViewmodel;
   private taserRechargeRemaining = 0;
   private readonly taserHudEl: HTMLDivElement;
@@ -592,6 +594,9 @@ export class DoomGameApp {
 
     // Gera layout aleatório a cada partida (caixas, itens, spawn do jogador, ninho, teias e aranha),
     // mantendo o mundo sincronizado por código de sala no Co-op enquanto o spawn de cada jogador varia!
+    // Peças da shotgun: solo fica com as 4; co-op gera uma peça por jogador do
+    // servidor (1 a 4). A contagem é fixada agora e entra no layout, então todos
+    // os clientes da sala recebem exatamente as mesmas peças.
     const arenaLayout = createRandomArenaLayout(
       initialMultiplayerSession
         ? {
@@ -600,10 +605,17 @@ export class DoomGameApp {
             ),
             playerSeed: createRandomArenaSeed(),
             isMultiplayer: true,
+            playerCount: Math.max(
+              1,
+              initialMultiplayerSession.playerCount ||
+                initialMultiplayerSession.playersSummary?.length ||
+                1
+            ),
           }
         : {}
     );
 
+    this.arenaLayout = arenaLayout;
     this.ambientZoneTracker = new DoomAmbientZoneTracker(arenaLayout.lairCell);
     const textures = createDoomTextures();
     const maze = buildDoomLabyrinth(
@@ -657,6 +669,7 @@ export class DoomGameApp {
     };
 
     this.inventory = new DoomInventory(this.viewportEl, this.sound, {
+      getShotgunPartSlotCount: () => this.arenaLayout.shotgunPartSlotCount,
       onToggleFlashlightFromUI: () => {
         const equipping = this.flashlight.toggle();
         this.sound.playFlashlightMotion(equipping);
@@ -1112,6 +1125,13 @@ export class DoomGameApp {
         createWeaponProps: () => ({ shotgun: this.shotgun.createThirdPersonWeapon(), taser: this.taser.createThirdPersonWeapon() }),
         onShotgunShot: (origin, direction) => { this.applyShotgunHit(origin, direction); },
         onTaserShot: (origin, direction) => { this.applyTaserHit(origin, direction); },
+        getLocalShotgunPartSlots: () => this.worldItems.getShotgunPartSlotCount(),
+        onShotgunPartSlotsChanged: (slots) => {
+          // O anfitrião define a quantidade de peças; quem entrou depois passa a
+          // ver as mesmas peças nas salas especiais.
+          const applied = this.worldItems.syncShotgunPartSlots(slots);
+          this.arenaLayout = { ...this.arenaLayout, shotgunPartSlotCount: applied };
+        },
         onReceiveFlare: (pos, yaw) => {
           this.worldItems.spawnLitFlare(pos, yaw);
           if (
@@ -2075,10 +2095,17 @@ export class DoomGameApp {
   }
 
   private updateShotgunObjective(): void {
-    const found = SHOTGUN_PART_IDS.filter(id => this.inventory.hasItem(id)).length;
+    const availableParts = this.inventory.getAvailableShotgunParts();
+    const found = availableParts.filter(id => this.inventory.hasItem(id)).length;
     const assembled = this.inventory.hasItem(SHOTGUN_ITEM_ID);
     const ammo = this.inventory.getItemCount(SHOTGUN_AMMO_ITEM_ID);
-    const text = formatShotgunObjective(this.spider.isDead, assembled, found, ammo);
+    const text = formatShotgunObjective(
+      this.spider.isDead,
+      assembled,
+      found,
+      ammo,
+      availableParts.length
+    );
     if (this.shotgunObjectiveEl.textContent !== text) this.shotgunObjectiveEl.textContent = text;
     this.shotgunObjectiveEl.classList.toggle('hidden', !this.engaged || this.inventory.open || this.pauseMenu.open || Boolean(this.danceId) || this.activeSequence !== 'NONE');
   }
@@ -2143,8 +2170,9 @@ export class DoomGameApp {
   private toggleShotgun(): void {
     if (!this.engaged || this.pauseMenu.open || this.inventory.open || this.activeSequence !== 'NONE' || this.danceMenu.isOpen) return;
     if (!this.inventory.hasItem(SHOTGUN_ITEM_ID)) {
-      const count = SHOTGUN_PART_IDS.filter(id => this.inventory.hasItem(id)).length;
-      this.inventory.wakeShortcutsHub(5000, `SHOTGUN ${count}/4 PEÇAS · MONTE NO INVENTÁRIO [TAB]`);
+      const availableParts = this.inventory.getAvailableShotgunParts();
+      const count = availableParts.filter(id => this.inventory.hasItem(id)).length;
+      this.inventory.wakeShortcutsHub(5000, `SHOTGUN ${count}/${availableParts.length} PEÇAS · MONTE NO INVENTÁRIO [TAB]`);
       return;
     }
     if (this.shotgun.isEquipped) {
@@ -3701,11 +3729,12 @@ export class DoomGameApp {
         }
         if (pickedItemId === TASER_ITEM_ID) {
           this.inventory.wakeShortcutsHub(6000, 'TASER ENCONTRADO · [J] EQUIPAR · CLIQUE PARA DISPARAR');
-        } else if (SHOTGUN_PART_IDS.some(id => id === pickedItemId)) {
-          const count = SHOTGUN_PART_IDS.filter(id => this.inventory.hasItem(id)).length;
-          this.inventory.wakeShortcutsHub(6500, count === 4
-            ? '4/4 PEÇAS · ABRA [TAB] E MONTE A SHOTGUN'
-            : `SHOTGUN: ${count}/4 PEÇAS · PROCURE NOS CAIXOTES`);
+        } else if (this.inventory.getAvailableShotgunParts().some(id => id === pickedItemId)) {
+          const availableParts = this.inventory.getAvailableShotgunParts();
+          const count = availableParts.filter(id => this.inventory.hasItem(id)).length;
+          this.inventory.wakeShortcutsHub(6500, count === availableParts.length
+            ? `${availableParts.length}/${availableParts.length} PEÇAS · ABRA [TAB] E MONTE A SHOTGUN`
+            : `SHOTGUN: ${count}/${availableParts.length} PEÇAS · PROCURE AS OUTRAS NAS SALAS ESPECIAIS`);
         } else if (pickedItemId === SHOTGUN_AMMO_ITEM_ID) {
           this.inventory.wakeShortcutsHub(5000, `CARTUCHOS: ${this.inventory.getItemCount(SHOTGUN_AMMO_ITEM_ID)} · [H] EQUIPAR`);
         } else if (pickedItemId === 'field_radar') {

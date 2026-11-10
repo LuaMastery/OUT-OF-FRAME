@@ -293,6 +293,17 @@ export type NetworkWorldEvent =
       ts: number;
     }
   | {
+      /**
+       * O anfitrião informa quantas peças da shotgun o servidor preparou.
+       * Co-op: uma peça por jogador presente (1 a 4). Serve para que quem entra
+       * depois veja exatamente a mesma quantidade de peças do resto da equipe.
+       */
+      kind: 'shotgun_slots';
+      senderId: string;
+      slots: number;
+      ts: number;
+    }
+  | {
       kind: 'futile_spider_strike';
       strikerId: string;
       strikerName: string;

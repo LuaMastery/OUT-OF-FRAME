@@ -1,4 +1,8 @@
-import { SHOTGUN_PART_IDS, SHOTGUN_ITEM_ID } from './DoomShotgun';
+import {
+  getAvailableShotgunPartIds,
+  SHOTGUN_PART_IDS,
+  SHOTGUN_ITEM_ID,
+} from './DoomShotgun';
 import { getInventoryItemIcon } from './DoomInventoryIcons';
 import { SoundEngine } from '../engine/audio/SoundEngine';
 import {
@@ -59,6 +63,11 @@ export interface PlayerVitalsSnapshot {
 }
 
 export interface DoomInventoryCallbacks {
+  /**
+   * Quantidade de peças da shotgun que existem nesta partida (1 a 4).
+   * Vem do layout do mundo: solo = 4, co-op = número de jogadores no servidor.
+   */
+  getShotgunPartSlotCount?: () => number;
   onToggleFlashlightFromUI: () => void;
   onUseHeal: (
     healAmount: number,
@@ -2970,6 +2979,15 @@ export class DoomInventory {
     }
   }
 
+  /**
+   * Peças realmente presentes no mapa desta partida. Em co-op com menos
+   * jogadores a arma é montada com as peças que existem no servidor.
+   */
+  getAvailableShotgunParts(): readonly import('./DoomShotgun').ShotgunPartId[] {
+    const slots = this.callbacks.getShotgunPartSlotCount?.() ?? SHOTGUN_PART_IDS.length;
+    return getAvailableShotgunPartIds(slots);
+  }
+
   private useSelectedItem(): void {
     this.activateSlotItem(this.selectedIndex, false);
   }
@@ -2980,14 +2998,15 @@ export class DoomInventory {
     const { def } = entry;
 
     if (def.kind === 'shotgun_part') {
-      const missing = SHOTGUN_PART_IDS.filter(id => !this.hasItem(id));
+      const availableParts = this.getAvailableShotgunParts();
+      const missing = availableParts.filter(id => !this.hasItem(id));
       if (missing.length) {
-        this.feedbackEl.textContent = `Shotgun: ${4 - missing.length}/4 peças. Procure as peças restantes nos caixotes.`;
+        this.feedbackEl.textContent = `Shotgun: ${availableParts.length - missing.length}/${availableParts.length} peças. Procure as peças restantes nas salas especiais.`;
         this.sound.invalidInput();
         return false;
       }
-      // Remover as quatro peças libera espaço antes de adicionar a arma montada.
-      for (const id of SHOTGUN_PART_IDS) this.consumeItemById(id);
+      // Remover todas as peças libera espaço antes de adicionar a arma montada.
+      for (const id of availableParts) this.consumeItemById(id);
       this.addItem(SHOTGUN_ITEM_ID, 1, true);
       this.feedbackEl.textContent = 'Shotgun montada! Procure cartuchos e pressione [H] para equipar.';
       this.wakeShortcutsHub(6000, 'SHOTGUN MONTADA · PROCURE CARTUCHOS · [H] EQUIPAR');

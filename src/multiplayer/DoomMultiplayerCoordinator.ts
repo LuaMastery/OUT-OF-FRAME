@@ -102,6 +102,10 @@ export interface MultiplayerCoordinatorHooks {
   createQuickItemProps?: () => Record<QuickHandheldKind, THREE.Object3D>;
   createWeaponProps?: () => Record<HeldWeapon, THREE.Object3D>;
   onReceiveFlare: (pos: THREE.Vector3, yaw: number) => void;
+  /** Quantidade de peças da shotgun anunciada pelo anfitrião da sala. */
+  onShotgunPartSlotsChanged?: (slots: number) => void;
+  /** Peças que o anfitrião preparou no próprio mundo (fonte da verdade da sala). */
+  getLocalShotgunPartSlots?: () => number;
   onShotgunShot?: (origin: THREE.Vector3, direction: THREE.Vector3) => void;
   onTaserShot?: (origin: THREE.Vector3, direction: THREE.Vector3) => void;
   onRescuedByAlly: (rescuerName: string) => void;
@@ -340,6 +344,12 @@ export class DoomMultiplayerCoordinator {
             if (ally && (r.status === 'AFK' || r.status === 'HOST_AFK')) {
               this.applyAllyAfkTransition(ally, true);
             }
+          }
+          // O anfitrião anuncia quantas peças a sala tem, para quem entrar depois.
+          if (this.client.isHost) {
+            this.broadcastShotgunPartSlots(
+              this.hooks.getLocalShotgunPartSlots?.() ?? 4
+            );
           }
           this.renderSquadHud();
         },
@@ -900,6 +910,29 @@ export class DoomMultiplayerCoordinator {
       }
     }
     return false;
+  }
+
+  /**
+   * Anfitrião: informa à sala quantas peças da shotgun foram preparadas.
+   * Convidados: aplicam a contagem recebida para ver as mesmas peças.
+   */
+  broadcastShotgunPartSlots(slots: number): void {
+    if (!this.client.isHost) return;
+    this.client.broadcastWorldEvent({
+      kind: 'shotgun_slots',
+      senderId: this.session.localPlayerId,
+      slots: Math.max(1, Math.min(4, Math.floor(slots))),
+      ts: Date.now(),
+    });
+  }
+
+  /** Quantidade de jogadores presentes na sala (inclui o jogador local). */
+  get rosterPlayerCount(): number {
+    return Math.max(1, this.roster.length || this.allies.size + 1);
+  }
+
+  get hostPlayerId(): string {
+    return this.session.hostId;
   }
 
   broadcastRoomUnlocked(roomId: string, roomName: string): void {
@@ -2234,6 +2267,13 @@ export class DoomMultiplayerCoordinator {
           `🕸️ SOS: ${ev.senderName}`,
           true,
           performance.now() * 0.001
+        );
+      }
+    } else if (ev.kind === 'shotgun_slots') {
+      // Somente o anfitrião define a quantidade de peças da partida.
+      if (ev.senderId === this.hostPlayerId && Number.isFinite(ev.slots)) {
+        this.hooks.onShotgunPartSlotsChanged?.(
+          Math.max(1, Math.min(4, Math.floor(ev.slots)))
         );
       }
     } else if (ev.kind === 'room_unlocked') {

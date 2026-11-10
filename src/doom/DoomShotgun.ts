@@ -33,6 +33,34 @@ export const SHOTGUN_PART_IDS: readonly ShotgunPartId[] = [
   'shotgun_stock',
 ];
 
+/**
+ * Quantas peças da shotgun existem numa partida.
+ *
+ * Solo mantém o conjunto completo (4 peças), para que a arma ainda possa ser
+ * montada sozinho. Em co-op são geradas tantas peças quantos forem os jogadores
+ * no servidor no momento em que o mundo é criado, respeitando o limite do
+ * conjunto — 1 jogador = 1 peça, 2 = 2, 3 = 3, 4 ou mais = 4.
+ *
+ * O valor é fixado na geração do mundo (`DoomArenaLayout`) e viaja junto com o
+ * layout, então todos os jogadores da sala veem exatamente as mesmas peças.
+ */
+export function resolveShotgunPartSlotCount(
+  playerCount: number,
+  isMultiplayer = false
+): number {
+  if (!isMultiplayer) return SHOTGUN_PART_IDS.length;
+  const players = Math.max(1, Math.floor(playerCount));
+  return Math.max(1, Math.min(SHOTGUN_PART_IDS.length, players));
+}
+
+/** Peças que realmente existem no mapa, na ordem canônica do conjunto. */
+export function getAvailableShotgunPartIds(
+  slotCount: number = SHOTGUN_PART_IDS.length
+): ShotgunPartId[] {
+  const total = Math.max(1, Math.min(SHOTGUN_PART_IDS.length, Math.floor(slotCount)));
+  return SHOTGUN_PART_IDS.slice(0, total);
+}
+
 export interface ShotgunPartDef {
   readonly id: ShotgunPartId;
   readonly name: string;
@@ -149,9 +177,10 @@ export function canAssembleShotgun(
 
 /** Lista das peças que ainda faltam (para o feedback do HUD). */
 export function getMissingShotgunParts(
-  hasItem: (itemId: string) => boolean
+  hasItem: (itemId: string) => boolean,
+  availableParts: readonly ShotgunPartId[] = SHOTGUN_PART_IDS
 ): ShotgunPartId[] {
-  return SHOTGUN_PART_IDS.filter((id) => !hasItem(id));
+  return availableParts.filter((id) => !hasItem(id));
 }
 
 /** Rótulo curto do estado de montagem ("2/4 PEÇAS"). */

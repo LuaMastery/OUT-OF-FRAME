@@ -20,7 +20,12 @@ import {
   getThemedRoomMiniMapTile,
   type DoomRoomId,
 } from './DoomRooms';
-import { SHOTGUN_PART_IDS, type ShotgunPartId } from './DoomShotgun';
+import {
+  getAvailableShotgunPartIds,
+  resolveShotgunPartSlotCount,
+  SHOTGUN_PART_IDS,
+  type ShotgunPartId,
+} from './DoomShotgun';
 
 export interface GridCoord {
   gx: number;
@@ -69,6 +74,12 @@ export interface DoomArenaLayout {
   readonly obstaclePlacements: ReadonlyArray<ObstaclePlacement>;
   readonly roomFurniturePlacements: ReadonlyArray<RoomFurniturePlacement>;
   readonly shotgunRoomPlacements: ReadonlyArray<ShotgunRoomPlacement>;
+  /**
+   * Quantidade de peças da shotgun geradas nesta partida (1 a 4).
+   * Solo: sempre 4. Co-op: uma peça por jogador no servidor, limitada ao
+   * conjunto completo. Fixada na geração do mundo e compartilhada pela sala.
+   */
+  readonly shotgunPartSlotCount: number;
 }
 
 export interface CreateArenaLayoutOptions {
@@ -78,6 +89,14 @@ export interface CreateArenaLayoutOptions {
   playerSeed?: number;
   /** Quantidade total de caixotes espalhados pela arena (padrão: 25). */
   crateCount?: number;
+  /** Jogadores presentes no servidor quando o mundo foi criado (padrão: 1). */
+  playerCount?: number;
+  /**
+   * Força a quantidade de peças da shotgun (1 a 4). Usado pelo anfitrião para
+   * semear o mundo com a mesma contagem para todos, independente do momento em
+   * que cada cliente entrou na sala.
+   */
+  shotgunPartSlots?: number;
   /** Sala cooperativa, mesmo antes de outros jogadores entrarem. O padrão é solo. */
   isMultiplayer?: boolean;
 }
@@ -394,12 +413,19 @@ export function buildRandomCrateLootPool(
   return shuffleInPlace(pool, rng);
 }
 
-/** Four distinct locked rooms, with reachable floor positions clear of furniture. */
+/**
+ * Distribui uma peça por sala especial acessível, sem repetir salas.
+ *
+ * A quantidade de peças vem de `partSlotCount`: solo mantém as quatro, co-op
+ * gera uma para cada jogador do servidor (limitado a quatro).
+ */
 export function planShotgunRoomPlacements(
   worldSeed: number,
-  furniture: readonly RoomFurniturePlacement[]
+  furniture: readonly RoomFurniturePlacement[],
+  partSlotCount: number = SHOTGUN_PART_IDS.length
 ): ShotgunRoomPlacement[] {
   const rng = createSeededRng((worldSeed ^ 0x1792f0c5) >>> 0);
+  const partIds = getAvailableShotgunPartIds(partSlotCount);
   const rooms = shuffleInPlace([...THEMED_ROOMS], rng);
   const result: ShotgunRoomPlacement[] = [];
   for (const room of rooms) {
@@ -437,8 +463,8 @@ export function planShotgunRoomPlacements(
     }
     if (!candidates.length) continue;
     const cell = candidates[rngInt(rng, 0, candidates.length)];
-    result.push({ itemId: SHOTGUN_PART_IDS[result.length], roomId: room.id, ...cell, yaw: rngRange(rng, -Math.PI, Math.PI) });
-    if (result.length === SHOTGUN_PART_IDS.length) return result;
+    result.push({ itemId: partIds[result.length], roomId: room.id, ...cell, yaw: rngRange(rng, -Math.PI, Math.PI) });
+    if (result.length === partIds.length) return result;
   }
   throw new Error('Não há salas especiais acessíveis suficientes para distribuir as peças da shotgun.');
 }
@@ -892,6 +918,11 @@ export function createRandomArenaLayout(
         ? 'WALL'
         : 'FLOOR';
 
+  const shotgunPartSlotCount = resolveShotgunPartSlotCount(
+    options.shotgunPartSlots ?? options.playerCount ?? 1,
+    Boolean(options.isMultiplayer)
+  );
+
   return {
     worldSeed,
     playerSeed,
@@ -908,7 +939,12 @@ export function createRandomArenaLayout(
     cratePlacements,
     obstaclePlacements,
     roomFurniturePlacements,
-    shotgunRoomPlacements: planShotgunRoomPlacements(worldSeed, roomFurniturePlacements),
+    shotgunRoomPlacements: planShotgunRoomPlacements(
+      worldSeed,
+      roomFurniturePlacements,
+      shotgunPartSlotCount
+    ),
+    shotgunPartSlotCount,
   };
 }
 
