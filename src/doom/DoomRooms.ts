@@ -2958,80 +2958,232 @@ function emitRoomFurniturePiece(
     }
 
     case 'medical_gurney_bed': {
-      // Maca hospitalar sobre rodízios com grades laterais articuladas, cilindro de O2 inferior e suporte duplo de soro (IV)
-      pushRoomBox(b.metalTrim, xf, 1.72, 0.075, 0.78, 0, 0.68, 0);
-      pushRoomBox(b.darkIron, xf, 1.36, 0.04, 0.54, 0, 0.24, 0);
-      pushRoomCyl(b.metalTrim, xf, 0.07, 0.07, 0.58, 8, 0.12, 0.33, 0, 0, 0, Math.PI * 0.5);
-      for (const sx of [-0.74, 0.74]) {
-        for (const sz of [-0.32, 0.32]) {
-          pushRoomCyl(b.metalTrim, xf, 0.03, 0.03, 0.58, 8, sx, 0.37, sz);
-          pushRoomCyl(b.darkIron, xf, 0.055, 0.055, 0.04, 8, sx, 0.055, sz, Math.PI * 0.5, 0, 0);
+      // Maca de pronto-socorro: chassi tubular em H com rodízios de duplo
+      // rodízio travados, coluna de altura hidráulica, tampo articulado em três
+      // seções (costas elevada), colchão com lençol e travesseiro, grades
+      // laterais articuladas, suporte de soro e prancheta de sinais vitais.
+      pushRoomBox(b.metalTrim, xf, 1.16, 0.06, 0.06, 0, 0.26, 0);
+      for (const sz of [-0.3, 0.3]) {
+        pushRoomBox(b.darkIron, xf, 1.12, 0.05, 0.05, 0, 0.26, sz);
+      }
+      for (const sx of [-0.58, 0.58]) {
+        pushRoomBox(b.metalTrim, xf, 0.06, 0.06, 0.66, sx, 0.26, 0);
+      }
+      for (const sx of [-0.72, 0.72]) {
+        for (const sz of [-0.34, 0.34]) {
+          // Mola de suspensão + roda dupla travada.
+          pushRoomCyl(b.metalTrim, xf, 0.026, 0.026, 0.16, 8, sx, 0.175, sz);
+          pushRoomBox(b.darkIron, xf, 0.09, 0.05, 0.10, sx, 0.24, sz);
+          pushRoomCyl(b.darkIron, xf, 0.052, 0.052, 0.03, 12, sx, 0.052, sz - 0.035, Math.PI / 2, 0, 0);
+          pushRoomCyl(b.darkIron, xf, 0.052, 0.052, 0.03, 12, sx, 0.052, sz + 0.035, Math.PI / 2, 0, 0);
+          pushRoomCyl(b.cleanLinen, xf, 0.054, 0.054, 0.008, 12, sx, 0.052, sz - 0.035, Math.PI / 2, 0, 0);
+          pushRoomCyl(b.cleanLinen, xf, 0.054, 0.054, 0.008, 12, sx, 0.052, sz + 0.035, Math.PI / 2, 0, 0);
+          pushRoomCyl(b.metalTrim, xf, 0.012, 0.012, 0.10, 6, sx + (sx > 0 ? 0.05 : -0.05), 0.12, sz, 0, 0, Math.PI / 2);
         }
       }
-      // Cabeceira, peseira com prontuário e grades laterais tubulares
-      pushRoomBox(b.metalTrim, xf, 0.05, 0.46, 0.78, -0.84, 0.9, 0);
-      pushRoomBox(b.metalTrim, xf, 0.045, 0.34, 0.78, 0.84, 0.84, 0);
-      pushRoomBox(b.cleanLinen, xf, 0.03, 0.24, 0.3, 0.87, 0.88, 0);
-      // Prancheta clínica presa à peseira, com linhas de registro.
-      for (const y of [0.82, 0.87, 0.92]) {
-        pushRoomBox(b.darkIron, xf, 0.004, 0.008, 0.19, 0.887, y, 0);
+      // Coluna hidráulica com alavanca de pedal e mola visible.
+      pushRoomCyl(b.metalTrim, xf, 0.09, 0.11, 0.30, 14, 0.2, 0.44, 0);
+      pushRoomCyl(b.darkIron, xf, 0.075, 0.075, 0.16, 12, 0.2, 0.36, 0);
+      pushRoomBox(b.darkIron, xf, 0.20, 0.035, 0.12, 0.2, 0.30, 0.16, 0.5, 0, 0);
+      // Grades laterais articuladas, com travessa e montantes.
+      for (const rz of [-0.34, 0.34]) {
+        pushRoomBox(b.cleanLinen, xf, 1.10, 0.03, 0.03, -0.04, 1.005, rz);
+        pushRoomBox(b.cleanLinen, xf, 1.10, 0.03, 0.03, -0.04, 0.895, rz);
+        for (const rx of [-0.54, -0.10, 0.34]) {
+          pushRoomBox(b.cleanLinen, xf, 0.028, 0.13, 0.028, rx, 0.95, rz);
+        }
+        // Dobradiça e pino de trava da grade.
+        pushRoomCyl(b.metalTrim, xf, 0.022, 0.022, 0.10, 8, -0.60, 0.95, rz, Math.PI / 2, 0, 0);
+        pushRoomCyl(b.metalTrim, xf, 0.018, 0.018, 0.08, 8, 0.52, 0.95, rz);
       }
-      for (const rz of [-0.4, 0.4]) {
-        pushRoomBox(b.metalTrim, xf, 1.06, 0.035, 0.035, -0.06, 0.98, rz);
-        pushRoomBox(b.metalTrim, xf, 0.03, 0.24, 0.03, -0.52, 0.85, rz);
-        pushRoomBox(b.metalTrim, xf, 0.03, 0.24, 0.03, 0.4, 0.85, rz);
+      // Estrado em três seções: a das costas inclinada para cima.
+      pushRoomBox(b.metalTrim, xf, 1.66, 0.07, 0.72, 0.04, 0.63, 0);
+      pushRoomBox(b.metalTrim, xf, 0.66, 0.06, 0.72, -0.52, 0.73, 0, 0, 0, -0.20);
+      // Colchão, lençol dobrado e travesseiro.
+      pushRoomBox(b.cleanLinen, xf, 1.5, 0.13, 0.66, 0.06, 0.73, 0);
+      pushRoomBox(b.metalTrim, xf, 0.62, 0.11, 0.64, -0.50, 0.82, 0, 0, 0, -0.20);
+      pushRoomBox(b.cleanLinen, xf, 0.30, 0.02, 0.62, 0.06, 0.798, 0);
+      pushRoomBox(b.cleanLinen, xf, 0.22, 0.05, 0.42, -0.30, 0.865, 0, 0, 0, -0.20);
+      // Faixa de sinalização e alça de transporte na cabeceira.
+      pushRoomBox(b.medicalCross, xf, 0.30, 0.014, 0.58, 0.34, 0.812, 0);
+      // Cabeceira e peseira tubulares com prancheta clínica.
+      for (const sx of [-0.86, 0.86]) {
+        pushRoomCyl(b.metalTrim, xf, 0.024, 0.024, 0.56, 10, sx, 0.82, -0.28);
+        pushRoomCyl(b.metalTrim, xf, 0.024, 0.024, 0.56, 10, sx, 0.82, 0.28);
       }
-      pushRoomBox(b.cleanLinen, xf, 1.62, 0.12, 0.7, 0, 0.78, 0);
-      pushRoomBox(b.medicalCross, xf, 0.92, 0.02, 0.714, 0.24, 0.85, 0);
-      pushRoomBox(b.cleanLinen, xf, 0.32, 0.085, 0.52, -0.58, 0.885, 0, 0, 0, -0.12);
-      // Haste inox de soro IV com duas bolsas suspensas
-      pushRoomCyl(b.metalTrim, xf, 0.02, 0.02, 1.68, 6, -0.8, 0.84, 0.37);
-      pushRoomBox(b.metalTrim, xf, 0.24, 0.025, 0.025, -0.8, 1.66, 0.37);
-      pushRoomBox(b.bioFluid, xf, 0.085, 0.18, 0.045, -0.88, 1.52, 0.37);
-      pushRoomBox(b.cleanLinen, xf, 0.08, 0.16, 0.045, -0.72, 1.53, 0.37);
+      pushRoomCyl(b.metalTrim, xf, 0.024, 0.024, 0.62, 10, -0.86, 1.06, 0, Math.PI / 2, 0, 0);
+      pushRoomCyl(b.metalTrim, xf, 0.024, 0.024, 0.62, 10, 0.86, 1.06, 0, Math.PI / 2, 0, 0);
+      // Cesto de pertences pendurado sob a cabeceira.
+      pushRoomBox(b.darkIron, xf, 0.24, 0.10, 0.30, -0.76, 0.66, 0);
+      pushRoomBox(b.darkIron, xf, 0.03, 0.30, 0.32, 0.85, 0.93, 0, 0, 0, 0.12);
+      pushRoomBox(b.cleanLinen, xf, 0.012, 0.24, 0.26, 0.868, 0.94, 0, 0, 0, 0.12);
+      for (const y of [0.88, 0.93, 0.98]) {
+        pushRoomBox(b.darkIron, xf, 0.006, 0.008, 0.17, 0.876, y, 0, 0, 0, 0.12);
+      }
+      // Haste IV com bomba de infusão e duas bolsas.
+      pushRoomCyl(b.metalTrim, xf, 0.018, 0.018, 1.66, 8, -0.80, 0.85, 0.36);
+      pushRoomCyl(b.metalTrim, xf, 0.015, 0.015, 0.26, 8, -0.80, 1.66, 0.30, Math.PI / 2, 0, 0);
+      for (const [hz, bucket] of [[0.30, b.bioFluid], [0.18, b.cleanLinen]] as const) {
+        pushRoomBox(bucket, xf, 0.10, 0.20, 0.05, -0.87, 1.50, hz);
+        pushRoomCyl(b.darkIron, xf, 0.006, 0.006, 0.26, 5, -0.87, 1.27, hz);
+        pushRoomCyl(b.cleanLinen, xf, 0.014, 0.020, 0.06, 8, -0.87, 1.14, hz);
+      }
+      pushRoomBox(b.metalTrim, xf, 0.16, 0.20, 0.10, -0.78, 1.34, 0.36);
+      pushRoomBox(b.computerScreen, xf, 0.11, 0.06, 0.012, -0.78, 1.38, 0.412);
       break;
     }
-
     case 'medical_supply_cabinet': {
-      // Armário farmacêutico e cirúrgico duplo com vitrine superior, gaveteiro inferior e maleta de emergência lateral
-      pushRoomBox(b.darkIron, xf, 1.44, 0.1, 0.64, 0, 0.05, 0);
-      pushRoomBox(b.cleanLinen, xf, 1.4, 1.96, 0.6, 0, 1.08, 0);
-      pushRoomBox(b.metalTrim, xf, 1.46, 0.08, 0.66, 0, 2.08, 0);
-      for (const dx of [-0.33, 0.33]) {
-        pushRoomBox(b.medicalCross, xf, 0.6, 0.62, 0.035, dx, 1.46, 0.305);
-        pushRoomBox(b.darkIron, xf, 0.6, 0.3, 0.03, dx, 0.66, 0.305);
-        pushRoomBox(b.darkIron, xf, 0.6, 0.3, 0.03, dx, 0.31, 0.305);
-        pushRoomBox(b.metalTrim, xf, 0.14, 0.03, 0.045, dx, 0.66, 0.325);
-        pushRoomBox(b.metalTrim, xf, 0.14, 0.03, 0.045, dx, 0.31, 0.325);
+      // Armário de farmácia com vitrine iluminada, portas de aço numeradas e
+      // cilindro de O2 de emergência em pé na lateral livre do vão.
+      const caseX = -0.19;
+      pushRoomBox(b.darkIron, xf, 1.10, 0.10, 0.58, caseX, 0.05, 0);
+      pushRoomBox(b.metalTrim, xf, 1.06, 1.06, 0.56, caseX, 0.63, 0);
+      pushRoomBox(b.darkIron, xf, 1.10, 0.05, 0.58, caseX, 1.185, 0);
+      pushRoomBox(b.metalTrim, xf, 1.00, 0.70, 0.54, caseX, 1.55, -0.02);
+      pushRoomBox(b.darkIron, xf, 1.06, 0.10, 0.58, caseX, 1.95, 0);
+      // Portas cegas inferiores, cada uma com puxador e número de prateleira.
+      for (const dx of [-0.26, 0.26]) {
+        pushRoomBox(b.darkIron, xf, 0.44, 0.94, 0.025, caseX + dx, 0.63, 0.286);
+        pushRoomBox(b.metalTrim, xf, 0.36, 0.84, 0.014, caseX + dx, 0.63, 0.301);
+        const hx = caseX + dx + (dx < 0 ? 0.16 : -0.16);
+        pushRoomBox(b.metalTrim, xf, 0.022, 0.19, 0.03, hx, 0.76, 0.312);
+        for (const y of [0.68, 0.84]) {
+          pushRoomBox(b.darkIron, xf, 0.05, 0.018, 0.05, hx, y, 0.298);
+        }
+        pushRoomBox(b.medicalCross, xf, 0.09, 0.03, 0.006, caseX + dx, 1.11, 0.306);
       }
-      pushRoomBox(b.medicalCross, xf, 0.08, 0.34, 0.28, 0.73, 1.24, 0);
-      break;
-    }
-
-    case 'vitals_monitor_cart': {
-      // Carrinho hospitalar de parada cardíaca (Crash-Cart) com 4 rodízios, gavetas, monitor ECG CRT, desfibrilador e cilindro O2
-      for (const sx of [-0.46, 0.46]) {
-        for (const sz of [-0.26, 0.26]) {
-          pushRoomCyl(b.darkIron, xf, 0.05, 0.05, 0.04, 8, sx, 0.05, sz, Math.PI * 0.5, 0, 0);
+      // Vitrine: caixilho, duas portas de vidro, prateleiras e acessórios.
+      pushRoomBox(b.darkIron, xf, 0.98, 0.06, 0.02, caseX, 1.235, 0.278);
+      pushRoomBox(b.darkIron, xf, 0.98, 0.06, 0.02, caseX, 1.865, 0.278);
+      for (const dx of [-0.485, -0.005, 0.475]) {
+        pushRoomBox(b.darkIron, xf, 0.05, 0.66, 0.03, caseX + dx, 1.55, 0.283);
+      }
+      for (const dx of [-0.24, 0.24]) {
+        pushRoomFrontPane(b.cryoWindow, xf, 0.42, 0.58, caseX + dx, 1.55, 0.292);
+        // Puxador de vitrine e dobradiças no batente entre as portas.
+        pushRoomCyl(b.cleanLinen, xf, 0.011, 0.011, 0.16, 8,
+          caseX + dx + (dx < 0 ? 0.16 : -0.16), 1.46, 0.305);
+        for (const y of [1.31, 1.79]) {
+          pushRoomCyl(b.darkIron, xf, 0.014, 0.014, 0.05, 6,
+            caseX + dx + (dx < 0 ? -0.235 : 0.235), y, 0.286);
+        }
+        // Etiqueta de advertência na base do vidro.
+        pushRoomBox(b.cleanLinen, xf, 0.20, 0.045, 0.006, caseX + dx, 1.262, 0.294);
+        for (const lx of [-0.06, 0, 0.06]) {
+          pushRoomBox(b.darkIron, xf, 0.035, 0.008, 0.004, caseX + dx + lx, 1.262, 0.298);
         }
       }
-      pushRoomBox(b.metalTrim, xf, 1.06, 0.82, 0.62, -0.04, 0.48, 0);
-      for (const dy of [0.24, 0.46, 0.68]) {
-        pushRoomBox(b.medicalCross, xf, 0.94, 0.17, 0.03, -0.04, dy, 0.315);
-        pushRoomBox(b.darkIron, xf, 0.26, 0.03, 0.045, -0.04, dy, 0.33);
+      for (const y of [1.30, 1.52, 1.74]) {
+        pushRoomBox(b.metalTrim, xf, 0.92, 0.022, 0.42, caseX, y, -0.02);
       }
-      // Alça lateral de empurrar + cilindro de O2 acoplado
-      pushRoomBox(b.metalTrim, xf, 0.04, 0.04, 0.52, -0.62, 0.84, 0);
-      pushRoomCyl(b.bioFluid, xf, 0.085, 0.085, 0.68, 8, 0.55, 0.48, 0);
-      // Monitor ECG giratório + pás de desfibrilador no topo
-      pushRoomBox(b.darkIron, xf, 0.54, 0.44, 0.4, -0.2, 1.16, -0.04, 0, 0.12, 0);
-      pushRoomBox(b.computerScreen, xf, 0.44, 0.32, 0.025, -0.18, 1.18, 0.165, 0, 0.12, 0);
-      pushRoomBox(b.cleanLinen, xf, 0.34, 0.16, 0.28, 0.28, 0.98, 0.02);
-      pushRoomBox(b.darkIron, xf, 0.1, 0.06, 0.14, 0.22, 1.08, 0.04);
-      pushRoomBox(b.darkIron, xf, 0.1, 0.06, 0.14, 0.35, 1.08, 0.04);
+      // Fita de luz no teto da vitrine iluminando as prateleiras.
+      pushRoomBox(b.warmLampGlow, xf, 0.88, 0.016, 0.10, caseX, 1.818, 0.10);
+      for (const [y, kind] of [[1.30, 0], [1.52, 1], [1.74, 2]] as const) {
+        for (let i = 0; i < 3; i++) {
+          const fx = caseX - 0.28 + i * 0.28;
+          if (kind === 1) {
+            // Caixas de sutura com etiqueta de cruz.
+            pushRoomBox(b.cleanLinen, xf, 0.17, 0.09, 0.19, fx, y + 0.056, -0.02);
+            pushRoomBox(b.medicalCross, xf, 0.10, 0.012, 0.20, fx, y + 0.056, -0.012);
+          } else {
+            // Frascos âmbar com tampa de rosca e rótulo claro.
+            pushRoomCyl(b.bioFluid, xf, 0.042, 0.042, 0.13, 10, fx, y + 0.076, -0.04);
+            pushRoomCyl(b.darkIron, xf, 0.044, 0.044, 0.014, 10, fx, y + 0.148, -0.04);
+            pushRoomBox(b.cleanLinen, xf, 0.058, 0.024, 0.006, fx, y + 0.096, 0.004);
+            // Ampolas deitadas na frente do frasco.
+            pushRoomCyl(b.cleanLinen, xf, 0.010, 0.010, 0.11, 6, fx, y + 0.030, 0.08, 0, 0, Math.PI / 2);
+          }
+        }
+      }
+      // Cruz iluminada na coroação.
+      pushRoomBox(b.medicalCross, xf, 0.24, 0.030, 0.012, caseX, 1.95, 0.298);
+      pushRoomBox(b.warmLampGlow, xf, 0.30, 0.02, 0.14, caseX, 1.99, -0.02);
+      // Cilindro de O2 de emergência na lateral livre, com regulador e mangueira.
+      pushRoomCyl(b.darkIron, xf, 0.13, 0.13, 0.05, 14, 0.50, 0.025, 0.02);
+      pushRoomCyl(b.bioFluid, xf, 0.115, 0.115, 0.90, 14, 0.50, 0.49, 0.02);
+      for (const y of [0.24, 0.74]) {
+        pushRoomTorus(b.metalTrim, xf, 0.118, 0.016, 0.50, y, 0.02, Math.PI / 2, 0, 0);
+      }
+      pushRoomCyl(b.metalTrim, xf, 0.07, 0.09, 0.09, 12, 0.50, 0.985, 0.02);
+      pushRoomCyl(b.darkIron, xf, 0.045, 0.045, 0.09, 10, 0.50, 1.07, 0.02);
+      pushRoomBox(b.metalTrim, xf, 0.18, 0.032, 0.032, 0.50, 1.03, 0.10);
+      pushRoomCyl(b.cleanLinen, xf, 0.038, 0.038, 0.02, 10, 0.50, 1.03, 0.165, Math.PI / 2, 0, 0);
+      for (let i = 0; i < 3; i++) {
+        pushRoomTorus(b.darkIron, xf, 0.075, 0.011, 0.50, 0.90 - i * 0.05, -0.10, Math.PI / 2, 0, 0);
+      }
       break;
     }
-
+    case 'vitals_monitor_cart': {
+      // Carrinho de parada cardíaca: corpo em quatro gavetas com puxadores e
+      // etiquetas, monitor ECG articulado em suporte com cabo espiral, painel
+      // de desfibrilador com pás encaixadas, bomba de infusão, cilindro de O2
+      // preso por cinta e alça de transporte com rodízios travados.
+      for (const sx of [-0.50, 0.50]) {
+        for (const sz of [-0.26, 0.26]) {
+          pushRoomBox(b.darkIron, xf, 0.05, 0.14, 0.05, sx, 0.20, sz);
+          pushRoomCyl(b.darkIron, xf, 0.05, 0.05, 0.035, 10, sx, 0.05, sz, Math.PI / 2, 0, 0);
+          pushRoomCyl(b.cleanLinen, xf, 0.052, 0.052, 0.008, 10, sx, 0.05, sz, Math.PI / 2, 0, 0);
+        }
+      }
+      pushRoomBox(b.metalTrim, xf, 0.10, 0.04, 0.56, -0.52, 0.30, 0);
+      pushRoomBox(b.darkIron, xf, 1.02, 0.14, 0.56, -0.02, 0.30, 0);
+      pushRoomBox(b.metalTrim, xf, 1.06, 0.72, 0.58, -0.02, 0.73, 0);
+      pushRoomBox(b.metalTrim, xf, 1.10, 0.05, 0.62, -0.02, 1.115, 0);
+      // Bandeja de inox rebaixada com toalha dobrada.
+      pushRoomBox(b.cleanLinen, xf, 0.34, 0.012, 0.40, -0.26, 1.146, 0);
+      // Quatro gavetas com frente rebaixada, puxador e etiqueta de conteúdo.
+      for (const dy of [0.50, 0.72, 0.94]) {
+        pushRoomBox(b.darkIron, xf, 0.94, 0.18, 0.022, -0.02, dy, 0.292);
+        pushRoomBox(b.metalTrim, xf, 0.84, 0.12, 0.012, -0.02, dy, 0.305);
+        pushRoomBox(b.cleanLinen, xf, 0.26, 0.024, 0.03, -0.02, dy + 0.035, 0.316);
+        pushRoomBox(b.medicalCross, xf, 0.10, 0.03, 0.006, 0.32, dy - 0.035, 0.306);
+      }
+      // Etiqueta de lacre e trava central.
+      pushRoomBox(b.darkIron, xf, 0.10, 0.07, 0.03, -0.02, 1.03, 0.318);
+      // Alça de empurrar traseira em tubo curvo.
+      for (const sz of [-0.24, 0.24]) {
+        pushRoomCyl(b.metalTrim, xf, 0.02, 0.02, 0.24, 8, -0.47, 1.24, sz);
+        pushRoomRod(b.metalTrim, xf, 0.018,
+          new THREE.Vector3(-0.47, 1.36, sz),
+          new THREE.Vector3(-0.56, 1.45, sz));
+      }
+      pushRoomCyl(b.darkIron, xf, 0.022, 0.022, 0.50, 8, -0.56, 1.45, 0, Math.PI / 2, 0, 0);
+      // Monitor ECG: suporte articulado, caixa, tela e teclado.
+      pushRoomCyl(b.darkIron, xf, 0.05, 0.06, 0.16, 10, -0.06, 1.17, -0.10);
+      pushRoomBox(b.metalTrim, xf, 0.60, 0.05, 0.34, -0.06, 1.24, -0.08);
+      pushRoomBox(b.darkIron, xf, 0.52, 0.32, 0.30, -0.06, 1.38, -0.10, -0.14, 0, 0);
+      pushRoomBox(b.computerScreen, xf, 0.44, 0.24, 0.02, -0.06, 1.39, 0.056, -0.14, 0, 0);
+      // Botões e cabo espiral saindo do monitor.
+      for (let i = 0; i < 4; i++) {
+        pushRoomBox(b.medicalCross, xf, 0.035, 0.025, 0.03, -0.22 + i * 0.10, 1.26, 0.09);
+      }
+      pushRoomRod(b.darkIron, xf, 0.012,
+        new THREE.Vector3(0.20, 1.30, 0.05), new THREE.Vector3(0.24, 1.22, 0.12));
+      pushRoomRod(b.darkIron, xf, 0.012,
+        new THREE.Vector3(0.24, 1.22, 0.12), new THREE.Vector3(0.30, 1.05, 0.14));
+      pushRoomRod(b.darkIron, xf, 0.012,
+        new THREE.Vector3(0.30, 1.05, 0.14), new THREE.Vector3(0.30, 0.98, 0.10));
+      // Desfibrilador: base, pás encaixadas e botão de carga.
+      pushRoomBox(b.darkIron, xf, 0.32, 0.13, 0.28, 0.24, 1.20, -0.10);
+      pushRoomBox(b.metalTrim, xf, 0.09, 0.05, 0.17, 0.18, 1.29, -0.10);
+      pushRoomBox(b.metalTrim, xf, 0.09, 0.05, 0.17, 0.32, 1.29, -0.10);
+      pushRoomCyl(b.medicalCross, xf, 0.028, 0.028, 0.02, 10, 0.24, 1.275, 0.045, Math.PI / 2, 0, 0);
+      // Bomba de infusão sobre a tampa e bolsa pendurada.
+      pushRoomBox(b.metalTrim, xf, 0.15, 0.20, 0.13, 0.40, 1.23, 0.14);
+      pushRoomBox(b.computerScreen, xf, 0.10, 0.065, 0.012, 0.40, 1.27, 0.208);
+      pushRoomCyl(b.metalTrim, xf, 0.010, 0.010, 0.30, 6, 0.46, 1.27, 0.19);
+      pushRoomBox(b.bioFluid, xf, 0.08, 0.15, 0.05, 0.46, 1.14, 0.19);
+      // Cilindro de O2 preso por cinta na lateral, com regulador.
+      pushRoomCyl(b.darkIron, xf, 0.08, 0.08, 0.03, 12, 0.50, 0.34, 0.02);
+      pushRoomCyl(b.bioFluid, xf, 0.08, 0.08, 0.62, 12, 0.50, 0.67, 0.02);
+      for (const y of [0.55, 0.85]) {
+        pushRoomTorus(b.metalTrim, xf, 0.083, 0.012, 0.50, y, 0.02, Math.PI / 2, 0, 0);
+      }
+      pushRoomCyl(b.metalTrim, xf, 0.042, 0.058, 0.07, 10, 0.50, 1.01, 0.02);
+      pushRoomBox(b.metalTrim, xf, 0.12, 0.03, 0.03, 0.50, 1.00, 0.10);
+      pushRoomCyl(b.cleanLinen, xf, 0.03, 0.03, 0.02, 8, 0.50, 1.00, 0.15, Math.PI / 2, 0, 0);
+      break;
+    }
     case 'hydroponic_tree_planter': {
       // Canteiro monumental de pedra com borda vazada de madeira + substrato interno limpo (ZERO sobreposição!) + Árvore ramificada
       pushRoomBox(b.stone, xf, 1.44, 0.48, 0.84, 0, 0.24, 0);
