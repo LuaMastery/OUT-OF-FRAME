@@ -96,6 +96,7 @@ import {
   TouchInteractContext,
 } from './DoomTouchControls';
 import { DoomWorldItems } from './DoomWorldItems';
+import { getOrCreateLocalPlayerProfile } from '../multiplayer/MultiplayerService';
 
 type ActiveHorrorSequence =
   | 'NONE'
@@ -441,6 +442,12 @@ export class DoomGameApp {
   private readonly danceCamTargetScratch = new THREE.Vector3();
   private readonly danceCamPosScratch = new THREE.Vector3();
   private readonly danceCamLookScratch = new THREE.Vector3();
+  private wasSpiderDead = false;
+  private victoryPending = false;
+  private victoryShown = false;
+  private victoryElapsedSec = 0;
+  private shotgunShotsFired = 0;
+  private localPlayerName = 'VOCÊ';
   private currentThemedRoomId: DoomRoomId | null = null;
   private roomBannerHideAtSec = 0;
   private elapsed = 0;
@@ -820,6 +827,7 @@ export class DoomGameApp {
         if (
           this.activeSequence !== 'NONE' ||
           this.inventory.gameOverVisible ||
+          this.inventory.victoryVisible ||
           this.pauseMenu.open
         ) {
           return;
@@ -844,7 +852,70 @@ export class DoomGameApp {
       onPermanentDeathTerminate: () => {
         this.finalizePermanentDeath();
       },
+      onVictoryRestart: () => {
+        this.sound.setWorldPaused(false);
+        this.pauseMenu.setOpen(false, 'main', true);
+        if (this.onRestartRequested) this.onRestartRequested();
+        else this.finalizePermanentDeath();
+      },
+      onVictoryExit: () => {
+        this.sound.setWorldPaused(false);
+        this.pauseMenu.setOpen(false, 'main', true);
+        this.finalizePermanentDeath();
+      },
     });
+
+    // A tela de vitória só entra depois de a aranha terminar de cair.
+    if (import.meta.env?.DEV) {
+      // Atalho de verificação manual em desenvolvimento: força a morte da aranha
+      // e permite ler o estado da tela de vitória pelo console do navegador.
+      (window as unknown as { __doomDevHooks?: unknown }).__doomDevHooks = {
+        killSpider: () => {
+          // Força a morte mesmo que a aranha esteja em cena cinemática.
+          if (!this.spider.applyShotgunDamage(9999)) {
+            (this.spider as unknown as { beginDeathAnimation: () => void }).beginDeathAnimation();
+          }
+        },
+        stageSpiderInFront: (distance = 3.2) => {
+          // Coloca a aranha à frente do olhar para inspecionar a animação.
+          const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion);
+          const target = this.camera.position.clone().addScaledVector(dir, distance);
+          (this.spider as unknown as { bodyPos: THREE.Vector3 }).bodyPos.set(
+            target.x,
+            Math.max(0.6, Math.min(2.1, target.y + 0.15)),
+            target.z
+          );
+        },
+        equipTaser: () => {
+          // Atalho de verificação: entrega o taser e equipa para inspeção visual.
+          if (!this.inventory.hasItem('field_taser')) this.inventory.addItem('field_taser');
+          this.taser.equip();
+          this.shotgun.stow();
+        },
+        fireTaser: () => {
+          this.taser.fire();
+        },
+        shockSpider: () => {
+          this.spider.applyTaserStun();
+        },
+        advanceDeath: (seconds: number) => {
+          // Avança a queda manualmente (usado para capturar quadros da cena).
+          (this.spider as unknown as {
+            updateDeathAnimation: (dt: number, elapsed: number) => void;
+          }).updateDeathAnimation(seconds, seconds);
+        },
+        state: () => ({
+          spiderDead: this.spider.isDead,
+          deathProgress: this.spider.deathProgress,
+          victoryVisible: this.inventory.victoryVisible,
+          bodyVisible: this.spider.sceneRoot.visible,
+        }),
+      };
+    }
+    this.spider.onDeathAnimationFinished = () => {
+      if (this.disposed) return;
+      this.showVictoryScreen();
+    };
 
     this.touchControls = new DoomTouchControls(this.viewportEl, {
       onActivity: () => {
@@ -1092,6 +1163,13 @@ export class DoomGameApp {
     this.inventory.setPauseMenuHidden(false);
     this.sound.setWorldPaused(false);
     this.engaged = true;
+    this.victoryElapsedSec = 0;
+    try {
+      const name = getOrCreateLocalPlayerProfile().name;
+      if (name) this.localPlayerName = name;
+    } catch {
+      // Perfil indisponível: mantém o rótulo padrão.
+    }
     this.wasFullscreen = Boolean(document.fullscreenElement);
     this.syncAudioFocusMute();
     this.onResize();
@@ -2061,6 +2139,7 @@ export class DoomGameApp {
       this.pauseMenu.setHudSuppressed(
         !this.engaged ||
           this.inventory.gameOverVisible ||
+          this.inventory.victoryVisible ||
           this.activeSequence !== 'NONE'
       );
 
@@ -2094,6 +2173,51 @@ export class DoomGameApp {
     this.rafId = requestAnimationFrame(loop);
   }
 
+  /**
+   * Acompanha a morte da aranha: dispara o pedido de vitória assim que a queda
+   * termina e mantém o relógio da incursão para o resumo final.
+   */
+  private monitorSpiderDeath(dt: number): void {
+    if (!this.victoryShown) this.victoryElapsedSec += dt;
+    const dead = this.spider.isDead;
+    if (dead && !this.wasSpiderDead) {
+      this.wasSpiderDead = true;
+      this.victoryPending = true;
+      // Aviso curto: a tela cheia só entra depois da animação de morte.
+      this.inventory.wakeShortcutsHub(10_000, 'ARANHA DESTRUÍDA · AGUARDE O CORPO CAIR');
+    }
+    if (this.victoryPending && this.spider.isDeathAnimationComplete) {
+      this.victoryPending = false;
+      this.showVictoryScreen();
+    }
+  }
+
+  /** Monta o resumo da incursão e exibe a tela de vitória. */
+  private showVictoryScreen(): void {
+    if (this.victoryShown || this.disposed || this.activeSequence === 'DEAD_TERMINATED') return;
+    this.victoryShown = true;
+    this.sound.stopDungeonAtmosphere?.();
+    this.sound.winSurvivors?.();
+    this.shotgun.stow();
+    this.taser.stow();
+    this.inventory.setPauseMenuHidden(true);
+    const survivors = this.multiplayer
+      ? this.multiplayer.getSurvivingPlayerNames(this.localPlayerName, false)
+      : [this.localPlayerName];
+    this.inventory.showVictory({
+      survivors,
+      totalPlayers: this.multiplayer?.totalRosterCount ?? 1,
+      everyoneSurvived: !this.multiplayer || survivors.length >= (this.multiplayer?.totalRosterCount ?? 1),
+      elapsedSeconds: this.victoryElapsedSec,
+      shots: this.shotgunShotsFired,
+    });
+    try {
+      document.exitPointerLock?.();
+    } catch {
+      // ignorar
+    }
+  }
+
   private updateShotgunObjective(): void {
     const availableParts = this.inventory.getAvailableShotgunParts();
     const found = availableParts.filter(id => this.inventory.hasItem(id)).length;
@@ -2121,7 +2245,7 @@ export class DoomGameApp {
   }
 
   private toggleTaser(): void {
-    if (!this.engaged || this.pauseMenu.open || this.inventory.open || this.inventory.gameOverVisible ||
+    if (!this.engaged || this.pauseMenu.open || this.inventory.open || this.inventory.gameOverVisible || this.inventory.victoryVisible ||
         this.activeSequence !== 'NONE' || this.danceMenu.isOpen || this.multiplayer?.isChatTyping) return;
     if (!this.inventory.hasItem(TASER_ITEM_ID)) {
       this.inventory.wakeShortcutsHub(4000, 'TASER NÃO ENCONTRADO · PROCURE NOS CAIXOTES');
@@ -2163,6 +2287,14 @@ export class DoomGameApp {
     if (this.spider.isDead || this.multiplayer?.getActiveRemoteAbduction()) return false;
     if (taserImpactDistance(origin, direction, this.spider.position, this.colliders.map(c => c.box)) === null) return false;
     if (!this.spider.applyTaserStun()) return false;
+    // Som do choque: estalo, zumbido e o guincho do bicho, posicionado no corredor.
+    const shockDelta = new THREE.Vector3().subVectors(this.spider.position, this.position);
+    const shockPan = THREE.MathUtils.clamp(
+      new THREE.Vector3(-Math.cos(this.yaw), 0, Math.sin(this.yaw)).dot(shockDelta.normalize()),
+      -1,
+      1
+    );
+    this.sound.playSpiderShock?.(shockPan, this.position.distanceTo(this.spider.position));
     this.inventory.wakeShortcutsHub(3500, `ARANHA ATORDOADA · ${TASER_STUN_SECONDS}s`);
     return true;
   }
@@ -2187,7 +2319,7 @@ export class DoomGameApp {
   }
 
   private fireShotgun(): void {
-    if (!this.engaged || !this.shotgun.isEquipped || this.pauseMenu.open || this.inventory.open || this.danceMenu.isOpen || this.danceId || this.activeSequence !== 'NONE' || this.multiplayer?.isChatTyping) return;
+    if (!this.engaged || !this.shotgun.isEquipped || this.pauseMenu.open || this.inventory.open || this.inventory.victoryVisible || this.danceMenu.isOpen || this.danceId || this.activeSequence !== 'NONE' || this.multiplayer?.isChatTyping) return;
     const now = performance.now();
     if (now < this.shotgunNextShotMs) return;
     if (!this.inventory.consumeItemById(SHOTGUN_AMMO_ITEM_ID)) {
@@ -2196,6 +2328,7 @@ export class DoomGameApp {
     }
     this.shotgunNextShotMs = now + 700;
     this.shotgun.fire(); this.sound.playShotgunBlast();
+    this.shotgunShotsFired += 1;
     const direction = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion).normalize();
     const hit = !this.multiplayer || this.multiplayer.isHost
       ? this.applyShotgunHit(this.camera.position, direction) : false;
@@ -2987,6 +3120,22 @@ export class DoomGameApp {
     this.sound.setDoomAmbientZone(this.ambientZoneTracker.update(ambientCell.gx, ambientCell.gz, dt));
     this.updateShotgunObjective();
     this.updateTaserHud();
+    this.monitorSpiderDeath(dt);
+    if (this.inventory.victoryVisible) {
+      // Com a tela de vitória na frente o mundo congela: nada de andar, atirar
+      // ou ser pego enquanto o esquadrão respira.
+      this.touchControls.syncState({
+        overlayBlocked: true,
+        inCaptureSequence: true,
+        isSprinting: false,
+        isCrouchedOrSliding: false,
+        canTriggerSlide: false,
+        interactContext: 'NONE',
+        inMultiplayer: Boolean(this.multiplayer),
+        isPushToTalkActive: false,
+      });
+      return;
+    }
     const isLocalAfk = this.refreshLocalAfkStatus();
 
     if (this.activeSequence === 'DEAD_TERMINATED') {

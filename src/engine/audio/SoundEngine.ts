@@ -3344,6 +3344,146 @@ export class SoundEngine {
   }
 
   /**
+   * Fanfarra curta e solene da tela de vitória: acorde aberto em Lá maior
+   * subindo, com sino cristalino por cima e cauda longa no corredor.
+   */
+  winSurvivors(): void {
+    if (!this.isRunning() || !this.ctx || !this.terminalBus) return;
+    const ctx = this.ctx;
+    const now = ctx.currentTime;
+    const bus = this.terminalBus;
+
+    const busGain = ctx.createGain();
+    busGain.gain.value = 0.001;
+    busGain.gain.linearRampToValueAtTime(0.34, now + 0.5);
+    busGain.gain.setTargetAtTime(0.0001, now + 3.6, 0.9);
+    busGain.connect(bus);
+    if (this.reverbSend) busGain.connect(this.reverbSend);
+
+    // Acorde maior com nona, entrando em cascata ascendente.
+    const notes: Array<[number, number]> = [
+      [220.0, 0.0],
+      [277.18, 0.1],
+      [329.63, 0.2],
+      [440.0, 0.3],
+      [493.88, 0.42],
+    ];
+    for (const [freq, delay] of notes) {
+      const osc = ctx.createOscillator();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(freq, now + delay);
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.0001, now + delay);
+      gain.gain.linearRampToValueAtTime(0.12, now + delay + 0.5);
+      gain.gain.exponentialRampToValueAtTime(0.0008, now + delay + 4.2);
+      const panner = ctx.createStereoPanner();
+      panner.pan.setValueAtTime((Math.random() * 2 - 1) * 0.32, now);
+      osc.connect(gain);
+      gain.connect(panner);
+      panner.connect(busGain);
+      osc.start(now + delay);
+      osc.stop(now + delay + 4.4);
+    }
+
+    // Sino de confirmação no topo, com brilho metálico.
+    const bell = ctx.createOscillator();
+    bell.type = 'sine';
+    bell.frequency.setValueAtTime(1318.5, now + 0.25);
+    const bellGain = ctx.createGain();
+    bellGain.gain.setValueAtTime(0.0001, now + 0.25);
+    bellGain.gain.linearRampToValueAtTime(0.09, now + 0.3);
+    bellGain.gain.exponentialRampToValueAtTime(0.0008, now + 3.0);
+    bell.connect(bellGain);
+    bellGain.connect(busGain);
+    bell.start(now + 0.25);
+    bell.stop(now + 3.1);
+
+    this.triggerFilteredNoise(bus, now + 0.05, 1.6, 5200, 0.9, 0.05, 'white');
+  }
+
+  /**
+   * Morte da aranha: o grito final desce de afinação, o corpo despenca com um
+   * baque grave e a carcaça chia enquanto as pernas tremem e param.
+   */
+  playSpiderDeath(): void {
+    if (!this.isRunning() || !this.ctx || !this.terminalBus) return;
+    const ctx = this.ctx;
+    const now = ctx.currentTime;
+    const bus = this.terminalBus;
+
+    // 1. Grito final: duas vozes dissonantes caindo de tom até o silêncio.
+    const screamFilter = ctx.createBiquadFilter();
+    screamFilter.type = 'bandpass';
+    screamFilter.frequency.setValueAtTime(1400, now);
+    screamFilter.frequency.exponentialRampToValueAtTime(320, now + 1.9);
+    screamFilter.Q.value = 1.6;
+    const screamGain = ctx.createGain();
+    screamGain.gain.setValueAtTime(0.0001, now);
+    screamGain.gain.linearRampToValueAtTime(0.2, now + 0.06);
+    screamGain.gain.exponentialRampToValueAtTime(0.0008, now + 2.1);
+    screamFilter.connect(screamGain);
+    screamGain.connect(bus);
+    if (this.reverbSend) screamGain.connect(this.reverbSend);
+
+    for (const [type, start, end, detune] of [
+      ['sawtooth', 520, 92, -7],
+      ['square', 585, 118, 9],
+    ] as const) {
+      const osc = ctx.createOscillator();
+      osc.type = type;
+      osc.frequency.setValueAtTime(start, now);
+      osc.frequency.exponentialRampToValueAtTime(end, now + 1.85);
+      osc.detune.setValueAtTime(detune, now);
+      const vibrato = ctx.createOscillator();
+      vibrato.type = 'sine';
+      vibrato.frequency.setValueAtTime(19, now);
+      vibrato.frequency.exponentialRampToValueAtTime(6, now + 1.8);
+      const depth = ctx.createGain();
+      depth.gain.value = 26;
+      vibrato.connect(depth);
+      depth.connect(osc.frequency);
+      vibrato.start(now);
+      vibrato.stop(now + 2.0);
+      osc.connect(screamFilter);
+      osc.start(now);
+      osc.stop(now + 2.1);
+    }
+
+    // 2. Baque do corpo no chão.
+    const thud = ctx.createOscillator();
+    thud.type = 'sine';
+    thud.frequency.setValueAtTime(88, now + 1.2);
+    thud.frequency.exponentialRampToValueAtTime(38, now + 1.75);
+    const thudGain = ctx.createGain();
+    thudGain.gain.setValueAtTime(0.0001, now + 1.2);
+    thudGain.gain.linearRampToValueAtTime(0.26, now + 1.24);
+    thudGain.gain.exponentialRampToValueAtTime(0.0008, now + 1.85);
+    thud.connect(thudGain);
+    thudGain.connect(bus);
+    thud.start(now + 1.2);
+    thud.stop(now + 1.9);
+    this.triggerFilteredNoise(bus, now + 1.2, 0.42, 210, 0.8, 0.16, 'gritty');
+
+    // 3. Quitina rachando e pernas tremendo até parar.
+    this.triggerFilteredNoise(bus, now + 0.5, 0.9, 2400, 1.4, 0.075, 'crackle');
+    for (let i = 0; i < 7; i++) {
+      const at = now + 0.35 + i * 0.19;
+      const click = ctx.createOscillator();
+      const clickGain = ctx.createGain();
+      click.type = 'triangle';
+      click.frequency.setValueAtTime(240 + i * 26, at);
+      click.frequency.exponentialRampToValueAtTime(120, at + 0.09);
+      clickGain.gain.setValueAtTime(0.0001, at);
+      clickGain.gain.linearRampToValueAtTime(0.05 * (1 - i / 9), at + 0.012);
+      clickGain.gain.exponentialRampToValueAtTime(0.0001, at + 0.12);
+      click.connect(clickGain);
+      clickGain.connect(bus);
+      click.start(at);
+      click.stop(at + 0.14);
+    }
+  }
+
+  /**
    * Guincho agudo de dor e recuo quando a Aranha é cegada por um Sinalizador de Magnésio ou golpeada pela Faca!
    */
   playSpiderPainRecoil(pan: number, distance: number, wallCount = 0): void {
@@ -3514,6 +3654,75 @@ export class SoundEngine {
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.2);
     oscillator.connect(gain); gain.connect(this.worldDryBus);
     oscillator.start(now); oscillator.stop(now + 0.21);
+  }
+
+  /**
+   * Choque do taser na aranha: estalo elétrico seco, zumbido de rede e o
+   * guincho do bicho travando as patas. Dura mais que o disparo da arma para
+   * cobrir a convulsão inteira.
+   */
+  playSpiderShock(pan: number, distance: number, wallCount = 0): void {
+    if (!this.isRunning() || !this.ctx || !this.worldDryBus) return;
+    const ctx = this.ctx;
+    const now = ctx.currentTime;
+    const acoustics = computeLabyrinthSoundAcoustics(distance, 30, wallCount);
+    const sink = this.createSpatialWorldSink(pan, {
+      ...acoustics,
+      dryGain: Math.max(0.12, acoustics.dryGain),
+      wetSendGain: Math.max(0.16, acoustics.wetSendGain),
+      audible: true,
+    });
+    if (!sink) return;
+
+    // Estalo seco da descarga.
+    this.triggerFilteredNoise(sink, now, 0.28, 3400, 2.6, 0.26, 'crackle');
+    // Zumbido de 60 Hz modulado, como rede elétrica entrando na carcaça.
+    const hum = ctx.createOscillator();
+    const humGain = ctx.createGain();
+    hum.type = 'sawtooth';
+    hum.frequency.setValueAtTime(120, now);
+    hum.frequency.exponentialRampToValueAtTime(74, now + 1.2);
+    const humFilter = ctx.createBiquadFilter();
+    humFilter.type = 'lowpass';
+    humFilter.frequency.setValueAtTime(900, now);
+    humFilter.frequency.exponentialRampToValueAtTime(320, now + 1.1);
+    const stutter = ctx.createOscillator();
+    const stutterGain = ctx.createGain();
+    stutter.type = 'square';
+    stutter.frequency.setValueAtTime(13, now);
+    stutterGain.gain.value = 0.5;
+    stutter.connect(stutterGain);
+    stutterGain.connect(humGain.gain);
+    humGain.gain.setValueAtTime(0.0001, now);
+    humGain.gain.linearRampToValueAtTime(0.14, now + 0.05);
+    humGain.gain.exponentialRampToValueAtTime(0.0008, now + 1.3);
+    hum.connect(humFilter);
+    humFilter.connect(humGain);
+    humGain.connect(sink);
+    hum.start(now);
+    hum.stop(now + 1.35);
+    stutter.start(now);
+    stutter.stop(now + 1.35);
+
+    // Guincho curto de dor/travamento.
+    const cry = ctx.createOscillator();
+    const cryGain = ctx.createGain();
+    cry.type = 'sawtooth';
+    cry.frequency.setValueAtTime(680, now + 0.06);
+    cry.frequency.exponentialRampToValueAtTime(240, now + 0.9);
+    const cryFilter = ctx.createBiquadFilter();
+    cryFilter.type = 'bandpass';
+    cryFilter.frequency.setValueAtTime(1300, now);
+    cryFilter.frequency.exponentialRampToValueAtTime(600, now + 0.9);
+    cryFilter.Q.value = 2.2;
+    cryGain.gain.setValueAtTime(0.0001, now + 0.06);
+    cryGain.gain.linearRampToValueAtTime(0.09, now + 0.12);
+    cryGain.gain.exponentialRampToValueAtTime(0.0008, now + 0.95);
+    cry.connect(cryFilter);
+    cryFilter.connect(cryGain);
+    cryGain.connect(sink);
+    cry.start(now + 0.06);
+    cry.stop(now + 1.0);
   }
 
   playShotgunBlast(): void {

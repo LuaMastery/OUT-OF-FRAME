@@ -926,6 +926,20 @@ export class DoomMultiplayerCoordinator {
     });
   }
 
+  /** Nomes de quem continua vivo na sala (inclui o jogador local, se vivo). */
+  getSurvivingPlayerNames(localName: string, localDead: boolean): string[] {
+    const others = this.roster
+      .filter((p) => p.id !== this.session.localPlayerId)
+      .map((p) => p.name || 'SOBREVIVENTE');
+    const names = localDead ? others : [localName, ...others];
+    return names.length ? names : [localName];
+  }
+
+  /** Total de jogadores da sala, contando o local. */
+  get totalRosterCount(): number {
+    return Math.max(1, this.roster.length || this.allies.size + 1);
+  }
+
   /** Quantidade de jogadores presentes na sala (inclui o jogador local). */
   get rosterPlayerCount(): number {
     return Math.max(1, this.roster.length || this.allies.size + 1);

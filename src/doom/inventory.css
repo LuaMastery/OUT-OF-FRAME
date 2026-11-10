@@ -846,6 +846,134 @@
 }
 
 /* ==========================================================================
+   TELA DE VITÓRIA — ARANHA DESTRUÍDA / ESQUADRÃO SOBREVIVENTE
+   Entra depois da animação de morte, escurecendo o mundo por trás.
+   ========================================================================== */
+
+#doom-survivor-victory {
+  position: fixed;
+  inset: 0;
+  z-index: 42;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 24px;
+  background:
+    radial-gradient(120% 90% at 50% 42%, rgba(12, 26, 20, .82) 0%, rgba(2, 5, 4, .97) 68%),
+    #010302;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity .9s ease-out, visibility .9s linear;
+  font-family: 'Geist Pixel', monospace;
+  color: #cfc8ba;
+  text-align: center;
+}
+
+#doom-survivor-victory.visible {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+
+.victory-kicker {
+  font-size: 11px;
+  letter-spacing: .38em;
+  text-transform: uppercase;
+  color: #6f8a6a;
+  animation: victoryRise 700ms ease-out both;
+}
+
+.victory-title {
+  font-size: clamp(24px, 3.4vw, 38px);
+  font-weight: 700;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  color: #e4efe1;
+  text-shadow: 0 0 22px rgba(126, 214, 148, .28);
+  animation: victoryRise 820ms ease-out 90ms both;
+}
+
+.victory-sub {
+  max-width: 520px;
+  font-size: 14px;
+  line-height: 1.7;
+  color: #9db29a;
+  animation: victoryRise 900ms ease-out 200ms both;
+}
+
+.victory-roster {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  max-width: 560px;
+  animation: victoryRise 900ms ease-out 300ms both;
+}
+
+.victory-survivor {
+  padding: 4px 10px;
+  border: 1px solid rgba(126, 214, 148, .28);
+  background: rgba(126, 214, 148, .07);
+  font-size: 12px;
+  letter-spacing: .1em;
+  color: #cfe6cb;
+}
+
+.victory-survivor::before {
+  content: '✓ ';
+  color: #7ed694;
+}
+
+.victory-stats {
+  font-size: 12px;
+  letter-spacing: .12em;
+  color: #718a6e;
+  animation: victoryRise 900ms ease-out 380ms both;
+}
+
+.victory-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 10px;
+  animation: victoryRise 900ms ease-out 460ms both;
+}
+
+#doom-survivor-victory .inv-action-btn {
+  min-width: 196px;
+  border-color: rgba(126, 214, 148, .4);
+  color: #d8ecdc;
+}
+
+#doom-survivor-victory .inv-action-btn:hover {
+  background: rgba(126, 214, 148, .16);
+}
+
+#doom-survivor-victory .inv-action-btn.victory-exit {
+  border-color: rgba(190, 178, 150, .32);
+  color: #b9b1a2;
+}
+
+@keyframes victoryRise {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #doom-survivor-victory,
+  .victory-kicker,
+  .victory-title,
+  .victory-sub,
+  .victory-roster,
+  .victory-stats,
+  .victory-actions { animation: none; transition: none; }
+}
+
+/* ==========================================================================
    HUB MINIMIZADA DE ATALHOS (CENTRO INFERIOR DA TELA)
    Compacta para não atrapalhar a visão, semi-transparente quando não
    configurada/ociosa e nítida ao selecionar, passar o mouse ou acionar.

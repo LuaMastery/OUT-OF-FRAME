@@ -86,11 +86,60 @@ export interface DoomInventoryCallbacks {
   onCloseRequest: () => void;
   onOpenPauseRequest?: () => void;
   onPermanentDeathTerminate: () => void;
+  /** Botão da tela de vitória: voltar ao terminal. */
+  onVictoryExit?: () => void;
+  /** Botão da tela de vitória: nova incursão no labirinto. */
+  onVictoryRestart?: () => void;
 }
 
 /** Textos do catálogo em atributos HTML, inclusive nomes com aspas (ex.: cano de 18"). */
 function escapeItemAttribute(value: string): string {
   return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/** Dados mostrados na tela de vitória após destruir a aranha. */
+export type VictorySummary = {
+  /** Nomes de quem sobreviveu (no solo, apenas o jogador). */
+  survivors?: readonly string[];
+  totalPlayers?: number;
+  everyoneSurvived?: boolean;
+  elapsedSeconds?: number;
+  shots?: number;
+};
+
+/**
+ * Monta os textos da tela de vitória (subtítulo, lista de sobreviventes e
+ * resumo). Puro, para poder ser verificado sem DOM.
+ */
+export function formatVictorySummary(info: VictorySummary = {}): {
+  sub: string;
+  roster: string[];
+  stats: string;
+  everySurvived: boolean;
+} {
+  const survivors = [...(info.survivors ?? [])];
+  const total = Math.max(survivors.length, info.totalPlayers ?? survivors.length);
+  const everySurvived =
+    info.everyoneSurvived ?? survivors.length >= total;
+  let sub: string;
+  if (survivors.length === 0) {
+    sub = 'A ameaça foi eliminada.';
+  } else if (!everySurvived) {
+    sub = `${survivors.length} de ${total} jogadores sobreviveram à incursão.`;
+  } else if (survivors.length === 1) {
+    sub = 'Você sobreviveu à incursão e eliminou a ameaça.';
+  } else {
+    sub = `Todos os ${survivors.length} jogadores sobreviveram à incursão.`;
+  }
+  const stats: string[] = [];
+  if (typeof info.elapsedSeconds === 'number' && Number.isFinite(info.elapsedSeconds)) {
+    const secs = Math.max(0, Math.floor(info.elapsedSeconds));
+    const mm = Math.floor(secs / 60).toString().padStart(2, '0');
+    const ss = (secs % 60).toString().padStart(2, '0');
+    stats.push(`tempo ${mm}:${ss}`);
+  }
+  if (typeof info.shots === 'number') stats.push(`${info.shots} cartuchos`);
+  return { sub, roster: survivors, stats: stats.join('  ·  '), everySurvived };
 }
 
 const TOTAL_SLOTS = 20;
@@ -1364,6 +1413,8 @@ export class DoomInventory {
   private readonly hubCaptionEl: HTMLElement;
   private readonly hubBarEl: HTMLElement;
   private readonly gameOverEl: HTMLElement;
+  private readonly victoryEl: HTMLElement;
+  private isVictory = false;
 
   private readonly anatomyCanvas: HTMLCanvasElement;
   private readonly anatomyCtx: CanvasRenderingContext2D;
@@ -1619,6 +1670,24 @@ export class DoomInventory {
     `;
     parentViewport.appendChild(this.gameOverEl);
 
+    // 4. Tela de Vitória (aranha destruída e esquadrão inteiro vivo)
+    this.victoryEl = document.createElement('div');
+    this.victoryEl.id = 'doom-survivor-victory';
+    this.victoryEl.innerHTML = `
+      <div class="victory-kicker">setor descontaminado</div>
+      <div class="victory-title">A aranha foi destruída</div>
+      <div class="victory-sub" data-victory-sub>
+        Todos os jogadores sobreviveram à incursão.
+      </div>
+      <div class="victory-roster" data-victory-roster></div>
+      <div class="victory-stats" data-victory-stats></div>
+      <div class="victory-actions">
+        <button type="button" class="inv-action-btn" data-victory-restart="1">[ nova incursão ]</button>
+        <button type="button" class="inv-action-btn victory-exit" data-victory-exit="1">[ voltar ao terminal ]</button>
+      </div>
+    `;
+    parentViewport.appendChild(this.victoryEl);
+
     this.anatomyCanvas = this.overlayEl.querySelector(
       '.inv-anatomy-canvas'
     ) as HTMLCanvasElement;
@@ -1727,6 +1796,19 @@ export class DoomInventory {
         this.callbacks.onPermanentDeathTerminate();
       });
 
+    this.victoryEl
+      .querySelector('[data-victory-restart]')
+      ?.addEventListener('click', () => {
+        this.hideVictory();
+        this.callbacks.onVictoryRestart?.();
+      });
+    this.victoryEl
+      .querySelector('[data-victory-exit]')
+      ?.addEventListener('click', () => {
+        this.hideVictory();
+        this.callbacks.onVictoryExit?.();
+      });
+
     // Navegação por teclado e atribuição de atalhos [1–3] quando o inventário está aberto
     window.addEventListener(
       'keydown',
@@ -1787,7 +1869,7 @@ export class DoomInventory {
 
     this.proximityFX = new CursorProximityFX(
       parentViewport,
-      () => this.isOpen || this.isGameOver,
+      () => this.isOpen || this.isGameOver || this.isVictory,
       () => this.collectInteractiveRects()
     );
 
@@ -1815,6 +1897,15 @@ export class DoomInventory {
       }
       return rects;
     }
+    if (this.isVictory) {
+      this.victoryEl
+        .querySelectorAll('.inv-action-btn')
+        .forEach((node) => {
+          const r = (node as HTMLElement).getBoundingClientRect();
+          if (r.width > 2) rects.push({ x: r.left, y: r.top, w: r.width, h: r.height });
+        });
+      return rects;
+    }
     if (!this.isOpen) return rects;
 
     const nodes = this.overlayEl.querySelectorAll(
@@ -1832,6 +1923,10 @@ export class DoomInventory {
 
   get open(): boolean {
     return this.isOpen;
+  }
+
+  get victoryVisible(): boolean {
+    return this.isVictory;
   }
 
   get gameOverVisible(): boolean {
@@ -1917,6 +2012,34 @@ export class DoomInventory {
   hideGameOver(): void {
     this.isGameOver = false;
     this.gameOverEl.classList.remove('visible');
+    this.syncShortcutsHubVisibility();
+  }
+
+  /**
+   * Tela de vitória: aparece somente depois da animação de morte da aranha, com
+   * o esquadrão que sobreviveu à incursão.
+   */
+  showVictory(info: VictorySummary = {}): void {
+    this.setOpen(false);
+    this.isVictory = true;
+    const summary = formatVictorySummary(info);
+    const sub = this.victoryEl.querySelector('[data-victory-sub]');
+    if (sub) sub.textContent = summary.sub;
+    const roster = this.victoryEl.querySelector('[data-victory-roster]');
+    if (roster) {
+      roster.innerHTML = summary.roster
+        .map((name) => `<span class="victory-survivor">${escapeItemAttribute(name)}</span>`)
+        .join('');
+    }
+    const stats = this.victoryEl.querySelector('[data-victory-stats]');
+    if (stats) stats.textContent = summary.stats;
+    this.victoryEl.classList.add('visible');
+    this.syncShortcutsHubVisibility();
+  }
+
+  hideVictory(): void {
+    this.isVictory = false;
+    this.victoryEl.classList.remove('visible');
     this.syncShortcutsHubVisibility();
   }
 
@@ -2138,7 +2261,7 @@ export class DoomInventory {
   private syncShortcutsHubVisibility(): void {
     const state = computeShortcutsHubState({
       inventoryOpen: this.isOpen || this.hubPausedHidden,
-      gameOver: this.isGameOver,
+      gameOver: this.isGameOver || this.isVictory,
       cinematicHidden: this.hubCinematicHidden,
       hasConfiguredSlots: this.hasConfiguredShortcuts(),
       isHovered: this.hubHovered,
@@ -3427,5 +3550,6 @@ export class DoomInventory {
     this.shortcutsHubEl.remove();
     this.diegeticEl.remove();
     this.gameOverEl.remove();
+    this.victoryEl.remove();
   }
 }

@@ -200,6 +200,16 @@ interface SpiderLimbRuntime {
   colAttr: THREE.BufferAttribute;
 }
 
+/** Duração da queda/carcaça da aranha até liberar a tela de vitória. */
+export const SPIDER_DEATH_SECONDS = 3.4;
+
+/** Altura em que o corpo morto repousa, conforme a superfície em que morreu. */
+export function deathRestHeightForSurface(mode: SpiderSurfaceMode): number {
+  if (mode === 'CEILING') return 0.34;
+  if (mode === 'WALL') return 0.24;
+  return 0.3;
+}
+
 function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
   return () => {
@@ -515,6 +525,133 @@ function createTentacleTubeGeometry(): {
  * - Escala chão, paredes e teto livremente, tece armadilhas de teia e dispara em velocidade absurda ao avistar o jogador.
  * - Ao alcançar o jogador: desfere ataque brutal, projeta seus 4 tentáculos orgânicos para puxar o Ragdoll desacordado até o Ninho de Teias!
  */
+/**
+ * Rig elétrico da aranha atordoada.
+ *
+ * Substitui os três riscos estáticos por feixes que se redesenham a cada
+ * quadro: arcos entre as articulações, halo azulado, faíscas que pulam do
+ * corpo e uma luz real que ilumina o cenário em volta.
+ */
+class SpiderShockRig {
+  readonly group = new THREE.Group();
+  private readonly arcs: THREE.Line[] = [];
+  private readonly glow: THREE.Line[] = [];
+  private readonly sparks: THREE.Mesh[] = [];
+  private light: THREE.PointLight | null = null;
+  private seed = 1234567;
+  private readonly rand = (): number => {
+    this.seed = (this.seed * 16807) % 2147483647;
+    return this.seed / 2147483647;
+  };
+
+  get visible(): boolean {
+    return this.group.visible;
+  }
+
+  set visible(value: boolean) {
+    this.group.visible = value;
+    if (this.light) this.light.visible = value;
+  }
+
+  build(parent: THREE.Object3D): void {
+    this.group.name = 'SpiderTaserArcs';
+    const coreMat = new THREE.LineBasicMaterial({ color: 0xe8fbff, transparent: true, opacity: 1 });
+    const glowMat = new THREE.LineBasicMaterial({ color: 0x6fe0ff, transparent: true, opacity: 0.5 });
+    const sparkMat = new THREE.MeshBasicMaterial({ color: 0xbfe9ff });
+    for (let i = 0; i < 5; i++) {
+      const core = new THREE.Line(new THREE.BufferGeometry().setFromPoints(this.trail(i)), coreMat);
+      core.frustumCulled = false;
+      core.visible = false;
+      this.group.add(core);
+      this.arcs.push(core);
+      const halo = new THREE.Line(new THREE.BufferGeometry().setFromPoints(this.trail(i)), glowMat);
+      halo.frustumCulled = false;
+      halo.scale.setScalar(1.06);
+      halo.visible = false;
+      this.group.add(halo);
+      this.glow.push(halo);
+    }
+    for (let i = 0; i < 6; i++) {
+      const spark = new THREE.Mesh(new THREE.SphereGeometry(0.035, 5, 4), sparkMat);
+      spark.visible = false;
+      this.group.add(spark);
+      this.sparks.push(spark);
+    }
+    this.light = new THREE.PointLight(0x9fe4ff, 0, 5.5);
+    this.light.position.set(0, 0.4, 0);
+    this.light.visible = false;
+    this.group.add(this.light);
+    this.group.visible = false;
+    parent.add(this.group);
+  }
+
+  /** Traçado de um arco, do dorso até uma articulação, com zigue-zague curto. */
+  private trail(index: number): THREE.Vector3[] {
+    const angles = [0.4, 1.5, 2.6, 3.7, 4.9];
+    const a = angles[index] ?? 0;
+    const inner = new THREE.Vector3(Math.cos(a) * 0.16, 0.3 + (index % 2) * 0.05, Math.sin(a) * 0.16);
+    const outer = new THREE.Vector3(Math.cos(a) * 0.4, 0.16 + (index % 3) * 0.06, Math.sin(a) * 0.34);
+    const points: THREE.Vector3[] = [];
+    const steps = 6;
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      const wobble = Math.sin(t * Math.PI) * 0.05;
+      points.push(
+        new THREE.Vector3(
+          inner.x + (outer.x - inner.x) * t + (this.rand() - 0.5) * wobble * 2,
+          inner.y + (outer.y - inner.y) * t + (this.rand() - 0.5) * wobble * 2,
+          inner.z + (outer.z - inner.z) * t + (this.rand() - 0.5) * wobble * 2
+        )
+      );
+    }
+    return points;
+  }
+
+  /** Redesenha feixes e faíscas; `intensity` cai devagar quando o efeito acaba. */
+  update(dt: number, intensity: number): void {
+    const on = this.group.visible && intensity > 0.02;
+    this.seed = (this.seed * 48271 + 11) % 2147483647;
+    for (let i = 0; i < this.arcs.length; i++) {
+      const core = this.arcs[i];
+      const halo = this.glow[i];
+      // Alterna quais arcos aparecem, como uma descarga que salta de ponto em ponto.
+      const active = on && ((Math.floor(this.seed / (i + 3)) + i) % 3 !== 0 || i < 2);
+      core.visible = active;
+      halo.visible = active;
+      if (!active) continue;
+      core.geometry.setFromPoints(this.trail(i));
+      halo.geometry.setFromPoints(this.trail(i));
+      const flicker = 0.6 + 0.4 * Math.abs(Math.sin((this.seed % 977) * 0.001 + i));
+      (core.material as THREE.LineBasicMaterial).opacity = Math.min(1, 0.6 + flicker * 0.4);
+      (halo.material as THREE.LineBasicMaterial).opacity = 0.2 + flicker * 0.3;
+    }
+    for (let i = 0; i < this.sparks.length; i++) {
+      const spark = this.sparks[i];
+      const active = on && this.rand() > 0.45;
+      spark.visible = active;
+      if (!active) continue;
+      const a = this.rand() * Math.PI * 2;
+      const r = 0.25 + this.rand() * 0.5;
+      spark.position.set(Math.cos(a) * r, 0.12 + this.rand() * 0.32, Math.sin(a) * r);
+      const s = 0.3 + this.rand() * 0.6;
+      spark.scale.setScalar(s);
+    }
+    if (this.light) {
+      this.light.intensity = on ? 1.1 * intensity * (0.55 + 0.45 * Math.abs(Math.sin(this.seed))) : 0;
+      this.light.visible = on;
+    }
+    // O grupo inteiro treme com a descarga.
+    if (on) {
+      this.group.rotation.set(
+        Math.sin(this.seed * 0.0007) * 0.05 * intensity,
+        Math.sin(this.seed * 0.0013) * 0.06 * intensity,
+        0
+      );
+    }
+    void dt;
+  }
+}
+
 export class DoomSpider {
   private readonly rootGroup = new THREE.Group();
   private readonly tentaclesGroup = new THREE.Group();
@@ -534,6 +671,12 @@ export class DoomSpider {
   private readonly limbs: SpiderLimbRuntime[] = [];
   private readonly tentacles: SpiderTentacleRuntime[] = [];
 
+  /** Progresso (0→1) da animação de morte; usado para liberar a tela de vitória. */
+  private deathTime = 0;
+  private deathFootWorld: THREE.Vector3[] = [];
+  private deathPlayed = false;
+  onDeathAnimationFinished?: () => void;
+
   private readonly bodyPos = new THREE.Vector3();
   private readonly smoothVel = new THREE.Vector3();
   private readonly prevBodyPos = new THREE.Vector3();
@@ -546,7 +689,10 @@ export class DoomSpider {
   private state: SpiderBehaviorState = 'STALK_PATROL';
   private shotgunHealth = 100;
   private stunRemaining = 0;
-  private readonly stunArcs = new THREE.Group();
+  private readonly stunArcs = new SpiderShockRig();
+  /** Tempo desde o último choque, usado pela animação de convulsão. */
+  private shockTime = 0;
+  private shockGlow = 0;
   private stateTimer = 0;
   private surfaceDecisionTimer = 3.5;
   private webCooldownTimer = 6.0;
@@ -612,20 +758,8 @@ export class DoomSpider {
 
     this.buildProceduralLimbSpecs();
     this.buildBodyCore();
-    // Electrical arcs are attached to the body, so they follow wall/ceiling poses.
-    const arcMaterial = new THREE.LineBasicMaterial({ color: 0x7be7ff, transparent: true, opacity: 0.95 });
-    for (const x of [-0.55, 0, 0.55]) {
-      const geometry = new THREE.BufferGeometry().setFromPoints([
-        new THREE.Vector3(x - 0.12, 0.2, -0.35),
-        new THREE.Vector3(x + 0.04, 0.45, -0.14),
-        new THREE.Vector3(x - 0.06, 0.26, 0.08),
-        new THREE.Vector3(x + 0.1, 0.48, 0.32),
-      ]);
-      this.stunArcs.add(new THREE.Line(geometry, arcMaterial));
-    }
-    this.stunArcs.name = 'SpiderTaserArcs';
-    this.stunArcs.visible = false;
-    this.bodyGroup.add(this.stunArcs);
+    // Arcos elétricos presos ao corpo (acompanham parede/teto) com halo e luz.
+    this.stunArcs.build(this.bodyGroup);
     this.buildProceduralLimbMeshes();
     this.buildProceduralTentacleMeshes();
 
@@ -643,6 +777,8 @@ export class DoomSpider {
     this.stateTimer = 0;
     this.smoothVel.set(0, 0, 0);
     this.commandedSpeed = 0;
+    // Reação imediata ao choque: corpo travado, patas recolhidas e arcos vivos.
+    this.shockTime = 0;
     this.stunArcs.visible = true;
     return true;
   }
@@ -652,13 +788,161 @@ export class DoomSpider {
     if (this.isDead || this.state === 'CINEMATIC_SEQUENCE' || !Number.isFinite(damage) || damage <= 0) return false;
     this.shotgunHealth = Math.max(0, this.shotgunHealth - damage);
     if (this.shotgunHealth <= 0) {
-      this.state = 'DEAD';
-      this.smoothVel.set(0, 0, 0);
-      this.hideCaptureTentacles();
-      this.rootGroup.visible = false;
-      this.stunArcs.visible = false;
+      this.beginDeathAnimation();
     }
     return true;
+  }
+
+  /**
+   * Inicia a queda da aranha ao ser destruída.
+   *
+   * A morte é encenada em três tempos: as pernas dobram uma a uma (perdendo a
+   * força), o corpo despenca do teto/parede até o chão e o opistossoma desaba,
+   * com as quelíceras abrindo devagar. A carcaça continua no mapa, inerte, para
+   * quem chegar depois ver que a ameaça foi eliminada.
+   */
+  private beginDeathAnimation(): void {
+    if (this.state === 'DEAD') return;
+    this.state = 'DEAD';
+    this.deathTime = 0;
+    this.deathPlayed = false;
+    this.shotgunHealth = 0;
+    this.stunRemaining = 0;
+    this.smoothVel.set(0, 0, 0);
+    this.commandedSpeed = 0;
+    this.cinematicMode = null;
+    this.cinematicRagdollHooks = null;
+    this.remoteDrivenCinematic = false;
+    this.stunArcs.visible = false;
+    this.shockGlow = 0;
+    this.hideCaptureTentacles();
+    this.rootGroup.visible = true;
+    // Guarda onde cada pata estava no instante da morte para as pernas
+    // desabarem a partir da posição real, sem "puxão" visual.
+    this.deathFootWorld = this.limbs.map((rt) => rt.footWorld.clone());
+    for (const rt of this.limbs) {
+      rt.stepping = false;
+      rt.stepT = 0;
+      rt.raiseThreat = 0;
+    }
+    this.sound.playSpiderDeath?.();
+  }
+
+  /** Grupo raiz do modelo (permite verificar a carcaça depois da morte). */
+  get sceneRoot(): THREE.Group {
+    return this.rootGroup;
+  }
+
+  /** Progresso da queda (0 a 1) para a tela de vitória esperar a cena terminar. */
+  get deathProgress(): number {
+    return this.state === 'DEAD' ? Math.min(1, this.deathTime / SPIDER_DEATH_SECONDS) : 0;
+  }
+
+  get isDeathAnimationComplete(): boolean {
+    return this.state === 'DEAD' && this.deathTime >= SPIDER_DEATH_SECONDS;
+  }
+
+  /**
+   * Desenha a carcaça caindo. Chamado todo quadro enquanto o estado é DEAD; é o
+   * único caminho que move o corpo depois da morte (a IA não roda mais).
+   */
+  private updateDeathAnimation(dt: number, elapsed: number): void {
+    this.deathTime = Math.min(SPIDER_DEATH_SECONDS + 1, this.deathTime + dt);
+    const u = Math.min(1, this.deathTime / SPIDER_DEATH_SECONDS);
+
+    // 1. Colapso das patas: os joelhos cedem em ordem, da frente para trás.
+    const collapse = smoothStep01(Math.min(1, u / 0.62));
+    const twitchAmount = Math.max(0, 1 - u * 2.4);
+    for (let i = 0; i < this.limbs.length; i++) {
+      const rt = this.limbs[i];
+      const spec = this.limbSpecs[i];
+      const start = this.deathFootWorld[i];
+      if (!start) continue;
+      // A pata dobra para dentro do corpo, como quem perde a força nas juntas.
+      const foldDelay = (i % 4) * 0.08 + (i >= 4 ? 0.12 : 0);
+      const local = Math.max(0, Math.min(1, (collapse - foldDelay) / Math.max(0.2, 1 - foldDelay)));
+      const target = this.tmpA
+        .copy(this.bodyPos)
+        .addScaledVector(this.currentUp, 0.06)
+        .addScaledVector(
+          this.tmpB.copy(start).sub(this.bodyPos).normalize(),
+          spec.totalLength * 0.34
+        );
+      rt.footWorld.lerpVectors(start, target, smoothStep01(local));
+      // Tremor final dos tarsos nos primeiros instantes.
+      if (twitchAmount > 0.01) {
+        rt.footWorld.x += Math.sin(elapsed * 34 + i * 2.1) * 0.025 * twitchAmount;
+        rt.footWorld.z += Math.cos(elapsed * 29 + i * 1.7) * 0.025 * twitchAmount;
+      }
+      rt.targetWorld.copy(rt.footWorld);
+    }
+
+    // 2. Queda do corpo até o piso, com quique curto ao tocar o chão.
+    const fall = smoothStep01(Math.min(1, u / 0.55));
+    const restY = Math.max(0.16, deathRestHeightForSurface(this.surfaceMode));
+    const bounce = Math.sin(Math.min(1, Math.max(0, (u - 0.5) / 0.5)) * Math.PI) * 0.045 * (1 - u);
+    this.bodyPos.y += (restY - this.bodyPos.y) * fall + bounce * (1 - fall);
+    if (this.bodyPos.y < 0.1) this.bodyPos.y = 0.1;
+
+    // 3. Corpo tomba de lado e o abdômen desaba sobre as patas dobradas.
+    const roll = smoothStep01(Math.min(1, u / 0.75)) * 1.05;
+    this.currentUp.lerp(this.tmpA.set(0, 1, 0), Math.min(1, dt * 3)).normalize();
+    this.currentForward.addScaledVector(this.tmpB.set(0, 1, 0), -this.currentForward.y).normalize();
+
+    this.bodyGroup.position.copy(this.bodyPos);
+    const basisMat = new THREE.Matrix4().makeBasis(
+      this.tmpRight.crossVectors(this.currentForward, this.currentUp).normalize(),
+      this.currentUp,
+      this.tmpB.copy(this.currentForward).negate()
+    );
+    this.bodyGroup.quaternion.setFromRotationMatrix(basisMat);
+    // Giro de tombo em torno do eixo do corpo.
+    this.bodyGroup.rotateZ(roll);
+    this.bodyGroup.position.y -= 0.12 * smoothStep01(Math.min(1, u / 0.8));
+    this.tmpInvBodyQuat.copy(this.bodyGroup.quaternion).invert();
+
+    // Quelíceras abrem e travam; palpos param de bater; respiração cessa.
+    const gape = 0.5 * smoothStep01(Math.min(1, u / 0.35));
+    this.leftCheliceraPivot.rotation.set(0.34 * gape, 0.2 * gape, -gape * 0.7);
+    this.rightCheliceraPivot.rotation.set(0.34 * gape, -0.2 * gape, gape * 0.7);
+    this.leftPalpPivot.rotation.set(-0.16, 0.18, 0.05);
+    this.rightPalpPivot.rotation.set(-0.16, -0.18, -0.05);
+    this.abdomenPivot.rotation.set(0.06 - 0.1 * u, 0.05 * Math.sin(u * 6), 0.22 * u);
+    const limpScale = 1 - 0.06 * u;
+    this.abdomenPivot.scale.set(limpScale, limpScale, 1);
+    this.leftSpinneretPivot.rotation.set(0, 0.1, 0);
+    this.rightSpinneretPivot.rotation.set(0, -0.1, 0);
+
+    // O brilho de raiva morre junto com o bicho.
+    this.chitinMat.uniforms.uRageGlow.value = Math.max(0, 0.0);
+    this.eyeMat.uniforms.uRageGlow.value = 0;
+
+    // Recalcula as patas a partir das posições já dobradas.
+    for (let i = 0; i < this.limbs.length; i++) {
+      const spec = this.limbSpecs[i];
+      const rt = this.limbs[i];
+      const rootWorld = this.tmpA
+        .copy(this.bodyPos)
+        .addScaledVector(this.tmpRight.crossVectors(this.currentForward, this.currentUp).normalize(), spec.rootLocal.x)
+        .addScaledVector(this.currentUp, spec.rootLocal.y)
+        .addScaledVector(this.currentForward, -spec.rootLocal.z);
+      for (let j = 0; j < rt.ikPoints.length; j++) {
+        const f = j / (rt.ikPoints.length - 1);
+        rt.ikPoints[j].lerpVectors(rootWorld, rt.footWorld, f);
+        rt.ikPoints[j].y += Math.sin(f * Math.PI) * 0.06 * u;
+      }
+      solveFabrikChain(rt.ikPoints, spec.lengths, rootWorld, rt.footWorld, IK_ITERATIONS);
+      this.unclipIntermediateJoints(rt.ikPoints);
+      const ringDir = this.tmpC.copy(rt.footWorld).sub(this.bodyPos).setY(0);
+      if (ringDir.lengthSq() < 1e-5) ringDir.set(0, 0, 1);
+      ringDir.normalize();
+      this.rebuildLimbTubeMesh(spec, rt, this.currentUp, ringDir);
+    }
+
+    if (!this.deathPlayed && u >= 1) {
+      this.deathPlayed = true;
+      this.onDeathAnimationFinished?.();
+    }
   }
 
   get currentState(): SpiderBehaviorState {
@@ -1056,10 +1340,22 @@ export class DoomSpider {
     if (typeof pkt.stunRemaining === 'number' && Number.isFinite(pkt.stunRemaining)) {
       this.stunRemaining = Math.max(0, Math.min(TASER_STUN_SECONDS, pkt.stunRemaining));
     }
-    this.stunArcs.visible = pkt.state === 'STUNNED';
+    const remoteShock = pkt.state === 'STUNNED';
+    this.stunArcs.visible = remoteShock;
+    if (remoteShock) {
+      // O cliente reproduz o mesmo choque do host.
+      this.updateShockAnimation(safeDt, elapsed, 0);
+    } else if (this.shockGlow > 0) {
+      this.shockGlow = 0;
+      this.chitinMat.uniforms.uShockGlow.value = 0;
+      this.eyeMat.uniforms.uShockGlow.value = 0;
+      this.stunArcs.visible = false;
+    }
     if (pkt.state === 'DEAD') {
-      this.state = 'DEAD'; this.shotgunHealth = 0;
-      this.rootGroup.visible = false; this.hideCaptureTentacles();
+      this.shotgunHealth = 0;
+      // O host já tocou a morte; os clientes veem a mesma queda da carcaça.
+      if (this.state !== 'DEAD') this.beginDeathAnimation();
+      this.updateDeathAnimation(safeDt, elapsed);
       return { cameraShakeAmount: 0, playerDistance: 0 };
     }
     if (this.isDead) return { cameraShakeAmount: 0, playerDistance: 0 };
@@ -1985,6 +2281,97 @@ export class DoomSpider {
     }
   }
 
+  /**
+   * Convulsão da aranha sob descarga elétrica.
+   *
+   * A cena tem começo, meio e fim: o impacto arqueia o corpo e recolhe as
+   * patas para perto do tronco (o bicho "encolhe"), as patas tremem em
+   * frequências diferentes como um curto-circuito, a quitina e os olhos
+   * acendem em azul e, ao acabar a carga, ela relaxa e retoma a caça.
+   */
+  private updateShockAnimation(dt: number, elapsed: number, distance: number): void {
+    this.shockTime += dt;
+    // Curva do efeito: sobe rápido no impacto e some nos últimos 25% da carga.
+    const normalized = this.stunRemaining / TASER_STUN_SECONDS;
+    const impact = Math.max(0, 1 - this.shockTime * 3.2);
+    const dying = Math.min(1, normalized / 0.25);
+    const envelope = Math.min(0.85, 0.2 + normalized * 0.65) * dying;
+    this.shockGlow = envelope;
+
+    // Shaders: veios elétricos na casca e olhos azuis.
+    this.chitinMat.uniforms.uShockGlow.value = envelope;
+    this.eyeMat.uniforms.uShockGlow.value = Math.min(1, envelope * 1.4);
+    this.chitinMat.uniforms.uRageGlow.value = 0;
+    this.eyeMat.uniforms.uRageGlow.value = 0;
+
+    // Corpo arqueado no impacto, tremendo em alta frequência.
+    const convulsion = Math.sin(elapsed * 47) * 0.055 * envelope;
+    const jitterX = Math.sin(elapsed * 61.3) * 0.02 * envelope;
+    const jitterZ = Math.cos(elapsed * 54.7) * 0.02 * envelope;
+    this.bodyGroup.position.set(jitterX, 0, jitterZ);
+    this.bodyGroup.rotation.x = -0.12 * impact * envelope;
+    this.bodyGroup.rotation.z = 0.06 * impact * envelope;
+
+    // Patas recolhidas e chacoalhando: cada uma com fase e frequência próprias.
+    for (let i = 0; i < this.limbs.length; i++) {
+      const rt = this.limbs[i];
+      const spec = this.limbSpecs[i];
+      rt.stepping = false;
+      rt.stepT = 0;
+      const pull = smoothStep01(Math.min(1, this.shockTime / 0.5)) * envelope;
+      const rootWorld = this.tmpA
+        .copy(this.bodyPos)
+        .addScaledVector(this.tmpRight.copy(this.currentForward).cross(this.currentUp).normalize(), spec.rootLocal.x)
+        .addScaledVector(this.currentUp, spec.rootLocal.y);
+      const inward = this.tmpB.copy(rt.footWorld).sub(rootWorld);
+      if (inward.lengthSq() < 1e-5) inward.set(0, -1, 0);
+      inward.normalize();
+      const curlTarget = rootWorld
+        .clone()
+        .addScaledVector(inward, spec.totalLength * (0.42 - 0.18 * pull))
+        .addScaledVector(this.currentUp, 0.16 * impact);
+      rt.footWorld.lerp(curlTarget, Math.min(1, dt * 3.2));
+      // Tremor do tarso: amplitude maior perto do fim do efeito.
+      const tremor = (0.055 + 0.035 * impact) * envelope;
+      rt.footWorld.x += Math.sin(elapsed * (33 + i * 7.5) + i) * tremor;
+      rt.footWorld.y += Math.cos(elapsed * (27 + i * 5.3) + i * 1.7) * tremor * 0.6;
+      rt.footWorld.z += Math.cos(elapsed * (37 + i * 6.1) + i * 2.3) * tremor;
+      rt.targetWorld.copy(rt.footWorld);
+    }
+
+    // Quelíceras travadas abertas, palpos encolhidos, abdômen vibrando.
+    this.leftCheliceraPivot.rotation.set(0.3, 0.18, -0.34 * envelope);
+    this.rightCheliceraPivot.rotation.set(0.3, -0.18, 0.34 * envelope);
+    this.leftPalpPivot.rotation.set(-0.3, 0.24, 0.1 + convulsion);
+    this.rightPalpPivot.rotation.set(-0.3, -0.24, -0.1 - convulsion);
+    this.abdomenPivot.rotation.set(0.2 + convulsion * 0.6, Math.sin(elapsed * 21) * 0.08, 0);
+    const pulse = 1 + Math.sin(elapsed * 26) * 0.03 * envelope;
+    this.abdomenPivot.scale.set(pulse, pulse, 1);
+
+    // Arcos e faíscas do rig elétrico seguem a carga.
+    this.stunArcs.update(dt, envelope);
+    this.stunArcs.visible = envelope > 0.02;
+
+    // IK normal, mas com o corpo travado e as patas acima recolhidas.
+    this.updateBodyAndLimbsIK(dt, elapsed, this.bodyPos, 0, distance);
+    this.bodyGroup.position.set(jitterX, 0, jitterZ);
+    this.bodyGroup.rotation.x = -0.12 * impact * envelope;
+    this.bodyGroup.rotation.z = 0.06 * impact * envelope;
+
+    if (this.stunRemaining <= 0) {
+      this.state = 'STALK_PATROL';
+      this.stateTimer = 0;
+      this.pathRepathTimer = 0;
+      this.webCooldownTimer = Math.max(this.webCooldownTimer, 2.4);
+      this.stunArcs.visible = false;
+      this.shockGlow = 0;
+      this.chitinMat.uniforms.uShockGlow.value = 0;
+      this.eyeMat.uniforms.uShockGlow.value = 0;
+      this.bodyGroup.position.set(0, 0, 0);
+      this.bodyGroup.rotation.set(0, 0, 0);
+    }
+  }
+
   update(
     dt: number,
     elapsed: number,
@@ -2003,7 +2390,11 @@ export class DoomSpider {
     cameraShakeAmount: number;
     playerDistance: number;
   } {
-    if (this.state === 'DEAD' || this.state === 'CINEMATIC_SEQUENCE') {
+    if (this.state === 'DEAD') {
+      this.updateDeathAnimation(Math.min(0.05, Math.max(0.0005, dt)), elapsed);
+      return { cameraShakeAmount: 0, playerDistance: 0 };
+    }
+    if (this.state === 'CINEMATIC_SEQUENCE') {
       return { cameraShakeAmount: 0, playerDistance: 0 };
     }
 
@@ -2011,15 +2402,7 @@ export class DoomSpider {
     if (this.isStunned) {
       this.stunRemaining = Math.max(0, this.stunRemaining - safeDt);
       const distance = Math.hypot(playerPos.x - this.bodyPos.x, playerPos.z - this.bodyPos.z);
-      this.stunArcs.visible = true;
-      this.stunArcs.rotation.y = Math.sin(elapsed * 18) * 0.08;
-      this.updateBodyAndLimbsIK(safeDt, elapsed, playerPos, 0, distance);
-      if (this.stunRemaining <= 0) {
-        this.state = 'STALK_PATROL';
-        this.stateTimer = 0;
-        this.pathRepathTimer = 0;
-        this.stunArcs.visible = false;
-      }
+      this.updateShockAnimation(safeDt, elapsed, distance);
       return { cameraShakeAmount: 0, playerDistance: distance };
     }
     const frameStartX = this.bodyPos.x;

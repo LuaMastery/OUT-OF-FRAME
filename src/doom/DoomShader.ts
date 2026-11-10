@@ -381,6 +381,7 @@ export function createSpiderChitinMaterial(
     side: THREE.DoubleSide,
     uniforms: {
       uRageGlow: { value: 0.0 },
+      uShockGlow: { value: 0.0 },
       uLightPositions: shared.uLightPositions,
       uLightIntensities: shared.uLightIntensities,
       uLightCount: shared.uLightCount,
@@ -412,6 +413,7 @@ export function createSpiderChitinMaterial(
       #define MAX_LIGHTS ${MAX_DOOM_LIGHTS}
 
       uniform float uRageGlow;
+      uniform float uShockGlow;
       uniform vec3 uLightPositions[MAX_LIGHTS];
       uniform float uLightIntensities[MAX_LIGHTS];
       uniform int uLightCount;
@@ -495,6 +497,15 @@ export function createSpiderChitinMaterial(
           baseCol += vec3(0.16, 0.018, 0.012) * uRageGlow * rim * distFalloff;
         }
 
+        // Descarga elétrica: a quitina ganha veios azulados e arcos pela casca.
+        // Descarga elétrica: veios finos de corrente pela quitina (sem lavar o corpo).
+        if (uShockGlow > 0.01) {
+          float filament = pow(abs(sin(vWorldPos.y * 22.0 + vWorldPos.x * 15.0)), 26.0);
+          float rimVein = pow(1.0 - ndv, 3.0);
+          baseCol += vec3(0.16, 0.52, 0.86) * uShockGlow * (filament * 0.5 + rimVein * 0.16);
+          baseCol += vec3(0.5, 0.85, 1.0) * uShockGlow * rimVein * 0.1;
+        }
+
         gl_FragColor = vec4(clamp(baseCol, 0.0, 1.0), 1.0);
       }
     `,
@@ -513,6 +524,7 @@ export function createSpiderEyeMaterial(
     vertexColors: true,
     uniforms: {
       uRageGlow: { value: 0.0 },
+      uShockGlow: { value: 0.0 },
       uFlashlightPos: shared.uFlashlightPos,
       uFlashlightDir: shared.uFlashlightDir,
       uFlashlightIntensity: shared.uFlashlightIntensity,
@@ -537,6 +549,7 @@ export function createSpiderEyeMaterial(
     `,
     fragmentShader: /* glsl */ `
       uniform float uRageGlow;
+      uniform float uShockGlow;
       uniform vec3 uFlashlightPos;
       uniform vec3 uFlashlightDir;
       uniform float uFlashlightIntensity;
@@ -567,7 +580,10 @@ export function createSpiderEyeMaterial(
         vec3 rageTone = vec3(0.92, 0.16, 0.09) * (0.35 + 0.65 * centerGlint) * uRageGlow * distAtten;
         vec3 flashGlint = vec3(1.0, 0.88, 0.68) * tapetum * (0.45 + 0.75 * pow(centerGlint, 3.0));
 
-        vec3 finalCol = max(calmTone, rageTone) + flashGlint;
+        // Olhos tomados pela descarga: azul elétrico pulsando.
+        vec3 shockTone = vec3(0.30, 0.78, 1.0) * uShockGlow * (0.28 + 0.55 * centerGlint) * distAtten;
+
+        vec3 finalCol = max(max(calmTone, rageTone), shockTone) + flashGlint;
         gl_FragColor = vec4(clamp(finalCol, 0.0, 1.0), 1.0);
       }
     `,
