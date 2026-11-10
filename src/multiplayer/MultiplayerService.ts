@@ -246,10 +246,25 @@ export type NetworkWorldEvent =
   | {
       kind: 'abduction_finished';
       victimId: string;
+      /** Posição exata do casulo no Ninho (todos os presos ficam juntos lá). */
+      lairX?: number;
+      lairZ?: number;
       ts: number;
     }
   | {
       kind: 'player_devoured';
+      victimId: string;
+      victimName: string;
+      ts: number;
+    }
+  | {
+      /**
+       * Fim de partida: a Aranha amarrou TODO o esquadrão vivo no Ninho e vai
+       * devorar um por um. Enviado pelo jogador local uma vez.
+       */
+      kind: 'squad_devoured';
+      senderId: string;
+      senderName: string;
       victimId: string;
       victimName: string;
       ts: number;

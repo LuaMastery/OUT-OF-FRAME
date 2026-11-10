@@ -129,6 +129,7 @@ import {
   STALE_HEARTBEAT_TTL_MS,
 } from '../src/multiplayer/MultiplayerService';
 import {
+  computeLairCaptivePositions,
   DoomMultiplayerCoordinator,
   TACTICAL_PING_COOLDOWN_SECONDS,
   TACTICAL_PING_DURATION_SECONDS,
@@ -4117,6 +4118,80 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
       (globalThis as Record<string, unknown>).window = prevWindow;
       (globalThis as Record<string, unknown>).document = prevDocument;
     }
+  });
+
+  it('amarra todos os capturados juntos na teia do Ninho e encerra a partida quando não sobra ninguém solto', () => {
+    // Anel do Ninho: cada preso num ponto próprio, o mais novo na frente (virado
+    // para o corredor de onde veio), sem dois corpos no mesmo lugar.
+    const center = { x: 12, z: -9 };
+    const entry = { x: 0, z: 1 };
+    const single = computeLairCaptivePositions(center, 1, entry);
+    expect(single).toEqual([center]);
+
+    for (const count of [2, 3, 4]) {
+      const spots = computeLairCaptivePositions(center, count, entry);
+      expect(spots.length).toBe(count);
+      for (let i = 0; i < spots.length; i++) {
+        // Todos dentro da teia central do Ninho.
+        expect(Math.hypot(spots[i].x - center.x, spots[i].z - center.z)).toBeLessThan(1.4);
+        for (let j = i + 1; j < spots.length; j++) {
+          expect(
+            Math.hypot(spots[i].x - spots[j].x, spots[i].z - spots[j].z)
+          ).toBeGreaterThan(0.85);
+        }
+      }
+    }
+    // O primeiro (mais recente) fica do lado do corredor de entrada.
+    const two = computeLairCaptivePositions(center, 2, entry);
+    expect(two[0].z).toBeGreaterThan(center.z);
+    expect(computeLairCaptivePositions(center, 0, entry)).toEqual([]);
+  });
+
+  it('só encerra a partida quando o Ninho fica cheio: mortos não contam e resgate reabre a caçada', () => {
+    const ally = (id: string, cocoonLocked: boolean, dead = false) => ({
+      id,
+      name: id.toUpperCase(),
+      dead,
+      cocoonLocked,
+      cocoonPos: new THREE.Vector3(),
+      currentPos: new THREE.Vector3(),
+    });
+    const make = (localCocoon: boolean, localDead: boolean, allies: ReturnType<typeof ally>[]) => {
+      const coord = Object.assign(
+        Object.create(DoomMultiplayerCoordinator.prototype),
+        {
+          session: { localPlayerId: 'host', localPlayerName: 'HOST' },
+          allies: new Map(allies.map((a) => [a.id, a])),
+          localCocoonLocked: localCocoon,
+          localDead,
+          client: { isHost: true },
+          captiveArrivalOrder: [] as string[],
+          squadDevoured: null,
+        }
+      );
+      return coord as DoomMultiplayerCoordinator;
+    };
+
+    // Um amigo ainda solto: nada de fim de partida.
+    let coord = make(true, false, [
+      ally('a', true),
+      ally('b', false),
+    ]);
+    expect(coord.isSquadFullyCaptured()).toBe(false);
+    expect(coord.freeLivingPlayers.map((p) => p.id)).toEqual(['b']);
+
+    // Todos presos na teia: o Ninho está cheio e o jogo termina.
+    coord = make(true, false, [ally('a', true), ally('b', true)]);
+    expect(coord.isSquadFullyCaptured()).toBe(true);
+    expect(coord.freeLivingPlayers).toEqual([]);
+
+    // Quem já morreu não conta como solto.
+    coord = make(false, true, [ally('a', true), ally('b', false, true)]);
+    expect(coord.isSquadFullyCaptured()).toBe(true);
+
+    // Resgate reabre a caçada: se alguém sai da teia, o fim de partida é cancelado.
+    coord = make(true, false, [ally('a', true), ally('b', false)]);
+    expect(coord.checkSquadCaptured()).toBe(false);
   });
 
   it('mantém nós DOM de itens estáveis sem cliques múltiplos no hover e aciona atalhos pela rolinha + botão esquerdo sem precisar das teclas 1, 2 e 3', () => {

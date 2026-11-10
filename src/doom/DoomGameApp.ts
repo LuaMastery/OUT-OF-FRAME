@@ -403,6 +403,11 @@ export class DoomGameApp {
   private cocoonDevourTimerSec = 0;
   private cocoonDevourMaxSec = 45;
   private cocoonReturnTriggered = false;
+  private pendingAbductionLairNotify = false;
+  /** Fim de partida: o esquadrão inteiro foi amarrado no Ninho. */
+  private squadDevouredActive = false;
+  private squadDevouredTime = 0;
+  private squadDevouredFinalized = false;
   private currentAbductionMode: SpiderCinematicMode | null = null;
   private currentAbductionProgress = 0;
   private readonly currentAbductionSpiderPos = new THREE.Vector3();
@@ -1159,6 +1164,11 @@ export class DoomGameApp {
           const applied = this.worldItems.syncShotgunPartSlots(slots);
           this.arenaLayout = { ...this.arenaLayout, shotgunPartSlotCount: applied };
         },
+        getLairCenter: () => this.webManager.lairCenter,
+        getDragDirection: () => this.webManager.dragDirection,
+        onSquadDevoured: (victimId, victimName) => {
+          this.beginSquadDevouredSequence(victimId, victimName);
+        },
         onReceiveFlare: (pos, yaw) => {
           this.worldItems.spawnLitFlare(pos, yaw);
           if (
@@ -1194,6 +1204,7 @@ export class DoomGameApp {
           }
         },
         onRemoteVictimFinishedAbduction: () => {
+          this.maybeStartSquadDevouredSequence();
           const observers = this.multiplayer?.getObserverWorldPositions(
             this.position
           );
@@ -2359,6 +2370,7 @@ export class DoomGameApp {
     this.desktopCrouchLatched = false;
     this.desktopAutoUnlatchAfterSlide = false;
     this.desktopSprintLatched = false;
+    this.pendingAbductionLairNotify = false;
     this.velocity.set(0, 0, 0);
     this.slideState.isSliding = false;
     this.slideState.slideAmount = 0;
@@ -2513,6 +2525,7 @@ export class DoomGameApp {
 
     this.activeSequence = 'NONE';
     this.seqTime = 0;
+    this.pendingAbductionLairNotify = false;
     this.currentAbductionMode = null;
     this.currentAbductionProgress = 0;
     this.cocoonDevourTimerSec = 0;
@@ -3002,7 +3015,7 @@ export class DoomGameApp {
           this.multiplayer.localPlayerId
         );
         this.spider.finishAbductionRetreat(observers);
-        this.multiplayer.notifyLocalAbductionFinished();
+        this.pendingAbductionLairNotify = true;
         this.cocoonDevourMaxSec = this.multiplayer.hasLivingAllies() ? 45 : 14;
         this.cocoonDevourTimerSec = this.cocoonDevourMaxSec;
         this.cocoonReturnTriggered = false;
@@ -3013,6 +3026,13 @@ export class DoomGameApp {
         this.spider.relocateAwayAfterAbduction();
       }
       this.webManager.placePlayerInWakingLairWeb(isCoop);
+      if (this.pendingAbductionLairNotify && this.multiplayer) {
+        this.pendingAbductionLairNotify = false;
+        this.multiplayer.notifyLocalAbductionFinished(
+          this.webManager.lairLocalCaptivePos
+        );
+        this.maybeStartSquadDevouredSequence();
+      }
       this.playerHealth = 22;
       this.playerBleeding = true;
       this.playerSanity = 25;
@@ -3071,6 +3091,100 @@ export class DoomGameApp {
       );
       this.syncInventoryVitals();
     }
+  }
+
+  /**
+   * Fim de partida no cooperativo: não há mais ninguém solto no complexo.
+   * O anfitrião confirma e a sala toda entra na cena final de devoração.
+   */
+  private maybeStartSquadDevouredSequence(): void {
+    if (!this.multiplayer || this.squadDevouredActive) return;
+    if (this.inventory.gameOverVisible || this.inventory.victoryVisible) return;
+    if (!this.multiplayer.checkSquadCaptured()) return;
+    this.beginSquadDevouredSequence(
+      this.multiplayer.localPlayerId,
+      this.multiplayer.firstCaptiveName
+    );
+  }
+
+  /**
+   * Cena final: o Ninho está cheio. A Aranha come um por um na frente dos
+   * outros presos e o esquadrão inteiro perde. Todos os clientes rodam a mesma
+   * cena (mesma duração), sem depender de mais pacotes.
+   */
+  private beginSquadDevouredSequence(victimId: string, victimName: string): void {
+    if (this.squadDevouredActive || this.disposed) return;
+    this.squadDevouredActive = true;
+    this.squadDevouredTime = 0;
+    this.squadDevouredFinalized = false;
+    this.sound.playSpiderBrutalAttack();
+    this.sound.playTensionHeartbeat(0.95);
+    if (this.multiplayer) {
+      this.multiplayer.pushHudNotice(
+        `🕷️ O NINHO ESTÁ CHEIO! A Aranha vai DEVORAR ${victimName} enquanto vocês estão amarrados na teia...`
+      );
+    }
+    this.cocoonHudEl.classList.remove('is-visible', 'is-critical');
+    this.inventory.setOpen(false);
+    this.pauseMenu.setOpen(false, 'main', true);
+    this.keys.clear();
+    this.touchControls.resetTransientInputs();
+    this.shotgun.stow();
+    this.taser.stow();
+    this.stopDance('capture');
+    void victimId;
+  }
+
+  /** Roda os ~4,2 s finais: seda descendo, escurecimento e o fim da partida. */
+  private updateSquadDevouredSequence(dt: number): void {
+    if (!this.squadDevouredActive || this.squadDevouredFinalized) return;
+    this.squadDevouredTime += dt;
+    const t = this.squadDevouredTime;
+    if (t < 0.35) {
+      this.cameraShake = 0.12;
+    } else {
+      this.cameraShake = Math.max(0.02, this.cameraShake * Math.exp(-4 * dt));
+    }
+    const u = Math.max(0, Math.min(1, (t - 0.35) / 2.2));
+    const cocoon = Math.min(1, 0.55 + u * 0.45);
+    this.inventory.setAbductionScreenFX(
+      0,
+      Math.min(1, 0.25 + u * 0.75),
+      Math.min(1, 0.05 + u * 0.88),
+      cocoon
+    );
+    this.sound.playTensionHeartbeat(Math.min(1, 0.85 + u * 0.15));
+    if (t >= 3.4) {
+      this.squadDevouredFinalized = true;
+      this.squadDevouredActive = false;
+      this.finishSquadDevoured();
+    }
+  }
+
+  private finishSquadDevoured(): void {
+    if (this.disposed) return;
+    this.inventory.setAbductionScreenFX(0, 0, 0, 0);
+    this.cameraShake = 0;
+    this.setCameraFov(this.settingsStore.value.fov);
+    this.touchControls.syncState({
+      overlayBlocked: true,
+      inCaptureSequence: true,
+      isSprinting: false,
+      isCrouchedOrSliding: false,
+      canTriggerSlide: false,
+      interactContext: 'NONE',
+      inMultiplayer: Boolean(this.multiplayer),
+      isPushToTalkActive: false,
+    });
+    this.inventory.showGameOver({
+      title: 'O ninho está cheio',
+      sub: 'A Aranha amarrou o esquadrão inteiro na teia e devorou um por um. Não sobrou ninguém para cortar os fios.',
+      note: 'fim da partida — o esquadrão foi capturado',
+    });
+    if (this.permadeathTimerId) window.clearTimeout(this.permadeathTimerId);
+    this.permadeathTimerId = window.setTimeout(() => {
+      this.finalizePermanentDeath();
+    }, 4200);
   }
 
   private setCameraFov(fov: number): void {
@@ -3144,6 +3258,21 @@ export class DoomGameApp {
     this.elapsed += dt;
     this.taserRechargeRemaining = advanceTaserRecharge(this.taserRechargeRemaining, dt);
     this.specialRoomDoors.update(dt);
+
+    // Anfitrião confere a cada quadro se o Ninho encheu (todos os vivos
+    // amarrados). Quem está preso não joga mais, então a checagem precisa rodar
+    // aqui e não só quando alguém entra no casulo.
+    if (this.multiplayer?.isHost && !this.inventory.gameOverVisible) {
+      this.maybeStartSquadDevouredSequence();
+    }
+
+    // Fim de partida cooperativo: o Ninho está cheio e a Aranha devora o
+    // esquadrão. Nada mais importa enquanto a cena roda.
+    if (this.squadDevouredActive) {
+      this.updateSquadDevouredSequence(dt);
+      this.updateFlickeringLightsAndAudio();
+      return;
+    }
 
     if (this.activeSequence !== 'NONE') {
       this.doorLockPromptEl.classList.remove('is-visible', 'can-unlock');
@@ -3399,7 +3528,8 @@ export class DoomGameApp {
         this.cocoonDevourMaxSec = this.multiplayer?.hasLivingAllies() ? 45 : 14;
         this.cocoonDevourTimerSec = this.cocoonDevourMaxSec;
       }
-      if (!this.spider.isDead && !this.spider.isStunned) {
+      const nestIsFull = Boolean(this.multiplayer) && !this.multiplayer!.hasFreeLivingPlayer();
+      if (!this.spider.isDead && !this.spider.isStunned && !nestIsFull) {
         this.cocoonDevourTimerSec = Math.max(0, this.cocoonDevourTimerSec - dt);
       }
       const ratio = Math.max(
@@ -3413,7 +3543,9 @@ export class DoomGameApp {
       this.cocoonHudEl.classList.add('is-visible');
       this.cocoonHudEl.classList.toggle('is-critical', isCrit);
       this.cocoonBarFillEl.style.width = `${(ratio * 100).toFixed(1)}%`;
-      this.cocoonSubEl.textContent = this.spider.isDead
+      this.cocoonSubEl.textContent = nestIsFull
+        ? 'O NINHO ESTÁ CHEIO · NÃO HÁ MAIS NINGUÉM SOLTO PARA CORTAR A TEIA'
+        : this.spider.isDead
         ? 'ARANHA DESTRUÍDA · CHAME UM AMIGO PARA CORTAR A TEIA NO NINHO'
         : this.spider.isStunned
         ? 'ARANHA ATORDOADA · CHAME UM AMIGO PARA CORTAR A TEIA NO NINHO'
@@ -3434,7 +3566,12 @@ export class DoomGameApp {
         this.spider.commandReturnToDevourVictim(this.position);
       }
 
-      if (!this.spider.isDead && !this.spider.isStunned && this.cocoonDevourTimerSec <= 0) {
+      if (
+        !nestIsFull &&
+        !this.spider.isDead &&
+        !this.spider.isStunned &&
+        this.cocoonDevourTimerSec <= 0
+      ) {
         const devourSpiderPos = new THREE.Vector3(
           this.position.x + this.webManager.dragDirection.x * 1.08,
           1.38,
@@ -3445,7 +3582,14 @@ export class DoomGameApp {
       }
     } else {
       this.cocoonHudEl.classList.remove('is-visible', 'is-critical');
+      // Alguém pode ter sido amarrado no Ninho agora: se não sobrou ninguém
+      // solto, a partida termina (o anfitrião confirma para a sala).
+      if (this.multiplayer) this.maybeStartSquadDevouredSequence();
     }
+
+    // Com o esquadrão inteiro preso, a Aranha se alimenta de um por um: nada de
+    // devolver o controle, a cena final assume a partir daqui.
+    if (this.squadDevouredActive) return;
 
     // Atualiza transparência dos fios do casulo enquanto o jogador sai caminhando do Ninho!
     this.inventory.setAbductionScreenFX(
@@ -4033,6 +4177,14 @@ export class DoomGameApp {
         this.inventory.gameOverVisible,
       this.multiplayer?.getRadarAllyBlips()
     );
+
+    if (this.multiplayer) {
+      // Todos os capturados ficam amarrados JUNTOS na teia do Ninho.
+      this.webManager.syncLairCaptives(
+        this.webManager.isLockedInMultiplayerCocoon,
+        this.multiplayer.getLairCaptiveAllies()
+      );
+    }
 
     this.multiplayer?.update(
       dt,

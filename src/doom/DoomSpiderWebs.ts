@@ -13,6 +13,10 @@ import {
   worldToGridCell,
 } from './DoomMazeBuilder';
 import { isThemedRoomDoorCell } from './DoomRooms';
+import {
+  computeLairCaptivePositions,
+  MAX_LAIR_CAPTIVES,
+} from '../multiplayer/DoomMultiplayerCoordinator';
 import { createDoomPropMaterial, DoomSharedUniforms } from './DoomShader';
 
 export interface SpiderWebTrap {
@@ -605,6 +609,10 @@ export class DoomSpiderWebManager {
   private inWakingLairWeb = false;
   private lockedInMultiplayerCocoon = false;
   private lairCocoonRing: THREE.Object3D | null = null;
+  /** Corpos amarrados no Ninho (o local é o `lairCocoonRing`), cada um com seu casulo. */
+  private readonly captiveCocoons: THREE.Group[] = [];
+  /** Ponto do jogador local na teia do Ninho (muda quando há outros presos). */
+  private readonly lairLocalSpot = new THREE.Vector3();
 
   // Contador incrementado toda vez que fios ao redor do jogador se rompem / são cortados
   private webSnapBurstSeq = 0;
@@ -895,7 +903,61 @@ export class DoomSpiderWebManager {
     this.lairCocoonRing = cocoonHolder;
     lairGroup.add(cocoonHolder);
 
+    // Casulos extras para os AMIGOS arrastados: a Aranha empilha todos juntos na
+    // mesma teia do Ninho. Reaproveita o molde do casulo do jogador.
+    for (let i = 0; i < MAX_LAIR_CAPTIVES - 1; i++) {
+      const pod = cocoonHolder.clone(true);
+      pod.visible = false;
+      pod.name = `SpiderLairCaptiveCocoon-${i}`;
+      lairGroup.add(pod);
+      this.captiveCocoons.push(pod);
+    }
+
     this.root.add(lairGroup);
+  }
+
+  /** Pontos do anel do Ninho onde os presos ficam (0 = vítima mais recente). */
+  private lairCaptiveSlots(count: number): Array<{ x: number; z: number }> {
+    return computeLairCaptivePositions(this.lairCenter, count, this.dragDirection);
+  }
+
+  /**
+   * Distribui todos os capturados na teia do Ninho: o jogador local ocupa um
+   * ponto do anel (não mais o centro) e cada amigo preso ganha o seu casulo.
+   */
+  syncLairCaptives(
+    localIsCaptive: boolean,
+    allyCaptives: ReadonlyArray<{ id: string; x: number; z: number }>
+  ): void {
+    const total = Math.min(
+      MAX_LAIR_CAPTIVES,
+      allyCaptives.length + (localIsCaptive ? 1 : 0)
+    );
+    const slots = this.lairCaptiveSlots(Math.max(1, total));
+    let slotIndex = 0;
+    if (localIsCaptive) {
+      const own = slots[0];
+      this.lairLocalSpot.set(own.x, 0, own.z);
+      slotIndex = 1;
+    }
+    for (let i = 0; i < this.captiveCocoons.length; i++) {
+      const pod = this.captiveCocoons[i];
+      const ally = allyCaptives[i];
+      if (!ally) {
+        pod.visible = false;
+        continue;
+      }
+      const spot = slots[slotIndex + i] ?? slots[0];
+      pod.visible = true;
+      pod.position.set(spot.x - this.lairCenter.x, 0, spot.z - this.lairCenter.z);
+      pod.rotation.y = Math.atan2(spot.x - this.lairCenter.x, spot.z - this.lairCenter.z);
+      pod.scale.set(1, 1, 1);
+    }
+  }
+
+  /** Onde o jogador local está amarrado na teia do Ninho. */
+  get lairLocalCaptivePos(): THREE.Vector3 {
+    return this.lairLocalSpot;
   }
 
   get isPlayerEnsnared(): boolean {
@@ -951,6 +1013,8 @@ export class DoomSpiderWebManager {
     this.ensnaredRemaining = 0;
     this.inWakingLairWeb = true;
     this.lockedInMultiplayerCocoon = lockUntilAllyRescue;
+    // Entra no anel (o amigo preso antes continua ao lado, na mesma teia).
+    this.syncLairCaptives(lockUntilAllyRescue, []);
     if (lockUntilAllyRescue) {
       this.playerSnareTetherGroup.visible = true;
       this.playerSnareTetherGroup.position.set(
@@ -1582,10 +1646,17 @@ export class DoomSpiderWebManager {
         );
         const snapBack = Math.min(1, dt * 10.0);
         const wobble = struggleInput ? 0.08 : 0;
-        playerPos.x += (this.lairCenter.x - playerPos.x) * snapBack;
-        playerPos.z += (this.lairCenter.z - playerPos.z) * snapBack;
+        // Cada preso tem seu ponto no anel: ninguém fica empilhado no centro.
+        const spot = this.lairLocalSpot.lengthSq() > 0 ? this.lairLocalSpot : this.lairCenter;
+        playerPos.x += (spot.x - playerPos.x) * snapBack;
+        playerPos.z += (spot.z - playerPos.z) * snapBack;
         if (this.lairCocoonRing) {
           this.lairCocoonRing.visible = true;
+          this.lairCocoonRing.position.set(
+            this.lairLocalSpot.x - this.lairCenter.x,
+            0,
+            this.lairLocalSpot.z - this.lairCenter.z
+          );
           this.lairCocoonRing.scale.set(
             1 + wobble,
             1 - wobble * 0.4,

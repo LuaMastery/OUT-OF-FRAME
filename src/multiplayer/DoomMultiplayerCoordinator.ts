@@ -73,6 +73,8 @@ interface RemoteAllyEntity {
   abductionCooldownUntilPerfMs: number;
   cocoonLocked: boolean;
   devourSecondsLeft: number;
+  /** Onde o corpo está amarrado na teia do Ninho (todos ficam juntos). */
+  cocoonPos: THREE.Vector3;
   dead: boolean;
   afk: boolean;
   voiceSpeaking: boolean;
@@ -100,6 +102,10 @@ interface ActiveTacticalPing {
 
 export interface MultiplayerCoordinatorHooks {
   createQuickItemProps?: () => Record<QuickHandheldKind, THREE.Object3D>;
+  /** Centro 3D do Ninho da Aranha (onde todos os capturados ficam amarrados juntos). */
+  getLairCenter?: () => THREE.Vector3;
+  /** Direção do corredor que entra no Ninho (define quem fica na frente). */
+  getDragDirection?: () => THREE.Vector3;
   createWeaponProps?: () => Record<HeldWeapon, THREE.Object3D>;
   onReceiveFlare: (pos: THREE.Vector3, yaw: number) => void;
   /** Quantidade de peças da shotgun anunciada pelo anfitrião da sala. */
@@ -124,6 +130,10 @@ export interface MultiplayerCoordinatorHooks {
   onRemoteWebTrapCut: (x: number, z: number) => void;
   onRemoteRoomUnlocked?: (roomId: string, senderName: string) => void;
   onNotifyHud: (text: string) => void;
+  /**
+   * O esquadrão inteiro foi amarrado no Ninho: a cena final de devoração começa.
+   */
+  onSquadDevoured?: (victimId: string, victimName: string) => void;
   onRadioChatClosed?: () => void;
   onLeaveRoomRequested: () => void;
 }
@@ -140,6 +150,47 @@ function lerpAngleShortest(a: number, b: number, t: number): number {
  */
 export const TACTICAL_PING_DURATION_SECONDS = 8;
 export const TACTICAL_PING_COOLDOWN_SECONDS = 10;
+
+/**
+ * Ninho da Aranha: todo mundo que ela pega fica amarrado JUNTO na teia do Ninho.
+ * Os corpos são distribuídos em anel, afastados do centro para que as teias não
+ * se sobreponham (a vítima que acorda fica no ponto mais próximo da entrada).
+ */
+export const LAIR_CAPTIVE_RING_RADIUS = 1.28;
+
+/** Máximo de corpos que cabem amarrados juntos na teia do Ninho. */
+export const MAX_LAIR_CAPTIVES = 8;
+
+/**
+ * Posição de cada cativo no anel do Ninho. O índice 0 é a vítima mais recente e
+ * fica no lado voltado para o corredor de onde ela veio (`entryDirX/Z`), de
+ * frente para quem chega para resgatar.
+ */
+export function computeLairCaptivePositions(
+  center: { x: number; z: number },
+  count: number,
+  entryDir?: { x: number; z: number }
+): Array<{ x: number; z: number }> {
+  const total = Math.max(0, Math.floor(count));
+  if (total === 0) return [];
+  if (total === 1) return [{ x: center.x, z: center.z }];
+  const baseAngle =
+    entryDir && Math.hypot(entryDir.x, entryDir.z) > 1e-4
+      ? Math.atan2(entryDir.x, entryDir.z)
+      : 0;
+  const out: Array<{ x: number; z: number }> = [];
+  for (let i = 0; i < total; i++) {
+    const ang = baseAngle + (i / total) * Math.PI * 2;
+    // O primeiro fica a meia distância do centro e os demais no anel; isso
+    // mantém 1,7 m entre vizinhos sem encostar os corpos.
+    const radius = i === 0 ? LAIR_CAPTIVE_RING_RADIUS * 0.72 : LAIR_CAPTIVE_RING_RADIUS;
+    out.push({
+      x: center.x + Math.sin(ang) * radius,
+      z: center.z + Math.cos(ang) * radius,
+    });
+  }
+  return out;
+}
 
 const AFK_SVG_ICON =
   '<svg class="oof-afk-icon-svg" viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">' +
@@ -169,6 +220,11 @@ export class DoomMultiplayerCoordinator {
   private readonly pings: ActiveTacticalPing[] = [];
   private tacticalPingCooldownRemaining = 0;
   private lastUpdateSec = 0;
+  private localDead = false;
+  /** Aviso "o Ninho está cheio" já anunciado nesta partida (evita repetição). */
+  private squadDevoured: { victimId: string; victimName: string; atSec: number } | null = null;
+  /** Ordem de chegada ao Ninho: a vítima mais recente entra na frente. */
+  private readonly captiveArrivalOrder: string[] = [];
   private readonly remoteVoicePeersScratch: Array<{
     id: string;
     pos: THREE.Vector3;
@@ -195,7 +251,6 @@ export class DoomMultiplayerCoordinator {
   private localDevourSecondsLeft = 0;
   private lastCocoonDistressMs = -Infinity;
   private localAfk = false;
-  private lastCatchBroadcastMs = 0;
   private readonly candidatesScratch: SpiderPlayerCandidate[] = [];
 
   private readonly hudRootEl: HTMLDivElement;
@@ -703,9 +758,9 @@ export class DoomMultiplayerCoordinator {
     targetPlayerId: string,
     spiderPos: THREE.Vector3
   ): void {
-    const now = performance.now();
-    if (now - this.lastCatchBroadcastMs < 1400) return;
-    this.lastCatchBroadcastMs = now;
+    // SEM throttle aqui: se o aviso de captura se perdesse, a vítima ficaria
+    // parada no corredor achando que está livre — era exatamente o "buga às
+    // vezes" quando a Aranha pegava alguém perto de outro jogador.
     this.client.broadcastWorldEvent({
       kind: 'spider_catch_player',
       targetPlayerId,
@@ -716,12 +771,131 @@ export class DoomMultiplayerCoordinator {
     });
   }
 
-  notifyLocalAbductionFinished(): void {
+  notifyLocalAbductionFinished(lairPos?: THREE.Vector3): void {
     this.client.broadcastWorldEvent({
       kind: 'abduction_finished',
       victimId: this.session.localPlayerId,
+      lairX: lairPos?.x,
+      lairZ: lairPos?.z,
       ts: Date.now(),
     });
+  }
+
+  /** Registra a ordem de chegada ao Ninho (a vítima mais nova fica na frente). */
+  private noteCaptiveArrival(id: string): void {
+    const idx = this.captiveArrivalOrder.indexOf(id);
+    if (idx >= 0) this.captiveArrivalOrder.splice(idx, 1);
+    this.captiveArrivalOrder.push(id);
+    if (this.captiveArrivalOrder.length > 8) {
+      this.captiveArrivalOrder.splice(0, this.captiveArrivalOrder.length - 8);
+    }
+  }
+
+  /** Remove da ordem quem foi resgatado ou morreu. */
+  private forgetCaptive(id: string): void {
+    const idx = this.captiveArrivalOrder.indexOf(id);
+    if (idx >= 0) this.captiveArrivalOrder.splice(idx, 1);
+  }
+
+  /**
+   * Reorganiza os corpos presos no anel do Ninho: todos juntos na teia central,
+   * sem encavalarem uns nos outros. Não move ninguém que já esteja perto do
+   * ponto — o objetivo é só corrigir quem ficou fora do lugar.
+   */
+  private layoutLairCaptives(lairCenter: THREE.Vector3, entryDir: THREE.Vector3): void {
+    if (this.captiveArrivalOrder.length === 0) return;
+    const order = [...this.captiveArrivalOrder].reverse();
+    const spots = computeLairCaptivePositions(lairCenter, order.length, entryDir);
+    for (let i = 0; i < order.length && i < spots.length; i++) {
+      const ally = this.allies.get(order[i]);
+      if (!ally || !ally.cocoonLocked || ally.dead) continue;
+      const spot = spots[i];
+      if (ally.cocoonPos.distanceTo(new THREE.Vector3(spot.x, 0, spot.z)) < 0.02) continue;
+      ally.cocoonPos.set(spot.x, 0, spot.z);
+      ally.currentPos.set(spot.x, 0, spot.z);
+      ally.targetPos.set(spot.x, 0, spot.z);
+    }
+  }
+
+  /**
+   * Host: o esquadrão inteiro já está amarrado no Ninho? Se sim, o jogo acabou —
+   * avisa a sala e devolve `true` para a cena de devoração começar.
+   */
+  checkSquadCaptured(): boolean {
+    if (!this.client.isHost) return false;
+    if (this.isSquadFullyCaptured()) {
+      this.notifySquadDevoured(this.session.localPlayerId, this.session.localPlayerName);
+      return true;
+    }
+    return false;
+  }
+
+  /** Amigos amarrados na teia do Ninho (posição já organizada no anel). */
+  getLairCaptiveAllies(): Array<{ id: string; x: number; z: number }> {
+    const out: Array<{ id: string; x: number; z: number }> = [];
+    for (const ally of this.allies.values()) {
+      if (ally.dead || !ally.cocoonLocked) continue;
+      out.push({ id: ally.id, x: ally.cocoonPos.x, z: ally.cocoonPos.z });
+    }
+    return out;
+  }
+
+  /** Alguém continua solto e vivo no complexo? */
+  hasFreeLivingPlayer(): boolean {
+    return this.freeLivingPlayers.length > 0;
+  }
+
+  /** Nome do primeiro a ser devorado (vítima mais recente no Ninho). */
+  get firstCaptiveName(): string {
+    for (const ally of this.allies.values()) {
+      if (ally.cocoonLocked && !ally.dead) return ally.name;
+    }
+    return this.session.localPlayerName;
+  }
+
+  /**
+   * Fim de partida: a Aranha já amarrou TODO o esquadrão vivo na teia do Ninho
+   * e começa a devorar um por um. Cada cliente anuncia uma vez.
+   */
+  notifySquadDevoured(victimId: string, victimName: string): { firstAnnounce: boolean } {
+    const firstAnnounce = this.squadDevoured === null;
+    if (!firstAnnounce) return { firstAnnounce };
+    this.squadDevoured = { victimId, victimName, atSec: this.lastUpdateSec };
+    this.client.broadcastWorldEvent({
+      kind: 'squad_devoured',
+      senderId: this.session.localPlayerId,
+      senderName: this.session.localPlayerName,
+      victimId,
+      victimName,
+      ts: Date.now(),
+    });
+    this.pushRadioFeed(
+      `🕷️ O NINHO ESTÁ CHEIO: a Aranha amarrou o esquadrão inteiro e vai DEVORAR ${victimName} primeiro!`,
+      true
+    );
+    return { firstAnnounce };
+  }
+
+  /** Jogadores vivos que ainda estão soltos (nem presos no Ninho, nem mortos). */
+  get freeLivingPlayers(): Array<{ id: string; name: string; isLocal: boolean }> {
+    const out: Array<{ id: string; name: string; isLocal: boolean }> = [];
+    if (!this.localCocoonLocked && !this.localDead) {
+      out.push({
+        id: this.session.localPlayerId,
+        name: this.session.localPlayerName,
+        isLocal: true,
+      });
+    }
+    for (const ally of this.allies.values()) {
+      if (ally.dead || ally.cocoonLocked) continue;
+      out.push({ id: ally.id, name: ally.name, isLocal: false });
+    }
+    return out;
+  }
+
+  /** `true` quando não há mais ninguém solto para resgatar: o Ninho está cheio. */
+  isSquadFullyCaptured(): boolean {
+    return this.freeLivingPlayers.length === 0;
   }
 
   notifyLocalPlayerDevoured(): void {
@@ -911,6 +1085,7 @@ export class DoomMultiplayerCoordinator {
         ally.ensnared = false;
         ally.cocoonLocked = false;
         ally.devourSecondsLeft = 0;
+        this.forgetCaptive(ally.id);
         if (
           spiderPos &&
           Math.hypot(spiderPos.x - localPos.x, spiderPos.z - localPos.z) <= 4.4
@@ -1229,7 +1404,9 @@ export class DoomMultiplayerCoordinator {
     this.worldLabelsLayerEl.style.display = hideHud ? 'none' : 'block';
 
     const nowCocoon = Boolean(localState.cocoonLocked);
+    const wasCocoonForLayout = this.localCocoonLocked;
     this.localCocoonLocked = nowCocoon;
+    this.localDead = Boolean(localState.dead);
     this.localDevourSecondsLeft = localState.devourSecondsLeft ?? 0;
 
     if (nowCocoon && !this.wasLocalCocoonLocked) {
@@ -1246,7 +1423,22 @@ export class DoomMultiplayerCoordinator {
         ts: Date.now(),
       });
     }
+    if (nowCocoon && !wasCocoonForLayout) {
+      this.noteCaptiveArrival(this.session.localPlayerId);
+    } else if (!nowCocoon && wasCocoonForLayout) {
+      this.forgetCaptive(this.session.localPlayerId);
+    }
     this.wasLocalCocoonLocked = nowCocoon;
+
+    // Corpos do Ninho sempre juntos e organizados (o local fica de fora: o
+    // servidor manda a posição dele e a cena de despertar usa `lairCenter`).
+    const lairCenter = this.hooks.getLairCenter?.();
+    if (lairCenter) {
+      this.layoutLairCaptives(
+        lairCenter,
+        this.hooks.getDragDirection?.() ?? new THREE.Vector3(0, 0, 1)
+      );
+    }
 
     // Alerta SOS automático quando o jogador local cai numa armadilha de teia ou começa a ser arrastado!
     if (localState.ensnared && !this.wasLocalEnsnared && !nowCocoon) {
@@ -1467,10 +1659,16 @@ export class DoomMultiplayerCoordinator {
         if (ally.quickItemAction.progress >= 1) ally.quickItemAction = null;
       }
       if (ally.dead) {
+        this.forgetCaptive(ally.id);
         ally.astronaut.setFirstPersonMode(true);
         ally.beamGroup.visible = false;
         ally.labelEl.style.display = 'none';
         continue;
+      }
+      if (ally.cocoonLocked) {
+        // Todos os presos ficam JUNTOS na teia do Ninho, cada um no seu ponto.
+        ally.currentPos.lerp(ally.cocoonPos, 1 - Math.exp(-6 * dt));
+        ally.targetPos.copy(ally.cocoonPos);
       }
       const allyDancing =
         ally.danceId !== null &&
@@ -1909,6 +2107,7 @@ export class DoomMultiplayerCoordinator {
         ),
         abductionCooldownUntilPerfMs: 0,
         cocoonLocked: Boolean(pkt.cocoonLocked),
+        cocoonPos: new THREE.Vector3(pkt.x, 0, pkt.z),
         devourSecondsLeft: pkt.devourSecondsLeft ?? 0,
         dead: pkt.dead,
         afk: Boolean(pkt.afk),
@@ -1954,7 +2153,12 @@ export class DoomMultiplayerCoordinator {
     ent.health = pkt.health;
     ent.bleeding = pkt.bleeding;
     ent.ensnared = pkt.ensnared;
+    const wasCocoonLocked = ent.cocoonLocked;
     ent.cocoonLocked = Boolean(pkt.cocoonLocked);
+    if (ent.cocoonLocked && !wasCocoonLocked) {
+      ent.cocoonPos.set(pkt.x, 0, pkt.z);
+      this.noteCaptiveArrival(ent.id);
+    }
     ent.devourSecondsLeft = pkt.cocoonLocked
       ? (pkt.devourSecondsLeft ?? ent.devourSecondsLeft)
       : 0;
@@ -2285,6 +2489,10 @@ export class DoomMultiplayerCoordinator {
           ally.abductionMode = null;
           ally.cocoonLocked = true;
           ally.devourSecondsLeft = 45;
+          if (typeof ev.lairX === 'number' && typeof ev.lairZ === 'number') {
+            ally.cocoonPos.set(ev.lairX, 0, ev.lairZ);
+          }
+          this.noteCaptiveArrival(ally.id);
           ally.abductionCooldownUntilPerfMs = performance.now() + 2600;
         }
         if (this.client.isHost) {
@@ -2299,6 +2507,7 @@ export class DoomMultiplayerCoordinator {
           ally.cocoonLocked = false;
           ally.devourSecondsLeft = 0;
           ally.dead = true;
+          this.forgetCaptive(ally.id);
         }
         this.sound.playRadarPing(true);
         this.pushRadioFeed(

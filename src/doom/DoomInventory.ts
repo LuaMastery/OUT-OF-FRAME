@@ -2002,9 +2002,22 @@ export class DoomInventory {
     }
   }
 
-  showGameOver(): void {
+  /**
+   * Tela de morte permanente. Aceita um texto próprio para o fim de partida
+   * cooperativo (o Ninho cheio, em que o esquadrão inteiro é devorado).
+   */
+  showGameOver(info?: { title?: string; sub?: string; note?: string }): void {
     this.setOpen(false);
     this.isGameOver = true;
+    const title = this.gameOverEl.querySelector('.gameover-title');
+    if (title) title.textContent = info?.title || 'Você morreu';
+    const sub = this.gameOverEl.querySelector('.gameover-sub');
+    if (sub) {
+      sub.textContent =
+        info?.sub || 'Seu corpo não resistiu ao ataque nas galerias subterrâneas.';
+    }
+    const note = this.gameOverEl.querySelector('.gameover-perm-note');
+    if (note) note.textContent = info?.note || 'sessão encerrada permanentemente';
     this.gameOverEl.classList.add('visible');
     this.syncShortcutsHubVisibility();
   }
