@@ -46,7 +46,13 @@ describe('Rádio no modo solo e no cooperativo', () => {
     expect(pickup).toBeDefined();
     expect(guestPickup.position.toArray()).toEqual(pickup.position.toArray());
     const addItem = vi.fn(() => true);
-    hostItems.updateAndCheckPickups(.016, 0, pickup.position, pickup.position, new THREE.Vector3(0, 0, -1), false, { addItem } as unknown as DoomInventory);
+    const hostCamera = pickup.position.clone().add(new THREE.Vector3(0.35, 0.8, 0.35));
+    const hostLook = pickup.position.clone().sub(hostCamera).normalize();
+    // Caixote lacrado: interage para abrir, espera a tampa subir e então recolhe.
+    hostItems.updateAndCheckPickups(.016, 0, pickup.position, hostCamera, hostLook, true, { addItem } as unknown as DoomInventory);
+    for (let frame = 0; frame < 40; frame++) {
+      hostItems.updateAndCheckPickups(.016, 0, pickup.position, hostCamera, hostLook, false, { addItem } as unknown as DoomInventory);
+    }
     expect(addItem).toHaveBeenCalledWith(radio, 1, false);
     expect(hostItems.getPickupsSnapshot().find(p => p.itemId === radio)?.collected).toBe(true);
     expect(guestItems.getPickupsSnapshot().find(p => p.itemId === radio)?.collected).toBe(false);

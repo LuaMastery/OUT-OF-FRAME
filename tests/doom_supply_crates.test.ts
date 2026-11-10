@@ -87,7 +87,24 @@ describe('Estojos de suprimentos sobre obstáculos', () => {
         const obstruction = maze.colliders.find(collider => sweepSegmentVsBox(camera, pickup.position, collider.box));
         expect(obstruction, `${seed}/${i}: visão ${obstruction?.id}`).toBeUndefined();
         const inventory = { addItem: vi.fn(() => true) } as unknown as DoomInventory;
-        items.updateAndCheckPickups(.016, 0, player, camera, pickup.position.clone().sub(camera).normalize(), true, inventory);
+        const lookAt = pickup.position.clone().sub(camera).normalize();
+        // Caixote lacrado: encostar não basta, é preciso interagir para abrir.
+        items.updateAndCheckPickups(.016, 0, player, camera, lookAt, false, inventory);
+        expect(items.getPickupsSnapshot().find(p => p.id === `pickup-${i}`)!.collected).toBe(false);
+        const crateNode = scene.getObjectByName(`SupplyLocation_${i}`)!.getObjectByName('SupplyCrate')!;
+        const lid = crateNode.getObjectByName('SupplyLid')!;
+        expect(lid.rotation.x).toBeLessThan(-0.05); // tampa fechada
+        expect(inventory.addItem).not.toHaveBeenCalled();
+        // Interagir abre a tampa...
+        let opened = 0;
+        items.updateAndCheckPickups(.016, 0, player, camera, lookAt, true, inventory, undefined, () => { opened++; });
+        expect(opened).toBe(1);
+        expect(inventory.addItem).not.toHaveBeenCalled();
+        // ...e o conteúdo só pode ser recolhido depois que a tampa termina de subir.
+        for (let frame = 0; frame < 40; frame++) {
+          items.updateAndCheckPickups(.016, 0, player, camera, lookAt, false, inventory);
+        }
+        expect(lid.rotation.x).toBeLessThan(-1.6);
         expect(items.getPickupsSnapshot().find(p => p.id === `pickup-${i}`)!.collected).toBe(true);
       }
     }

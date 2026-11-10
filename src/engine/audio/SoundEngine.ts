@@ -4276,6 +4276,78 @@ export class SoundEngine {
     );
   }
 
+  /**
+   * Abrir um caixote de suprimento lacrado: estalo da fivela de latão, ranger
+   * seco das dobradiças de ferro e a tampa batendo no batente de madeira.
+   */
+  playCrateOpen(): void {
+    if (
+      !this.isRunning() ||
+      !this.ctx ||
+      !this.worldDryBus ||
+      !this.reverbSend
+    ) {
+      return;
+    }
+    const now = this.ctx.currentTime;
+
+    // 1. Fivela de latão saltando.
+    for (const [delay, freq] of [
+      [0, 900],
+      [0.045, 1_340],
+    ] as const) {
+      const t = now + delay;
+      const osc = this.ctx.createOscillator();
+      const g = this.ctx.createGain();
+      osc.type = 'square';
+      osc.frequency.setValueAtTime(freq, t);
+      osc.frequency.exponentialRampToValueAtTime(freq * 0.62, t + 0.055);
+      g.gain.setValueAtTime(0.05, t);
+      g.gain.exponentialRampToValueAtTime(0.0008, t + 0.07);
+      osc.connect(g);
+      g.connect(this.worldDryBus);
+      osc.start(t);
+      osc.stop(t + 0.075);
+    }
+
+    // 2. Dobradiça de ferro rangendo ao levantar a tampa.
+    const hinge = this.ctx.createOscillator();
+    const hingeGain = this.ctx.createGain();
+    hinge.type = 'sawtooth';
+    hinge.frequency.setValueAtTime(158, now + 0.06);
+    hinge.frequency.linearRampToValueAtTime(232, now + 0.34);
+    hingeGain.gain.setValueAtTime(0.001, now + 0.06);
+    hingeGain.gain.linearRampToValueAtTime(0.032, now + 0.16);
+    hingeGain.gain.exponentialRampToValueAtTime(0.0008, now + 0.42);
+    hinge.connect(hingeGain);
+    hingeGain.connect(this.worldDryBus);
+    hingeGain.connect(this.reverbSend);
+    hinge.start(now + 0.06);
+    hinge.stop(now + 0.44);
+
+    // 3. Madeira raspando e a tampa encostando para trás.
+    this.triggerFilteredNoise(
+      this.worldDryBus,
+      now + 0.08,
+      0.22,
+      780,
+      1.2,
+      0.075,
+      'gritty',
+      this.reverbSend
+    );
+    this.triggerFilteredNoise(
+      this.worldDryBus,
+      now + 0.36,
+      0.11,
+      240,
+      1.9,
+      0.1,
+      'pink',
+      this.reverbSend
+    );
+  }
+
   /** Sinalizador acústico tático 3D (`[V]`): tom duplo limpo para posição ou alerta urgente para PERIGO! */
   playTacticalPingSound(danger: boolean, pan = 0): void {
     if (!this.isRunning() || !this.ctx || !this.worldDryBus) return;

@@ -1072,7 +1072,12 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
       const front = new THREE.Vector3(Math.sin(c.crateYaw), 0, Math.cos(c.crateYaw));
       const player = new THREE.Vector3(w.x + c.ox, 0, w.z + c.oz).addScaledVector(front, .96);
       const camera = player.clone().add(new THREE.Vector3(0, 1.72, 0));
-      items.updateAndCheckPickups(.016, 0, player, camera, front.clone().negate(), false, invMock as never);
+      const lookAt = front.clone().negate();
+      // Caixote lacrado: abrir com [E] e esperar a tampa subir antes de recolher.
+      items.updateAndCheckPickups(.016, 0, player, camera, lookAt, true, invMock as never);
+      for (let frame = 0; frame < 40; frame++) {
+        items.updateAndCheckPickups(.016, 0, player, camera, lookAt, false, invMock as never);
+      }
     }
     // 25 caixotes, com o Taser adicional na mesma caixa de cartuchos.
     expect(collectedCount).toBe(26);
@@ -1202,21 +1207,28 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
     expect(radarCrate).toBeDefined();
 
     let radarPicked = false;
-    items.updateAndCheckPickups(
-      0.016,
-      0,
-      new THREE.Vector3(radarCrate.position.x, 0, radarCrate.position.z),
-      new THREE.Vector3(radarCrate.position.x, 1.72, radarCrate.position.z),
-      new THREE.Vector3(1, 0, 0),
-      false,
-      { addItem: () => true } as never,
-      (itemId) => {
-        if (itemId === 'field_radar') {
-          radarPicked = true;
-          radar.unlockAndActivate();
+    const radarPlayer = new THREE.Vector3(radarCrate.position.x, 0, radarCrate.position.z);
+    const radarCamera = new THREE.Vector3(radarCrate.position.x, 1.72, radarCrate.position.z);
+    const radarLook = radarCrate.position.clone().sub(radarCamera).normalize();
+    const collectRadar = (interact: boolean) =>
+      items.updateAndCheckPickups(
+        0.016,
+        0,
+        radarPlayer,
+        radarCamera,
+        radarLook,
+        interact,
+        { addItem: () => true } as never,
+        (itemId) => {
+          if (itemId === 'field_radar') {
+            radarPicked = true;
+            radar.unlockAndActivate();
+          }
         }
-      }
-    );
+      );
+    // Interage para abrir o caixote e espera a tampa subir antes de recolher.
+    collectRadar(true);
+    for (let frame = 0; frame < 40; frame++) collectRadar(false);
 
     expect(radarPicked).toBe(true);
     expect(radar.hasRadar).toBe(true);
@@ -7200,7 +7212,14 @@ describe('Shotgun: peças, munição e aranha', () => {
     const addItem = vi.fn(() => true);
     const inventory = { addItem } as unknown as DoomInventory;
     const camera = pickup.position.clone();
-    items.updateAndCheckPickups(0.016, 1, pickup.position, camera, new THREE.Vector3(0, 0, -1), false, inventory);
+    const lookAt = new THREE.Vector3(0, 0, -1);
+    // Fechada: encostar no caixote não entrega mais nada.
+    items.updateAndCheckPickups(0.016, 1, pickup.position, camera, lookAt, false, inventory);
+    expect(addItem).not.toHaveBeenCalled();
+    items.updateAndCheckPickups(0.016, 1, pickup.position, camera, lookAt, true, inventory);
+    for (let frame = 0; frame < 40; frame++) {
+      items.updateAndCheckPickups(0.016, 2, pickup.position, camera, lookAt, false, inventory);
+    }
     expect(addItem).toHaveBeenCalledWith(SHOTGUN_AMMO_ITEM_ID, 8, false);
     const calls = addItem.mock.calls.length;
     items.updateAndCheckPickups(0.016, 2, pickup.position, camera, new THREE.Vector3(0, 0, -1), false, inventory);
@@ -7274,7 +7293,12 @@ describe('Taser de contenção da aranha', () => {
       expect(coopItems.getPickupsSnapshot().find(p => p.itemId === TASER_ITEM_ID)?.position.toArray()).toEqual(tasers[0].position.toArray());
       expect(items.getUncollectedEquipmentSignals()).toHaveLength(29);
       const rejectTaserInventory = { addItem: (id: string) => id !== TASER_ITEM_ID } as unknown as DoomInventory;
-      items.updateAndCheckPickups(0.016, 1, tasers[0].position, tasers[0].position, new THREE.Vector3(0, 0, -1), false, rejectTaserInventory);
+      const taserCamera = tasers[0].position.clone().add(new THREE.Vector3(0.35, 0.9, 0.35));
+      const taserLook = tasers[0].position.clone().sub(taserCamera).normalize();
+      items.updateAndCheckPickups(0.016, 1, tasers[0].position, taserCamera, taserLook, true, rejectTaserInventory);
+      for (let frame = 0; frame < 40; frame++) {
+        items.updateAndCheckPickups(0.016, 1, tasers[0].position, taserCamera, taserLook, false, rejectTaserInventory);
+      }
       expect(items.getUncollectedEquipmentSignals().some(signal => signal.id === tasers[0].id)).toBe(true);
     }
   });
@@ -7372,8 +7396,10 @@ describe('Taser de contenção da aranha', () => {
     };
     const sound = { playTaserDischarge: vi.fn() };
     const inventory = { open: false, gameOverVisible: false, hasItem: () => true, wakeShortcutsHub: vi.fn(), getItemCount: () => 4 };
+    // A lanterna lateral é guardada quando a shotgun ocupa as duas mãos.
+    const flashlight = { isEquipped: true, forceStowImmediate: vi.fn() };
     const game = Object.assign(Object.create(DoomGameApp.prototype), {
-      taser, shotgun, sound, inventory, engaged: true,
+      taser, shotgun, sound, inventory, flashlight, engaged: true,
       pauseMenu: { open: false }, danceMenu: { isOpen: false }, danceId: null,
       activeSequence: 'NONE', multiplayer: null, taserRechargeRemaining: 0,
       camera: new THREE.PerspectiveCamera(), stopDance: vi.fn(), updateTaserHud: vi.fn(),
@@ -7393,6 +7419,7 @@ describe('Taser de contenção da aranha', () => {
     game.toggleShotgun();
     expect(taser.isEquipped).toBe(false);
     expect(shotgun.isEquipped).toBe(true);
+    expect(flashlight.forceStowImmediate).toHaveBeenCalled();
     game.activeSequence = 'DRAGGING_TO_WEB';
     game.toggleTaser();
     expect(taser.isEquipped).toBe(false);

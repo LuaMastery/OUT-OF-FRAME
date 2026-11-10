@@ -98,7 +98,7 @@ export function isTouchCapableEnvironment(): boolean {
   return false;
 }
 
-export type TouchInteractContext = 'NONE' | 'ITEM' | 'ALLY' | 'WEB';
+export type TouchInteractContext = 'NONE' | 'ITEM' | 'CRATE' | 'ALLY' | 'WEB';
 
 export interface DoomTouchStateSync {
   overlayBlocked: boolean;
@@ -356,6 +356,7 @@ export class DoomTouchControls {
       this.lastInteractContext = state.interactContext;
       this.useBtnEl.classList.remove(
         'context-item',
+        'context-crate',
         'context-ally',
         'context-web'
       );
@@ -367,6 +368,10 @@ export class DoomTouchControls {
         this.useBtnEl.classList.add('context-ally');
         this.useIconEl.textContent = '✚';
         this.useLabelEl.textContent = 'SALVAR!';
+      } else if (state.interactContext === 'CRATE') {
+        this.useBtnEl.classList.add('context-crate');
+        this.useIconEl.textContent = '▣';
+        this.useLabelEl.textContent = 'ABRIR';
       } else if (state.interactContext === 'ITEM') {
         this.useBtnEl.classList.add('context-item');
         this.useIconEl.textContent = '◈';

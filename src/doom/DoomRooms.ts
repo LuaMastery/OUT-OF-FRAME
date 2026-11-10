@@ -2610,91 +2610,188 @@ function emitRoomFurniturePiece(
     }
 
     case 'bio_specimen_tank': {
-      // Base e tampa ocultam as extremidades da casca, sem discos transparentes coplanares.
-      pushRoomCyl(b.darkIron, xf, 0.47, 0.50, 0.22, 24, 0, 0.11, 0);
-      pushRoomCyl(b.metalTrim, xf, 0.44, 0.46, 0.12, 24, 0, 0.28, 0);
-      pushRoomBox(b.computerScreen, xf, 0.24, 0.09, 0.025, 0, 0.16, 0.483);
-      pushRoomGlassCylinder(b.specimenGlass, xf, 0.38, 1.69, 0, 1.17, 0);
+      // Cuba de contenção xenobiológica: pedestal rebaixado com pés de nivelar,
+      // anilhas de vedação em latão no topo e na base do cilindro de vidro,
+      // coluna vertebral de sustentação e o espécime flutuando no fluido.
+      pushRoomCyl(b.darkIron, xf, 0.46, 0.49, 0.06, 24, 0, 0.03, 0);
+      for (const ang of [Math.PI * 0.25, Math.PI * 0.75, Math.PI * 1.25, Math.PI * 1.75]) {
+        pushRoomCyl(b.metalTrim, xf, 0.045, 0.05, 0.10, 10,
+          Math.cos(ang) * 0.31, 0.06, Math.sin(ang) * 0.31);
+      }
+      // Base do tanque: funil escalonado + anilha de vedação.
+      pushRoomCyl(b.metalTrim, xf, 0.42, 0.47, 0.20, 24, 0, 0.18, 0);
+      pushRoomCyl(b.cleanLinen, xf, 0.385, 0.40, 0.05, 24, 0, 0.30, 0);
+      pushRoomTorus(b.darkIron, xf, 0.375, 0.026, 0, 0.345, 0, Math.PI / 2);
+      // Painel de instrumentação frontal encaixado na base.
+      pushRoomBox(b.darkIron, xf, 0.26, 0.10, 0.02, 0, 0.19, 0.475);
+      pushRoomBox(b.computerScreen, xf, 0.20, 0.06, 0.012, 0, 0.19, 0.487);
+      pushRoomSphere(b.medicalCross, xf, 0.018, 0.20, 0.24, 0.49);
 
-      // Espécime articulado suspenso: oito patas, todas contidas no cilindro.
-      pushRoomSphere(b.darkIron, xf, 0.115, 0, 1.16, -0.10);
-      pushRoomSphere(b.darkIron, xf, 0.075, 0, 1.16, 0.075);
+      // Cilindro de vidro da cuba (sem tampas coplanares atravessando o vidro).
+      pushRoomGlassCylinder(b.specimenGlass, xf, 0.38, 1.62, 0, 1.16, 0);
+      // Coluna vertebral no fundo: tubo de ascensão do fluido + borbulhador.
+      pushRoomCyl(b.darkIron, xf, 0.045, 0.045, 1.58, 10, 0, 1.16, -0.28);
+      for (let i = 0; i < 5; i++) {
+        pushRoomCyl(b.metalTrim, xf, 0.055, 0.055, 0.02, 10, 0, 0.45 + i * 0.30, -0.28);
+      }
+      // Quatro tirantes externos travando a coluna à base.
+      for (const ang of [0.6, 2.54, 3.74, 5.68]) {
+        pushRoomCyl(b.metalTrim, xf, 0.020, 0.020, 1.62, 8,
+          Math.cos(ang) * 0.405, 1.16, Math.sin(ang) * 0.405);
+      }
+
+      // Espécime articulado suspenso: cefalotórax, abdômen e oito patas
+      // segmentadas (fêmur, tíbia e tarso) — todas contidas no cilindro.
+      const specimenY = 1.14;
+      pushRoomSphere(b.darkIron, xf, 0.115, 0, specimenY + 0.02, -0.07);
+      pushRoomSphere(b.darkIron, xf, 0.092, 0, specimenY - 0.03, 0.10);
+      pushRoomSphere(b.bioFluid, xf, 0.055, 0, specimenY + 0.09, -0.03);
       for (const side of [-1, 1]) {
-        for (const [index, z] of [-0.12, -0.05, 0.04, 0.11].entries()) {
-          const spread = z * 0.35;
-          const knee = new THREE.Vector3(side * (0.17 + index * 0.008), 1.25 - index * 0.045, z + spread);
-          pushRoomRod(b.darkIron, xf, 0.012,
-            new THREE.Vector3(side * 0.055, 1.16, z), knee);
-          pushRoomRod(b.darkIron, xf, 0.01, knee,
-            new THREE.Vector3(side * (0.26 + index * 0.01), 1.16 - index * 0.085, z + spread * 2));
+        for (const [index, z] of [-0.15, -0.06, 0.04, 0.13].entries()) {
+          const hip = new THREE.Vector3(side * 0.055, specimenY, z);
+          const knee = new THREE.Vector3(side * (0.20 + index * 0.01), specimenY + 0.12 - index * 0.045, z + z * 0.28);
+          const ankle = new THREE.Vector3(side * (0.27 + index * 0.012), specimenY - 0.06 - index * 0.03, z + z * 0.5);
+          pushRoomRod(b.darkIron, xf, 0.014, hip, knee);
+          pushRoomRod(b.darkIron, xf, 0.011, knee, ankle);
+          pushRoomRod(b.metalTrim, xf, 0.006, ankle,
+            ankle.clone().add(new THREE.Vector3(side * 0.05, -0.13, z * 0.4)));
+          pushRoomSphere(b.cleanLinen, xf, 0.018, knee.x, knee.y, knee.z);
         }
       }
-      // Quatro suportes terminam dentro dos anéis, sem avançar além da caixa de colisão.
-      pushRoomCyl(b.metalTrim, xf, 0.44, 0.44, 0.10, 24, 0, 2.05, 0);
-      pushRoomCyl(b.darkIron, xf, 0.38, 0.46, 0.22, 24, 0, 2.21, 0);
-      pushRoomCyl(b.metalTrim, xf, 0.12, 0.12, 0.07, 16, 0, 2.355, 0);
-      for (const ang of [0.6, 2.54, 3.74, 5.68]) {
-        pushRoomCyl(b.darkIron, xf, 0.026, 0.026, 1.78, 8,
-          Math.cos(ang) * 0.43, 1.17, Math.sin(ang) * 0.43);
+
+      // Tampa superior: anilha dupla, coroa de parafusos e capô com mostrador.
+      pushRoomTorus(b.darkIron, xf, 0.375, 0.028, 0, 1.99, 0, Math.PI / 2);
+      pushRoomCyl(b.metalTrim, xf, 0.41, 0.41, 0.09, 24, 0, 2.05, 0);
+      pushRoomCyl(b.darkIron, xf, 0.35, 0.41, 0.22, 24, 0, 2.21, 0);
+      for (let i = 0; i < 10; i++) {
+        const ang = (i / 10) * Math.PI * 2;
+        pushRoomSphere(b.cleanLinen, xf, 0.017, Math.cos(ang) * 0.375, 2.10, Math.sin(ang) * 0.375);
       }
+      pushRoomCyl(b.metalTrim, xf, 0.13, 0.11, 0.09, 16, 0, 2.36, 0);
+      pushRoomCyl(b.bioFluid, xf, 0.075, 0.075, 0.03, 14, 0, 2.405, 0);
       break;
     }
-
     case 'autopsy_surgical_table': {
-      // Mesa cirúrgica/autópsia hidráulica em inox com calha perimetral, bandeja Mayo e refletor cirúrgico duplo!
-      pushRoomBox(b.darkIron, xf, 0.66, 0.1, 0.5, 0, 0.05, 0);
-      pushRoomCyl(b.metalTrim, xf, 0.16, 0.2, 0.66, 10, 0, 0.42, 0);
-      pushRoomBox(b.metalTrim, xf, 1.66, 0.08, 0.78, 0, 0.8, 0);
-      // Bordas laterais elevadas de contenção em inox
-      pushRoomBox(b.darkIron, xf, 1.68, 0.04, 0.04, 0, 0.85, 0.38);
-      pushRoomBox(b.darkIron, xf, 1.68, 0.04, 0.04, 0, 0.85, -0.38);
-      pushRoomBox(b.cleanLinen, xf, 1.5, 0.045, 0.64, 0.04, 0.86, 0);
-      pushRoomBox(b.cleanLinen, xf, 0.3, 0.08, 0.5, -0.58, 0.91, 0, 0, 0, -0.12);
-      // Mesa auxiliar lateral de instrumentos cirúrgicos
-      pushRoomCyl(b.metalTrim, xf, 0.022, 0.022, 0.88, 6, 0.56, 0.44, 0.38);
-      pushRoomBox(b.metalTrim, xf, 0.38, 0.03, 0.26, 0.56, 0.89, 0.32);
-      // Coluna articulada com cúpula cirúrgica scialítica dupla
-      pushRoomCyl(b.metalTrim, xf, 0.034, 0.04, 1.66, 8, -0.72, 0.83, -0.3);
-      pushRoomBox(b.metalTrim, xf, 0.74, 0.045, 0.045, -0.38, 1.64, -0.14, 0, 0, -0.08);
-      for (const lx of [-0.22, 0.12]) {
-        pushRoomCyl(b.metalTrim, xf, 0.16, 0.23, 0.09, 10, lx, 1.56, -0.02);
-        pushRoomCyl(b.warmLampGlow, xf, 0.19, 0.19, 0.025, 10, lx, 1.51, -0.02);
+      // Mesa de autópsia hidráulica: base com rodízios travados, coluna
+      // telescópica, tampo de inox com calha perimetral e dreno na cabeceira,
+      // bandeja de instrumentos, suporte de soro e refletor cirúrgico duplo.
+      for (const sx of [-0.52, 0.52]) {
+        for (const sz of [-0.3, 0.3]) {
+          pushRoomCyl(b.darkIron, xf, 0.055, 0.06, 0.08, 10, sx, 0.04, sz);
+          pushRoomSphere(b.metalTrim, xf, 0.035, sx, 0.02, sz);
+        }
+      }
+      pushRoomBox(b.darkIron, xf, 1.16, 0.08, 0.68, 0, 0.10, 0);
+      pushRoomCyl(b.metalTrim, xf, 0.15, 0.19, 0.52, 14, 0, 0.40, 0);
+      pushRoomCyl(b.darkIron, xf, 0.11, 0.11, 0.10, 12, 0, 0.60, 0);
+      // Tampo com calha perimetral e dreno.
+      pushRoomBox(b.metalTrim, xf, 1.62, 0.07, 0.74, 0, 0.74, 0);
+      pushRoomBox(b.cleanLinen, xf, 1.5, 0.03, 0.62, 0.04, 0.79, 0);
+      for (const sz of [-0.36, 0.36]) pushRoomBox(b.darkIron, xf, 1.64, 0.06, 0.045, 0, 0.775, sz);
+      for (const sx of [-0.79, 0.79]) pushRoomBox(b.darkIron, xf, 0.045, 0.06, 0.72, sx, 0.775, 0);
+      pushRoomCyl(b.darkIron, xf, 0.055, 0.045, 0.04, 12, 0.72, 0.80, 0);
+      pushRoomCyl(b.metalTrim, xf, 0.02, 0.02, 0.22, 8, 0.72, 0.70, 0);
+      // Cabeceira elevada com almofada e tira de contenção.
+      pushRoomBox(b.cleanLinen, xf, 0.34, 0.09, 0.52, -0.6, 0.85, 0, 0, 0, -0.12);
+      pushRoomBox(b.darkIron, xf, 0.04, 0.26, 0.56, -0.80, 0.87, 0);
+      // Bandeja auxiliar (Mesa Mayo) com instrumentos soltos.
+      pushRoomCyl(b.metalTrim, xf, 0.022, 0.022, 0.86, 8, 0.58, 0.44, 0.40);
+      pushRoomBox(b.metalTrim, xf, 0.40, 0.025, 0.28, 0.58, 0.88, 0.36);
+      for (const [ix, irot] of [[-0.10, 0.3], [0.02, -0.2], [0.12, 0.6]] as const) {
+        pushRoomBox(b.cleanLinen, xf, 0.016, 0.008, 0.20, 0.58 + ix, 0.90, 0.36, 0, irot, 0);
+        pushRoomBox(b.darkIron, xf, 0.018, 0.012, 0.05, 0.58 + ix, 0.90, 0.45, 0, irot, 0);
+      }
+      // Suporte de soro com bolsa pendurada.
+      pushRoomCyl(b.metalTrim, xf, 0.02, 0.024, 1.60, 8, -0.74, 0.80, -0.28);
+      pushRoomBox(b.metalTrim, xf, 0.03, 0.03, 0.34, -0.74, 1.58, -0.14);
+      pushRoomBox(b.cleanLinen, xf, 0.12, 0.20, 0.08, -0.74, 1.44, 0.0);
+      pushRoomCyl(b.bioFluid, xf, 0.008, 0.008, 0.22, 6, -0.74, 1.30, 0.0);
+      // Coluna articulada e cúpula scialítica dupla.
+      pushRoomCyl(b.metalTrim, xf, 0.034, 0.04, 1.62, 10, -0.80, 0.81, -0.34);
+      pushRoomBox(b.metalTrim, xf, 0.70, 0.045, 0.045, -0.44, 1.60, -0.26, 0, 0.25, -0.10);
+      // Cúpulas inclinadas para o tampo, com o difusor voltado para baixo e à frente.
+      for (const [lx, lz] of [[-0.20, -0.14], [0.06, -0.10]] as const) {
+        pushRoomCyl(b.metalTrim, xf, 0.15, 0.24, 0.11, 14, lx, 1.515, lz, 0.62, 0, 0);
+        pushRoomCyl(b.warmLampGlow, xf, 0.185, 0.185, 0.02, 14, lx, 1.433, lz + 0.034, 0.62, 0, 0);
+        pushRoomCyl(b.darkIron, xf, 0.055, 0.07, 0.07, 10, lx, 1.585, lz - 0.038, 0.62, 0, 0);
+        pushRoomCyl(b.darkIron, xf, 0.012, 0.012, 0.14, 6, lx, 1.63, lz - 0.12, 1.05, 0, 0);
+      }
+      // Pedal hidráulico e manípulos de regulagem na coluna.
+      pushRoomBox(b.metalTrim, xf, 0.24, 0.03, 0.16, 0.30, 0.16, 0.24, 0.22, 0, 0);
+      pushRoomBox(b.darkIron, xf, 0.10, 0.05, 0.10, 0.30, 0.13, 0.22);
+      for (const [kx, kz] of [[0.19, 0.02], [0.19, -0.06]] as const) {
+        pushRoomCyl(b.cleanLinen, xf, 0.03, 0.03, 0.03, 10, kx, 0.46, kz, 0, 0, Math.PI / 2);
+        pushRoomCyl(b.darkIron, xf, 0.012, 0.012, 0.05, 8, kx + 0.03, 0.46, kz, 0, 0, Math.PI / 2);
       }
       break;
     }
-
     case 'xenobio_lab_bench': {
-      // Bancada laboratorial completa com cuba inox + torneira pescoço de ganso, microscópio binocular, tubos brilhantes e centrífuga
-      pushRoomBox(b.metalTrim, xf, 1.54, 0.84, 0.7, 0, 0.42, 0);
-      pushRoomBox(b.darkIron, xf, 1.58, 0.065, 0.74, 0, 0.87, 0);
-      // Portas e gavetas frontais do gabinete
-      for (const gx of [-0.5, 0, 0.5]) {
-        pushRoomBox(b.darkIron, xf, 0.44, 0.66, 0.03, gx, 0.42, 0.355);
-        pushRoomBox(b.metalTrim, xf, 0.12, 0.03, 0.04, gx, 0.64, 0.37);
+      // Bancada de xenobiologia: gabinete de aço com portas e gavetas reais
+      // (puxadores, painéis rebaixados), tampo de inox com cuba e torneira
+      // pescoço de ganso, microscópio binocular articulado, estante de tubos
+      // bioluminescentes e uma centrífuga com mostrador.
+      pushRoomBox(b.darkIron, xf, 1.5, 0.06, 0.66, 0, 0.03, 0);
+      pushRoomBox(b.metalTrim, xf, 1.54, 0.78, 0.7, 0, 0.45, 0);
+      pushRoomBox(b.cleanLinen, xf, 1.58, 0.06, 0.74, 0, 0.87, 0);
+      pushRoomBox(b.metalTrim, xf, 1.62, 0.035, 0.78, 0, 0.912, 0);
+      // Portas com moldura rebaixada + puxador de barra.
+      for (const gx of [-0.5, 0]) {
+        pushRoomBox(b.darkIron, xf, 0.45, 0.62, 0.02, gx, 0.42, 0.352);
+        pushRoomBox(b.metalTrim, xf, 0.37, 0.5, 0.012, gx, 0.42, 0.364);
+        pushRoomCyl(b.metalTrim, xf, 0.012, 0.012, 0.18, 8, gx + 0.16, 0.52, 0.383, 0, 0, Math.PI / 2);
       }
-      // Cuba de pia laboratorial + torneira alta curva
-      pushRoomBox(b.darkIron, xf, 0.32, 0.04, 0.28, -0.54, 0.905, 0.04);
-      pushRoomCyl(b.metalTrim, xf, 0.018, 0.018, 0.28, 6, -0.54, 1.04, -0.1);
-      pushRoomBox(b.metalTrim, xf, 0.03, 0.03, 0.14, -0.54, 1.17, -0.04);
-      // Microscópio binocular 3D
-      pushRoomBox(b.darkIron, xf, 0.22, 0.045, 0.24, -0.14, 0.92, 0.04);
-      pushRoomBox(b.metalTrim, xf, 0.06, 0.3, 0.09, -0.14, 1.08, -0.03);
-      pushRoomBox(b.darkIron, xf, 0.14, 0.025, 0.14, -0.14, 1.04, 0.05);
-      pushRoomCyl(b.darkIron, xf, 0.026, 0.03, 0.22, 8, -0.16, 1.25, 0.04, 0.45, 0, 0);
-      pushRoomCyl(b.darkIron, xf, 0.026, 0.03, 0.22, 8, -0.11, 1.25, 0.04, 0.45, 0, 0);
-      // Estante escalonada de tubos bioluminescentes + centrífuga digital
-      pushRoomBox(b.darkIron, xf, 0.36, 0.09, 0.18, 0.2, 0.94, 0.02);
-      for (const tx of [0.06, 0.13, 0.2, 0.27, 0.34]) {
-        pushRoomCyl(b.bioFluid, xf, 0.022, 0.022, 0.2, 8, tx, 1.04, 0.02);
-        pushRoomCyl(b.metalTrim, xf, 0.024, 0.024, 0.014, 8, tx, 1.147, 0.02);
+      // Coluna de gavetas com puxadores individuais.
+      pushRoomBox(b.darkIron, xf, 0.44, 0.62, 0.02, 0.5, 0.42, 0.352);
+      for (let i = 0; i < 3; i++) {
+        pushRoomBox(b.metalTrim, xf, 0.38, 0.16, 0.012, 0.5, 0.22 + i * 0.2, 0.364);
+        pushRoomCyl(b.metalTrim, xf, 0.01, 0.01, 0.16, 8, 0.5, 0.22 + i * 0.2, 0.377, 0, 0, Math.PI / 2);
       }
-      pushRoomBox(b.cleanLinen, xf, 0.34, 0.25, 0.32, 0.56, 1.02, -0.02);
-      pushRoomBox(b.computerScreen, xf, 0.18, 0.1, 0.025, 0.56, 1.05, 0.145);
+      // Cuba de inox embutida com ralo e torneira de pescoço de ganso.
+      pushRoomBox(b.cleanLinen, xf, 0.34, 0.03, 0.30, -0.54, 0.925, 0.04);
+      pushRoomBox(b.darkIron, xf, 0.26, 0.02, 0.22, -0.54, 0.918, 0.04);
+      pushRoomCyl(b.metalTrim, xf, 0.05, 0.05, 0.03, 10, -0.54, 0.93, 0.04);
+      pushRoomCyl(b.metalTrim, xf, 0.019, 0.023, 0.26, 8, -0.54, 1.06, -0.10);
+      pushRoomCyl(b.metalTrim, xf, 0.017, 0.017, 0.16, 8, -0.54, 1.19, -0.03, Math.PI / 2, 0, 0);
+      pushRoomCyl(b.metalTrim, xf, 0.015, 0.015, 0.05, 8, -0.54, 1.17, 0.04);
+      pushRoomCyl(b.metalTrim, xf, 0.012, 0.012, 0.08, 8, -0.52, 1.10, -0.10, 0, 0, Math.PI / 2);
+
+      // Microscópio binocular: base pesada, braço inclinado, mesa porta-lâmina,
+      // revólver de objetivas e dois tubos oculares.
+      pushRoomBox(b.darkIron, xf, 0.24, 0.05, 0.26, -0.12, 0.945, 0.04);
+      pushRoomBox(b.metalTrim, xf, 0.14, 0.24, 0.12, -0.12, 1.08, -0.01);
+      pushRoomBox(b.cleanLinen, xf, 0.16, 0.02, 0.16, -0.12, 1.02, 0.06);
+      pushRoomBox(b.metalTrim, xf, 0.1, 0.1, 0.1, -0.12, 1.20, 0.03);
+      pushRoomCyl(b.darkIron, xf, 0.035, 0.028, 0.07, 12, -0.12, 1.16, 0.06);
+      for (const ox of [-0.045, 0.045]) {
+        pushRoomCyl(b.darkIron, xf, 0.024, 0.021, 0.20, 10, -0.12 + ox, 1.33, 0.06, 0.34, 0, 0);
+        pushRoomCyl(b.cleanLinen, xf, 0.026, 0.026, 0.03, 10, -0.12 + ox, 1.42, 0.02, 0.34, 0, 0);
+      }
+      // Lâmina de vidro na platina.
+      pushRoomFrontPane(b.cryoWindow, xf, 0.06, 0.02, -0.12, 1.03, 0.06);
+
+      // Estante escalonada com tubos de amostra bioluminescentes e rótulos.
+      pushRoomBox(b.darkIron, xf, 0.40, 0.05, 0.22, 0.22, 0.945, 0.00);
+      pushRoomBox(b.metalTrim, xf, 0.40, 0.14, 0.03, 0.22, 1.0, 0.11);
+      for (const tx of [0.07, 0.15, 0.23, 0.31, 0.39]) {
+        pushRoomCyl(b.bioFluid, xf, 0.023, 0.023, 0.20, 10, tx - 0.01, 1.05, -0.02);
+        pushRoomCyl(b.metalTrim, xf, 0.025, 0.025, 0.015, 10, tx - 0.01, 1.157, -0.02);
+        pushRoomBox(b.cleanLinen, xf, 0.036, 0.03, 0.006, tx - 0.01, 1.08, 0.006);
+      }
+      // Centrífuga: base, cúpula, tampa de latão e mostrador digital.
+      pushRoomCyl(b.darkIron, xf, 0.15, 0.16, 0.14, 18, 0.56, 0.99, -0.02);
+      pushRoomCyl(b.metalTrim, xf, 0.13, 0.15, 0.10, 18, 0.56, 1.11, -0.02);
+      pushRoomCyl(b.bioFluid, xf, 0.10, 0.10, 0.01, 16, 0.56, 1.165, -0.02);
+      pushRoomBox(b.computerScreen, xf, 0.20, 0.09, 0.012, 0.56, 1.06, 0.128);
+      for (const sx of [-0.07, 0.07]) {
+        pushRoomBox(b.metalTrim, xf, 0.03, 0.03, 0.02, 0.56 + sx, 1.02, 0.14);
+      }
       break;
     }
-
     case 'cryo_biohazard_cabinet': {
-      // Estrutura vazada real: fundo, laterais e teto, em vez de vidro sobre um bloco sólido.
+      // Armário criogênico de biohazard: chassi vazado (fundo, laterais e teto),
+      // duas portas com caixilho próprio e vidro plano, puxadores, prateleiras
+      // com frascos, painel inferior com grelhas, reservatório lateral e
+      // tubulação de refrigeração.
       const centerX = -0.17;
       pushRoomBox(b.darkIron, xf, 1.04, 0.12, 0.60, centerX, 0.06, 0);
       pushRoomBox(b.darkIron, xf, 1.00, 1.70, 0.04, centerX, 0.97, -0.27);
@@ -2703,8 +2800,9 @@ function emitRoomFurniturePiece(
       }
       pushRoomBox(b.metalTrim, xf, 1.00, 0.06, 0.56, centerX, 1.85, 0);
       pushRoomBox(b.darkIron, xf, 1.04, 0.14, 0.60, centerX, 1.95, 0);
-      // Monitor fica à frente do painel, não enterrado em uma face coplanar.
       pushRoomBox(b.computerScreen, xf, 0.42, 0.075, 0.014, centerX, 1.95, 0.308);
+      // Faixa de advertência biológica no coroamento.
+      pushRoomBox(b.medicalCross, xf, 0.09, 0.09, 0.006, centerX + 0.24, 1.95, 0.315);
 
       // Duas portas, com caixilhos separados e vidros planos.
       for (const cx of [-0.415, 0.075]) {
@@ -2714,23 +2812,27 @@ function emitRoomFurniturePiece(
           pushRoomBox(b.darkIron, xf, 0.04, 1.125, 0.04, cx + dx, 1.1025, 0.305);
         }
         pushRoomFrontPane(b.cryoWindow, xf, 0.38, 1.12, cx, 1.105, 0.316);
-        // Puxador fora do vidro, apoiado na borda interna de cada porta.
         const hx = cx + (cx < centerX ? 0.19 : -0.19);
+        // Puxador de barra vertical com dois apoios.
         pushRoomBox(b.darkIron, xf, 0.025, 0.20, 0.035, hx, 1.10, 0.33);
+        pushRoomCyl(b.cleanLinen, xf, 0.011, 0.011, 0.20, 8, hx, 1.10, 0.345);
         for (const sy of [0.70, 1.12, 1.50]) {
           pushRoomBox(b.metalTrim, xf, 0.40, 0.025, 0.34, cx, sy, -0.02);
-          // Frascos em cima da prateleira, separados entre si e do vidro.
           for (const dx of [-0.10, 0.10]) {
             pushRoomCyl(b.bioFluid, xf, 0.032, 0.032, 0.13, 12, cx + dx, sy + 0.078, -0.02);
             pushRoomCyl(b.darkIron, xf, 0.034, 0.034, 0.014, 12, cx + dx, sy + 0.148, -0.02);
           }
         }
-        // Grelhas discretas no painel inferior.
         for (const y of [0.23, 0.28, 0.33]) {
           pushRoomBox(b.darkIron, xf, 0.23, 0.012, 0.012, cx, y, 0.318);
         }
+        // Dobradiças na lateral externa de cada porta.
+        for (const y of [0.55, 1.62]) {
+          pushRoomCyl(b.metalTrim, xf, 0.022, 0.022, 0.10, 8,
+            cx + (cx < centerX ? -0.225 : 0.225), y, 0.30);
+        }
       }
-      // Reservatório lateral separado do corpo; conexões curtas ocupam apenas o vão.
+      // Reservatório lateral independente, apoiado no piso.
       pushRoomCyl(b.darkIron, xf, 0.14, 0.14, 0.12, 16, 0.54, 0.06, 0);
       pushRoomCyl(b.metalTrim, xf, 0.12, 0.13, 1.30, 16, 0.54, 0.769, 0);
       for (const y of [0.32, 1.14]) {
@@ -2738,9 +2840,17 @@ function emitRoomFurniturePiece(
       }
       pushRoomCyl(b.darkIron, xf, 0.065, 0.065, 0.10, 12, 0.54, 1.468, 0);
       pushRoomBox(b.darkIron, xf, 0.09, 0.04, 0.05, 0.375, 1.31, 0);
+      // Manômetro e válvula do reservatório.
+      pushRoomCyl(b.cleanLinen, xf, 0.05, 0.05, 0.02, 12, 0.54, 1.40, 0.126, Math.PI / 2, 0, 0);
+      pushRoomCyl(b.metalTrim, xf, 0.014, 0.014, 0.06, 8, 0.54, 1.22, 0.145, Math.PI / 2, 0, 0);
+      // Serpentina de refrigeração descendo da lateral para a base.
+      for (let i = 0; i < 4; i++) {
+        pushRoomRod(b.metalTrim, xf, 0.012,
+          new THREE.Vector3(0.48, 1.32 - i * 0.14, 0.11),
+          new THREE.Vector3(0.44, 1.26 - i * 0.14, 0.05));
+      }
       break;
     }
-
     case 'astronaut_bunk_bed': {
       // Beliche duplo espacial/subterrâneo com cabeceiras, colchões acolchoados, guarda-corpo, luzes individuais e baús sob a cama
       const w = 1.84;

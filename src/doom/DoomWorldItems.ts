@@ -28,6 +28,28 @@ interface WorldPickupInstance {
   radarJitterX: number;
   radarJitterZ: number;
   collected: boolean;
+  /** Caixa de suprimento que guarda o item: precisa ser aberta primeiro. */
+  crate?: SupplyCrateState;
+  /** Altura de repouso do item no fundo do caixote (sobem ao abrir). */
+  restY?: number;
+}
+
+/**
+ * Estado de um caixote de suprimento fechado.
+ *
+ * O caixote nasce lacrado (tampa baixada, cintas apertadas) e só entrega o
+ * item depois que o jogador interage com ele: a tampa abre com uma animação
+ * de dobradiça e o item fica disponível para coleta.
+ */
+export interface SupplyCrateState {
+  readonly group: THREE.Group;
+  readonly lid: THREE.Group;
+  readonly hingeZ: number;
+  open: boolean;
+  /** 0 = totalmente fechado, 1 = totalmente aberto. */
+  openProgress: number;
+  /* Velocidade angular da tampa (rad/s) para a abertura ter mola. */
+  lidVelocity: number;
 }
 
 export interface ActiveMagnesiumFlare {
@@ -36,6 +58,39 @@ export interface ActiveMagnesiumFlare {
   flameMesh: THREE.Object3D;
   remainingSec: number;
   maxSec: number;
+}
+
+/** Tampa fechada apoiada no caixote (rad) e aberta para trás (rad). */
+const CRATE_LID_CLOSED_ROTATION = -0.10;
+const CRATE_LID_OPEN_ROTATION = -2.35;
+
+/** Distância máxima (m) em que o jogador consegue abrir um caixote. */
+export const CRATE_INTERACT_RANGE = 2.2;
+/** Distância (m) em que o caixote destaca o botão contextual de interação. */
+export const CRATE_HINT_RANGE = 2.6;
+
+/**
+ * Avança a tampa de um caixote com mola e amortecimento, para a abertura
+ * ter peso em vez de ser um corte instantâneo.
+ */
+export function advanceCrateLid(
+  state: SupplyCrateState,
+  dt: number
+): void {
+  const target = state.open ? 1 : 0;
+  const step = Math.max(0, Math.min(0.05, dt));
+  const stiffness = 120;
+  const damping = 15;
+  const offset = state.openProgress - target;
+  state.lidVelocity += (-offset * stiffness - state.lidVelocity * damping) * step;
+  state.openProgress = Math.max(
+    0,
+    Math.min(1, state.openProgress + state.lidVelocity * step)
+  );
+  const eased = state.openProgress * state.openProgress * (3 - 2 * state.openProgress);
+  state.lid.rotation.x =
+    CRATE_LID_CLOSED_ROTATION +
+    (CRATE_LID_OPEN_ROTATION - CRATE_LID_CLOSED_ROTATION) * eased;
 }
 
 function clamp255(v: number): number {
@@ -594,10 +649,19 @@ export class DoomWorldItems {
       group.name = `SupplyLocation_${idx}`;
       group.position.set(wx, p.baseY, wz);
 
-      // Caixote baixo de suprimentos esculpido voltado para o centro livre do corredor
-      const crate = this.buildSupplyCrate();
+      // Caixote de suprimentos LACRADO, voltado para o centro livre do corredor.
+      // A tampa só abre quando o jogador interage com o caixote.
+      const { crate, lid } = this.buildSupplyCrate();
       crate.rotation.y = p.crateYaw;
       group.add(crate);
+      const crateState: SupplyCrateState = {
+        group: crate,
+        lid,
+        hingeZ: lid.position.z,
+        open: false,
+        openProgress: 0,
+        lidVelocity: 0,
+      };
 
       // Apoiado FISICAMENTE sobre o forro interno do caixote (y = 0.095), alinhado à bandeja sem flutuar nem atravessar paredes!
       const itemMesh = this.buildItemMesh(p.itemId);
@@ -605,6 +669,8 @@ export class DoomWorldItems {
       // Na bandeja compartilhada, manter os cartuchos separados do Taser e das bordas.
       if (idx === taserCrateIndex) itemMesh.scale.setScalar(.75);
       itemMesh.position.set(0, 0.095, idx === taserCrateIndex ? -0.075 : 0.01);
+      // Caixote lacrado: o conteúdo fica escondido até a tampa abrir.
+      itemMesh.visible = false;
       itemMesh.rotation.y = idx === taserCrateIndex ? 0 : p.itemTiltYaw;
       crate.add(itemMesh);
 
@@ -620,6 +686,8 @@ export class DoomWorldItems {
         radarJitterX: p.radarJitterX,
         radarJitterZ: p.radarJitterZ,
         collected: false,
+        crate: crateState,
+        restY: itemMesh.position.y,
       });
       if (idx === taserCrateIndex) {
         // The shell box sits at the rear of the liner and the Taser at the front;
@@ -627,6 +695,7 @@ export class DoomWorldItems {
         const taser = this.buildItemMesh('field_taser');
         taser.name = 'WorldTaser';
         taser.position.set(0, 0.095, 0.075);
+        taser.visible = false;
         crate.add(taser);
         const offset = new THREE.Vector3(0, 0, 0.075).applyAxisAngle(new THREE.Vector3(0, 1, 0), p.crateYaw);
         this.pickups.push({
@@ -635,6 +704,8 @@ export class DoomWorldItems {
           cellWorldX: world.x, cellWorldZ: world.z,
           radarJitterX: p.radarJitterX, radarJitterZ: p.radarJitterZ,
           collected: false,
+          crate: crateState,
+          restY: taser.position.y,
         });
       }
     });
@@ -737,10 +808,11 @@ export class DoomWorldItems {
   }
 
   /**
-   * Constrói um caixote/estojo de campo aberto em 3D (fundo, 4 paredes de borda,
-   * 4 cantoneiras rebitadas de ferro, alças laterais e tampa ripada apoiada atrás).
+   * Constrói um caixote de suprimento LACRADO (fundo, quatro paredes, cantoneiras
+   * rebitadas de ferro, alças laterais, cintas de aço e tampa ripada com
+   * dobradiças). O interior só aparece quando o jogador interage e a tampa abre.
    */
-  private buildSupplyCrate(): THREE.Group {
+  private buildSupplyCrate(): { crate: THREE.Group; lid: THREE.Group } {
     const crate = new THREE.Group();
     crate.name = 'SupplyCrate';
     const box = (name: string, w: number, h: number, d: number,
@@ -752,49 +824,72 @@ export class DoomWorldItems {
       return mesh;
     };
 
-    // Trilhos apoiados no caixote de carga, com o fundo apoiado sobre eles.
+    // Trilhos apoiados no suporte, com o fundo do caixote sobre eles.
     for (const x of [-.2, .2]) box('SupplySkid', .06, .03, .44, x, .015, 0, this.matDarkIron);
     box('SupplyBase', .52, .05, .42, 0, .055, 0, this.matCrateWood);
     box('SupplyLiner', .42, .018, .32, 0, .085, 0, this.matDarkIron);
 
-    // Bordas, com uma placa identificadora e reforços de ferro faceados.
-    for (const z of [-.188, .188]) box('SupplyRim', .52, .085, .045, 0, .1225, z, this.matCrateWood);
-    for (const x of [-.238, .238]) box('SupplyRim', .045, .085, .331, x, .1225, 0, this.matCrateWood);
+    // Paredes altas o bastante para esconder o conteúdo até a tampa abrir.
+    for (const z of [-.188, .188]) box('SupplyRim', .52, .105, .045, 0, .1275, z, this.matCrateWood);
+    for (const x of [-.238, .238]) box('SupplyRim', .045, .105, .331, x, .1275, 0, this.matCrateWood);
+    // Ripas verticais de reforço nas faces de fora.
+    for (const x of [-.16, 0, .16]) {
+      box('SupplyRib', .03, .095, .012, x, .1275, .212, this.matDarkIron);
+      box('SupplyRib', .03, .095, .012, x, .1275, -.212, this.matDarkIron);
+    }
+    // Cantoneiras de ferro com rebites.
     for (const x of [-.245, .245]) for (const z of [-.195, .195]) {
-      box('SupplyCorner', .034, .13, .034, x, .095, z, this.matDarkIron);
-      // Rebites nas faces externas, sem invadir o espaço dos itens.
-      for (const y of [.065, .135]) {
+      box('SupplyCorner', .034, .12, .034, x, .1275, z, this.matDarkIron);
+      for (const y of [.085, .1275, .18]) {
         const rivet = new THREE.Mesh(new THREE.SphereGeometry(.007, 8, 6), this.matBrass);
         rivet.name = 'SupplyRivet';
         rivet.position.set(x, y, z + Math.sign(z) * .018);
         crate.add(rivet);
       }
     }
-    box('SupplyLabel', .14, .036, .004, 0, .119, .2125, this.matBrass);
+    // Plaqueta de identificação na frente.
+    box('SupplyLabel', .14, .034, .004, 0, .125, .2125, this.matBrass);
+    // Alças laterais, abertas (não uma barra atravessando a parede).
     for (const x of [-.27, .27]) {
-      // Alça aberta, não uma barra sólida atravessando a parede.
-      for (const z of [-.065, .065]) box('SupplyHandleMount', .025, .024, .018, x, .105, z, this.matDarkIron);
-      box('SupplyHandleGrip', .02, .018, .13, x + Math.sign(x) * .018, .105, 0, this.matBrass);
+      for (const z of [-.065, .065]) box('SupplyHandleMount', .025, .024, .018, x, .125, z, this.matDarkIron);
+      box('SupplyHandleGrip', .02, .018, .13, x + Math.sign(x) * .018, .125, 0, this.matBrass);
+    }
+    // Cintas de aço que lacram o caixote sobre a tampa: o lacre é o que sinaliza
+    // que ele ainda está fechado. Duas fitas correndo no sentido da largura.
+    for (const z of [-.10, .10]) {
+      box('SupplyStrap', .52, .012, .05, 0, .223, z, this.matDarkIron);
+      box('SupplyStrapLatch', .056, .014, .022, 0, .229, z, this.matBrass);
     }
 
-    // Tampa articulada a partir da borda traseira; a parte baixa começa na
-    // dobradiça, em vez de flutuar sobre o estojo.
+    // Tampa articulada na borda traseira (a dobradiça fica no fundo do grupo,
+    // então girar o grupo levanta a tampa como uma tampa de baú de verdade).
     const lid = new THREE.Group();
     lid.name = 'SupplyLid';
-    lid.position.set(0, .165, -.21);
-    lid.rotation.x = 1.18;
+    const hingeZ = -.212;
+    lid.position.set(0, .212, hingeZ);
+    lid.rotation.x = CRATE_LID_CLOSED_ROTATION;
     crate.add(lid);
-    box('SupplyLidPanel', .48, .025, .34, 0, 0, -.17, this.matCrateWood, lid);
-    for (const x of [-.19, .19]) box('SupplyLidStrap', .028, .007, .33, x, .016, -.17, this.matDarkIron, lid);
+    box('SupplyLidPanel', .52, .022, .43, 0, .011, .215, this.matCrateWood, lid);
+    // Saia da tampa: encaixa por fora das paredes e cobra o conteúdo até abrir.
+    box('SupplyLidSkirt', .54, .05, .022, 0, -.014, .425, this.matCrateWood, lid);
+    for (const x of [-.262, .262]) box('SupplyLidSkirt', .022, .05, .45, x, -.014, .215, this.matCrateWood, lid);
+    for (const z of [-.02, .10]) {
+      box('SupplyLidStrap', .53, .008, .05, 0, .024, z, this.matDarkIron, lid);
+    }
+    // Ripas do topo da tampa.
+    for (const x of [-.16, 0, .16]) {
+      box('SupplyLidRib', .028, .006, .40, x, .025, .215, this.matBrass, lid);
+    }
     for (const x of [-.16, .16]) {
       const hinge = new THREE.Mesh(new THREE.CylinderGeometry(.014, .014, .065, 10), this.matBrass);
       hinge.name = 'SupplyHinge';
       hinge.rotation.z = Math.PI / 2;
-      hinge.position.set(x, .165, -.21);
+      hinge.position.set(x, .212, hingeZ);
       crate.add(hinge);
     }
-    return crate;
+    return { crate, lid };
   }
+
 
   private buildItemMesh(itemId: string): THREE.Object3D {
     const holder = new THREE.Group();
@@ -1556,25 +1651,59 @@ export class DoomWorldItems {
     cameraForward: THREE.Vector3,
     interactPressed: boolean,
     inventory: DoomInventory,
-    onItemCollected?: (itemId: string) => void
+    onItemCollected?: (itemId: string) => void,
+    onCrateOpened?: (itemId: string) => void
   ): void {
     for (let i = 0; i < this.pickups.length; i++) {
       const p = this.pickups[i];
+
+      // Caixotes fechados: a tampa é animada sempre, mesmo depois de vazios.
+      if (p.crate) {
+        advanceCrateLid(p.crate, dt);
+        const reveal = Math.max(0, (p.crate.openProgress - 0.35) / 0.65);
+        if (reveal > 0) {
+          // O conteúdo sobe do fundo do caixote até a borda, como se fosse
+          // apresentado, para o jogador ver o que ganhou ao abrir a tampa.
+          const lifted = Math.min(1, reveal) * 0.075;
+          if (typeof p.restY === 'number') {
+            p.itemMesh.position.y = p.restY + lifted;
+          }
+          p.itemMesh.visible = !p.collected;
+        }
+      }
       if (p.collected) continue;
 
       const dx = p.position.x - playerPos.x;
       const dz = p.position.z - playerPos.z;
       const flatDist = Math.hypot(dx, dz);
 
-      let shouldCollect = flatDist < 1.02;
-
-      if (!shouldCollect && interactPressed && flatDist < 2.4) {
+      const looking = (range: number): boolean => {
+        if (flatDist > range) return false;
         const toItem = new THREE.Vector3()
           .subVectors(p.position, cameraPos)
           .normalize();
-        if (toItem.dot(cameraForward) > 0.72) {
-          shouldCollect = true;
+        return toItem.dot(cameraForward) > 0.72;
+      };
+
+      // Caixote lacrado: interagir abre a tampa e libera o item. Ele não é
+      // coletado apenas por encostar — precisa da interação.
+      if (p.crate && !p.crate.open) {
+        if (interactPressed && looking(CRATE_INTERACT_RANGE)) {
+          p.crate.open = true;
+          p.crate.lidVelocity = 2.4;
+          onCrateOpened?.(p.itemId);
         }
+        continue;
+      }
+
+      // Caixote aberto: o item aparece quando a tampa termina de subir e só
+      // então pode ser recolhido (encostando ou interagindo de perto).
+      if (p.crate && p.crate.openProgress < 0.85) continue;
+      let shouldCollect = flatDist < 1.02;
+      if (!shouldCollect && p.crate && interactPressed) {
+        shouldCollect = looking(CRATE_INTERACT_RANGE);
+      } else if (!shouldCollect && interactPressed && flatDist < 2.4) {
+        shouldCollect = looking(2.4);
       }
 
       if (shouldCollect) {
@@ -1608,6 +1737,34 @@ export class DoomWorldItems {
   }
 
   /**
+   * Verdadeiro quando existe um caixote ainda LACRADO na mira próxima: é o
+   * que troca o botão contextual para [ABRIR].
+   */
+  hasLockedCrateInSight(
+    playerPos: THREE.Vector3,
+    cameraPos: THREE.Vector3,
+    cameraDir: THREE.Vector3
+  ): boolean {
+    for (let i = 0; i < this.pickups.length; i++) {
+      const p = this.pickups[i];
+      if (p.collected || !p.crate || p.crate.open) continue;
+      const flatDist = Math.hypot(
+        p.position.x - playerPos.x,
+        p.position.z - playerPos.z
+      );
+      if (flatDist > CRATE_HINT_RANGE) continue;
+      const dx = p.position.x - cameraPos.x;
+      const dy = p.position.y - cameraPos.y;
+      const dz = p.position.z - cameraPos.z;
+      const len = Math.sqrt(Math.max(1e-6, dx * dx + dy * dy + dz * dz));
+      const dot =
+        (dx * cameraDir.x + dy * cameraDir.y + dz * cameraDir.z) / len;
+      if (dot > 0.72) return true;
+    }
+    return false;
+  }
+
+  /**
    * Indica se há um item colecionável na mira próxima do jogador (<2.4m),
    * permitindo destacar o botão contextual [PEGAR] na interface mobile!
    */
@@ -1619,11 +1776,13 @@ export class DoomWorldItems {
     for (let i = 0; i < this.pickups.length; i++) {
       const p = this.pickups[i];
       if (p.collected) continue;
+      // Caixote lacrado a vista também pede o botão de interação (ABRIR).
+      const range = p.crate && !p.crate.open ? CRATE_HINT_RANGE : 2.4;
       const flatDist = Math.hypot(
         p.position.x - playerPos.x,
         p.position.z - playerPos.z
       );
-      if (flatDist > 2.4) continue;
+      if (flatDist > range) continue;
       const dx = p.position.x - cameraPos.x;
       const dy = p.position.y - cameraPos.y;
       const dz = p.position.z - cameraPos.z;

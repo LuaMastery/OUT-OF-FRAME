@@ -198,6 +198,13 @@
 }
 
 /* Destaque contextual quando perto de item, aliado preso ou preso na teia! */
+.oof-touch-btn.context-crate {
+  border-color: #c8d6e5;
+  background: rgba(26, 34, 42, 0.9);
+  color: #eaf3ff;
+  box-shadow: 0 0 12px rgba(168, 196, 224, 0.34);
+}
+
 .oof-touch-btn.context-item {
   border-color: #ffd37a;
   background: rgba(44, 32, 8, 0.86);

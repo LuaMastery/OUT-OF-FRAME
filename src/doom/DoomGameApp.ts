@@ -35,6 +35,7 @@ import {
   isDoomDanceId,
 } from './DoomDance';
 import { DoomDanceMenu } from './DoomDanceMenu';
+import { resolveSpiderCaptureOutcome } from './DoomDeathRules';
 import { DoomFlashlight } from './DoomFlashlight';
 import { DoomShotgunViewmodel, SHOTGUN_ITEM_ID, SHOTGUN_AMMO_ITEM_ID, shotgunImpactDistance, computeShotgunBlastDamage } from './DoomShotgun';
 import { DoomInventory, ITEM_CATALOG } from './DoomInventory';
@@ -1745,6 +1746,17 @@ export class DoomGameApp {
         }
 
         if (e.code === 'KeyF' && !e.repeat) {
+          // Com as duas mãos na shotgun não há mão livre: a lanterna de apoio
+          // presa sob o cano é a fonte de luz, então a lanterna avulsa não pode
+          // ser empunhada enquanto a arma estiver equipada.
+          if (this.shotgun.isEquipped) {
+            this.sound.invalidInput();
+            this.inventory.wakeShortcutsHub(
+              2600,
+              'MÃOS OCUPADAS · LANTERNA DE APOIO ACOPLADA SOB O CANO'
+            );
+            return;
+          }
           const equipping = this.flashlight.toggle();
           this.sound.playFlashlightMotion(equipping);
           if (!equipping) {
@@ -2267,6 +2279,9 @@ export class DoomGameApp {
     } else {
       this.stopDance('action');
       this.taser.stow();
+      // As duas mãos passam a segurar a arma: a lanterna avulsa é guardada e
+      // vira iluminação acoplada sob o cano.
+      if (this.flashlight.isEquipped) this.flashlight.forceStowImmediate();
       this.shotgun.equip();
       this.inventory.wakeShortcutsHub(4500, `SHOTGUN · ${this.inventory.getItemCount(SHOTGUN_AMMO_ITEM_ID)} CARTUCHOS · CLIQUE PARA ATIRAR`);
     }
@@ -2408,9 +2423,12 @@ export class DoomGameApp {
     this.lastDragPullStep = -1;
     this.lastWebSpinStep = -1;
 
-    const shouldAbductToWeb = this.multiplayer
-      ? !wasLockedInCocoon
-      : this.playerHealth > 36;
+    // Um operador à beira da morte não é arrastado para a teia: o bote o executa
+    // ali mesmo. Vale em solo e no cooperativo — antes, no co-op, todo mundo era
+    // levado ao Ninho, mesmo sangrando com pouquíssima vida.
+    const shouldAbductToWeb =
+      resolveSpiderCaptureOutcome(this.playerHealth, { lockedInCocoon: wasLockedInCocoon }) ===
+      'ABDUCTION_TO_WEB';
 
     if (shouldAbductToWeb) {
       this.activeSequence = 'ABDUCTION_TO_WEB';
@@ -2420,9 +2438,14 @@ export class DoomGameApp {
       this.activeSequence = 'PERMADEATH_EXECUTION';
       this.playerHealth = 0;
       this.playerBleeding = true;
-      if (wasLockedInCocoon) {
-        this.multiplayer?.notifyLocalPlayerDevoured();
-      }
+      // Em cooperativo os aliados precisam ver o corpo no chão e saber que ele
+      // não volta: a execução é anunciada como morte para a sala inteira.
+      this.multiplayer?.notifyLocalPlayerDevoured();
+      this.multiplayer?.pushHudNotice(
+        wasLockedInCocoon
+          ? '🕸️ A ARANHA DEVOROU VOCÊ NO NINHO.'
+          : '💀 SEM FÔLEGO PARA O ARRASTO: A ARANHA EXECUTOU VOCÊ NO CORREDOR.'
+      );
       this.syncInventoryVitals();
       this.sound.playPermanentDeath();
     }
@@ -3589,9 +3612,18 @@ export class DoomGameApp {
     }
     this.sound.playSprintBreath(stamStep.fatigue01, stamStep.exhausted);
 
-    if (this.flashlight.isEquipped && this.lanternBattery > 0) {
+    if ((this.flashlight.isEquipped || this.shotgun.isEquipped) && this.lanternBattery > 0) {
+      // A lanterna de apoio gasta a mesma célula da lanterna avulsa.
       this.lanternBattery = Math.max(0, this.lanternBattery - dt * 0.62);
     }
+
+    // Lanterna de apoio: com a shotgun nas duas mãos o feixe continua saindo
+    // da arma, alimentado pela bateria, mesmo sem a lanterna empunhada.
+    const shotgunMounted = this.shotgun.isEquipped;
+    this.shotgun.setMountedFlashlight(
+      shotgunMounted && this.lanternBattery > 0.2,
+      this.lanternBattery < 15
+    );
 
     const fl = this.flashlight.update(
       dt,
@@ -3822,6 +3854,15 @@ export class DoomGameApp {
       camForward,
       interactPressed,
       this.inventory,
+      (openedItemId) => {
+        this.sound.playCrateOpen();
+        this.inventory.wakeShortcutsHub(
+          3400,
+          openedItemId === SHOTGUN_AMMO_ITEM_ID
+            ? 'CAIXOTE ABERTO · CARTUCHOS 12 GAUGE À VISTA'
+            : 'CAIXOTE ABERTO · SUPRIMENTO À VISTA'
+        );
+      },
       (pickedItemId) => {
         pickedUpAnyItem = true;
         const pickedKind = pickedItemId === TASER_ITEM_ID ? 'taser'
@@ -3912,6 +3953,14 @@ export class DoomGameApp {
       )
     ) {
       touchInteractContext = 'ALLY';
+    } else if (
+      this.worldItems.hasLockedCrateInSight(
+        this.position,
+        this.camera.position,
+        camForward
+      )
+    ) {
+      touchInteractContext = 'CRATE';
     } else if (
       this.worldItems.hasInteractableItemInSight(
         this.position,
@@ -4012,8 +4061,17 @@ export class DoomGameApp {
         this.inventory.gameOverVisible
     );
 
-    this.sharedUniforms.uFlashlightIntensity.value = fl.beamIntensity;
-    if (fl.beamIntensity > 0.005) {
+    // O feixe da lanterna de apoio acoplada substitui o da lanterna avulsa
+    // enquanto a shotgun estiver nas duas mãos.
+    const beamIntensity = shotgunMounted
+      ? this.lanternBattery > 0.2
+        ? this.lanternBattery < 15
+          ? 0.6
+          : 1
+        : 0
+      : fl.beamIntensity;
+    this.sharedUniforms.uFlashlightIntensity.value = beamIntensity;
+    if (beamIntensity > 0.005) {
       const camRight = new THREE.Vector3(1, 0, 0).applyQuaternion(
         this.camera.quaternion
       );
@@ -4028,8 +4086,8 @@ export class DoomGameApp {
         .addScaledVector(camUp, -0.14);
 
       const beamEuler = new THREE.Euler(
-        this.pitch + fl.aimPitchOffset,
-        this.yaw + fl.aimYawOffset,
+        this.pitch + (shotgunMounted ? -0.05 : fl.aimPitchOffset),
+        this.yaw + (shotgunMounted ? 0 : fl.aimYawOffset),
         0,
         'YXZ'
       );
@@ -4042,7 +4100,7 @@ export class DoomGameApp {
     this.updateSurvivalVitals(
       dt,
       spiderOut.playerDistance,
-      fl.beamIntensity > 0.05
+      beamIntensity > 0.05
     );
     this.updateFlickeringLightsAndAudio();
   }
