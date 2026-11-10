@@ -588,7 +588,9 @@ export function createRandomArenaLayout(
   );
 
   // 2. Sorteia as armadilhas iniciais de teia exclusivamente por `worldSeed` (sincronizadas no Co-op!)
-  const trapCount = rngInt(worldRng, 6, 9); // 6 a 8 armadilhas iniciais
+  // Teias raras: no máximo duas armadilhas iniciais por partida. Depois disso a
+  // própria aranha só tece vez ou outra (ver webCooldownTimer em DoomSpider).
+  const trapCount = rngInt(worldRng, 1, 3);
   const allOpenTrapCandidates: GridCoord[] = [];
   for (let gz = 1; gz < LABYRINTH_MAP.length - 1; gz++) {
     for (let gx = 1; gx < LABYRINTH_MAP[gz].length - 1; gx++) {
@@ -606,7 +608,7 @@ export function createRandomArenaLayout(
   for (const cand of allOpenTrapCandidates) {
     if (initialWebTrapCells.length >= trapCount) break;
     const tooClose = initialWebTrapCells.some(
-      (t) => Math.hypot(t.gx - cand.gx, t.gz - cand.gz) < 3.8
+      (t) => Math.hypot(t.gx - cand.gx, t.gz - cand.gz) < 6.0
     );
     if (!tooClose) {
       initialWebTrapCells.push(cand);

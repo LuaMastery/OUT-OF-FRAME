@@ -695,7 +695,7 @@ export class DoomSpider {
   private shockGlow = 0;
   private stateTimer = 0;
   private surfaceDecisionTimer = 3.5;
-  private webCooldownTimer = 6.0;
+  private webCooldownTimer = 14.0;
   private lostSightTimer = 0;
   private postAbductionGraceTimer = 0;
   private chitterTimer = 2.6;
@@ -2362,7 +2362,7 @@ export class DoomSpider {
       this.state = 'STALK_PATROL';
       this.stateTimer = 0;
       this.pathRepathTimer = 0;
-      this.webCooldownTimer = Math.max(this.webCooldownTimer, 2.4);
+      this.webCooldownTimer = Math.max(this.webCooldownTimer, 16.0);
       this.stunArcs.visible = false;
       this.shockGlow = 0;
       this.chitinMat.uniforms.uShockGlow.value = 0;
@@ -2635,7 +2635,7 @@ export class DoomSpider {
         if (spawned) {
           this.onWebTrapSpawned?.(cellCenter.x, cellCenter.z);
         }
-        this.webCooldownTimer = 15.0;
+        this.webCooldownTimer = 42.0;
         this.state = 'STALK_PATROL';
         this.stateTimer = 0;
         if (this.hasWallForWebAt(this.bodyPos.x, this.bodyPos.z)) {
@@ -2685,10 +2685,10 @@ export class DoomSpider {
             this.stateTimer = 0;
           } else if (
             this.webCooldownTimer <= 0 &&
-            distToPlayer > 7.5 &&
+            distToPlayer > 11.0 &&
             hasClimbWall &&
-            !this.webManager.hasTrapNear(this.bodyPos.x, this.bodyPos.z, 3.6) &&
-            Math.random() < 0.38
+            !this.webManager.hasTrapNear(this.bodyPos.x, this.bodyPos.z, 9.5) &&
+            Math.random() < 0.14
           ) {
             this.state = 'SPINNING_WEB';
             this.stateTimer = 0;

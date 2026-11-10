@@ -587,7 +587,7 @@ export class DoomSpiderWebManager {
   private readonly silkSolidMat: THREE.ShaderMaterial;
   private readonly traps: SpiderWebTrap[] = [];
   private nextTrapId = 1;
-  private readonly maxActiveTraps = 14;
+  private readonly maxActiveTraps = 4;
 
   readonly lairCenter: THREE.Vector3;
   readonly dragCorridorStart: THREE.Vector3;

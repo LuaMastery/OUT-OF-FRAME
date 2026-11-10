@@ -7211,8 +7211,10 @@ describe('Shotgun: peças, munição e aranha', () => {
     expect(pickup).toBeDefined();
     const addItem = vi.fn(() => true);
     const inventory = { addItem } as unknown as DoomInventory;
-    const camera = pickup.position.clone();
-    const lookAt = new THREE.Vector3(0, 0, -1);
+    // Câmera 0,6 m à frente do caixote, mirando o item: sem isso o vetor de
+    // mira é nulo e a interação não abre a tampa.
+    const camera = pickup.position.clone().add(new THREE.Vector3(0, 0, 0.6));
+    const lookAt = pickup.position.clone().sub(camera).normalize();
     // Fechada: encostar no caixote não entrega mais nada.
     items.updateAndCheckPickups(0.016, 1, pickup.position, camera, lookAt, false, inventory);
     expect(addItem).not.toHaveBeenCalled();
