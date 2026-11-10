@@ -128,7 +128,11 @@ import {
   normalizeRoomCode,
   STALE_HEARTBEAT_TTL_MS,
 } from '../src/multiplayer/MultiplayerService';
-import { DoomMultiplayerCoordinator } from '../src/multiplayer/DoomMultiplayerCoordinator';
+import {
+  DoomMultiplayerCoordinator,
+  TACTICAL_PING_COOLDOWN_SECONDS,
+  TACTICAL_PING_DURATION_SECONDS,
+} from '../src/multiplayer/DoomMultiplayerCoordinator';
 import {
   applyChunkMicroFade,
   buildRetro8BitQuantizerCurve,
@@ -4018,6 +4022,94 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
           receivedEvents.some((ev) => ev.kind === 'rescue_ally')
         ).toBe(true);
       }
+
+      // 6. SINAL TÁTICO [V]: marcador com prazo de validade (nunca permanente) e
+      //    recarga obrigatória entre os usos.
+      const camPing = new THREE.PerspectiveCamera(75, 16 / 9, 0.1, 100);
+      camPing.position.set(10, 1.6, 10);
+      const tickAt = (nowSec: number) =>
+        coordinator.update(
+          0.016,
+          nowSec,
+          camPing,
+          {
+            pos: new THREE.Vector3(10, 0, 10),
+            yaw: 0,
+            pitch: 0,
+            speed: 0,
+            bobPhase: 0,
+            crouch: 0,
+            flashlightOn: true,
+            flashDir: new THREE.Vector3(0, 0, -1),
+            health: 100,
+            bleeding: false,
+            ensnared: false,
+            inSequence: false,
+            dead: false,
+          },
+          {
+            x: 10,
+            y: 0,
+            z: 10,
+            upX: 0,
+            upY: 1,
+            upZ: 0,
+            fwdX: 0,
+            fwdY: 0,
+            fwdZ: -1,
+            state: 'PATROL',
+            surfaceMode: 'FLOOR',
+          },
+          false
+        );
+      const pingAt = (nowSec: number) =>
+        coordinator.emitTacticalPing(
+          new THREE.Vector3(10, 1.6, 10),
+          new THREE.Vector3(0, 0, -1),
+          new THREE.Vector3(400, 1.3, 400),
+          nowSec
+        );
+
+      tickAt(120.0);
+      expect(coordinator.canEmitTacticalPing()).toBe(true);
+      pingAt(120.0);
+      expect((coordinator as any).pings.length).toBe(1);
+      expect((coordinator as any).pings[0].expiresAtSec).toBeCloseTo(
+        120 + TACTICAL_PING_DURATION_SECONDS,
+        5
+      );
+
+      // Recarga: apertar [V] de novo na sequência NÃO empilha outro sinal.
+      expect(coordinator.canEmitTacticalPing()).toBe(false);
+      expect(coordinator.tacticalPingCooldownRemainingSec).toBe(TACTICAL_PING_COOLDOWN_SECONDS);
+      pingAt(120.2);
+      expect((coordinator as any).pings.length).toBe(1);
+
+      const pingGroup = (coordinator as any).pings[0].meshGroup as THREE.Group;
+      expect(pingGroup.parent).toBe(scene);
+      // Continuou vivo até o fim do prazo...
+      tickAt(120 + TACTICAL_PING_DURATION_SECONDS - 0.2);
+      expect((coordinator as any).pings.length).toBe(1);
+      // ...e então o marcador sai do mundo sozinho: nada fica fixo na cena.
+      tickAt(120 + TACTICAL_PING_DURATION_SECONDS + 0.2);
+      expect((coordinator as any).pings.length).toBe(0);
+      expect(pingGroup.parent).toBeNull();
+      expect(scene.children.includes(pingGroup)).toBe(false);
+
+      // A recarga é descontada por tempo real de jogo (~60 fps): 2s ainda bloqueia...
+      const cooldownStart = 120 + TACTICAL_PING_DURATION_SECONDS;
+      for (let i = 0; i < 120; i++) tickAt(cooldownStart + i * 0.016);
+      expect(coordinator.canEmitTacticalPing()).toBe(false);
+      // ...e passada a recarga inteira o sinal fica disponível outra vez.
+      for (let i = 0; i < 640; i++) tickAt(cooldownStart + 2 + i * 0.016);
+      expect(coordinator.canEmitTacticalPing()).toBe(true);
+      const secondPingAt = cooldownStart + TACTICAL_PING_COOLDOWN_SECONDS + 1.0;
+      pingAt(secondPingAt);
+      expect((coordinator as any).pings.length).toBe(1);
+      tickAt(secondPingAt + TACTICAL_PING_DURATION_SECONDS - 0.1);
+      expect((coordinator as any).pings.length).toBe(1);
+      tickAt(secondPingAt + TACTICAL_PING_DURATION_SECONDS + 0.1);
+      expect((coordinator as any).pings.length).toBe(0);
 
       coordinator.destroy();
       guestClient.disconnect();

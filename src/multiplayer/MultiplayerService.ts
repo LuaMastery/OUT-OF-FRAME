@@ -204,6 +204,8 @@ export type NetworkWorldEvent =
       x: number;
       y: number;
       z: number;
+      /** Instante da partida (segundos) em que o sinal foi marcado. */
+      serverTs?: number;
       ts: number;
     }
   | {

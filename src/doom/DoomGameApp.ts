@@ -13,7 +13,10 @@ import {
   resolveCylinderWorldCollisions,
   StaticColliderBox,
 } from '../engine/physics/SpatialSweep';
-import { DoomMultiplayerCoordinator } from '../multiplayer/DoomMultiplayerCoordinator';
+import {
+  DoomMultiplayerCoordinator,
+  TACTICAL_PING_DURATION_SECONDS,
+} from '../multiplayer/DoomMultiplayerCoordinator';
 import {
   ActiveRoomSession,
   isPlayerConsideredAfk,
@@ -902,16 +905,7 @@ export class DoomGameApp {
         this.multiplayer?.setPushToTalkHeld(held);
       },
       onPingPress: () => {
-        if (!this.multiplayer) return;
-        const camDir = new THREE.Vector3(0, 0, -1).applyQuaternion(
-          this.camera.quaternion
-        );
-        this.multiplayer.emitTacticalPing(
-          this.camera.position,
-          camDir,
-          this.spider.position,
-          this.elapsed
-        );
+        this.emitTacticalPingFromCamera();
       },
       onRadioChatPress: () => {
         if (!this.multiplayer || this.pauseMenu.open) return;
@@ -1677,15 +1671,7 @@ export class DoomGameApp {
 
         // Atalho Multiplayer Co-op: [V] Sinalizador 3D de posição!
         if (this.multiplayer && e.code === 'KeyV' && !e.repeat) {
-          const camDir = new THREE.Vector3(0, 0, -1).applyQuaternion(
-            this.camera.quaternion
-          );
-          this.multiplayer.emitTacticalPing(
-            this.camera.position,
-            camDir,
-            this.spider.position,
-            this.elapsed
-          );
+          this.emitTacticalPingFromCamera();
           return;
         }
 
@@ -2227,6 +2213,32 @@ export class DoomGameApp {
       this.inventory.wakeShortcutsHub(4500, 'TASER · CLIQUE PARA ATORDOAR · ALCANCE 8m');
     }
     this.updateTaserHud();
+  }
+
+  /**
+   * Sinal tático [V]: marca um ponto à frente da mira por alguns segundos.
+   * Tem duração limitada e exige recarga entre os usos — nunca fica fixo.
+   */
+  private emitTacticalPingFromCamera(): void {
+    if (!this.multiplayer) return;
+    if (!this.multiplayer.canEmitTacticalPing()) {
+      const left = Math.ceil(this.multiplayer.tacticalPingCooldownRemainingSec);
+      this.inventory.wakeShortcutsHub(1800, `SINAL RECARREGANDO · ${left}s`);
+      return;
+    }
+    const camDir = new THREE.Vector3(0, 0, -1).applyQuaternion(
+      this.camera.quaternion
+    );
+    this.multiplayer.emitTacticalPing(
+      this.camera.position,
+      camDir,
+      this.spider.position,
+      this.elapsed
+    );
+    this.inventory.wakeShortcutsHub(
+      2200,
+      `SINAL MARCADO · EXPIRA EM ${TACTICAL_PING_DURATION_SECONDS}s`
+    );
   }
 
   private fireTaser(): void {

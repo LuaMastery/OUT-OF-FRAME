@@ -1084,6 +1084,23 @@
   color: #ffc2c2;
 }
 
+/* O sinal expira sozinho: a plaqueta some em fade nos últimos instantes. */
+.oof-ping-marker-3d.expiring {
+  animation: oof-ping-expire 1.2s ease-in forwards;
+}
+
+@keyframes oof-ping-expire {
+  0% {
+    opacity: 1;
+  }
+  70% {
+    opacity: 0.45;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
 @media (max-width: 760px), (max-height: 500px) {
   .oof-mp-backdrop {
     padding: calc(6px + var(--safe-top, 0px)) calc(6px + var(--safe-right, 0px))

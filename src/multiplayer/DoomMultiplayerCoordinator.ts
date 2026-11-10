@@ -134,6 +134,13 @@ function lerpAngleShortest(a: number, b: number, t: number): number {
   return a + diff * t;
 }
 
+/**
+ * Sinal tático [V]: fica marcado no mundo por tempo limitado e nunca é
+ * permanente. Depois de usado, o operador precisa esperar a recarga.
+ */
+export const TACTICAL_PING_DURATION_SECONDS = 8;
+export const TACTICAL_PING_COOLDOWN_SECONDS = 10;
+
 const AFK_SVG_ICON =
   '<svg class="oof-afk-icon-svg" viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">' +
   '<circle cx="8" cy="8" r="6.5" fill="rgba(45,30,4,0.9)" stroke="#ffca63" stroke-width="1.5"/>' +
@@ -160,6 +167,8 @@ export class DoomMultiplayerCoordinator {
   private readonly voiceChat: ProximityVoiceChatManager;
   private readonly allies = new Map<string, RemoteAllyEntity>();
   private readonly pings: ActiveTacticalPing[] = [];
+  private tacticalPingCooldownRemaining = 0;
+  private lastUpdateSec = 0;
   private readonly remoteVoicePeersScratch: Array<{
     id: string;
     pos: THREE.Vector3;
@@ -268,7 +277,7 @@ export class DoomMultiplayerCoordinator {
             <span class="oof-coop-voice-hint" data-coop-voice-hint>[Z] MODO</span>
           </div>
           <div class="oof-coop-squad-list" data-coop-squad></div>
-          <div class="oof-coop-keys-hint">[B] Falar (Voz 3D)  •  [Z] Modo Mic  •  [T] Rádio  •  [V] Ping</div>
+          <div class="oof-coop-keys-hint">[B] Falar (Voz 3D)  •  [Z] Modo Mic  •  [T] Rádio  •  [V] Ping (8s)</div>
         </div>
       </div>
       <div class="oof-coop-chat-feed" data-coop-feed></div>
@@ -556,12 +565,25 @@ export class DoomMultiplayerCoordinator {
     }
   }
 
+  /** Segundos restantes até o sinal [V] poder ser usado de novo (0 = pronto). */
+  get tacticalPingCooldownRemainingSec(): number {
+    return Math.max(0, this.tacticalPingCooldownRemaining);
+  }
+
+  /** Só um sinal por vez: usou, espera a recarga inteira antes do próximo. */
+  canEmitTacticalPing(): boolean {
+    return this.tacticalPingCooldownRemaining <= 0;
+  }
+
   emitTacticalPing(
     cameraPos: THREE.Vector3,
     cameraDir: THREE.Vector3,
     spiderPos: THREE.Vector3,
     elapsedSec: number
   ): void {
+    if (!this.canEmitTacticalPing()) return;
+    this.tacticalPingCooldownRemaining = TACTICAL_PING_COOLDOWN_SECONDS;
+
     // Raymarch simples pelos blocos do labirinto até 13m à frente da mira
     const hitPos = cameraPos.clone();
     const step = 0.35;
@@ -594,6 +616,8 @@ export class DoomMultiplayerCoordinator {
       this.sound.playRadarPing(true);
     }
 
+    // `serverTs` é o relógio da partida: o marcador expira exatamente no mesmo
+    // prazo para quem enviou e para quem recebeu o sinal.
     this.client.broadcastWorldEvent({
       kind: 'ping',
       senderId: this.session.localPlayerId,
@@ -603,6 +627,7 @@ export class DoomMultiplayerCoordinator {
       x: hitPos.x,
       y: hitPos.y,
       z: hitPos.z,
+      serverTs: elapsedSec,
       ts: Date.now(),
     });
   }
@@ -1192,6 +1217,12 @@ export class DoomMultiplayerCoordinator {
     },
     hideHud: boolean
   ): void {
+    this.lastUpdateSec = elapsedSec;
+    this.tacticalPingCooldownRemaining = Math.max(
+      0,
+      this.tacticalPingCooldownRemaining - Math.max(0, dt)
+    );
+
     // NUNCA oculta o HUD enquanto a caixa de chat de rádio estiver aberta (evita matar foco e travar teclado!)
     const effectiveHideHud = hideHud && !this.chatInputActive;
     this.hudRootEl.style.display = effectiveHideHud ? 'none' : 'flex';
@@ -1578,8 +1609,18 @@ export class DoomMultiplayerCoordinator {
     // 4. Atualiza Pings Táticos 3D ativos
     for (let i = this.pings.length - 1; i >= 0; i--) {
       const p = this.pings[i];
+      // Tempo esgotado (ou o dono do sinal saiu da partida): remove o marcador
+      // do mundo 3D e do overlay — o sinal nunca fica fixo no mapa.
       if (elapsedSec >= p.expiresAtSec) {
         this.scene.remove(p.meshGroup);
+        p.meshGroup.traverse((child) => {
+          if (child instanceof THREE.Mesh) {
+            child.geometry?.dispose();
+            const mat = child.material as THREE.Material | THREE.Material[] | undefined;
+            if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
+            else mat?.dispose();
+          }
+        });
         p.markerEl.remove();
         this.pings.splice(i, 1);
         continue;
@@ -1598,6 +1639,10 @@ export class DoomMultiplayerCoordinator {
       } else {
         p.markerEl.style.display = 'none';
       }
+      p.markerEl.classList.toggle(
+        'expiring',
+        p.expiresAtSec - elapsedSec <= 1.2
+      );
     }
 
     // 5. Atualiza HUD de esquadrão/ping periodicamente
@@ -1680,6 +1725,7 @@ export class DoomMultiplayerCoordinator {
       p.markerEl.remove();
     }
     this.pings.length = 0;
+    this.tacticalPingCooldownRemaining = 0;
     this.captureBannerEl.remove();
     this.hudRootEl.remove();
     this.worldLabelsLayerEl.remove();
@@ -2153,12 +2199,20 @@ export class DoomMultiplayerCoordinator {
         } else {
           this.sound.playRadarPing(true);
         }
+        // Usa o instante da partida gravado pelo remetente; sem ele (pacotes
+        // antigos) o marcador nasce já com a validade local completa.
+        const sentAtSec = typeof ev.serverTs === 'number' && Number.isFinite(ev.serverTs)
+          ? ev.serverTs
+          : undefined;
         this.spawnLocalPingVisual(
           `${ev.senderId}-${ev.ts}`,
           new THREE.Vector3(ev.x, ev.y, ev.z),
           ev.label,
           ev.danger,
-          performance.now() * 0.001
+          sentAtSec ?? this.lastUpdateSec,
+          sentAtSec !== undefined
+            ? sentAtSec + TACTICAL_PING_DURATION_SECONDS
+            : undefined
         );
       }
     } else if (ev.kind === 'flare') {
@@ -2325,7 +2379,8 @@ export class DoomMultiplayerCoordinator {
     pos: THREE.Vector3,
     label: string,
     danger: boolean,
-    nowSec: number
+    nowSec: number,
+    expiresAtSec = nowSec + TACTICAL_PING_DURATION_SECONDS
   ): void {
     const grp = new THREE.Group();
     grp.position.copy(pos);
@@ -2354,7 +2409,8 @@ export class DoomMultiplayerCoordinator {
       worldPos: pos.clone(),
       meshGroup: grp,
       markerEl,
-      expiresAtSec: nowSec + 7.5,
+      // Prazo absoluto na partida: o sinal apaga sozinho e nunca fica fixo no mapa.
+      expiresAtSec: Math.min(expiresAtSec, nowSec + TACTICAL_PING_DURATION_SECONDS),
     });
   }
 
