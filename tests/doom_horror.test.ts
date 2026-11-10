@@ -7555,7 +7555,7 @@ describe('Objetos das salas especiais: abajures, telas e espécime', () => {
 
   it('constrói cúpulas abertas e difusores separados e mantém as cadeiras apoiadas', () => {
     for (const [kind, shadeName, minY, maxY] of [
-      ['cabin_nightstand_desk', 'MazeRoom_lampShade', 1.07, 1.25],
+      ['cabin_nightstand_desk', 'MazeRoom_lampShade', 1.065, 1.235],
       ['library_reading_table', 'MazeRoom_bankerShade', 1.10, 1.195],
     ] as const) {
       const { scene, controller } = fixture(kind);
@@ -7580,9 +7580,9 @@ describe('Objetos das salas especiais: abajures, telas e espécime', () => {
         return false;
       };
       if (kind === 'cabin_nightstand_desk') {
-        for (const x of [-0.34, -0.02]) for (const z of [0.09, 0.35]) {
+        for (const x of [-0.34, 0.02]) for (const z of [0.05, 0.29]) {
           expect(hasVertex(x - 0.02, 0, z - 0.02)).toBe(true);
-          expect(hasVertex(x - 0.02, 0.415, z - 0.02)).toBe(true);
+          expect(hasVertex(x - 0.02, 0.43, z - 0.02)).toBe(true);
         }
       } else {
         for (const chairX of [-0.36, 0.36]) for (const side of [-1, 1]) {

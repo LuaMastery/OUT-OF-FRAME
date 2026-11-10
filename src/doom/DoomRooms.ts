@@ -2852,111 +2852,240 @@ function emitRoomFurniturePiece(
       break;
     }
     case 'astronaut_bunk_bed': {
-      // Beliche duplo espacial/subterrâneo com cabeceiras, colchões acolchoados, guarda-corpo, luzes individuais e baús sob a cama
+      // Beliche de cabine pressurizada: torre de cantoneiras com travessas
+      // diagonais, dois colchões com roupa de cama, gavetas sob o leito
+      // inferior, escada de degraus reais, guarda-corpo e luminárias de leitura
+      // articuladas em cada leito.
       const w = 1.84;
       const d = 0.84;
       const hw = w * 0.5 - 0.045;
       const hd = d * 0.5 - 0.045;
       for (const sx of [-hw, hw]) {
         for (const sz of [-hd, hd]) {
-          pushRoomBox(b.darkIron, xf, 0.07, 1.86, 0.07, sx, 0.93, sz);
+          pushRoomBox(b.darkIron, xf, 0.08, 1.86, 0.08, sx, 0.93, sz);
+          // Sapata de fixação no piso e no teto.
+          pushRoomBox(b.metalTrim, xf, 0.13, 0.05, 0.13, sx, 0.025, sz);
+          pushRoomBox(b.metalTrim, xf, 0.11, 0.05, 0.11, sx, 1.835, sz);
         }
-        // Barras de cabeceira/peseira
-        pushRoomBox(b.metalTrim, xf, 0.05, 0.28, d - 0.06, sx, 0.64, 0);
-        pushRoomBox(b.metalTrim, xf, 0.05, 0.28, d - 0.06, sx, 1.54, 0);
+        // Travessas diagonais de reforço na lateral de cada montante.
+        for (const sz of [-hd, hd]) {
+          pushRoomRod(b.metalTrim, xf, 0.014,
+            new THREE.Vector3(sx, 0.42, sz), new THREE.Vector3(sx, 0.72, sz));
+        }
       }
-      // Dois baús metálicos de bagagem sob o beliche inferior
-      pushRoomBox(b.metalTrim, xf, 0.68, 0.26, 0.62, -0.42, 0.13, 0);
-      pushRoomBox(b.metalTrim, xf, 0.68, 0.26, 0.62, 0.42, 0.13, 0);
+      // Cabeceira e peseira em grade.
+      for (const sz of [-hd, hd]) {
+        pushRoomBox(b.metalTrim, xf, w, 0.035, 0.035, 0, 1.80, sz);
+        for (const bx of [-0.52, -0.17, 0.17, 0.52]) {
+          pushRoomBox(b.metalTrim, xf, 0.028, 0.50, 0.028, bx, 1.55, sz);
+        }
+      }
+      // Gaveteiro sob o leito inferior, com puxadores e faixa de identificação.
+      pushRoomBox(b.metalTrim, xf, 1.52, 0.24, 0.62, 0, 0.14, 0);
+      for (const gx of [-0.5, 0, 0.5]) {
+        pushRoomBox(b.darkIron, xf, 0.46, 0.18, 0.02, gx, 0.14, 0.315);
+        pushRoomBox(b.cleanLinen, xf, 0.16, 0.022, 0.03, gx, 0.14, 0.327);
+        pushRoomBox(b.medicalCross, xf, 0.08, 0.03, 0.006, gx + 0.14, 0.185, 0.318);
+      }
+      // Etiqueta de tripulante na peseira e bolsa de pertences pendurada.
+      pushRoomBox(b.cleanLinen, xf, 0.24, 0.11, 0.02, 0.58, 1.12, hd + 0.01);
+      pushRoomBox(b.bunkFabric, xf, 0.20, 0.18, 0.10, -0.80, 0.90, hd - 0.06);
 
-      for (const bedY of [0.38, 1.28]) {
-        pushRoomBox(b.darkIron, xf, w, 0.075, d, 0, bedY, 0);
-        pushRoomBox(b.cleanLinen, xf, w - 0.12, 0.13, d - 0.1, 0, bedY + 0.1, 0);
-        pushRoomBox(b.bunkFabric, xf, w - 0.56, 0.145, d - 0.08, 0.22, bedY + 0.108, 0);
-        pushRoomBox(b.cleanLinen, xf, 0.34, 0.095, 0.54, -0.64, bedY + 0.2, 0, 0, 0, -0.09);
-        // Luminária individual quente de leitura na cabeceira
-        pushRoomBox(b.warmLampGlow, xf, 0.04, 0.08, 0.16, -hw + 0.05, bedY + 0.34, -0.18);
+      for (const bedY of [0.42, 1.28]) {
+        // Estrutura do leito em U, para o colchão não flutuar.
+        pushRoomBox(b.darkIron, xf, w - 0.06, 0.06, d - 0.06, 0, bedY, 0);
+        pushRoomBox(b.metalTrim, xf, w - 0.02, 0.05, 0.05, 0, bedY + 0.03, -hd + 0.05);
+        pushRoomBox(b.metalTrim, xf, w - 0.02, 0.05, 0.05, 0, bedY + 0.03, hd - 0.05);
+        // Colchão e roupa de cama: lençol, edredom e travesseiro.
+        pushRoomBox(b.cleanLinen, xf, w - 0.14, 0.10, d - 0.12, 0, bedY + 0.11, 0);
+        pushRoomBox(b.bunkFabric, xf, w - 0.52, 0.11, d - 0.10, 0.24, bedY + 0.135, 0);
+        pushRoomBox(b.bunkFabric, xf, w - 0.16, 0.03, d - 0.13, 0.02, bedY + 0.185, 0);
+        pushRoomBox(b.cleanLinen, xf, 0.32, 0.09, 0.48, -0.60, bedY + 0.20, 0, 0, 0, -0.07);
+        // Fita de sinalização no pé do colchão.
+        pushRoomBox(b.medicalCross, xf, 0.05, 0.008, d - 0.20, 0.66, bedY + 0.19, 0);
+        // Luminária de leitura: base, braço curvo e cúpula com difusor.
+        pushRoomBox(b.darkIron, xf, 0.10, 0.05, 0.12, -hw + 0.08, bedY + 0.10, -0.20);
+        pushRoomRod(b.metalTrim, xf, 0.013,
+          new THREE.Vector3(-hw + 0.08, bedY + 0.12, -0.20),
+          new THREE.Vector3(-hw + 0.13, bedY + 0.30, -0.12));
+        pushRoomCyl(b.metalTrim, xf, 0.045, 0.075, 0.07, 12, -hw + 0.14, bedY + 0.335, -0.10, 0.5, 0, 0);
+        pushRoomCyl(b.warmLampGlow, xf, 0.055, 0.055, 0.012, 12, -hw + 0.15, bedY + 0.30, -0.075, 0.5, 0, 0);
+        // Gancho de cortina e cortina dobrada no canto do leito.
+        pushRoomBox(b.bunkFabric, xf, 0.03, 0.32, 0.24, -hw + 0.06, bedY + 0.29, 0.26);
       }
-      // Guarda-corpo de proteção no beliche superior + escada de 5 degraus
-      pushRoomBox(b.metalTrim, xf, 1.04, 0.04, 0.04, -0.22, 1.58, hd + 0.02);
-      pushRoomBox(b.metalTrim, xf, 0.045, 1.54, 0.045, 0.56, 0.79, hd + 0.035);
-      pushRoomBox(b.metalTrim, xf, 0.045, 1.54, 0.045, 0.82, 0.79, hd + 0.035);
-      for (const ry of [0.28, 0.56, 0.84, 1.12, 1.4]) {
-        pushRoomBox(b.metalTrim, xf, 0.28, 0.035, 0.035, 0.69, ry, hd + 0.035);
+      // Guarda-corpo do beliche superior com montantes e travessa.
+      pushRoomBox(b.metalTrim, xf, 1.14, 0.035, 0.035, -0.18, 1.72, hd + 0.02);
+      for (const rx of [-0.72, -0.18, 0.36]) {
+        pushRoomBox(b.metalTrim, xf, 0.03, 0.20, 0.03, rx, 1.62, hd + 0.02);
+      }
+      // Escada de três degraus com apoios inclinados.
+      for (const rx of [0.62, 0.82]) {
+        pushRoomRod(b.metalTrim, xf, 0.020,
+          new THREE.Vector3(rx, 0.26, hd - 0.01), new THREE.Vector3(rx, 1.58, hd + 0.02));
+      }
+      for (const ry of [0.46, 0.86, 1.24]) {
+        pushRoomBox(b.metalTrim, xf, 0.30, 0.035, 0.07, 0.72, ry, hd + 0.02);
+        // Faixa antiderrapante do degrau.
+        pushRoomBox(b.darkIron, xf, 0.26, 0.008, 0.05, 0.72, ry + 0.022, hd + 0.02);
       }
       break;
     }
-
     case 'crew_locker_bank': {
-      // Conjunto de 3 armários vestiários com banco de madeira integrado à frente e maletas no topo
-      pushRoomBox(b.darkIron, xf, 1.5, 0.1, 0.58, 0, 0.05, -0.06);
-      pushRoomBox(b.metalTrim, xf, 1.48, 1.98, 0.54, 0, 1.08, -0.06);
+      // Vestiário: três armários com portas emolduradas, venezianas de
+      // ventilação, plaquetas nominais, maçanetas e ganchos; banco de madeira
+      // rebaixado sobre pés, malas e caixas no topo.
+      pushRoomBox(b.darkIron, xf, 1.50, 0.10, 0.56, 0, 0.05, -0.07);
+      pushRoomBox(b.metalTrim, xf, 1.48, 1.96, 0.52, 0, 1.07, -0.07);
+      pushRoomBox(b.darkIron, xf, 1.52, 0.06, 0.58, 0, 2.08, -0.07);
       for (const lx of [-0.47, 0, 0.47]) {
-        pushRoomBox(b.darkIron, xf, 0.43, 1.84, 0.03, lx, 1.08, 0.215);
-        pushRoomBox(b.metalTrim, xf, 0.39, 1.78, 0.035, lx, 1.08, 0.222);
-        // Venezianas de ventilação + plaqueta nominal + maçaneta
-        pushRoomBox(b.cleanLinen, xf, 0.18, 0.065, 0.04, lx, 1.72, 0.232);
-        pushRoomBox(b.darkIron, xf, 0.24, 0.025, 0.042, lx, 1.84, 0.232);
-        pushRoomBox(b.darkIron, xf, 0.24, 0.025, 0.042, lx, 0.36, 0.232);
-        pushRoomBox(b.darkIron, xf, 0.032, 0.16, 0.05, lx + 0.14, 1.08, 0.24);
+        // Porta com moldura rebaixada e puxador em barra.
+        pushRoomBox(b.darkIron, xf, 0.44, 1.82, 0.025, lx, 1.07, 0.212);
+        pushRoomBox(b.metalTrim, xf, 0.38, 1.72, 0.014, lx, 1.07, 0.226);
+        // Venezianas de ventilação em duas fileiras.
+        for (const vy of [1.64, 1.70, 1.76]) {
+          pushRoomBox(b.darkIron, xf, 0.26, 0.012, 0.02, lx, vy, 0.236);
+        }
+        for (let i = 0; i < 4; i++) {
+          pushRoomBox(b.darkIron, xf, 0.24, 0.010, 0.018, lx, 1.20 + i * 0.035, 0.236);
+        }
+        // Plaqueta nominal clara e etiqueta de função.
+        pushRoomBox(b.cleanLinen, xf, 0.22, 0.07, 0.012, lx, 1.46, 0.236);
+        pushRoomBox(b.medicalCross, xf, 0.10, 0.02, 0.006, lx, 1.46, 0.243);
+        // Maçaneta, fechadura e ganchos laterais.
+        pushRoomBox(b.cleanLinen, xf, 0.026, 0.15, 0.036, lx + 0.15, 1.10, 0.245);
+        pushRoomBox(b.darkIron, xf, 0.05, 0.07, 0.03, lx + 0.15, 0.96, 0.238);
+        pushRoomCyl(b.metalTrim, xf, 0.011, 0.011, 0.10, 8, lx + 0.185, 1.34, 0.24, Math.PI / 2, 0, 0);
+        pushRoomCyl(b.metalTrim, xf, 0.010, 0.010, 0.07, 8, lx + 0.185, 1.44, 0.235, Math.PI / 2, 0, 0);
       }
-      // Banco de vestiário em madeira na frente + caixas estocadas em cima
-      pushRoomBox(b.weatheredWood, xf, 1.42, 0.05, 0.22, 0, 0.42, 0.34);
-      pushRoomBox(b.darkIron, xf, 0.06, 0.4, 0.18, -0.56, 0.2, 0.34);
-      pushRoomBox(b.darkIron, xf, 0.06, 0.4, 0.18, 0.56, 0.2, 0.34);
-      pushRoomBox(b.bunkFabric, xf, 0.52, 0.22, 0.38, -0.36, 2.18, -0.06, 0, 0.08, 0);
-      // Ranhuras reais nas portas dos armários, sem prolongar o banco.
-      for (const lx of [-0.47, 0, 0.47]) for (const y of [1.79, 1.77, 0.41, 0.39]) {
-        pushRoomBox(b.darkIron, xf, 0.18, 0.007, 0.006, lx, y, 0.243);
+      // Cantoneiras verticais entre os armários.
+      for (const lx of [-0.71, -0.235, 0.235, 0.71]) {
+        pushRoomBox(b.darkIron, xf, 0.035, 1.96, 0.05, lx, 1.07, 0.20);
       }
+      // Banco de vestiário com ripas e pés de ferro, dentro do vão frontal.
+      for (let i = 0; i < 4; i++) {
+        pushRoomBox(b.weatheredWood, xf, 1.40, 0.045, 0.05, 0, 0.44, 0.19 + i * 0.048);
+      }
+      pushRoomBox(b.darkIron, xf, 1.34, 0.05, 0.15, 0, 0.40, 0.245);
+      for (const bx of [-0.56, 0.56]) {
+        pushRoomBox(b.darkIron, xf, 0.06, 0.38, 0.05, bx, 0.19, 0.20);
+        pushRoomBox(b.darkIron, xf, 0.06, 0.38, 0.05, bx, 0.19, 0.29);
+        pushRoomBox(b.metalTrim, xf, 0.10, 0.025, 0.11, bx, 0.055, 0.235);
+      }
+      // Mochila e caixa de suprimentos apoiadas no banco.
+      pushRoomBox(b.bunkFabric, xf, 0.30, 0.24, 0.14, -0.44, 0.58, 0.23);
+      pushRoomBox(b.weatheredWood, xf, 0.28, 0.16, 0.14, 0.34, 0.54, 0.25);
+      pushRoomBox(b.cleanLinen, xf, 0.14, 0.05, 0.006, 0.34, 0.54, 0.322);
+      // Casacos pendurados na frente do armário direito.
+      for (const hx of [0.58, 0.70]) {
+        pushRoomCyl(b.metalTrim, xf, 0.010, 0.010, 0.10, 8, hx, 1.30, 0.245, Math.PI / 2, 0, 0);
+      }
+      pushRoomBox(b.bunkFabric, xf, 0.20, 0.40, 0.14, 0.64, 1.08, 0.28, 0, 0.06, 0);
       break;
     }
-
     case 'crew_mess_table': {
-      // Mesa de refeitório da tripulação com tampo limpo apoiado sobre saia inferior (ZERO Z-fighting!), bancos duplos e utensílios
-      pushRoomBox(b.oakWood, xf, 1.56, 0.06, 0.64, 0, 0.775, 0);
-      pushRoomBox(b.weatheredWood, xf, 1.46, 0.045, 0.56, 0, 0.722, 0);
-      pushRoomBox(b.darkIron, xf, 0.1, 0.7, 0.5, -0.62, 0.35, 0);
-      pushRoomBox(b.darkIron, xf, 0.1, 0.7, 0.5, 0.62, 0.35, 0);
-      for (const bz of [-0.4, 0.4]) {
-        pushRoomBox(b.weatheredWood, xf, 1.44, 0.055, 0.22, 0, 0.44, bz);
-        pushRoomBox(b.darkIron, xf, 0.065, 0.42, 0.18, -0.54, 0.21, bz);
-        pushRoomBox(b.darkIron, xf, 0.065, 0.42, 0.18, 0.54, 0.21, bz);
+      // Refeitório: tampo de madeira com saia estrutural, dois bancos corridos
+      // presos por travessas de ferro, bandejas com comida, canecas, jarra
+      // térmica e uma lamparina acesa no centro.
+      pushRoomBox(b.darkIron, xf, 1.50, 0.08, 0.58, 0, 0.74, 0);
+      pushRoomBox(b.oakWood, xf, 1.56, 0.05, 0.64, 0, 0.805, 0);
+      pushRoomBox(b.weatheredWood, xf, 1.56, 0.022, 0.66, 0, 0.782, 0);
+      // Pernas em A nas duas extremidades, com sapatas.
+      for (const px of [-0.62, 0.62]) {
+        pushRoomBox(b.darkIron, xf, 0.07, 0.70, 0.36, px, 0.35, 0);
+        pushRoomBox(b.metalTrim, xf, 0.12, 0.025, 0.44, px, 0.705, 0);
+        pushRoomBox(b.metalTrim, xf, 0.10, 0.025, 0.42, px, 0.013, 0);
+        // Travessa que sustenta os bancos corridos nos dois lados.
+        for (const sz of [-1, 1]) {
+          pushRoomBox(b.metalTrim, xf, 0.06, 0.045, 0.22, px, 0.40, sz * 0.40);
+        }
       }
-      // Bandejas inox, jarra e canecas sobre a mesa (topo exato em 0.805)
-      pushRoomBox(b.metalTrim, xf, 0.36, 0.022, 0.24, -0.36, 0.817, 0.12);
-      pushRoomBox(b.metalTrim, xf, 0.36, 0.022, 0.24, 0.34, 0.817, -0.12);
-      pushRoomCyl(b.metalTrim, xf, 0.045, 0.045, 0.11, 8, -0.12, 0.86, 0.1);
-      pushRoomCyl(b.darkIron, xf, 0.065, 0.075, 0.2, 8, 0.04, 0.905, -0.02);
+      // Dois bancos corridos, um por lado, apoiados nas travessas.
+      for (const sz of [-1, 1]) {
+        pushRoomBox(b.darkIron, xf, 1.42, 0.035, 0.20, 0, 0.415, sz * 0.40);
+        for (let i = 0; i < 3; i++) {
+          pushRoomBox(b.weatheredWood, xf, 1.46, 0.05, 0.058, 0, 0.455, sz * (0.325 + i * 0.066));
+        }
+        // Apoio central do banco, até o chão.
+        pushRoomBox(b.darkIron, xf, 0.06, 0.40, 0.05, 0, 0.20, sz * 0.40);
+        pushRoomBox(b.metalTrim, xf, 0.12, 0.02, 0.16, 0, 0.01, sz * 0.40);
+      }
+      // Bandejas com compartimentos e prato, dos dois lados do tampo.
+      for (const [tx, tz] of [[-0.42, 0.16], [0.34, 0.16], [-0.42, -0.16], [0.34, -0.16]] as const) {
+        pushRoomBox(b.metalTrim, xf, 0.30, 0.02, 0.24, tx, 0.828, tz);
+        pushRoomBox(b.darkIron, xf, 0.24, 0.012, 0.18, tx, 0.841, tz);
+        pushRoomCyl(b.cleanLinen, xf, 0.062, 0.062, 0.016, 12, tx - 0.05, 0.852, tz);
+        pushRoomBox(b.cleanLinen, xf, 0.09, 0.04, 0.08, tx + 0.07, 0.858, tz);
+      }
+      // Canecas metálicas junto dos talheres.
+      for (const [cx, cz] of [[-0.12, 0.20], [-0.10, -0.20], [0.56, 0.14], [0.58, -0.14]] as const) {
+        pushRoomCyl(b.metalTrim, xf, 0.040, 0.036, 0.085, 10, cx, 0.868, cz);
+        pushRoomCyl(b.darkIron, xf, 0.043, 0.043, 0.010, 10, cx, 0.915, cz);
+      }
+      // Jarra térmica central com tampa e alça.
+      pushRoomCyl(b.cleanLinen, xf, 0.068, 0.076, 0.105, 12, 0.10, 0.882, 0);
+      pushRoomCyl(b.darkIron, xf, 0.060, 0.070, 0.024, 12, 0.10, 0.9365, 0);
+      pushRoomCyl(b.metalTrim, xf, 0.017, 0.017, 0.08, 8, 0.17, 0.90, 0, 0, 0, Math.PI / 2);
+      // Lamparina acesa: tigela, mecha incandescente e cúpula.
+      pushRoomCyl(b.darkIron, xf, 0.048, 0.058, 0.022, 10, -0.10, 0.841, 0.02);
+      pushRoomCyl(b.warmLampGlow, xf, 0.032, 0.026, 0.060, 10, -0.10, 0.882, 0.02);
+      pushRoomCyl(b.darkIron, xf, 0.023, 0.032, 0.012, 10, -0.10, 0.918, 0.02);
+      // Suporte de pão e guardanapos no centro.
+      pushRoomBox(b.weatheredWood, xf, 0.20, 0.05, 0.16, 0.34, 0.855, 0);
+      pushRoomBox(b.cleanLinen, xf, 0.16, 0.03, 0.12, 0.34, 0.878, 0);
       break;
     }
-
     case 'cabin_nightstand_desk': {
-      // Escrivaninha de cabine com gaveteiro lateral, nicho de livros, abajur quente e cadeira de madeira
-      pushRoomBox(b.weatheredWood, xf, 1.32, 0.065, 0.68, 0, 0.76, -0.02);
-      pushRoomBox(b.oakWood, xf, 0.46, 0.72, 0.62, 0.4, 0.36, -0.02);
-      pushRoomBox(b.weatheredWood, xf, 0.075, 0.72, 0.6, -0.58, 0.36, -0.02);
-      for (const dy of [0.2, 0.42, 0.62]) {
-        pushRoomBox(b.weatheredWood, xf, 0.38, 0.16, 0.03, 0.4, dy, 0.3);
-        pushRoomBox(b.metalTrim, xf, 0.1, 0.025, 0.04, 0.4, dy, 0.32);
+      // Escrivaninha de cabine: tampo de madeira sobre gaveteiro lateral,
+      // nicho de livros, abajur com cúpula aberta, terminal de cabine com
+      // teclado, quadro de recados, cadeira estofada e tapete.
+      pushRoomBox(b.darkIron, xf, 1.30, 0.06, 0.66, 0, 0.72, -0.02);
+      pushRoomBox(b.weatheredWood, xf, 1.34, 0.05, 0.68, 0, 0.775, -0.02);
+      pushRoomBox(b.oakWood, xf, 0.46, 0.66, 0.62, 0.40, 0.36, -0.02);
+      pushRoomBox(b.weatheredWood, xf, 0.075, 0.70, 0.60, -0.60, 0.35, -0.02);
+      // Quatro gavetas com frente rebaixada e puxador de latão.
+      for (const dy of [0.16, 0.36, 0.56]) {
+        pushRoomBox(b.darkIron, xf, 0.40, 0.17, 0.022, 0.40, dy, 0.298);
+        pushRoomBox(b.weatheredWood, xf, 0.34, 0.12, 0.014, 0.40, dy, 0.311);
+        pushRoomBox(b.metalTrim, xf, 0.11, 0.022, 0.035, 0.40, dy, 0.328);
+        pushRoomBox(b.cleanLinen, xf, 0.13, 0.04, 0.006, 0.40, dy + 0.05, 0.314);
       }
-      // Nicho traseiro com livros pessoais + tablet + abajur quente
-      pushRoomBox(b.weatheredWood, xf, 0.72, 0.28, 0.2, -0.24, 0.93, -0.24);
-      pushRoomBox(b.bookshelf, xf, 0.64, 0.22, 0.16, -0.24, 0.93, -0.22);
-      // Base sobre o tampo; haste encontra a cúpula aberta, com luz somente por baixo.
-      pushRoomCyl(b.darkIron, xf, 0.085, 0.105, 0.04, 12, 0.42, 0.8125, -0.08);
-      pushRoomCyl(b.metalTrim, xf, 0.018, 0.018, 0.29, 10, 0.42, 0.9775, -0.08);
-      pushRoomLampShell(b.lampShade, xf, 0.10, 0.17, 0.18, 0.42, 1.16, -0.08);
-      pushRoomCyl(b.warmLampGlow, xf, 0.135, 0.135, 0.012, 16, 0.42, 1.077, -0.08);
-      // Cadeira encaixada na escrivaninha
-      pushRoomBox(b.weatheredWood, xf, 0.42, 0.05, 0.38, -0.18, 0.44, 0.24);
-      pushRoomBox(b.weatheredWood, xf, 0.42, 0.42, 0.05, -0.18, 0.66, 0.41);
-      for (const x of [-0.34, -0.02]) for (const z of [0.09, 0.35]) {
-        pushRoomBox(b.weatheredWood, xf, 0.04, 0.415, 0.04, x, 0.2075, z);
+      // Nicho traseiro com livros, quadro de recados e luminária.
+      pushRoomBox(b.weatheredWood, xf, 0.74, 0.30, 0.20, -0.26, 0.94, -0.24);
+      pushRoomBox(b.bookshelf, xf, 0.66, 0.22, 0.16, -0.26, 0.94, -0.22);
+      for (let i = 0; i < 6; i++) {
+        pushRoomBox(i % 2 === 0 ? b.libraryBookRed : b.libraryBookGreen,
+          xf, 0.045, 0.17, 0.12, -0.56 + i * 0.055, 0.94, -0.21);
       }
+      pushRoomBox(b.weatheredWood, xf, 0.44, 0.26, 0.02, -0.26, 1.19, -0.30);
+      for (let i = 0; i < 3; i++) {
+        pushRoomBox(b.cleanLinen, xf, 0.32, 0.09, 0.006, -0.26, 1.255 - i * 0.085, -0.288);
+      }
+      // Abajur: base, haste e cúpula aberta com difusor por baixo.
+      pushRoomCyl(b.darkIron, xf, 0.075, 0.095, 0.035, 12, 0.42, 0.818, -0.08);
+      pushRoomCyl(b.metalTrim, xf, 0.016, 0.016, 0.27, 10, 0.42, 0.965, -0.08);
+      pushRoomLampShell(b.lampShade, xf, 0.09, 0.16, 0.17, 0.42, 1.15, -0.08);
+      pushRoomCyl(b.warmLampGlow, xf, 0.125, 0.125, 0.012, 16, 0.42, 1.068, -0.08);
+      // Terminal de cabine sobre a mesa, com teclado inclinado.
+      pushRoomBox(b.darkIron, xf, 0.34, 0.24, 0.06, -0.10, 0.95, -0.16, -0.16, 0, 0);
+      pushRoomBox(b.computerScreen, xf, 0.28, 0.18, 0.02, -0.10, 0.955, -0.126, -0.16, 0, 0);
+      pushRoomBox(b.metalTrim, xf, 0.32, 0.02, 0.14, -0.10, 0.795, 0.02);
+      for (let i = 0; i < 4; i++) {
+        pushRoomBox(b.darkIron, xf, 0.26, 0.006, 0.012, -0.10, 0.808, -0.02 + i * 0.026);
+      }
+      // Cadeira estofada encaixada na escrivaninha.
+      pushRoomBox(b.bunkFabric, xf, 0.44, 0.07, 0.32, -0.16, 0.47, 0.17);
+      pushRoomBox(b.weatheredWood, xf, 0.44, 0.02, 0.32, -0.16, 0.43, 0.17);
+      pushRoomBox(b.bunkFabric, xf, 0.44, 0.42, 0.06, -0.16, 0.71, 0.315, -0.09, 0, 0);
+      for (const cx of [-0.34, 0.02]) {
+        for (const cz of [0.05, 0.29]) {
+          pushRoomBox(b.weatheredWood, xf, 0.04, 0.43, 0.04, cx, 0.215, cz);
+        }
+      }
+      // Tapete e caixa de bagagem sob a mesa.
+      pushRoomBox(b.bunkFabric, xf, 0.78, 0.012, 0.32, -0.16, 0.012, 0.19);
+      pushRoomBox(b.metalTrim, xf, 0.34, 0.20, 0.26, -0.44, 0.16, 0.16);
       break;
     }
-
     case 'medical_gurney_bed': {
       // Maca de pronto-socorro: chassi tubular em H com rodízios de duplo
       // rodízio travados, coluna de altura hidráulica, tampo articulado em três
