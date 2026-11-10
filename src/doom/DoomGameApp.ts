@@ -866,52 +866,6 @@ export class DoomGameApp {
     });
 
     // A tela de vitória só entra depois de a aranha terminar de cair.
-    if (import.meta.env?.DEV) {
-      // Atalho de verificação manual em desenvolvimento: força a morte da aranha
-      // e permite ler o estado da tela de vitória pelo console do navegador.
-      (window as unknown as { __doomDevHooks?: unknown }).__doomDevHooks = {
-        killSpider: () => {
-          // Força a morte mesmo que a aranha esteja em cena cinemática.
-          if (!this.spider.applyShotgunDamage(9999)) {
-            (this.spider as unknown as { beginDeathAnimation: () => void }).beginDeathAnimation();
-          }
-        },
-        stageSpiderInFront: (distance = 3.2) => {
-          // Coloca a aranha à frente do olhar para inspecionar a animação.
-          const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion);
-          const target = this.camera.position.clone().addScaledVector(dir, distance);
-          (this.spider as unknown as { bodyPos: THREE.Vector3 }).bodyPos.set(
-            target.x,
-            Math.max(0.6, Math.min(2.1, target.y + 0.15)),
-            target.z
-          );
-        },
-        equipTaser: () => {
-          // Atalho de verificação: entrega o taser e equipa para inspeção visual.
-          if (!this.inventory.hasItem('field_taser')) this.inventory.addItem('field_taser');
-          this.taser.equip();
-          this.shotgun.stow();
-        },
-        fireTaser: () => {
-          this.taser.fire();
-        },
-        shockSpider: () => {
-          this.spider.applyTaserStun();
-        },
-        advanceDeath: (seconds: number) => {
-          // Avança a queda manualmente (usado para capturar quadros da cena).
-          (this.spider as unknown as {
-            updateDeathAnimation: (dt: number, elapsed: number) => void;
-          }).updateDeathAnimation(seconds, seconds);
-        },
-        state: () => ({
-          spiderDead: this.spider.isDead,
-          deathProgress: this.spider.deathProgress,
-          victoryVisible: this.inventory.victoryVisible,
-          bodyVisible: this.spider.sceneRoot.visible,
-        }),
-      };
-    }
     this.spider.onDeathAnimationFinished = () => {
       if (this.disposed) return;
       this.showVictoryScreen();
