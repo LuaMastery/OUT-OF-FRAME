@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { gridCellToWorld } from '../src/doom/DoomMazeBuilder';
-import { buildTitleBackdropWorld, TITLE_CAMERA_CELL } from '../src/terminal/TitleGameBackdrop';
+import {
+  buildTitleBackdropWorld,
+  TITLE_BACKDROP_QUALITY,
+  TITLE_CAMERA_CELL,
+} from '../src/terminal/TitleGameBackdrop';
 import { resetThemedRoomLocks } from '../src/doom/DoomRooms';
 
 describe('Cenário real no menu principal', () => {
@@ -27,5 +31,41 @@ describe('Cenário real no menu principal', () => {
       Object.values(world.textures).forEach(texture => texture.dispose());
       resetThemedRoomLocks();
     }
+  });
+
+  it('renderiza o cenário com resolução interna maior que a versão pixelizada antiga', () => {
+    // O fundo antigo renderizava a 640x400 no máximo; agora acompanha a tela
+    // com supersampling moderado e teto para não competir com a partida.
+    expect(TITLE_BACKDROP_QUALITY.maxBufferWidth).toBeGreaterThanOrEqual(1024);
+    expect(TITLE_BACKDROP_QUALITY.maxBufferHeight).toBeGreaterThanOrEqual(640);
+    expect(TITLE_BACKDROP_QUALITY.minBufferWidth).toBeGreaterThanOrEqual(640);
+    expect(TITLE_BACKDROP_QUALITY.minBufferHeight).toBeGreaterThanOrEqual(360);
+    expect(TITLE_BACKDROP_QUALITY.maxPixelRatio).toBeGreaterThan(1);
+    expect(TITLE_BACKDROP_QUALITY.targetFps).toBeGreaterThanOrEqual(24);
+    expect(TITLE_BACKDROP_QUALITY.reducedMotionFps).toBeLessThan(TITLE_BACKDROP_QUALITY.targetFps);
+  });
+});
+
+describe('Trilha da tela inicial (motor de áudio)', () => {
+  it('expõe controles de barramento para manter, abafar e encerrar o tema', async () => {
+    const { SoundEngine } = await import('../src/engine/audio/SoundEngine');
+    const engine = new SoundEngine();
+    const proto = SoundEngine.prototype as unknown as Record<string, unknown>;
+    for (const method of ['startTitlePad', 'stopTitlePad', 'duckTitleTheme', 'unduckTitleTheme', 'titleMenuGlide']) {
+      expect(typeof proto[method]).toBe('function');
+    }
+    // O ambiente de teste não tem navegador: o mínimo para as chamadas serem
+    // seguras é um `window` com AudioContext ausente (o motor sai em silêncio).
+    (globalThis as unknown as { window: unknown }).window = {
+      AudioContext: undefined,
+      setTimeout: () => 0,
+      clearTimeout: () => undefined,
+    };
+    expect(() => engine.startTitlePad(0.55)).not.toThrow();
+    expect(() => engine.duckTitleTheme()).not.toThrow();
+    expect(() => engine.unduckTitleTheme()).not.toThrow();
+    expect(() => engine.titleMenuGlide(1)).not.toThrow();
+    expect(() => engine.stopTitlePad(0.3)).not.toThrow();
+    engine.dispose();
   });
 });

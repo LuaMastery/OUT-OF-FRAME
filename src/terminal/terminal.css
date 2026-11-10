@@ -557,7 +557,19 @@
   display: block;
   width: 100%;
   height: 100%;
-  filter: brightness(1.22) contrast(1.04);
+  /* Nitidez do cenário real: leve saturação e vinheta nas bordas para o
+     corredor ganhar profundidade sem perder o clima do jogo. */
+  filter: brightness(1.3) contrast(1.09) saturate(1.06);
+}
+
+.oof-title-screen__background::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(120% 92% at 38% 52%, transparent 42%, rgba(3, 6, 5, .42) 100%),
+    linear-gradient(90deg, rgba(4, 8, 7, .18), transparent 34%);
 }
 
 @keyframes oofTitleBackdropIn {

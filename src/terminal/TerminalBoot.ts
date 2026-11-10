@@ -195,9 +195,10 @@ export class TerminalBootController {
         if (this.phase !== 'title_menu' || this.multiplayerModal?.visible || event.pointerType === 'touch') return;
         this.finishTitleIntro();
         if (this.menuIndex !== index) {
+          const direction = index > this.menuIndex ? 1 : -1;
           this.menuIndex = index;
           this.syncMainMenuSelection();
-          this.sound.menuMove();
+          this.sound.titleMenuGlide(direction);
         }
       });
       button.addEventListener('focus', () => {
@@ -242,7 +243,11 @@ export class TerminalBootController {
         this.options.onLaunchImmediateGesture(session);
       },
       onClose: () => {
-        if (this.phase === 'title_menu') this.mainMenuButtons[this.menuIndex]?.focus();
+        // A Central de Salas apenas abafa a trilha; ao fechar, ela volta.
+        if (this.phase === 'title_menu') {
+          this.sound.unduckTitleTheme();
+          this.mainMenuButtons[this.menuIndex]?.focus();
+        }
       },
     });
   }
@@ -505,6 +510,9 @@ export class TerminalBootController {
           this.activateDesktopItem(DESKTOP_ITEMS[this.selectedIconIndex].id);
         }
       } else if (this.phase === 'title_menu') {
+        // Com a Central de Salas aberta, as teclas pertencem ao modal (inclusive
+        // o Esc, que fecha só o modal e devolve a trilha ao volume normal).
+        if (this.multiplayerModal?.visible) return;
         const count = TITLE_MENU_ITEMS.length;
         // Qualquer tecla conclui a impressão do terminal antes de navegar.
         this.finishTitleIntro();
@@ -512,12 +520,12 @@ export class TerminalBootController {
           e.preventDefault();
           this.menuIndex = (this.menuIndex - 1 + count) % count;
           this.syncMainMenuSelection(true);
-          this.sound.menuMove();
+          this.sound.titleMenuGlide(-1);
         } else if (e.key === 'ArrowDown' || e.code === 'KeyS') {
           e.preventDefault();
           this.menuIndex = (this.menuIndex + 1) % count;
           this.syncMainMenuSelection(true);
-          this.sound.menuMove();
+          this.sound.titleMenuGlide(1);
         } else if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
           this.executeMenuSelection();
@@ -1389,8 +1397,10 @@ export class TerminalBootController {
 
   private executeMenuSelection(): void {
     this.finishTitleIntro();
-    this.sound.stopTitlePad(0.8);
     this.sound.stopBootBed(0.4);
+    // A trilha da tela inicial só termina quando o menu realmente sai de cena:
+    // indo para a partida, voltando à área de trabalho ou no fade do fim.
+    if (this.menuIndex !== 1) this.sound.stopTitlePad(0.8);
     if (this.menuIndex === 0) {
       // INICIAR (Modo Solo) — mantém o SoundEngine vivo para crossfade contínuo com o Labirinto DOOM!
       this.destroy(false);
@@ -1405,6 +1415,8 @@ export class TerminalBootController {
         urlRoom = '';
       }
       this.sound.windowOpen();
+      // Abafa a trilha (sem parar) enquanto a Central de Salas está aberta.
+      this.sound.duckTitleTheme(0.34, 0.45);
       this.multiplayerModal?.open(urlRoom || undefined);
     } else {
       // SAIR retorna para a Área de Trabalho versão Terminal

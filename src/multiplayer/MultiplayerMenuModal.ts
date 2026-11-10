@@ -183,8 +183,11 @@ export class MultiplayerMenuModal {
 
     this.boundKeyDown = (e: KeyboardEvent) => {
       if (!this.isOpen) return;
-      // Impede que o menu binário ao fundo intercepte teclas de digitação nos campos!
-      e.stopPropagation();
+      // Impede que o menu binário ao fundo intercepte teclas de digitação nos
+      // campos. `stopImmediatePropagation` também bloqueia o handler global do
+      // terminal que está registrado na mesma janela — sem ele, o Esc que fecha
+      // esta central voltava a ser lido como "sair do jogo" e fechava o menu.
+      e.stopImmediatePropagation();
 
       if (e.key === 'Escape') {
         e.preventDefault();

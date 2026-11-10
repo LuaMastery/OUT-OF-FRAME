@@ -23,6 +23,27 @@ export function buildTitleBackdropWorld(): {
 
 export const TITLE_CAMERA_CELL = { gx: 14, gz: 15 } as const;
 
+/**
+ * Ajustes de qualidade do cenário do menu.
+ *
+ * O fundo é uma cena real do jogo, então vale investir um pouco mais em
+ * nitidez: renderiza em resolução interna maior (com supersampling em telas
+ * grandes), com antialias e 30 quadros por segundo. O teto evita que o menu
+ * consuma a GPU que a partida vai precisar.
+ */
+export const TITLE_BACKDROP_QUALITY = {
+  /** Maior lado do buffer interno, em pixels de dispositivo. */
+  maxBufferWidth: 1400,
+  maxBufferHeight: 820,
+  /** Piso do buffer interno: nunca renderiza abaixo disso para não pixelizar. */
+  minBufferWidth: 640,
+  minBufferHeight: 360,
+  /** Escala de supersampling em relação ao tamanho do contêiner CSS. */
+  maxPixelRatio: 1.5,
+  targetFps: 30,
+  reducedMotionFps: 6,
+} as const;
+
 /** Câmera no corredor real entre os setores industrial e de pedra. */
 export class TitleGameBackdrop {
   private readonly renderer: THREE.WebGLRenderer;
@@ -35,11 +56,15 @@ export class TitleGameBackdrop {
   private elapsed = 0;
   private width = 0;
   private height = 0;
+  private sized = false;
   private readonly reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+  private lightSources: Array<{ position: THREE.Vector3; intensity: number }> = [];
+  private lightRefreshCountdown = 0;
 
   constructor(private readonly container: HTMLElement) {
-    this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'low-power' });
+    this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'default' });
     this.renderer.setPixelRatio(1);
+    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.setClearColor(0x080d0a, 1);
     this.renderer.domElement.setAttribute('aria-hidden', 'true');
     this.container.appendChild(this.renderer.domElement);
@@ -55,13 +80,20 @@ export class TitleGameBackdrop {
     // O mesmo feixe usado pelo jogador revela a arquitetura sem alterar o mapa.
     this.world.uniforms.uFlashlightPos.value.copy(this.camera.position);
     this.world.uniforms.uFlashlightIntensity.value = 1.2;
+    this.lightSources = [...this.world.maze.lights, ...this.world.maze.annexLights].map((light) => ({
+      position: light.position,
+      intensity: light.baseIntensity,
+    }));
+    this.refreshNearestLights();
+  }
+
+  /** Mantém apenas as lâmpadas próximas do olhar dentro do shader. */
+  private refreshNearestLights(): void {
     syncNearestDoomLightsToUniforms(
-      [...this.world.maze.lights, ...this.world.maze.annexLights].map((light) => ({
-        position: light.position, intensity: light.baseIntensity,
-      })),
+      this.lightSources,
       this.camera.position,
       this.world.uniforms,
-      12
+      16
     );
   }
 
@@ -85,7 +117,10 @@ export class TitleGameBackdrop {
 
   private readonly render = (now: number): void => {
     this.frame = 0;
-    if (this.lastFrame && now - this.lastFrame < 1000 / (this.reduceMotion.matches ? 5 : 15)) {
+    const fps = this.reduceMotion.matches
+      ? TITLE_BACKDROP_QUALITY.reducedMotionFps
+      : TITLE_BACKDROP_QUALITY.targetFps;
+    if (this.lastFrame && now - this.lastFrame < 1000 / fps) {
       this.frame = requestAnimationFrame(this.render);
       return;
     }
@@ -93,19 +128,56 @@ export class TitleGameBackdrop {
     this.lastFrame = now;
     const width = Math.max(1, this.container.clientWidth);
     const height = Math.max(1, this.container.clientHeight);
-    if (width !== this.width || height !== this.height) {
-      this.width = width; this.height = height;
-      // A visão de fundo não deve disputar os recursos da partida/menu em telas grandes.
-      const scale = Math.min(1, 640 / width, 400 / height);
-      this.renderer.setSize(Math.max(1, Math.round(width * scale)), Math.max(1, Math.round(height * scale)), false);
+    if (width !== this.width || height !== this.height || !this.sized) {
+      this.width = width;
+      this.height = height;
+      this.sized = true;
+      // Nitidez primeiro: o buffer acompanha o tamanho real da tela, com um teto
+      // para o menu não competir com a GPU da partida.
+      const dpr = Math.min(window.devicePixelRatio || 1, TITLE_BACKDROP_QUALITY.maxPixelRatio);
+      const fit = Math.min(
+        1,
+        TITLE_BACKDROP_QUALITY.maxBufferWidth / (width * dpr),
+        TITLE_BACKDROP_QUALITY.maxBufferHeight / (height * dpr)
+      );
+      const bufferW = Math.min(
+        TITLE_BACKDROP_QUALITY.maxBufferWidth,
+        Math.max(TITLE_BACKDROP_QUALITY.minBufferWidth, Math.round(width * dpr * fit))
+      );
+      const bufferH = Math.min(
+        TITLE_BACKDROP_QUALITY.maxBufferHeight,
+        Math.max(TITLE_BACKDROP_QUALITY.minBufferHeight, Math.round(height * dpr * fit))
+      );
+      this.renderer.setSize(bufferW, bufferH, false);
       this.camera.aspect = width / height;
-      this.camera.fov = this.camera.aspect < 1 ? 70 : 60;
+      this.camera.fov = this.camera.aspect < 1 ? 72 : 62;
       this.camera.updateProjectionMatrix();
     }
-    // A câmera permanece na célula livre; só o olhar oscila suavemente.
-    const drift = this.reduceMotion.matches ? 0 : Math.sin(this.elapsed * 0.16) * 0.60;
-    this.camera.lookAt(this.origin.x + 10, 1.54 + drift * 0.08, this.origin.z + drift);
+
+    // Movimento de câmera contínuo e lento: deriva lateral, balanço de cabeça e
+    // respiração da lanterna. Mantém o corredor vivo sem tirar a estabilidade.
+    const t = this.elapsed;
+    const still = this.reduceMotion.matches;
+    const drift = still ? 0 : Math.sin(t * 0.16) * 0.60;
+    const sway = still ? 0 : Math.sin(t * 0.23 + 0.7) * 0.055;
+    const breathe = still ? 0 : Math.sin(t * 0.9) * 0.012;
+    const lookX = this.origin.x + 10;
+    const lookZ = this.origin.z + drift;
+    this.camera.lookAt(lookX + sway, 1.54 + drift * 0.08 + breathe, lookZ);
     this.camera.getWorldDirection(this.world.uniforms.uFlashlightDir.value);
+    this.world.uniforms.uFlashlightPos.value.copy(this.camera.position);
+
+    // A lanterna pulsa de leve, como se a lâmpada estivesse aquecendo.
+    const flicker = still ? 0 : Math.sin(t * 1.7) * 0.035 + Math.sin(t * 7.3) * 0.012;
+    this.world.uniforms.uFlashlightIntensity.value = 1.42 + flicker;
+
+    // As lâmpadas mais próximas do olhar se renovam de tempos em tempos.
+    this.lightRefreshCountdown -= 1;
+    if (this.lightRefreshCountdown <= 0) {
+      this.lightRefreshCountdown = 20;
+      this.refreshNearestLights();
+    }
+
     this.renderer.render(this.world.scene, this.camera);
     this.frame = requestAnimationFrame(this.render);
   };

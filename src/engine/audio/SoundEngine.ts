@@ -272,6 +272,13 @@ export class SoundEngine {
   private terminalHumOscB: OscillatorNode | null = null;
   private titlePadGain: GainNode | null = null;
   private titlePadOscillators: OscillatorNode[] = [];
+  private titleThemeBus: GainNode | null = null;
+  private titlePadFilter: BiquadFilterNode | null = null;
+  private titlePadNoise: AudioBufferSourceNode | null = null;
+  private titleMelodyTimer = 0;
+  private titleMelodyOscillators: OscillatorNode[] = [];
+  private titleThemeToken = 0;
+  private readonly titleThemeLevel = 1.0;
 
   // Ambiência espacial e industrial do Labirinto DOOM
   private dungeonStarted = false;
@@ -892,54 +899,186 @@ export class SoundEngine {
   }
 
   /**
-   * Pad harmônico da tela inicial: acorde lento e grave que entra por baixo
-   * do menu, com brilho aberto aos poucos.
+   * Trilha da tela inicial.
+   *
+   * Um acorde de Lá menor aberto (fundamental, quinta, oitava, terça e nona)
+   * entra por baixo do menu em camadas: cada voz tem o próprio envelope, um
+   * `detune` levemente desafinado (coro analógico) e a respiração de um LFO
+   * lento. O filtro abre devagar e o convolver do corredor de pedra dá a cauda,
+   * então a tela ganha um ambiente contínuo em vez de um zumbido estático.
+   *
+   * A trilha vive no próprio `titleThemeBus`, o que permite mantê-la tocando
+   * durante a navegação do menu e silenciá-la com fade quando a partida começa.
    */
-  startTitlePad(volume = 0.5): void {
+  startTitlePad(volume = 0.55): void {
     if (!this.isRunning() || !this.ctx || !this.terminalBus) return;
     const ctx = this.ctx;
     const now = ctx.currentTime;
     this.stopTitlePad(0.6);
 
-    const gain = ctx.createGain();
-    gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.linearRampToValueAtTime(0.02 + volume * 0.045, now + 2.8);
+    // O tema tem um barramento próprio (usado para abafar sem interromper) e,
+    // dentro dele, um nível para o colchão harmônico e outro para o motivo.
+    const themeBus = ctx.createGain();
+    themeBus.gain.value = 0.0001;
+    themeBus.gain.linearRampToValueAtTime(1, now + 3.2);
+    themeBus.connect(this.terminalBus);
+    this.titleThemeBus = themeBus;
 
-    const filter = ctx.createBiquadFilter();
-    filter.type = 'lowpass';
-    filter.frequency.setValueAtTime(260, now);
-    filter.frequency.linearRampToValueAtTime(1150, now + 3.4);
-    filter.Q.value = 0.7;
-    filter.connect(gain);
-    gain.connect(this.terminalBus);
-    if (this.reverbSend) gain.connect(this.reverbSend);
+    // Nível calibrado para o pad ficar audível sem mascarar os efeitos de UI.
+    const padBus = ctx.createGain();
+    padBus.gain.value = 0.028 + volume * 0.062;
+    padBus.connect(themeBus);
 
-    // Acorde de Lá menor aberto: fundamental, quinta, oitava e terça maior.
-    const voices: Array<[number, OscillatorType, number]> = [
-      [55, 'sine', 0.9],
-      [82.41, 'triangle', 0.55],
-      [110, 'sine', 0.5],
-      [164.81, 'sine', 0.32],
-      [220, 'triangle', 0.2],
+    // Colchão grave: filtro abre aos poucos e o LFO dá a respiração do ambiente.
+    const bodyFilter = ctx.createBiquadFilter();
+    bodyFilter.type = 'lowpass';
+    bodyFilter.frequency.setValueAtTime(210, now);
+    bodyFilter.frequency.linearRampToValueAtTime(760, now + 5.4);
+    bodyFilter.Q.value = 0.92;
+    bodyFilter.connect(padBus);
+    this.titlePadFilter = bodyFilter;
+
+    const airFilter = ctx.createBiquadFilter();
+    airFilter.type = 'bandpass';
+    airFilter.Q.value = 0.62;
+    airFilter.frequency.setValueAtTime(480, now);
+    airFilter.frequency.linearRampToValueAtTime(1650, now + 6.2);
+    const airGain = ctx.createGain();
+    airGain.gain.setValueAtTime(0.0001, now);
+    airGain.gain.linearRampToValueAtTime(0.16, now + 5.0);
+    airFilter.connect(airGain);
+    airGain.connect(padBus);
+
+    // Envelopes por voz: o acorde se monta de baixo para cima, sem ataque.
+    const voices: Array<{
+      freq: number;
+      type: OscillatorType;
+      level: number;
+      pan: number;
+      detune: number;
+      delay: number;
+    }> = [
+      { freq: 55.0, type: 'sine', level: 0.95, pan: 0, detune: -4, delay: 0 },
+      { freq: 82.41, type: 'triangle', level: 0.42, pan: -0.26, detune: 3, delay: 0.7 },
+      { freq: 110.0, type: 'sine', level: 0.4, pan: 0.22, detune: -6, delay: 1.3 },
+      { freq: 164.81, type: 'sine', level: 0.26, pan: -0.34, detune: 5, delay: 1.9 },
+      { freq: 220.0, type: 'triangle', level: 0.16, pan: 0.3, detune: -3, delay: 2.5 },
+      { freq: 261.63, type: 'sine', level: 0.09, pan: -0.12, detune: 7, delay: 3.1 },
     ];
+
     const oscillators: OscillatorNode[] = [];
-    voices.forEach(([freq, type, level], index) => {
+    for (const voice of voices) {
       const osc = ctx.createOscillator();
-      osc.type = type;
-      osc.frequency.setValueAtTime(freq, now);
-      // Deriva minúscula dá vida ao pad sem soar desafinada.
-      osc.detune.setValueAtTime(index % 2 === 0 ? -3 : 3, now);
+      osc.type = voice.type;
+      osc.frequency.setValueAtTime(voice.freq, now);
+      osc.detune.setValueAtTime(voice.detune, now);
+
+      const panner = ctx.createStereoPanner();
+      panner.pan.setValueAtTime(voice.pan, now);
+
       const voiceGain = ctx.createGain();
-      voiceGain.gain.setValueAtTime(0.0001, now);
-      voiceGain.gain.linearRampToValueAtTime(level, now + 2.2 + index * 0.35);
+      voiceGain.gain.setValueAtTime(0.0001, now + voice.delay);
+      voiceGain.gain.linearRampToValueAtTime(voice.level, now + voice.delay + 3.4);
+
+      // Coro lento: cada voz respira em um ritmo próprio.
+      const lfo = ctx.createOscillator();
+      lfo.type = 'sine';
+      lfo.frequency.setValueAtTime(0.045 + voice.delay * 0.012, now);
+      const lfoDepth = ctx.createGain();
+      lfoDepth.gain.setValueAtTime(4.5, now);
+      lfo.connect(lfoDepth);
+      lfoDepth.connect(osc.detune);
+      lfo.start(now);
+      oscillators.push(lfo);
+
       osc.connect(voiceGain);
-      voiceGain.connect(filter);
+      voiceGain.connect(panner);
+      if (voice.freq > 200) {
+        panner.connect(airFilter);
+      } else {
+        panner.connect(bodyFilter);
+      }
       osc.start(now);
       oscillators.push(osc);
-    });
+    }
 
-    this.titlePadGain = gain;
+    // Sopro sutil de ar da sala, só para o pad não soar sintético demais.
+    if (this.pinkNoiseBuffer) {
+      const air = ctx.createBufferSource();
+      air.buffer = this.pinkNoiseBuffer;
+      air.loop = true;
+      const noiseFilter = ctx.createBiquadFilter();
+      noiseFilter.type = 'bandpass';
+      noiseFilter.frequency.setValueAtTime(620, now);
+      noiseFilter.frequency.linearRampToValueAtTime(1180, now + 7.5);
+      noiseFilter.Q.value = 0.7;
+      const noiseGain = ctx.createGain();
+      noiseGain.gain.setValueAtTime(0.0001, now);
+      noiseGain.gain.linearRampToValueAtTime(0.052, now + 6.4);
+      air.connect(noiseFilter);
+      noiseFilter.connect(noiseGain);
+      noiseGain.connect(padBus);
+      air.start(now);
+      this.titlePadNoise = air;
+    }
+
+    if (this.reverbSend) themeBus.connect(this.reverbSend);
+    this.titlePadGain = themeBus;
     this.titlePadOscillators = oscillators;
+
+    this.startTitleThemeMelody(volume, now);
+  }
+
+  /**
+   * Motivo lento e esparso sobre o pad: uma nota a cada poucos segundos, em
+   * Lá menor natural, com eco no corredor. Entra depois do acorde, como um
+   * instrumento distante na trilha.
+   */
+  private startTitleThemeMelody(volume: number, now: number): void {
+    if (!this.ctx || !this.titleThemeBus) return;
+    const ctx = this.ctx;
+    const melody: Array<[number, number, number]> = [
+      [0, 440.0, 0.09],
+      [3.6, 329.63, 0.078],
+      [7.4, 392.0, 0.072],
+      [11.2, 349.23, 0.066],
+      [15.0, 440.0, 0.08],
+      [19.2, 293.66, 0.07],
+      [23.4, 329.63, 0.064],
+    ];
+    const startAt = now + 2.4;
+    const token = ++this.titleThemeToken;
+    let loopOffset = 0;
+    const played: OscillatorNode[] = [];
+    const schedulePass = (): void => {
+      if (!this.ctx || !this.titleThemeBus || token !== this.titleThemeToken) return;
+      for (const [offset, freq, level] of melody) {
+        const at = startAt + loopOffset + offset;
+        const osc = ctx.createOscillator();
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(freq, at);
+        const gain = ctx.createGain();
+        gain.gain.setValueAtTime(0.0001, at);
+        gain.gain.linearRampToValueAtTime(level * (0.34 + volume * 0.45), at + 0.9);
+        gain.gain.exponentialRampToValueAtTime(0.0001, at + 3.6);
+        const panner = ctx.createStereoPanner();
+        panner.pan.setValueAtTime(0.18, at);
+        osc.connect(gain);
+        gain.connect(panner);
+        panner.connect(this.titleThemeBus);
+        if (this.reverbSend) panner.connect(this.reverbSend);
+        osc.start(at);
+        osc.stop(at + 3.8);
+        played.push(osc);
+      }
+      loopOffset += 26.5;
+      this.titleMelodyTimer = window.setTimeout(() => {
+        if (token !== this.titleThemeToken) return;
+        schedulePass();
+      }, 25_500);
+    };
+    this.titleMelodyOscillators = played;
+    schedulePass();
   }
 
   stopTitlePad(fadeSeconds = 1.2): void {
@@ -947,13 +1086,24 @@ export class SoundEngine {
     const now = this.ctx.currentTime;
     const gain = this.titlePadGain;
     const oscillators = this.titlePadOscillators;
+    const noise = this.titlePadNoise;
     this.titlePadGain = null;
     this.titlePadOscillators = [];
+    this.titlePadNoise = null;
+    this.titleThemeBus = null;
+    this.titlePadFilter = null;
+    this.titleThemeToken += 1;
+    const melody = this.titleMelodyOscillators;
+    if (this.titleMelodyTimer) {
+      window.clearTimeout(this.titleMelodyTimer);
+      this.titleMelodyTimer = 0;
+    }
+    this.titleMelodyOscillators = [];
     if (!gain) return;
     gain.gain.cancelScheduledValues(now);
     gain.gain.setTargetAtTime(0.0001, now, Math.max(0.02, fadeSeconds / 3));
     window.setTimeout(() => {
-      for (const osc of oscillators) {
+      for (const osc of [...oscillators, ...melody]) {
         try {
           osc.stop();
         } catch {
@@ -961,11 +1111,56 @@ export class SoundEngine {
         }
       }
       try {
+        noise?.stop();
         gain.disconnect();
       } catch {
         // já desconectado
       }
     }, Math.ceil(fadeSeconds * 1000) + 150);
+  }
+
+  /** Abafa a trilha (sem encerrá-la) enquanto um submenu cobre a tela. */
+  duckTitleTheme(amount = 0.45, seconds = 0.5): void {
+    if (!this.ctx || !this.titleThemeBus) return;
+    const now = this.ctx.currentTime;
+    const target = Math.max(0.0001, this.titleThemeLevel * amount);
+    this.titleThemeBus.gain.cancelScheduledValues(now);
+    this.titleThemeBus.gain.setTargetAtTime(target, now, Math.max(0.05, seconds / 3));
+    // Abafar também escurece o timbre: a trilha vira fundo, não compete com o submenu.
+    this.titlePadFilter?.frequency.setTargetAtTime(430, now, Math.max(0.05, seconds / 3));
+  }
+
+  /** Devolve a trilha ao volume normal depois de fechar o submenu. */
+  unduckTitleTheme(seconds = 0.7): void {
+    if (!this.ctx || !this.titleThemeBus) return;
+    const now = this.ctx.currentTime;
+    this.titleThemeBus.gain.cancelScheduledValues(now);
+    this.titleThemeBus.gain.setTargetAtTime(this.titleThemeLevel, now, Math.max(0.05, seconds / 3));
+    this.titlePadFilter?.frequency.setTargetAtTime(760, now, Math.max(0.05, seconds / 3));
+  }
+
+  /** Nota curta de hover/seleção do menu, afinada com a trilha da tela inicial. */
+  titleMenuGlide(direction: 1 | -1 = 1): void {
+    if (!this.isRunning() || !this.ctx || !this.terminalBus) return;
+    const ctx = this.ctx;
+    const now = ctx.currentTime;
+    const base = direction > 0 ? 440.0 : 329.63;
+    const osc = ctx.createOscillator();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(base, now);
+    osc.frequency.exponentialRampToValueAtTime(direction > 0 ? base * 1.5 : base * 0.75, now + 0.16);
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.linearRampToValueAtTime(0.05, now + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.28);
+    const panner = ctx.createStereoPanner();
+    panner.pan.setValueAtTime(direction > 0 ? 0.22 : -0.22, now);
+    osc.connect(gain);
+    gain.connect(panner);
+    panner.connect(this.terminalBus);
+    if (this.reverbSend) panner.connect(this.reverbSend);
+    osc.start(now);
+    osc.stop(now + 0.3);
   }
 
   /** Avanço da barra de progresso combinando pulso harmônico + micro-seek de disco rígido */
@@ -4022,6 +4217,10 @@ export class SoundEngine {
       this.pulseTimerId = 0;
     }
     this.stopCoalesceDrone();
+    // Encerra também a trilha da tela inicial (e o motivo que se reagenda).
+    this.stopTitlePad(0.2);
+    this.stopBootBed(0.2);
+    this.stopTerminalPowerBed(0.2);
     if (this.ctx) {
       void this.ctx.close();
       this.ctx = null;

@@ -70,6 +70,9 @@ function createSequenceState(search = '') {
       stopBootBed: vi.fn(),
       startTitlePad: vi.fn(),
       stopTitlePad: vi.fn(),
+      duckTitleTheme: vi.fn(),
+      unduckTitleTheme: vi.fn(),
+      titleMenuGlide: vi.fn(),
       stopCoalesceDrone: vi.fn(),
       keyBackspace: vi.fn(),
     },
@@ -101,6 +104,12 @@ function createSequenceState(search = '') {
 
     playTitleParticles: vi.fn(),
     startTitleTerminalIntro: vi.fn(),
+    finishTitleIntro: vi.fn(),
+    executeMenuSelection: TerminalBootController.prototype['executeMenuSelection'],
+    multiplayerModal: {
+      visible: false,
+      open: vi.fn(),
+    },
   };
 
   const setTimeoutMock = vi.fn((fn: () => void, _ms?: number) => {
@@ -286,5 +295,42 @@ describe('Tela inicial sem textos auxiliares', () => {
     for (const text of forbidden) {
       expect(TITLE_MENU_MARKUP).not.toContain(text);
     }
+  });
+});
+
+describe('Trilha contínua durante a navegação do menu', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('mantém o som da tela inicial tocando ao abrir a Central de Salas, apenas abafando', () => {
+    const { state } = createSequenceState();
+    const execute = (TerminalBootController.prototype as unknown as {
+      executeMenuSelection(this: typeof state): void;
+    }).executeMenuSelection;
+    state.menuIndex = 1;
+    execute.call(state);
+
+    expect(state.sound.duckTitleTheme).toHaveBeenCalled();
+    expect(state.sound.stopTitlePad).not.toHaveBeenCalled();
+    expect(state.multiplayerModal.open).toHaveBeenCalled();
+  });
+
+  it('encerra a trilha somente quando o menu sai de cena', () => {
+    const { state } = createSequenceState();
+    const back = (TerminalBootController.prototype as unknown as {
+      returnToDesktopFromTitle(this: typeof state): void;
+    }).returnToDesktopFromTitle;
+    back.call(state);
+    expect(state.sound.stopTitlePad).toHaveBeenCalled();
+  });
+
+  it('usa uma nota afinada com a trilha ao navegar pelas opções', () => {
+    // O hover e as setas do teclado chamam a nota musical do menu; conferimos
+    // pelo protótipo porque o binding real depende de um DOM completo.
+    const proto = TerminalBootController.prototype as unknown as Record<string, unknown>;
+    expect(typeof proto['syncMainMenuSelection']).toBe('function');
+    const source = String(TerminalBootController.prototype['bindEvents']);
+    expect(source).toContain('titleMenuGlide');
   });
 });
