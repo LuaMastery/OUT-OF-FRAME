@@ -64,6 +64,14 @@ import {
   sampleDragPolyline,
 } from './DoomRagdoll';
 import {
+  DoomPerfGovernor,
+  PERF_LIGHTS_MIN,
+  PerfGovernorSnapshot,
+  PerfLevers,
+  snapFrameCapToVsync,
+} from './DoomPerfGovernor';
+import { DoomPerfHud } from './DoomPerfHud';
+import {
   DoomAnnexLightSpec,
   DoomRoomId,
   DoomSpecialRoomDoorController,
@@ -73,6 +81,7 @@ import {
   DoomGameSettings,
   DoomSettingsStore,
   resolutionPresetToHeight,
+  viewmodelShadowMapSize,
 } from './DoomSettings';
 import {
   createDoomSharedUniforms,
@@ -1028,10 +1037,38 @@ export class DoomGameApp {
     );
     this.pauseMenu.setHudSuppressed(true);
     this.pauseMenu.setMultiplayerMode(Boolean(initialMultiplayerSession));
+    this.perfHud = new DoomPerfHud(this.viewportEl);
+    this.perfGovernor = new DoomPerfGovernor(
+      this.buildBasePerfLevers(this.settingsStore.value),
+      {
+        targetFps: this.settingsStore.value.targetFps,
+        aggressiveness: this.settingsStore.value.optimizerAggressiveness,
+        enabled: this.settingsStore.value.autoOptimizer,
+      }
+    );
+
     this.unsubscribeSettings = this.settingsStore.subscribe((s) => {
       this.applySettings(s);
     });
     this.applySettings(this.settingsStore.value);
+
+    // O foco da janela decide se vale a pena renderizar a plena carga.
+    window.addEventListener('blur', () => this.refreshFocusPenalty(), {
+      signal: this.abortCtrl.signal,
+    });
+    window.addEventListener('focus', () => this.refreshFocusPenalty(), {
+      signal: this.abortCtrl.signal,
+    });
+    document.addEventListener(
+      'visibilitychange',
+      () => {
+        this.refreshFocusPenalty();
+        // Voltar de uma aba oculta traz um quadro gigantesco que não diz nada
+        // sobre o hardware: joga as medidas fora e recomeça a janela limpa.
+        if (!document.hidden) this.perfGovernor.resetWindow();
+      },
+      { signal: this.abortCtrl.signal }
+    );
 
     this.syncCamera(0);
     this.bindInput();
@@ -1041,12 +1078,6 @@ export class DoomGameApp {
   }
 
   private applySettings(s: Readonly<DoomGameSettings>): void {
-    const targetH = resolutionPresetToHeight(s.resolutionHeight);
-    if (this.compositor.getResolution().height !== targetH) {
-      const w = Math.max(1, this.viewportEl.clientWidth || window.innerWidth);
-      const h = Math.max(1, this.viewportEl.clientHeight || window.innerHeight);
-      this.compositor.setTargetHeight(targetH, w, h);
-    }
     this.compositor.setPostFXOptions({
       brightness: s.brightness / 100,
       contrast: s.contrast / 100,
@@ -1092,6 +1123,8 @@ export class DoomGameApp {
       this.setCameraFov(s.fov + this.slideState.slideAmount * 5.5);
     }
 
+    this.applyPerformanceSettings(s);
+
     if (this.pauseMenu.open && !this.multiplayer) {
       this.flashlight.update(
         0.001,
@@ -1104,6 +1137,198 @@ export class DoomGameApp {
       );
       this.updateFlickeringLightsAndAudio();
     }
+  }
+
+  // ==========================================================================
+  // SISTEMA DE OTIMIZAÇÃO
+  // ==========================================================================
+
+  /** Qualidade pedida pelo jogador, antes de o governador mexer em nada. */
+  private buildBasePerfLevers(s: Readonly<DoomGameSettings>): PerfLevers {
+    return {
+      renderScalePercent: s.renderScalePercent,
+      maxDynamicLights: s.maxDynamicLights,
+      contactShadowHz: s.contactShadowRate,
+      viewmodelShadowMap: viewmodelShadowMapSize(s.viewmodelShadowQuality) > 0,
+      radarHz: 24,
+      lightRankMs: 0,
+    };
+  }
+
+  /**
+   * Recalcula a altura do framebuffer: resolução escolhida × escala do
+   * governador × penalidade de falta de foco.
+   */
+  private syncRenderScale(): void {
+    const s = this.settingsStore.value;
+    const baseH = resolutionPresetToHeight(s.resolutionHeight);
+    const scale = this.perfGovernor
+      ? this.perfGovernor.currentLevers.renderScalePercent
+      : s.renderScalePercent;
+    const penalty = this.unfocusedPenalty ? 0.6 : 1;
+    const targetH = Math.round((baseH * scale * penalty) / 100);
+    // Mesmos limites do compositor, para a comparação abaixo não divergir.
+    const clamped = Math.max(140, Math.min(1080, targetH));
+    if (this.compositor.getResolution().height === clamped) return;
+    const w = Math.max(1, this.viewportEl.clientWidth || window.innerWidth);
+    const h = Math.max(1, this.viewportEl.clientHeight || window.innerHeight);
+    this.compositor.setTargetHeight(clamped, w, h);
+  }
+
+  /** Teto de tempo por quadro já encaixado na taxa do monitor. */
+  private effectiveFrameCap(): { capMs: number; toleranceMs: number } {
+    return snapFrameCapToVsync(this.frameCapMs, this.displayIntervalMs);
+  }
+
+  /** Teto de tempo por quadro. Zero significa "deixa o monitor mandar". */
+  private updateFrameCap(): void {
+    const s = this.settingsStore.value;
+    let cap = s.targetFps > 0 ? 1000 / s.targetFps : 0;
+    if (this.unfocusedPenalty) {
+      // Sem foco não tem ninguém olhando: 15 quadros por segundo bastam.
+      cap = Math.max(cap, 1000 / 15);
+    }
+    this.frameCapMs = cap;
+  }
+
+  /** Aplica as alavancas decididas pelo governador nos subsistemas. */
+  private applyPerfLevers(levers: PerfLevers): void {
+    this.perfLightsBudget = Math.max(
+      PERF_LIGHTS_MIN,
+      Math.min(MAX_DOOM_LIGHTS, Math.round(levers.maxDynamicLights))
+    );
+
+    if (this.lightRankIntervalMs !== levers.lightRankMs) {
+      this.lightRankIntervalMs = levers.lightRankMs;
+      this.lastLightRankMs = -1;
+    }
+
+    this.radar.setRefreshIntervalMs(1000 / Math.max(1, levers.radarHz));
+    this.worldItems.setContactShadowHz(levers.contactShadowHz);
+    this.flashlight.setViewmodelShadowQuality(
+      levers.viewmodelShadowMap
+        ? viewmodelShadowMapSize(
+            this.settingsStore.value.viewmodelShadowQuality
+          )
+        : 0
+    );
+    this.syncRenderScale();
+  }
+
+  /**
+   * Janela sem foco: corta resolução e quadros em vez de queimar máquina.
+   *
+   * Só entra em ação depois de um instante sem foco, porque alternar de janela
+   * por um segundo não deveria mexer na qualidade de quem está jogando — e
+   * porque `document.hasFocus()` pode demorar a confirmar em algumas
+   * incorporações, o atraso evita rebaixar o jogo à toa.
+   */
+  private refreshFocusPenalty(): void {
+    const s = this.settingsStore.value;
+    const hidden = Boolean(document.hidden);
+    const unfocused =
+      hidden ||
+      (typeof document.hasFocus === 'function' && !document.hasFocus());
+
+    if (!s.reduceWhenUnfocused || !unfocused) {
+      if (this.focusLostAtMs !== 0) this.focusLostAtMs = 0;
+      this.setFocusPenalty(false);
+      return;
+    }
+
+    if (this.focusLostAtMs === 0) {
+      this.focusLostAtMs = performance.now();
+      window.setTimeout(() => {
+        if (!this.disposed) this.refreshFocusPenalty();
+      }, 2600);
+      return;
+    }
+
+    if (performance.now() - this.focusLostAtMs < 2000) return;
+    this.setFocusPenalty(true);
+  }
+
+  private setFocusPenalty(on: boolean): void {
+    if (this.unfocusedPenalty === on) return;
+    this.unfocusedPenalty = on;
+    this.updateFrameCap();
+    this.syncRenderScale();
+  }
+
+  /** Chamado uma vez por quadro, depois de desenhar. */
+  private updatePerfFrame(
+    nowMs: number,
+    realDtMs: number,
+    cpuMs: number,
+    measuring: boolean
+  ): void {
+    if (this.disposed) return;
+
+    if (measuring) {
+      const snapshot = this.perfGovernor.update({
+        frameMs: realDtMs,
+        cpuMs,
+        nowMs,
+      });
+      this.lastPerfSnapshot = snapshot;
+      if (snapshot.leversRevision !== this.appliedLeversRevision) {
+        this.appliedLeversRevision = snapshot.leversRevision;
+        this.applyPerfLevers(snapshot.levers);
+      }
+    }
+
+    const snap = this.lastPerfSnapshot;
+    if (this.perfHud.visible && snap) {
+      this.perfHud.pushFrameTime(realDtMs);
+      this.perfHud.update(
+        {
+          fps: snap.fps,
+          targetFps: this.settingsStore.value.targetFps,
+          frameMsMedian: snap.frameMsMedian,
+          frameMsP95: snap.frameMsP95,
+          cpuShare: snap.cpuShare,
+          bottleneck: snap.bottleneck,
+          status: snap.status,
+          step: snap.step,
+          stepLabel: snap.stepLabel,
+          scalePercent: this.perfGovernor.currentLevers.renderScalePercent,
+          lights: this.perfLightsBudget,
+          budgetMs: snap.budgetMs,
+          autoEnabled: this.settingsStore.value.autoOptimizer,
+          drops: snap.drops,
+          raises: snap.raises,
+        },
+        nowMs
+      );
+    }
+  }
+
+  /** Aplica as opções de desempenho vindas das configurações. */
+  private applyPerformanceSettings(s: Readonly<DoomGameSettings>): void {
+    this.perfGovernor.setBase(this.buildBasePerfLevers(s));
+    this.perfGovernor.setOptions({
+      targetFps: s.targetFps,
+      aggressiveness: s.optimizerAggressiveness,
+      enabled: s.autoOptimizer,
+    });
+    this.updateFrameCap();
+
+    const far = Math.max(1, s.drawDistance);
+    if (this.camera.far !== far) {
+      this.camera.far = far;
+      this.camera.updateProjectionMatrix();
+    }
+
+    this.flashlight.setViewmodelShadowQuality(
+      viewmodelShadowMapSize(s.viewmodelShadowQuality)
+    );
+    this.worldItems.setContactShadowHz(s.contactShadowRate);
+    this.radar.setRefreshIntervalMs(1000 / 24);
+    this.perfHud.setVisible(s.showPerfHud);
+
+    // As alavancas resolvidas mandam: reaplica por cima do que foi pedido.
+    this.applyPerfLevers(this.perfGovernor.currentLevers);
+    this.appliedLeversRevision = this.perfGovernor.leversRevision;
   }
 
   private syncAudioFocusMute(): void {
@@ -2395,9 +2620,35 @@ export class DoomGameApp {
     this.lastRaf = performance.now();
     const loop = (now: number) => {
       if (this.disposed) return;
+      // Reagenda já: mesmo que este quadro seja descartado pelo limitador, a
+      // próxima chance continua garantida.
+      this.rafId = requestAnimationFrame(loop);
+
+      // Descobre o intervalo real do monitor: o `requestAnimationFrame` nunca
+      // dispara mais rápido que o vsync, então o menor intervalo observado é
+      // a taxa de atualização da tela.
+      if (this.lastRafCallbackMs > 0) {
+        const sinceCallback = now - this.lastRafCallbackMs;
+        if (
+          sinceCallback > 4 &&
+          (this.displayIntervalMs === 0 || sinceCallback < this.displayIntervalMs)
+        ) {
+          this.displayIntervalMs = sinceCallback;
+        }
+      }
+      this.lastRafCallbackMs = now;
+
+      // Limitador de quadros. Quando ainda falta tempo para o próximo quadro
+      // do alvo, devolve o controle ao navegador sem simular e sem desenhar.
+      // É o que transforma uma enxurrada de quadros irregulares numa entrega
+      // constante: a máquina esquenta menos e o jogo para de engasgar.
+      const { capMs, toleranceMs } = this.effectiveFrameCap();
+      if (capMs > 0 && now - this.lastRaf < capMs - toleranceMs) return;
+
       const realDt = Math.max(0.0005, (now - this.lastRaf) / 1000);
       const dt = Math.min(0.08, realDt);
       this.lastRaf = now;
+      const cpuStartMs = performance.now();
 
       const res = this.compositor.getResolution();
       this.pauseMenu.updateTelemetry(realDt, res.width, res.height);
@@ -2431,7 +2682,14 @@ export class DoomGameApp {
         showViewmodel ? (showShotgun ? this.shotgun.viewScene : this.flashlight.viewScene) : undefined,
         showViewmodel ? (showShotgun ? this.shotgun.viewCamera : this.flashlight.viewCamera) : undefined
       );
-      this.rafId = requestAnimationFrame(loop);
+
+      // Este tempo inclui a submissão de desenho, mas não a espera pela GPU:
+      // a diferença entre os dois é justamente o que diz onde está o gargalo,
+      // e é isso que o governador usa para escolher o que cortar primeiro.
+      const cpuMs = performance.now() - cpuStartMs;
+      // Com a simulação congelada (pausa solo) o tempo de quadro não mede o
+      // custo real do jogo, então o governador fica de fora desse período.
+      this.updatePerfFrame(now, realDt * 1000, cpuMs, !soloSimulationPaused);
     };
     this.rafId = requestAnimationFrame(loop);
   }
@@ -4940,6 +5198,31 @@ export class DoomGameApp {
     d2: number;
   }> = [];
 
+  // ===== Sistema inteligente de otimização =====
+  /** Mede o tempo de quadro e decide quanta qualidade o hardware aguenta. */
+  private readonly perfGovernor: DoomPerfGovernor;
+  /** Painel opcional de telemetria ao vivo. */
+  private readonly perfHud: DoomPerfHud;
+  /** Revisão já aplicada: evita reescrever estado a cada quadro. */
+  private appliedLeversRevision = -1;
+  private perfLightsBudget: number = MAX_DOOM_LIGHTS;
+  private lightRankIntervalMs = 0;
+  private lastLightRankMs = -1;
+  private nearestFlarePos: THREE.Vector3 | null = null;
+  private nearestFlareDist = Infinity;
+  private nearestFlareLife = 0;
+  /** Teto de quadros por segundo; 0 = sem limitador. */
+  private frameCapMs = 0;
+  /** Penalidade aplicada quando a janela perde o foco. */
+  private unfocusedPenalty = false;
+  /** Quando o foco foi perdido, para não penalizar uma alternada rápida. */
+  private focusLostAtMs = 0;
+  /** Menor intervalo entre chamadas do rAF observado: o vsync da tela. */
+  private displayIntervalMs = 0;
+  private lastRafCallbackMs = 0;
+  /** Último retrato do governador, para o painel continuar legível na pausa. */
+  private lastPerfSnapshot: PerfGovernorSnapshot | null = null;
+
   /** Direção (espaço de câmera) da lâmpada que mais ilumina o jogador. */
   private readonly viewmodelLightDir = new THREE.Vector3();
   private readonly cameraInverseQuat = new THREE.Quaternion();
@@ -5017,6 +5300,44 @@ export class DoomGameApp {
     }
 
     this.rankedLightScratch.length = totalLightPool;
+
+    // Ranking e envio para a GPU: amostrados conforme o orçamento atual.
+    const rankNowMs = this.elapsed * 1000;
+    if (
+      this.lightRankIntervalMs <= 0 ||
+      this.lastLightRankMs < 0 ||
+      rankNowMs - this.lastLightRankMs >= this.lightRankIntervalMs
+    ) {
+      this.lastLightRankMs = rankNowMs;
+      this.rankAndUploadLights(listenerPos);
+    }
+
+    if (!(this.pauseMenu.open && !this.multiplayer)) {
+      this.sound.updateSpatialLampAudio(
+        listenerPos,
+        this.yaw,
+        nearestLamp,
+        nearestDist,
+        nearestJustFlickered
+      );
+      this.sound.updateSpatialFlareAudio(
+        listenerPos,
+        this.yaw,
+        this.nearestFlarePos,
+        this.nearestFlareDist,
+        this.nearestFlareLife
+      );
+    }
+  }
+
+  /**
+   * Ordena as luminárias por distância, preenche os uniformes do shader e
+   * calcula de onde vem a luz que está batendo no jogador.
+   *
+   * Pode rodar mais devagar que o quadro: o ranking e o envio para a GPU são
+   * caros (ordenação + escrita em uniformes), mas a cena muda pouco em 100 ms.
+   */
+  private rankAndUploadLights(listenerPos: THREE.Vector3): void {
     this.rankedLightScratch.sort((a, b) => a.d2 - b.d2);
 
     const flares = this.worldItems.getActiveFlares();
@@ -5026,9 +5347,13 @@ export class DoomGameApp {
       flares.length + allyFlashLights.length,
       10
     );
-    const staticSlots = Math.min(
-      this.rankedLightScratch.length,
-      MAX_DOOM_LIGHTS - reservedForDynamic
+    const lightBudget = Math.max(
+      PERF_LIGHTS_MIN,
+      Math.min(MAX_DOOM_LIGHTS, this.perfLightsBudget)
+    );
+    const staticSlots = Math.max(
+      0,
+      Math.min(this.rankedLightScratch.length, lightBudget - reservedForDynamic)
     );
 
     let totalLights = 0;
@@ -5058,7 +5383,7 @@ export class DoomGameApp {
       }
     }
 
-    for (let f = 0; f < flares.length && totalLights < MAX_DOOM_LIGHTS; f++) {
+    for (let f = 0; f < flares.length && totalLights < lightBudget; f++) {
       const fl = flares[f];
       const fade = Math.min(1, fl.remainingSec / 2.5);
       const jitter = 0.84 + 0.16 * Math.sin(this.elapsed * 31 + f * 2);
@@ -5070,7 +5395,7 @@ export class DoomGameApp {
 
     for (
       let a = 0;
-      a < allyFlashLights.length && totalLights < MAX_DOOM_LIGHTS;
+      a < allyFlashLights.length && totalLights < lightBudget;
       a++
     ) {
       const al = allyFlashLights[a];
@@ -5118,23 +5443,13 @@ export class DoomGameApp {
       this.viewmodelLightDir.z
     );
 
-    if (!(this.pauseMenu.open && !this.multiplayer)) {
-      this.sound.updateSpatialLampAudio(
-        listenerPos,
-        this.yaw,
-        nearestLamp,
-        nearestDist,
-        nearestJustFlickered
-      );
-      this.sound.updateSpatialFlareAudio(
-        listenerPos,
-        this.yaw,
-        nearestFlarePos,
-        nearestFlareDist,
-        nearestFlareLife
-      );
-    }
+    // Guardado para o áudio espacial, que roda em todo quadro mesmo quando o
+    // ranking das luzes é amostrado num ritmo menor.
+    this.nearestFlarePos = nearestFlarePos;
+    this.nearestFlareDist = nearestFlareDist;
+    this.nearestFlareLife = nearestFlareLife;
   }
+
 
   destroy(): void {
     if (this.disposed) return;
@@ -5161,6 +5476,7 @@ export class DoomGameApp {
     this.shotgun.dispose();
     this.specialRoomDoors.dispose();
     this.pauseMenu.destroy();
+    this.perfHud.dispose();
     this.touchControls.destroy();
     this.multiplayer?.destroy();
     this.multiplayer = null;

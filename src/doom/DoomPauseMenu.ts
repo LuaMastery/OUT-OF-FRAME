@@ -169,7 +169,7 @@ export class DoomPauseMenu {
             </div>
           </section>
 
-          <!-- VIEW 2: CONFIGURAÇÕES (27 OPÇÕES REAIS) -->
+          <!-- VIEW 2: CONFIGURAÇÕES (38 OPÇÕES REAIS) -->
           <section class="pause-view" data-pause-view="settings">
             <div class="pause-subbar">
               <div class="pause-tabs" data-settings-tabs></div>
@@ -579,7 +579,7 @@ export class DoomPauseMenu {
   }
 
   /**
-   * Constrói UMA ÚNICA VEZ as abas e todas as 27 linhas de configuração com nós DOM persistentes!
+   * Constrói UMA ÚNICA VEZ as abas e todas as 38 linhas de configuração com nós DOM persistentes!
    */
   private buildSettingsTabsAndRows(): void {
     const tabsRoot = this.overlayEl.querySelector(

@@ -8,16 +8,22 @@ export type CrtScanlineMode = 'off' | 'subtle' | 'strong';
 export type HoldOrToggleMode = 'hold' | 'toggle';
 export type CrosshairStyle = 'off' | 'dot' | 'cross';
 export type DominantHandMode = 'right' | 'left';
+export type PerformancePresetId = 'eco' | 'balanced' | 'quality' | 'custom';
+export type TargetFpsOption = 0 | 30 | 60 | 90 | 120;
+export type OptimizerAggressiveness = 'gentle' | 'balanced' | 'aggressive';
+export type ViewmodelShadowQuality = 'off' | 'low' | 'high';
+export type ContactShadowRate = 0 | 15 | 30 | 60;
 
 export type SettingsCategoryId =
   | 'video'
   | 'audio'
   | 'controls'
   | 'gameplay'
-  | 'interface';
+  | 'interface'
+  | 'performance';
 
 /**
- * Conjunto completo de 27 opções reais de configuração do jogo,
+ * Conjunto completo de 38 opções reais de configuração do jogo,
  * persistidas em localStorage e conectadas diretamente à engine WebGL / WebAudio / Input / HUD.
  */
 export interface DoomGameSettings {
@@ -57,6 +63,19 @@ export interface DoomGameSettings {
   viewmodelHand: DominantHandMode; // right | left (padrão 'right')
   bloodOverlayScale: number; // 25..100 % intensidade de sangue nas bordas (padrão 100)
   autoFullscreenOnResume: boolean; // Entrar em tela cheia ao retomar (padrão true)
+
+  // 6. DESEMPENHO & OTIMIZAÇÃO (11 opções -> Total: 38 opções)
+  perfPreset: PerformancePresetId; // eco | balanced | quality | custom (padrão 'balanced')
+  targetFps: TargetFpsOption; // 0 = sem limite, 30, 60, 90, 120 (padrão 60)
+  autoOptimizer: boolean; // Governador inteligente de qualidade (padrão true)
+  optimizerAggressiveness: OptimizerAggressiveness; // gentle | balanced | aggressive
+  renderScalePercent: number; // 50..160 % da resolução interna escolhida (padrão 100)
+  maxDynamicLights: number; // 8..48 luzes dinâmicas no shader (padrão 40)
+  viewmodelShadowQuality: ViewmodelShadowQuality; // off | low(256) | high(512)
+  contactShadowRate: ContactShadowRate; // 0 | 15 | 30 | 60 Hz (padrão 30)
+  drawDistance: number; // 45..125 m plano distante da câmera (padrão 125)
+  reduceWhenUnfocused: boolean; // Cortar qualidade com a janela sem foco (padrão true)
+  showPerfHud: boolean; // Painel de telemetria ao vivo (padrão false)
 }
 
 export const DEFAULT_DOOM_SETTINGS: Readonly<DoomGameSettings> = Object.freeze({
@@ -91,7 +110,96 @@ export const DEFAULT_DOOM_SETTINGS: Readonly<DoomGameSettings> = Object.freeze({
   viewmodelHand: 'right',
   bloodOverlayScale: 100,
   autoFullscreenOnResume: true,
+
+  perfPreset: 'balanced',
+  targetFps: 60,
+  autoOptimizer: true,
+  optimizerAggressiveness: 'balanced',
+  renderScalePercent: 100,
+  maxDynamicLights: 40,
+  viewmodelShadowQuality: 'low',
+  contactShadowRate: 30,
+  drawDistance: 125,
+  reduceWhenUnfocused: true,
+  showPerfHud: false,
 });
+
+/**
+ * Pacotes de desempenho: cada preset escreve um conjunto coerente de opções e
+ * qualquer ajuste manual depois disso marca o preset como `custom`.
+ */
+export const PERFORMANCE_PRESETS: Readonly<
+  Record<
+    Exclude<PerformancePresetId, 'custom'>,
+    Readonly<Partial<DoomGameSettings>>
+  >
+> = {
+  eco: {
+    targetFps: 30,
+    autoOptimizer: true,
+    optimizerAggressiveness: 'balanced',
+    renderScalePercent: 75,
+    maxDynamicLights: 12,
+    viewmodelShadowQuality: 'off',
+    contactShadowRate: 0,
+    drawDistance: 70,
+    reduceWhenUnfocused: true,
+  },
+  balanced: {
+    targetFps: 60,
+    autoOptimizer: true,
+    optimizerAggressiveness: 'balanced',
+    renderScalePercent: 100,
+    maxDynamicLights: 40,
+    viewmodelShadowQuality: 'low',
+    contactShadowRate: 30,
+    drawDistance: 125,
+    reduceWhenUnfocused: true,
+  },
+  quality: {
+    targetFps: 0,
+    autoOptimizer: true,
+    optimizerAggressiveness: 'gentle',
+    renderScalePercent: 130,
+    maxDynamicLights: 48,
+    viewmodelShadowQuality: 'high',
+    contactShadowRate: 60,
+    drawDistance: 125,
+    reduceWhenUnfocused: false,
+  },
+};
+
+/**
+ * Opções que pertencem ao pacote de desempenho. Mexer em qualquer uma delas
+ * tira o jogador do pacote fechado e marca o preset como personalizado — sem
+ * isso a interface mentiria dizendo "Equilibrado" com valores diferentes.
+ */
+const PERFORMANCE_SETTING_KEYS: ReadonlySet<keyof DoomGameSettings> = new Set([
+  'targetFps',
+  'autoOptimizer',
+  'optimizerAggressiveness',
+  'renderScalePercent',
+  'maxDynamicLights',
+  'viewmodelShadowQuality',
+  'contactShadowRate',
+  'drawDistance',
+  'reduceWhenUnfocused',
+  'showPerfHud',
+]);
+
+/** Tamanho do shadow map do viewmodel para cada nível de qualidade. */
+export function viewmodelShadowMapSize(
+  quality: ViewmodelShadowQuality
+): number {
+  switch (quality) {
+    case 'high':
+      return 512;
+    case 'low':
+      return 256;
+    default:
+      return 0;
+  }
+}
 
 export type SettingControlSpec<K extends keyof DoomGameSettings = keyof DoomGameSettings> =
   | {
@@ -132,6 +240,7 @@ export const SETTINGS_CATEGORIES: ReadonlyArray<{
   { id: 'controls', label: 'Controles & Mira' },
   { id: 'gameplay', label: 'Jogabilidade' },
   { id: 'interface', label: 'Interface & Acess.' },
+  { id: 'performance', label: 'Desempenho & FPS' },
 ];
 
 export const DOOM_SETTINGS_DESCRIPTORS: ReadonlyArray<SettingControlSpec> = [
@@ -453,6 +562,143 @@ export const DOOM_SETTINGS_DESCRIPTORS: ReadonlyArray<SettingControlSpec> = [
     onLabel: 'Ativa',
     offLabel: 'Janela',
   },
+
+  // --- DESEMPENHO & OTIMIZAÇÃO (11) ---
+  {
+    key: 'perfPreset',
+    category: 'performance',
+    label: 'Pacote de Desempenho',
+    description:
+      'Aplica um conjunto coerente de ajustes de uma vez: Eco prioriza fluidez e bateria, Qualidade prioriza nitidez. Ajuste qualquer opção abaixo para virar Personalizado.',
+    kind: 'choice',
+    choices: [
+      { value: 'eco', label: 'Eco (30 FPS)' },
+      { value: 'balanced', label: 'Equilibrado (60 FPS)' },
+      { value: 'quality', label: 'Qualidade (máximo)' },
+      { value: 'custom', label: 'Personalizado' },
+    ],
+  },
+  {
+    key: 'targetFps',
+    category: 'performance',
+    label: 'Limite de Quadros por Segundo',
+    description:
+      'Trava o jogo numa taxa fixa. Limitar em 30 ou 60 dá entrega de quadros muito mais regular e esfria a máquina; "Sem limite" deixa o monitor mandar.',
+    kind: 'choice',
+    choices: [
+      { value: 30, label: '30 FPS' },
+      { value: 60, label: '60 FPS' },
+      { value: 90, label: '90 FPS' },
+      { value: 120, label: '120 FPS' },
+      { value: 0, label: 'Sem limite' },
+    ],
+  },
+  {
+    key: 'autoOptimizer',
+    category: 'performance',
+    label: 'Otimização Automática Inteligente',
+    description:
+      'Mede o tempo de cada quadro e ajusta resolução, luzes e efeitos sozinho para segurar o alvo de FPS — inclusive descobrindo se o gargalo é o processador ou a placa de vídeo.',
+    kind: 'toggle',
+    onLabel: 'Ativa',
+    offLabel: 'Desligada',
+  },
+  {
+    key: 'optimizerAggressiveness',
+    category: 'performance',
+    label: 'Ímpeto do Ajuste Automático',
+    description:
+      'Quão rápido o sistema reage: Suave demora mais para mudar (imagem mais estável), Agressivo corrige quedas na hora (mais fiel ao alvo de FPS).',
+    kind: 'choice',
+    choices: [
+      { value: 'gentle', label: 'Suave' },
+      { value: 'balanced', label: 'Equilibrado' },
+      { value: 'aggressive', label: 'Agressivo' },
+    ],
+  },
+  {
+    key: 'renderScalePercent',
+    category: 'performance',
+    label: 'Escala da Resolução Interna',
+    description:
+      'Multiplica a resolução retrô escolhida em Vídeo. Abaixo de 100% o jogo fica mais leve e levemente mais granulado; acima, mais nítido e mais pesado.',
+    kind: 'range',
+    min: 50,
+    max: 160,
+    step: 5,
+    unit: '%',
+  },
+  {
+    key: 'maxDynamicLights',
+    category: 'performance',
+    label: 'Orçamento de Luzes Dinâmicas',
+    description:
+      'Quantas luminárias o shader calcula por pixel. É o item que mais pesa no labirinto: menos luzes, muito mais quadros por segundo.',
+    kind: 'range',
+    min: 8,
+    max: 48,
+    step: 4,
+    unit: 'luzes',
+  },
+  {
+    key: 'viewmodelShadowQuality',
+    category: 'performance',
+    label: 'Sombra Real em 1ª Pessoa',
+    description:
+      'A lanterna e as mãos projetam sombra umas sobre as outras. Desligar remove um passe de renderização inteiro por quadro.',
+    kind: 'choice',
+    choices: [
+      { value: 'off', label: 'Desligada' },
+      { value: 'low', label: 'Baixa (256)' },
+      { value: 'high', label: 'Alta (512)' },
+    ],
+  },
+  {
+    key: 'contactShadowRate',
+    category: 'performance',
+    label: 'Sombras de Contato dos Objetos',
+    description:
+      'Com que frequência as sombras no chão dos caixotes e equipamentos são recalculadas. Em 0 elas ficam estáticas em vez de seguirem a luz.',
+    kind: 'choice',
+    choices: [
+      { value: 0, label: 'Desligadas' },
+      { value: 15, label: '15 por seg.' },
+      { value: 30, label: '30 por seg.' },
+      { value: 60, label: 'Todo quadro' },
+    ],
+  },
+  {
+    key: 'drawDistance',
+    category: 'performance',
+    label: 'Alcance de Desenho',
+    description:
+      'Até que distância a câmera desenha objetos, teias e criaturas. Encurtar reduz bastante o trabalho em corredores longos.',
+    kind: 'range',
+    min: 45,
+    max: 125,
+    step: 5,
+    unit: 'm',
+  },
+  {
+    key: 'reduceWhenUnfocused',
+    category: 'performance',
+    label: 'Economizar sem Foco',
+    description:
+      'Ao trocar de janela o jogo corta a resolução e a taxa de quadros em vez de continuar renderizando a plena carga.',
+    kind: 'toggle',
+    onLabel: 'Economiza',
+    offLabel: 'Mantém',
+  },
+  {
+    key: 'showPerfHud',
+    category: 'performance',
+    label: 'Painel de Telemetria ao Vivo',
+    description:
+      'Mostra FPS, tempo de quadro, uso de processador, onde está o gargalo e o que o ajuste automático está fazendo agora.',
+    kind: 'toggle',
+    onLabel: 'Visível',
+    offLabel: 'Oculto',
+  },
 ];
 
 export function resolutionPresetToHeight(
@@ -483,12 +729,13 @@ function clampBool(val: unknown, fallback: boolean): boolean {
   return typeof val === 'boolean' ? val : fallback;
 }
 
-function clampChoice<T extends string>(
+function clampChoice<T extends string | number>(
   val: unknown,
   allowed: readonly T[],
   fallback: T
 ): T {
-  return typeof val === 'string' && (allowed as readonly string[]).includes(val)
+  const pool = allowed as readonly (string | number)[];
+  return (typeof val === 'string' || typeof val === 'number') && pool.includes(val)
     ? (val as T)
     : fallback;
 }
@@ -585,6 +832,45 @@ export function sanitizeDoomSettings(
       r.autoFullscreenOnResume,
       d.autoFullscreenOnResume
     ),
+
+    perfPreset: clampChoice(
+      r.perfPreset,
+      ['eco', 'balanced', 'quality', 'custom'] as const,
+      d.perfPreset
+    ),
+    targetFps: clampChoice(
+      r.targetFps,
+      [0, 30, 60, 90, 120] as const,
+      d.targetFps
+    ),
+    autoOptimizer: clampBool(r.autoOptimizer, d.autoOptimizer),
+    optimizerAggressiveness: clampChoice(
+      r.optimizerAggressiveness,
+      ['gentle', 'balanced', 'aggressive'] as const,
+      d.optimizerAggressiveness
+    ),
+    renderScalePercent: Math.round(
+      clampNum(r.renderScalePercent, 50, 160, d.renderScalePercent)
+    ),
+    maxDynamicLights: Math.round(
+      clampNum(r.maxDynamicLights, 8, 48, d.maxDynamicLights)
+    ),
+    viewmodelShadowQuality: clampChoice(
+      r.viewmodelShadowQuality,
+      ['off', 'low', 'high'] as const,
+      d.viewmodelShadowQuality
+    ),
+    contactShadowRate: clampChoice(
+      r.contactShadowRate,
+      [0, 15, 30, 60] as const,
+      d.contactShadowRate
+    ),
+    drawDistance: Math.round(clampNum(r.drawDistance, 45, 125, d.drawDistance)),
+    reduceWhenUnfocused: clampBool(
+      r.reduceWhenUnfocused,
+      d.reduceWhenUnfocused
+    ),
+    showPerfHud: clampBool(r.showPerfHud, d.showPerfHud),
   };
 }
 
@@ -613,10 +899,7 @@ export class DoomSettingsStore {
     key: K,
     nextVal: DoomGameSettings[K]
   ): Readonly<DoomGameSettings> {
-    const merged = sanitizeDoomSettings({
-      ...this.current,
-      [key]: nextVal,
-    });
+    const merged = this.mergeWithPresetSemantics(key, nextVal);
     if (merged[key] === this.current[key]) {
       return this.current;
     }
@@ -624,6 +907,40 @@ export class DoomSettingsStore {
     this.writeToStorage(this.current);
     this.emit();
     return this.current;
+  }
+
+  /**
+   * Escolher um pacote de desempenho escreve o conjunto inteiro de uma vez;
+   * ajustar qualquer opção do pacote por conta própria marca "Personalizado".
+   */
+  private mergeWithPresetSemantics<K extends keyof DoomGameSettings>(
+    key: K,
+    nextVal: DoomGameSettings[K]
+  ): DoomGameSettings {
+    if (key === 'perfPreset') {
+      const preset = nextVal as PerformancePresetId;
+      if (preset !== 'custom') {
+        const bundle = PERFORMANCE_PRESETS[preset];
+        if (bundle) {
+          return sanitizeDoomSettings({
+            ...this.current,
+            ...bundle,
+            perfPreset: preset,
+          });
+        }
+      }
+      return sanitizeDoomSettings({ ...this.current, [key]: nextVal });
+    }
+
+    if (PERFORMANCE_SETTING_KEYS.has(key)) {
+      return sanitizeDoomSettings({
+        ...this.current,
+        [key]: nextVal,
+        perfPreset: 'custom',
+      });
+    }
+
+    return sanitizeDoomSettings({ ...this.current, [key]: nextVal });
   }
 
   update(patch: Partial<DoomGameSettings>): Readonly<DoomGameSettings> {

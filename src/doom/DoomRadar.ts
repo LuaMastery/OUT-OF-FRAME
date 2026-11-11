@@ -442,6 +442,8 @@ export class DoomRadar {
   private active = false;
   private scaleMode: RadarScaleMode = 'FULL';
   private lastDrawMs = -1;
+  /** Intervalo mínimo entre redesenhos do minimapa, em ms. */
+  private refreshIntervalMs = 40;
 
   constructor(
     parentViewport?: HTMLElement | null,
@@ -572,6 +574,18 @@ export class DoomRadar {
     }
   }
 
+  /**
+   * Define a frequência de redesenho do minimapa. O visor CRT não precisa de
+   * 60 qps para parecer vivo, e cada redesenho varre a grade inteira no canvas.
+   */
+  setRefreshIntervalMs(intervalMs: number): void {
+    const clamped = Math.max(8, Math.min(500, Math.round(intervalMs)));
+    if (clamped === this.refreshIntervalMs) return;
+    this.refreshIntervalMs = clamped;
+    // Força um redesenho no próximo update para o novo ritmo valer já.
+    this.lastDrawMs = -1;
+  }
+
   update(
     playerX: number,
     playerZ: number,
@@ -590,7 +604,7 @@ export class DoomRadar {
 
     // ~24 qps no visor CRT para movimento suave com custo mínimo de CPU
     const nowMs = elapsedSec * 1000;
-    if (this.lastDrawMs >= 0 && nowMs - this.lastDrawMs < 40) {
+    if (this.lastDrawMs >= 0 && nowMs - this.lastDrawMs < this.refreshIntervalMs) {
       return;
     }
     this.lastDrawMs = nowMs;

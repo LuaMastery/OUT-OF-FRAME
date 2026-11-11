@@ -4622,9 +4622,9 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
   });
 });
 
-describe('Botão de Pausa no HUD, Tela de Pausa Completa & 27 Configurações Reais', () => {
-  it('define 27 opções reais (>= 20) em 5 categorias com sanitização segura, persistência em localStorage e restauração de padrões', () => {
-    expect(DOOM_SETTINGS_DESCRIPTORS.length).toBe(27);
+describe('Botão de Pausa no HUD, Tela de Pausa Completa & 38 Configurações Reais', () => {
+  it('define 38 opções reais (>= 20) em 6 categorias com sanitização segura, persistência em localStorage e restauração de padrões', () => {
+    expect(DOOM_SETTINGS_DESCRIPTORS.length).toBe(38);
     expect(DOOM_SETTINGS_DESCRIPTORS.length).toBeGreaterThanOrEqual(20);
     expect(SETTINGS_CATEGORIES.map((c) => c.id)).toEqual([
       'video',
@@ -4632,6 +4632,7 @@ describe('Botão de Pausa no HUD, Tela de Pausa Completa & 27 Configurações Re
       'controls',
       'gameplay',
       'interface',
+      'performance',
     ]);
 
     const seenKeys = new Set<string>();
@@ -4645,7 +4646,9 @@ describe('Botão de Pausa no HUD, Tela de Pausa Completa & 27 Configurações Re
         expect(defVal).toBeLessThanOrEqual(desc.max);
       } else if (desc.kind === 'choice') {
         const defVal = String(DEFAULT_DOOM_SETTINGS[desc.key]);
-        expect(desc.choices.some((c) => c.value === defVal)).toBe(true);
+        // Escolhas podem ser texto (presets de resolução) ou número (alvo de
+        // FPS, taxa das sombras): compara pela forma serializada.
+        expect(desc.choices.some((c) => String(c.value) === defVal)).toBe(true);
       } else {
         expect(typeof DEFAULT_DOOM_SETTINGS[desc.key]).toBe('boolean');
       }
@@ -4755,7 +4758,7 @@ describe('Botão de Pausa no HUD, Tela de Pausa Completa & 27 Configurações Re
     expect(anyNegativeScale).toBe(false);
   });
 
-  it('monta o Botão de Pausa visível no HUD, abre a Tela de Pausa com 27 opções interativas sem recriar DOM no hover e confirma Reiniciar/Sair em 2 cliques', () => {
+  it('monta o Botão de Pausa visível no HUD, abre a Tela de Pausa com 38 opções interativas sem recriar DOM no hover e confirma Reiniciar/Sair em 2 cliques', () => {
     interface PauseMockEl {
       tagName: string;
       id: string;
@@ -5045,7 +5048,7 @@ describe('Botão de Pausa no HUD, Tela de Pausa Completa & 27 Configurações Re
       expect(pauseMenu.open).toBe(true);
       expect(pauseOpenedCount).toBe(1);
 
-      // 2. Navegar para Configurações exibe exatamente as 27 linhas persistentes
+      // 2. Navegar para Configurações exibe exatamente as 38 linhas persistentes
       const openSettingsBtn = viewportEl.querySelector(
         '[data-pause-action="open-settings"]'
       )!;
@@ -5053,7 +5056,7 @@ describe('Botão de Pausa no HUD, Tela de Pausa Completa & 27 Configurações Re
       expect(pauseMenu.subView).toBe('settings');
 
       const rowsBefore = viewportEl.querySelectorAll('.setting-row');
-      expect(rowsBefore.length).toBe(27);
+      expect(rowsBefore.length).toBe(38);
       const firstRowRef = rowsBefore[0];
       const firstSegBtn = firstRowRef.querySelector('.setting-seg-btn')!;
       expect(firstSegBtn).not.toBeNull();

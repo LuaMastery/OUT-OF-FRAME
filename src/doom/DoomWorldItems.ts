@@ -182,6 +182,12 @@ export class DoomWorldItems {
   // dominante da arena (e do feixe da lanterna) sobre a superfície de apoio.
   private readonly shadowDecalTexture: THREE.DataTexture;
   private readonly crateShadows: CrateShadowRig[] = [];
+  /** Recálculos por segundo das sombras de contato (0 = desligado). */
+  private contactShadowHz = 30;
+  private contactShadowIntervalMs = 1000 / 30;
+  private contactShadowAccumMs = 1000 / 30;
+  /** Passes restantes quando desligado, para acomodar a sombra antes de parar. */
+  private contactShadowPassesLeft = 0;
   private readonly lightProbe = new PropLightingProbe();
   private readonly lightScratch: { position: THREE.Vector3; intensity: number }[] = [];
   private readonly probeTarget = new THREE.Vector3();
@@ -1787,9 +1793,43 @@ export class DoomWorldItems {
    * `uLightPositions/uLightIntensities/uFlashlight*` — assim a mancha escura
    * aponta para longe da luz que está de fato iluminando o caixote.
    */
+  /**
+   * Frequência de recálculo das sombras de contato, em atualizações por
+   * segundo. Zero desliga a atualização e congela as sombras onde estão.
+   */
+  setContactShadowHz(hz: number): void {
+    const clamped = Math.max(0, Math.min(120, Math.round(hz)));
+    if (clamped === this.contactShadowHz) return;
+    this.contactShadowHz = clamped;
+    this.contactShadowIntervalMs = clamped > 0 ? 1000 / clamped : 0;
+    this.contactShadowAccumMs = this.contactShadowIntervalMs;
+    // Ao desligar, ainda rodam dois passes para a sombra assentar na luz atual
+    // em vez de congelar torta na posição neutra inicial.
+    this.contactShadowPassesLeft = clamped > 0 ? 0 : 2;
+  }
+
   updatePropShadows(dt: number): void {
     if (!this.crateShadows.length) return;
 
+    if (this.contactShadowHz > 0) {
+      // Amostragem por tempo real: a 15 Hz a sombra continua acompanhando a
+      // luz, mas o custo por quadro cai para uma fração do original.
+      const stepMs = Math.min(0.25, Math.max(0, dt)) * 1000;
+      this.contactShadowAccumMs += stepMs;
+      if (this.contactShadowAccumMs < this.contactShadowIntervalMs) return;
+      const shadowDt = this.contactShadowAccumMs / 1000;
+      this.contactShadowAccumMs = 0;
+      this.updateContactShadowsNow(shadowDt);
+      return;
+    }
+
+    if (this.contactShadowPassesLeft > 0) {
+      this.contactShadowPassesLeft -= 1;
+      this.updateContactShadowsNow(1 / 9);
+    }
+  }
+
+  private updateContactShadowsNow(shadowDt: number): void {
     const positions = this.sharedUniforms.uLightPositions.value;
     const intensities = this.sharedUniforms.uLightIntensities.value;
     const count = Math.max(
@@ -1817,7 +1857,7 @@ export class DoomWorldItems {
           }
         : null;
 
-    const blend = 1 - Math.exp(-9 * Math.max(0, dt));
+    const blend = 1 - Math.exp(-9 * Math.max(0, shadowDt));
     for (let i = 0; i < this.crateShadows.length; i++) {
       const rig = this.crateShadows[i];
       this.probeTarget.set(rig.worldX, rig.worldY, rig.worldZ);

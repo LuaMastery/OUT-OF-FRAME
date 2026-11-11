@@ -170,6 +170,8 @@ export class DoomFlashlight {
   private currentLightLevel = 0.45;
   /** Vazamento da lâmpada acesa sobre o próprio modelo (lanterna, aro e luva). */
   private readonly selfGlowLight: THREE.PointLight;
+  /** Tamanho atual do mapa de sombra do viewmodel (0 = sombra desligada). */
+  private shadowMapSize = 512;
 
   // Grupo de ação rápida em 1ª pessoa (atalhos [1], [2], [3] e uso de objetos)
   private readonly quickRootGroup = new THREE.Group();
@@ -920,6 +922,31 @@ export class DoomFlashlight {
   }
 
   /**
+   * Liga, desliga ou redimensiona a sombra real do modelo de 1ª pessoa.
+   *
+   * Desligar remove um passe de renderização inteiro por quadro: é uma das
+   * alavancas mais baratas de se abrir mão, porque a sombra só cobre a
+   * lanterna e as mãos, que ocupam uma fatia pequena da tela.
+   *
+   * @param mapSize 0 desliga; 256/512 definem a nitidez do mapa de sombra.
+   */
+  setViewmodelShadowQuality(mapSize: number): void {
+    const rounded = mapSize > 0 ? Math.max(128, Math.min(2048, Math.round(mapSize))) : 0;
+    if (rounded === this.shadowMapSize && this.keyLight.castShadow === rounded > 0) {
+      return;
+    }
+    this.shadowMapSize = rounded;
+    this.keyLight.castShadow = rounded > 0;
+    if (rounded > 0) {
+      this.keyLight.shadow.mapSize.set(rounded, rounded);
+      // Descarta o mapa antigo: sem isto o three.js reaproveita o tamanho
+      // anterior e a mudança não surte efeito até a próxima recriação.
+      this.keyLight.shadow.map?.dispose();
+      this.keyLight.shadow.map = null;
+    }
+  }
+
+  /**
    * Sombra real no modelo de 1ª pessoa: a luz principal projeta a silhueta do
    * cabeçote e do tubo sobre a luva e o antebraço, então a lanterna deixa de
    * parecer chapada quando o jogador entra embaixo de uma lâmpada.
@@ -929,7 +956,7 @@ export class DoomFlashlight {
    */
   private configureViewmodelShadows(): void {
     this.keyLight.castShadow = true;
-    this.keyLight.shadow.mapSize.set(512, 512);
+    this.keyLight.shadow.mapSize.set(this.shadowMapSize, this.shadowMapSize);
     const shadowCam = this.keyLight.shadow.camera;
     shadowCam.left = -0.62;
     shadowCam.right = 0.62;

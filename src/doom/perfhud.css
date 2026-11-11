@@ -1,0 +1,182 @@
+/* ==========================================================================
+   PAINEL DE TELEMETRIA DE DESEMPENHO
+   --------------------------------------------------------------------------
+   Fica no canto inferior esquerdo, acima do selo de FPS. Segue a mesma
+   linguagem visual do radar: caixa escura, borda dupla, fósforo verde.
+   ========================================================================== */
+
+.doom-perf-hud {
+  position: fixed;
+  bottom: calc(46px + var(--safe-bottom, 0px));
+  left: calc(14px + var(--safe-left, 0px));
+  z-index: 24;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 7px 9px 6px;
+  min-width: 210px;
+  background: linear-gradient(
+    180deg,
+    rgba(18, 22, 20, 0.94) 0%,
+    rgba(9, 12, 11, 0.96) 100%
+  );
+  border: 2px solid #35473e;
+  box-shadow:
+    inset 0 0 0 1px #090d0b,
+    0 6px 20px rgba(0, 0, 0, 0.72);
+  font-family: 'Geist Pixel', monospace;
+  font-size: 9.5px;
+  letter-spacing: 0.05em;
+  color: #7f9c8c;
+  pointer-events: none;
+  user-select: none;
+}
+
+.doom-perf-hud[hidden] {
+  display: none;
+}
+
+.doom-perf-hud__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid rgba(130, 227, 180, 0.16);
+}
+
+.doom-perf-hud__title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  color: #82e3b4;
+  text-shadow: 0 0 6px rgba(80, 228, 158, 0.35);
+}
+
+.doom-perf-hud__state {
+  padding: 1px 5px;
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  color: #d6efe2;
+  background: #172b22;
+  border: 1px solid #3c6e57;
+  white-space: nowrap;
+}
+
+.doom-perf-hud__state[data-state='dropping'] {
+  color: #ffe0a8;
+  background: #3a2a13;
+  border-color: #8a6a2c;
+}
+
+.doom-perf-hud__state[data-state='recovering'] {
+  color: #bfe9ff;
+  background: #142a35;
+  border-color: #3a6b85;
+}
+
+.doom-perf-hud__state[data-state='at-floor'] {
+  color: #ffb3a8;
+  background: #3a1a16;
+  border-color: #8a3a2c;
+}
+
+.doom-perf-hud__state[data-state='off'],
+.doom-perf-hud__state[data-state='warming'] {
+  color: #8d9a92;
+  background: #1c211f;
+  border-color: #3a443e;
+}
+
+.doom-perf-hud__fps {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  line-height: 1;
+}
+
+.doom-perf-hud__fps b {
+  font-size: 21px;
+  font-weight: 700;
+  color: #eafff4;
+  text-shadow: 0 0 9px rgba(120, 240, 180, 0.3);
+  font-variant-numeric: tabular-nums;
+}
+
+.doom-perf-hud__fps i {
+  font-style: normal;
+  font-size: 9px;
+  color: #6f8a7c;
+}
+
+.doom-perf-hud__fps u {
+  margin-left: auto;
+  text-decoration: none;
+  font-size: 8.5px;
+  color: #6f8a7c;
+}
+
+/* Barra do orçamento: quanto do tempo do quadro está consumido. */
+.doom-perf-hud__budget {
+  position: relative;
+  height: 5px;
+  background: rgba(130, 227, 180, 0.1);
+  border: 1px solid rgba(130, 227, 180, 0.22);
+  overflow: hidden;
+}
+
+.doom-perf-hud__budget-fill {
+  position: absolute;
+  inset: 0;
+  transform-origin: left center;
+  transform: scaleX(0);
+  background: linear-gradient(90deg, #57d69b 0%, #82e3b4 60%, #f0b846 100%);
+  will-change: transform;
+}
+
+.doom-perf-hud__rows {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 8px;
+  font-size: 9px;
+}
+
+.doom-perf-hud__rows span:nth-child(odd) {
+  color: #5f7a6c;
+}
+
+.doom-perf-hud__rows span:nth-child(even) {
+  color: #c4dccf;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.doom-perf-hud__graph {
+  display: block;
+  width: 100%;
+  height: 24px;
+  image-rendering: pixelated;
+}
+
+.doom-perf-hud__foot {
+  font-size: 8px;
+  letter-spacing: 0.06em;
+  color: #5f7a6c;
+}
+
+@media (max-width: 760px), (max-height: 500px) {
+  .doom-perf-hud {
+    min-width: 168px;
+    padding: 5px 6px 4px;
+    font-size: 8.5px;
+  }
+
+  .doom-perf-hud__fps b {
+    font-size: 17px;
+  }
+
+  .doom-perf-hud__graph {
+    height: 18px;
+  }
+}
