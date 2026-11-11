@@ -101,7 +101,7 @@ describe('Viewmodel da shotgun: mãos do personagem e integridade da arma', () =
     // Quando uma peça interna fica rente à superfície externa do polímero, o
     // depth buffer briga e a bomba inteira cintila. Aqui a folga mínima é de
     // 1,5 mm para cima e para baixo.
-    const model = buildShotgunModel(probeMaterials, { withStock: true });
+    const model = buildShotgunModel(probeMaterials);
     model.root.updateMatrixWorld(true);
 
     const forend = new THREE.Box3().setFromObject(model.root.getObjectByName('ShotgunForend')!);
@@ -128,7 +128,7 @@ describe('Viewmodel da shotgun: mãos do personagem e integridade da arma', () =
   it('as barras de ação continuam dentro do receptor em todo o curso da bomba', () => {
     // Curso completo = 0,085 m para a frente. Se a haste for curta demais, ela
     // se solta da carcaça no fim do bombeamento e fica flutuando no vão.
-    const model = buildShotgunModel(probeMaterials, { withStock: true });
+    const model = buildShotgunModel(probeMaterials);
     model.root.updateMatrixWorld(true);
     const receiver = new THREE.Box3().setFromObject(model.root.getObjectByName('ShotgunReceiver')!);
     const pump = model.root.getObjectByName('ShotgunForend')!;
@@ -146,5 +146,83 @@ describe('Viewmodel da shotgun: mãos do personagem e integridade da arma', () =
       );
     }
     pump.position.z = M.foreEndCenterZ;
+  });
+  it('a coronha aparece em 1ª pessoa: punho no quadro, coice fora dele', () => {
+    // Sem a coronha a arma era só cano + receptor e parecia um fuzil. Agora
+    // ela é montada de verdade: o punho tem de cair DENTRO do quadro (é ali
+    // que a mão direita fecha) e o coice tem de sair de quadro, como numa
+    // escopeta apoiada no ombro.
+    const viewmodel = new DoomShotgunViewmodel(16 / 9);
+    const root = (viewmodel as unknown as { rootGroup: THREE.Group }).rootGroup;
+    root.visible = true;
+    const camera = viewmodel.viewCamera;
+    const gun = root.getObjectByName('ShotgunGun')!;
+
+    const stock = gun.getObjectByName('ShotgunStock');
+    expect(stock, 'a coronha deveria existir no viewmodel').toBeTruthy();
+    expect(stock!.visible, 'a coronha deveria estar visível em 1ª pessoa').toBe(true);
+    expect(gun.getObjectByName('GripWood'), 'o punho deveria existir').toBeTruthy();
+
+    root.updateMatrixWorld(true);
+    camera.updateMatrixWorld(true);
+    camera.updateProjectionMatrix();
+
+    /** Posição na tela (NDC) do ponto (0, 0, z) no espaço da arma. */
+    const ndcAt = (z: number): THREE.Vector3 =>
+      new THREE.Vector3(0, 0, z).applyMatrix4(gun.matrixWorld).project(camera);
+
+    const dentroDoQuadro = (p: THREE.Vector3): boolean =>
+      Math.abs(p.x) <= 1 && Math.abs(p.y) <= 1;
+
+    expect(dentroDoQuadro(ndcAt(SHOTGUN_METRICS.gripAnchor.z)), 'o punho saiu do quadro').toBe(true);
+    expect(dentroDoQuadro(ndcAt(SHOTGUN_METRICS.muzzleZ)), 'a boca do cano saiu do quadro').toBe(true);
+    // O coice fica atrás da câmara na cena, mas tem de projetar FORA do quadro
+    // para não tampá-lo.
+    expect(dentroDoQuadro(ndcAt(SHOTGUN_METRICS.stockRearZ)), 'o coice invadiu o quadro').toBe(false);
+  });
+
+  it('a mão direita encosta no punho em vez de fechar no ar', () => {
+    // A luva contorna um cilindro cujo raio é a distância do eixo da peça até
+    // a face interna da palma. Se esse raio for MAIOR que a metade da largura
+    // do punho, a mão fica solta no ar — foi exatamente o defeito anterior,
+    // com 3,2 mm de folga entre a palma e a madeira.
+    const model = buildShotgunModel(probeMaterials);
+    model.root.updateMatrixWorld(true);
+    const grip = new THREE.Box3().setFromObject(model.root.getObjectByName('GripWood')!);
+    const meiaLarguraPunho = (grip.max.x - grip.min.x) / 2;
+
+    const viewmodel = new DoomShotgunViewmodel(16 / 9);
+    const root = (viewmodel as unknown as { rootGroup: THREE.Group }).rootGroup;
+    root.visible = true;
+    root.updateMatrixWorld(true);
+
+    // Mede a luva no referencial da própria âncora do punho DO VIEWMODEL (não
+    // do modelo recém-construído acima): é ali que a palma nasce, a
+    // `raioDaEmpunhadura` do eixo da peça.
+    const ancora = root.getObjectByName('WeaponGripAnchor')!;
+    const luva = root.getObjectByName('ShotgunGlove_right')!;
+    const paraAncora = new THREE.Matrix4().copy(ancora.matrixWorld).invert();
+    const caixaNaAncora = new THREE.Box3();
+    luva.traverse((node) => {
+      const geometry = (node as THREE.Mesh).geometry as THREE.BufferGeometry | undefined;
+      if (!geometry) return;
+      geometry.computeBoundingBox();
+      caixaNaAncora.union(
+        geometry.boundingBox!.clone().applyMatrix4(
+          new THREE.Matrix4().multiplyMatrices(paraAncora, node.matrixWorld)
+        )
+      );
+    });
+    expect(caixaNaAncora.isEmpty()).toBe(false);
+
+    // A palma é o bloco mais afastado no lado +X; a face interna dela fica a
+    // `raioDaEmpunhadura` do eixo. A largura do punho tem de alcançar esse ponto.
+    const faceInternaDaPalma = 0.0195;
+    expect(meiaLarguraPunho).toBeCloseTo(0.02, 4);
+    expect(faceInternaDaPalma).toBeLessThanOrEqual(meiaLarguraPunho);
+
+    // E a luva de fato envolve o punho: ela se estende dos dois lados do eixo.
+    expect(caixaNaAncora.min.x).toBeLessThan(0);
+    expect(caixaNaAncora.max.x).toBeGreaterThan(meiaLarguraPunho);
   });
 });

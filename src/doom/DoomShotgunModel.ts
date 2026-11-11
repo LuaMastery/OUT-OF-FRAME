@@ -492,6 +492,9 @@ export function buildShotgunStock(mats: ShotgunMaterialSet): THREE.Group {
   add(extrudeProfile(stockProfile, 0.04, 0.004), mats.wood, [0, 0, 0]).name = 'StockWood';
 
   // Punho (empunhadura): um pouco mais estreito que a coronha, com checagem.
+  // A seção é FORTEMENTE biselada (0,040 m de largura com bisel de 0,012):
+  // o punho de uma escopeta real é um punho torneado arredondado, não uma
+  // chapa de lados retos — e é essa seção que a mão da luva contorna.
   const gripProfile: ReadonlyArray<readonly [number, number]> = [
     [0.196, 0.018],
     [0.196, -0.036],
@@ -501,10 +504,12 @@ export function buildShotgunStock(mats: ShotgunMaterialSet): THREE.Group {
     [0.282, -0.012],
     [0.246, 0.014],
   ];
-  add(extrudeProfile(gripProfile, 0.036, 0.003), mats.woodDark, [0, 0, 0]).name = 'GripWood';
+  add(extrudeProfile(gripProfile, 0.04, 0.012), mats.woodDark, [0, 0, 0]).name = 'GripWood';
+  // Checagem: frisos cruzados um pouco mais largos que o punho, para marcar
+  // a madeira sem virar uma chapa solta por cima dela.
   for (let i = 0; i < 6; i++) {
     const line = add(
-      new THREE.BoxGeometry(0.0375, 0.030, 0.0022),
+      new THREE.BoxGeometry(0.0412, 0.030, 0.0022),
       mats.woodDark,
       [0, -0.028, 0.212 + i * 0.013],
       [0.28, 0, 0]
@@ -551,21 +556,16 @@ export interface ShotgunModel {
   readonly pumpAnchor: THREE.Object3D;
   /** Âncora da boca do cano (clarão, som e feixe). */
   readonly muzzleAnchor: THREE.Object3D;
-  /** Malhas que só existem em 1ª pessoa (coronha atrás da câmera). */
-  readonly firstPersonHidden: THREE.Object3D[];
 }
 
 /**
  * Monta a escopeta completa no espaço canônico.
  *
- * @param withStock Quando `false` a coronha é construída mas marcada em
- *   `firstPersonHidden` — em 1ª pessoa ela fica atrás da câmera e só
- *   atrapalharia o enquadramento.
+ * A coronha faz parte da arma em qualquer situação — inclusive em 1ª pessoa,
+ * onde o punho aparece no canto inferior direito da tela e o coice sai de
+ * quadro. Sem ela a arma parecia um fuzil: só cano e receptor.
  */
-export function buildShotgunModel(
-  mats: ShotgunMaterialSet,
-  options: { withStock?: boolean } = {}
-): ShotgunModel {
+export function buildShotgunModel(mats: ShotgunMaterialSet): ShotgunModel {
   const M = SHOTGUN_METRICS;
   const root = new THREE.Group();
   root.name = 'ShotgunModel';
@@ -601,7 +601,6 @@ export function buildShotgunModel(
     gripAnchor,
     pumpAnchor,
     muzzleAnchor,
-    firstPersonHidden: options.withStock === false ? [stock] : [],
   };
 }
 

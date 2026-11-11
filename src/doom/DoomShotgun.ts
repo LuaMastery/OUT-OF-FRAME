@@ -353,16 +353,14 @@ export class DoomShotgunViewmodel {
       cavity: lambert(0x0d0f12),
     };
 
-    // Em 1ª pessoa a coronha fica atrás da câmera: ela é construída (a arma
-    // precisa existir inteira para a 3ª pessoa) mas escondida aqui.
-    const model = buildShotgunModel(this.materials, { withStock: false });
+    // A coronha aparece em 1ª pessoa também: o punho cai no canto inferior
+    // direito da tela (é ali que a mão direita fecha) e o coice sai de quadro,
+    // como numa escopeta real apoiada no ombro. Escondê-la deixava só cano e
+    // receptor na tela — a arma parecia um fuzil sem a peça de trás.
+    const model = buildShotgunModel(this.materials);
     this.gunGroup = model.root;
     this.pumpGroup = model.pump;
-    for (const hidden of model.firstPersonHidden) hidden.visible = false;
     this.gunGroup.name = 'ShotgunGun';
-    this.gunGroup.traverse((node) => {
-      if (node.name === 'ShotgunStock' || node.name === 'ShotgunGripWood') node.visible = false;
-    });
 
     // Estojo ejetado: sai pela porta de ejeção, no lado direito do receptor.
     this.ejectShell = new THREE.Mesh(
@@ -402,11 +400,13 @@ export class DoomShotgunViewmodel {
       cuff: astroMats.anodizedCrimson,
       sleeve: astroMats.astroCamo,
     };
-    // Mão direita no punho da coronha: o punho tem seção ~0,040 × 0,046.
+    // Mão direita no punho da coronha. O punho tem 0,040 m de largura, então
+    // a luva fecha num raio de 0,0195: a palma encosta na madeira em vez de
+    // ficar 3 mm solta no ar.
     model.gripAnchor.add(
       buildShotgunGlove(gloveMats, {
         side: 'right',
-        radius: 0.0212,
+        radius: 0.0195,
         scale: 0.98,
         sleeveDirection: new THREE.Vector3(0.34, -0.9, 0.26),
         sleeveLength: 0.05,
@@ -517,7 +517,7 @@ export class DoomShotgunViewmodel {
    * mãos do traje do aliado é que a seguram, pelas âncoras.
    */
   createThirdPersonWeapon(): THREE.Object3D {
-    const model = buildShotgunModel(this.materials, { withStock: true });
+    const model = buildShotgunModel(this.materials);
     model.root.name = 'ShotgunThirdPerson';
     // Menor e mais simples: vista de longe, o detalhe miúdo vira ruído.
     model.root.scale.setScalar(0.92);
