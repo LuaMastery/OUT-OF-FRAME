@@ -637,6 +637,8 @@ export class ProximityVoiceChatManager {
 
   private gateState: VoiceGateState = createInitialVoiceGateState();
   private relaySeq = 0;
+  /** Invalida uma solicitação getUserMedia que ainda esteja pendente ao desligar a opção. */
+  private micInitGeneration = 0;
   private disposed = false;
 
   private readonly peers = new Map<string, RemotePeerAudioEntry>();
@@ -808,6 +810,7 @@ export class ProximityVoiceChatManager {
     }
 
     this.permissionState = 'requesting';
+    const requestGeneration = ++this.micInitGeneration;
     this.hooks.onStatusChanged?.();
 
     try {
@@ -821,7 +824,11 @@ export class ProximityVoiceChatManager {
         video: false,
       });
 
-      if (this.disposed || !this.voiceEnabled) {
+      if (
+        this.disposed ||
+        !this.voiceEnabled ||
+        requestGeneration !== this.micInitGeneration
+      ) {
         for (const tr of stream.getTracks()) tr.stop();
         return false;
       }
@@ -890,6 +897,13 @@ export class ProximityVoiceChatManager {
       this.hooks.onStatusChanged?.();
       return true;
     } catch {
+      if (
+        this.disposed ||
+        !this.voiceEnabled ||
+        requestGeneration !== this.micInitGeneration
+      ) {
+        return false;
+      }
       this.permissionState = 'denied';
       this.hooks.onStatusChanged?.();
       return false;
@@ -898,6 +912,7 @@ export class ProximityVoiceChatManager {
 
   /** Interrompe apenas a entrada do microfone; o contexto continua vivo para ouvir o jogo. */
   private releaseMicrophoneInput(): void {
+    this.micInitGeneration++;
     if (this.relayProcessorNode) {
       try {
         this.relayProcessorNode.onaudioprocess = null;
