@@ -40,6 +40,33 @@ export interface AstronautFingerRig {
   readonly distPivot: THREE.Group;
 }
 
+/** Pose de empunhadura em 3ª pessoa: onde a mão direita fica e para onde o cano aponta. */
+/**
+ * Empunhadura de duas mãos em terceira pessoa.
+ *
+ * O traje tem ombros largos (0,484 m) e braços curtos (0,477 m até o pulso), e a
+ * coronha da escopeta afasta 0,354 m as duas mãos — por isso a arma não pode
+ * ficar paralela ao eixo do corpo sem atravessar o tronco. A pose abaixo é a
+ * solução com as duas mãos na arma e folga real em volta do traje: coronha
+ * encostada no quadril direito, cano subindo em diagonal até a frente-esquerda
+ * ("carry" diagonal, igual a quem carrega uma escopeta a tiracolo).
+ */
+const WEAPON_HOLD = {
+  /** Posição da mão direita (punho da arma) no espaço do tronco. */
+  gripPoint: new THREE.Vector3(0.15, 0.02, -0.24),
+  /** Direção do cano (do punho até a boca) no espaço do tronco. */
+  aim: new THREE.Vector3(-0.75, 0.375, -0.545),
+  /** Rolagem da arma em torno do próprio eixo. */
+  roll: -0.05,
+  /** Para onde cada cotovelo deve apontar (o plano da flexão). */
+  rightElbowHint: new THREE.Vector3(0.7, -0.2, 0.6),
+  leftElbowHint: new THREE.Vector3(-0.5, -0.65, 0.25),
+} as const;
+
+/** Comprimentos do braço, medidos no rig (ombro→cotovelo→pulso). */
+const ARM_UPPER_LENGTH = 0.245;
+const ARM_FOREARM_LENGTH = 0.232;
+
 export interface AstronautArmRig {
   readonly side: AstronautArmSide;
   readonly root: THREE.Group;
@@ -970,6 +997,27 @@ export class DoomAstronaut {
   readonly thirdPersonWebCocoonGroup = new THREE.Group();
   readonly thirdPersonItemGroup = new THREE.Group();
   readonly thirdPersonWeaponGroup = new THREE.Group();
+  /** Scratch do resolvedor de dois ossos (sem alocação por quadro). */
+  private readonly scratch = {
+    pos: new THREE.Vector3(),
+    quat: new THREE.Quaternion(),
+    quatB: new THREE.Quaternion(),
+    elbow: new THREE.Vector3(),
+  };
+  /** Scratch do resolvedor de dois ossos (sem alocação por quadro). */
+  private readonly ikScratch = {
+    dir: new THREE.Vector3(),
+    bend: new THREE.Vector3(),
+    axis: new THREE.Vector3(),
+    elbow: new THREE.Vector3(),
+    toWrist: new THREE.Vector3(),
+    upper: new THREE.Vector3(),
+    quat: new THREE.Quaternion(),
+    quatB: new THREE.Quaternion(),
+    down: new THREE.Vector3(0, -1, 0),
+    matrix: new THREE.Matrix4(),
+    mirror: new THREE.Matrix4().makeScale(-1, 1, 1),
+  };
   private thirdPersonWeapons: Partial<Record<HeldWeapon, THREE.Object3D>> = {};
   private thirdPersonItems: Partial<Record<QuickHandheldKind, THREE.Object3D>> = {};
   private readonly thirdPersonFlashlightMuzzle = new THREE.Object3D();
@@ -1243,10 +1291,12 @@ export class DoomAstronaut {
     this.thirdPersonItemGroup.rotation.x = -Math.PI * 0.5;
     this.thirdPersonItemGroup.visible = false;
     this.leftArm.gripSocket.add(this.thirdPersonItemGroup);
+    // A arma de 3ª pessoa é filha do TRONCO, não da mão: assim as duas mãos
+    // podem alcançá-la (ver `applyThirdPersonHeldWeapon`) em vez de a arma
+    // perseguir um único soquete e flutuar longe da outra luva.
     this.thirdPersonWeaponGroup.name = 'AstronautThirdPersonWeaponAdapter';
-    this.thirdPersonWeaponGroup.rotation.x = -1.80;
     this.thirdPersonWeaponGroup.visible = false;
-    this.leftArm.gripSocket.add(this.thirdPersonWeaponGroup);
+    this.torsoGroup.add(this.thirdPersonWeaponGroup);
 
     // 6. CASULO / FIOS 3D DE SEDA DIMENSIONADOS AO REDOR DO TRAJE BIOLÓGICO INFLADO (ZERO CLIPPING)
     this.thirdPersonWebCocoonGroup.name = 'AstronautThirdPersonWebCocoon';
@@ -1821,10 +1871,122 @@ export class DoomAstronaut {
     for (const weapon of Object.values(this.thirdPersonWeapons)) weapon.visible = false;
     prop.visible = true;
     this.thirdPersonWeaponGroup.visible = true;
-    this.leftArm.shoulderPivot.rotation.set(1.05, -0.12, -0.12);
-    this.leftArm.elbowPivot.rotation.set(0.70, -0.12, 0.10);
-    this.leftArm.wristPivot.rotation.set(0.05, 0, 0);
-    this.leftArm.setGripPose('cylindrical');
+
+    const gripAnchor = prop.getObjectByName('WeaponGripAnchor');
+    const supportAnchor = prop.getObjectByName('WeaponSupportAnchor');
+    if (!gripAnchor) {
+      // Arma sem âncoras (modelo antigo): mantém a pose de uma mão só.
+      this.leftArm.shoulderPivot.rotation.set(1.05, -0.12, -0.12);
+      this.leftArm.elbowPivot.rotation.set(0.7, -0.12, 0.1);
+      this.leftArm.wristPivot.rotation.set(0.05, 0, 0);
+      this.leftArm.setGripPose('cylindrical');
+      return;
+    }
+
+    // 1) A arma entra pela mão direita: o punho comanda o enquadramento.
+    const group = this.thirdPersonWeaponGroup;
+    this.root.updateWorldMatrix(true, true);
+    const gunQuat = this.scratch.quat.setFromRotationMatrix(this.weaponHoldBasis());
+    const localGrip = gripAnchor.getWorldPosition(this.scratch.elbow);
+    this.torsoGroup.worldToLocal(localGrip);
+    const gripOffset = localGrip.clone().sub(group.position).applyQuaternion(
+      group.quaternion.clone().invert()
+    );
+    group.quaternion.copy(gunQuat);
+    group.position.copy(WEAPON_HOLD.gripPoint).sub(gripOffset.clone().applyQuaternion(gunQuat));
+
+    // 2) As duas mãos caem sobre as âncoras da arma (IK de dois ossos).
+    this.root.updateWorldMatrix(true, true);
+    const torsoInv = this.torsoGroup.getWorldQuaternion(this.scratch.quatB).invert();
+    const readAnchor = (node: THREE.Object3D): { pos: THREE.Vector3; quat: THREE.Quaternion } => {
+      const pos = node.getWorldPosition(new THREE.Vector3());
+      this.torsoGroup.worldToLocal(pos);
+      const quat = node.getWorldQuaternion(new THREE.Quaternion()).premultiply(torsoInv);
+      return { pos, quat };
+    };
+    const grip = readAnchor(gripAnchor);
+    this.poseArmToGrip(this.rightArm, grip.pos, grip.quat, WEAPON_HOLD.rightElbowHint);
+    if (supportAnchor) {
+      const support = readAnchor(supportAnchor);
+      this.poseArmToGrip(this.leftArm, support.pos, support.quat, WEAPON_HOLD.leftElbowHint);
+    } else {
+      this.leftArm.setGripPose('cylindrical');
+    }
+  }
+
+  /** Base ortogonal da arma empunhada (colunas: direita, cima, +Z da arma). */
+  private weaponHoldBasis(): THREE.Matrix4 {
+    const forward = WEAPON_HOLD.aim.clone().normalize();
+    const zAxis = forward.clone().negate();
+    const xAxis = new THREE.Vector3()
+      .crossVectors(new THREE.Vector3(0, 1, 0), zAxis)
+      .normalize();
+    const yAxis = new THREE.Vector3().crossVectors(zAxis, xAxis).normalize();
+    const roll = new THREE.Quaternion().setFromAxisAngle(zAxis, WEAPON_HOLD.roll);
+    xAxis.applyQuaternion(roll);
+    yAxis.applyQuaternion(roll);
+    return this.ikScratch.matrix.makeBasis(xAxis, yAxis, zAxis);
+  }
+
+  /**
+   * Coloca a luva do braço exatamente sobre uma âncora da arma, resolvendo
+   * ombro e cotovelo por IK de dois ossos e o pulso pela orientação pedida.
+   * É o que faz a mão do traje "agarrar" a modelagem em vez de flutuar ao lado.
+   */
+  private poseArmToGrip(
+    arm: AstronautArmRig,
+    targetPos: THREE.Vector3,
+    targetQuat: THREE.Quaternion,
+    elbowHint: THREE.Vector3
+  ): void {
+    const s = this.ikScratch;
+    const sign = arm.side === 'right' ? 1 : -1;
+    // O soquete da empunhadura fica dentro da mão: o pulso vem um pouco antes.
+    const socketOffset = new THREE.Vector3(-sign * 0.022, -0.068, 0).applyQuaternion(targetQuat);
+    const shoulder = arm.root.position;
+    const wrist = targetPos.clone().sub(socketOffset).sub(shoulder);
+    const distance = THREE.MathUtils.clamp(
+      wrist.length(),
+      Math.abs(ARM_UPPER_LENGTH - ARM_FOREARM_LENGTH) + 0.004,
+      ARM_UPPER_LENGTH + ARM_FOREARM_LENGTH - 0.004
+    );
+    const dir = wrist.normalize();
+    // Ângulo do ombro: triângulo ombro-cotovelo-pulso.
+    const cosShoulder = THREE.MathUtils.clamp(
+      (ARM_UPPER_LENGTH * ARM_UPPER_LENGTH + distance * distance -
+        ARM_FOREARM_LENGTH * ARM_FOREARM_LENGTH) /
+        (2 * ARM_UPPER_LENGTH * distance),
+      -1,
+      1
+    );
+    const shoulderAngle = Math.acos(cosShoulder);
+    // Plano da flexão: o cotovelo é empurrado para o lado do `elbowHint`.
+    s.axis.copy(elbowHint).normalize();
+    s.bend.crossVectors(dir, s.axis);
+    if (s.bend.lengthSq() < 1e-6) s.bend.crossVectors(dir, new THREE.Vector3(0, 0, 1));
+    s.bend.normalize();
+    s.elbow.crossVectors(s.bend, dir).normalize();
+    s.upper
+      .copy(dir)
+      .multiplyScalar(Math.cos(shoulderAngle))
+      .addScaledVector(s.elbow, Math.sin(shoulderAngle))
+      .normalize();
+
+    arm.shoulderPivot.quaternion.setFromUnitVectors(s.down, s.upper);
+    const elbowPos = s.upper.clone().multiplyScalar(ARM_UPPER_LENGTH).add(shoulder);
+    s.toWrist
+      .copy(targetPos)
+      .sub(socketOffset)
+      .sub(elbowPos)
+      .normalize()
+      .applyQuaternion(s.quatB.copy(arm.shoulderPivot.quaternion).invert());
+    arm.elbowPivot.quaternion.setFromUnitVectors(s.down, s.toWrist);
+    arm.wristPivot.quaternion
+      .copy(arm.shoulderPivot.quaternion)
+      .multiply(arm.elbowPivot.quaternion)
+      .invert()
+      .multiply(targetQuat);
+    arm.setGripPose('cylindrical');
   }
 
   /** Overlay only the left arm; locomotion, flashlight and the actual gameplay remain independent. */

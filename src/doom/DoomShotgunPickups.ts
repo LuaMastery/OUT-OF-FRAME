@@ -1,6 +1,13 @@
 import * as THREE from 'three';
 import { createDoomPropMaterial, type DoomSharedUniforms } from './DoomShader';
 import type { ShotgunPartId } from './DoomShotgun';
+import {
+  buildShotgunBarrelAssembly,
+  buildShotgunForend,
+  buildShotgunReceiver,
+  buildShotgunStock,
+  type ShotgunMaterialSet,
+} from './DoomShotgunModel';
 
 export type ShotgunPickupId = ShotgunPartId | 'shotgun_shells';
 
@@ -40,6 +47,15 @@ export function createShotgunPickupMaterials(shared?: DoomSharedUniforms) {
       return [126 + v, 71 + v, 37 + Math.round(v * .6)];
     }), 0.75),
     rubber: mat(solid([31, 29, 27])),
+    // Aço mais escuro (tubo de cartuchos) e polímero nervurado do guarda-mão.
+    blued: mat(texture(32, 16, (x, y) => {
+      const v = 52 + (x % 9 === 0 ? 11 : 0) + ((x * 5 + y * 3) % 5);
+      return [v, v + 5, v + 11];
+    })),
+    polymerRib: mat(texture(32, 16, (x, y) => {
+      const v = 34 + (x % 5 === 0 ? 7 : 0) + (y % 4 === 0 ? 4 : 0);
+      return [v, v + 2, v + 1];
+    })),
     brass: mat(solid([215, 161, 67]), 0.82),
     primer: mat(solid([235, 205, 140]), 0.84),
     // Wide, pale identifying band and vertical highlights remain legible at game resolution.
@@ -53,10 +69,59 @@ export function createShotgunPickupMaterials(shared?: DoomSharedUniforms) {
 }
 export type ShotgunPickupMaterials = ReturnType<typeof createShotgunPickupMaterials>;
 
+/** As peças do mundo usam os mesmos construtores da arma montada. */
+function asGunMaterials(m: ShotgunPickupMaterials): ShotgunMaterialSet {
+  return {
+    steel: m.steel,
+    steelBright: m.edge,
+    steelDark: m.blued,
+    polymer: m.polymer,
+    polymerDark: m.polymerRib,
+    wood: m.wood,
+    woodDark: m.rubber,
+    rubber: m.rubber,
+    brass: m.brass,
+    cavity: m.dark,
+  };
+}
+
+/**
+ * Deita a peça no chão: eixo longo em X, apoiada no próprio corpo.
+ * A coronha deita sobre a face plana (melhor leitura de silhueta); cano,
+ * receptor e guarda-mão deitam de lado, como fariam numa bancada.
+ */
+function layPartFlat(
+  root: THREE.Group,
+  part: THREE.Group,
+  scale: number,
+  flatFaceDown: boolean
+): void {
+  const basis = new THREE.Matrix4();
+  if (flatFaceDown) {
+    basis.makeBasis(
+      new THREE.Vector3(0, -1, 0),
+      new THREE.Vector3(0, 0, -1),
+      new THREE.Vector3(1, 0, 0)
+    );
+  } else {
+    basis.makeBasis(
+      new THREE.Vector3(0, 0, -1),
+      new THREE.Vector3(0, 1, 0),
+      new THREE.Vector3(1, 0, 0)
+    );
+  }
+  part.quaternion.setFromRotationMatrix(basis);
+  part.scale.setScalar(scale);
+  root.add(part);
+}
+
 /** X is the long axis; the lowest point is y=0 so it rests on a surface. */
 export function buildShotgunPickup(id: ShotgunPickupId, m: ShotgunPickupMaterials): THREE.Group {
   const root = new THREE.Group();
   root.name = `ShotgunPickup_${id}`;
+  const gun = asGunMaterials(m);
+
+  // Helpers usados pelos cartuchos (as peças grandes vêm do modelo da arma).
   const box = (name: string, w: number, h: number, d: number, x: number, y: number, z: number, material: THREE.Material) => {
     const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), material);
     mesh.name = name; mesh.position.set(x, y, z); root.add(mesh); return mesh;
@@ -65,59 +130,23 @@ export function buildShotgunPickup(id: ShotgunPickupId, m: ShotgunPickupMaterial
     const mesh = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, length, 16, 1, open), material);
     mesh.name = name; mesh.rotation.z = Math.PI / 2; mesh.position.set(x, y, z); root.add(mesh); return mesh;
   };
-  const endRing = (name: string, outer: number, inner: number, x: number, y: number, z: number, mat: THREE.Material) => {
-    const mesh = new THREE.Mesh(new THREE.RingGeometry(inner, outer, 16), mat);
+  const endRing = (name: string, outer: number, inner: number, x: number, y: number, z: number, material: THREE.Material) => {
+    const mesh = new THREE.Mesh(new THREE.RingGeometry(inner, outer, 16), material);
     mesh.name = name; mesh.rotation.y = Math.PI / 2; mesh.position.set(x, y, z); root.add(mesh);
   };
+
   if (id === 'shotgun_barrel') {
-    cyl('BarrelOuter', .023, .40, 0, .029, 0, m.steel, true);
-    cyl('BarrelBore', .015, .40, 0, .029, 0, m.dark, true);
-    endRing('MuzzleRim', .023, .015, -.201, .029, 0, m.edge);
-    endRing('BreechRim', .023, .015, .201, .029, 0, m.edge);
-    cyl('BreechCollar', .028, .038, .175, .029, 0, m.steel);
-    box('SightBase', .045, .008, .018, -.155, .055, 0, m.steel);
-    box('FrontSight', .009, .012, .009, -.167, .065, 0, m.brass);
-    box('LowerLug', .038, .016, .024, .10, .010, 0, m.steel);
+    // O cano da arma: cano, tubo de cartuchos, cinta, trilho e massa de mira.
+    layPartFlat(root, buildShotgunBarrelAssembly(gun), 0.78, false);
   } else if (id === 'shotgun_receiver') {
-    box('ReceiverMain', .17, .075, .075, 0, .065, 0, m.steel);
-    box('ReceiverTop', .155, .012, .065, -.003, .1085, 0, m.edge);
-    // Ejection port has a contrasting inset and a metallic bolt, visible from the side.
-    box('EjectionPort', .075, .034, .004, -.018, .079, .039, m.dark);
-    box('Bolt', .050, .017, .005, -.023, .079, .042, m.edge);
-    cyl('BarrelMount', .027, .034, -.1, .067, 0, m.steel);
-    cyl('StockMount', .027, .028, .098, .067, 0, m.steel);
-    // Guard is open, not a solid silhouette: three rails plus trigger.
-    box('GuardFront', .009, .035, .013, -.045, .022, 0, m.edge);
-    box('GuardRear', .009, .035, .013, .048, .022, 0, m.edge);
-    box('GuardBottom', .102, .008, .013, .001, .004, 0, m.edge);
-    const trigger = box('Trigger', .009, .023, .009, .004, .033, 0, m.brass);
-    trigger.rotation.z = -.25;
-    for (const x of [-.066, .065]) {
-      const pin = new THREE.Mesh(new THREE.CylinderGeometry(.006, .006, .004, 12), m.edge);
-      pin.name = 'ReceiverPin'; pin.rotation.x = Math.PI / 2; pin.position.set(x, .061, .039); root.add(pin);
-    }
+    // O receptor: tampa do ferrolho, porta de ejeção, guarda-mato e gatilho.
+    layPartFlat(root, buildShotgunReceiver(gun), 0.78, false);
   } else if (id === 'shotgun_pump') {
-    cyl('PumpBody', .041, .19, 0, .043, 0, m.polymer, true);
-    cyl('PumpBore', .015, .208, 0, .043, 0, m.dark, true);
-    for (let x = -.07; x <= .071; x += .02) cyl('PumpRib', .043, .006, x, .043, 0, m.steel);
-    for (const x of [-.098, .098]) {
-      cyl('PumpEndCollar', .033, .012, x, .043, 0, m.edge, true);
-      endRing('PumpShoulder', .041, .033, x < 0 ? -.095 : .095, .043, 0, m.polymer);
-      endRing('PumpSocket', .033, .015, x + (x < 0 ? -.0061 : .0061), .043, 0, m.edge);
-    }
+    // O guarda-mão com as barras de ação que entram no receptor.
+    layPartFlat(root, buildShotgunForend(gun), 0.78, false);
   } else if (id === 'shotgun_stock') {
-    const shape = new THREE.Shape();
-    shape.moveTo(-.15, .02); shape.lineTo(-.15, .105); shape.lineTo(-.065, .10);
-    shape.lineTo(.02, .078); shape.lineTo(.11, .088); shape.lineTo(.11, .052);
-    shape.lineTo(.04, .047); shape.lineTo(-.01, .015); shape.lineTo(-.075, .015); shape.closePath();
-    const mesh = new THREE.Mesh(new THREE.ExtrudeGeometry(shape, { depth: .06, bevelEnabled: true, bevelSize: .004, bevelThickness: .003, bevelSegments: 1 }), m.wood);
-    mesh.name = 'StockWood'; mesh.position.z = -.03; root.add(mesh);
-    const pad = box('ButtPad', .018, .09, .07, -.16, .063, 0, m.rubber); pad.rotation.z = -.035;
-    box('StockMount', .018, .035, .05, .118, .07, 0, m.steel);
-    for (let i = 0; i < 4; i++) {
-      const line = box('GripCheckering', .006, .027, .003, .006 + i * .012, .045, .032, m.rubber);
-      line.rotation.z = -.5;
-    }
+    // A coronha de nogueira, deitada sobre a face plana.
+    layPartFlat(root, buildShotgunStock(gun), 0.8, true);
   } else {
     for (const z of [-.04, 0, .04]) {
       cyl('ShellHull', .016, .072, .007, .018, z, m.shell);
@@ -131,6 +160,7 @@ export function buildShotgunPickup(id: ShotgunPickupId, m: ShotgunPickupMaterial
       }
     }
   }
+
   // Cada peça deve encostar na superfície, inclusive a coronha chanfrada.
   const lowest = new THREE.Box3().setFromObject(root).min.y;
   for (const child of root.children) child.position.y -= lowest;

@@ -1,6 +1,15 @@
 import * as THREE from 'three';
 import { computeAdaptiveVerticalFov } from './DoomTouchControls';
 import type { WebStrugglePose } from './DoomWebStruggle';
+import {
+  buildShotgunGlove,
+  buildShotgunModel,
+  createMeshAdder,
+  latheZ,
+  SHOTGUN_METRICS,
+  type ShotgunGloveMaterials,
+  type ShotgunMaterialSet,
+} from './DoomShotgunModel';
 
 /**
  * ============================================================================
@@ -250,62 +259,50 @@ export function formatShotgunAssemblyProgress(
 }
 
 /** Plaquinha estampada (marca/série) aplicada na lateral do receptor. */
-function createShotgunLabelTexture(): THREE.DataTexture {
-  const size = 32;
-  const data = new Uint8Array(size * size * 4);
-  const rows: Array<[number, number, number]> = [
-    [7, 9, 13],
-    [7, 16, 9],
-    [7, 23, 15],
-  ];
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const i = (y * size + x) * 4;
-      let ink = 0;
-      for (const [startX, row, len] of rows) {
-        if (Math.abs(y - row) <= 1 && x >= startX && x < startX + len && (x + row) % 3 !== 0) ink = 1;
-      }
-      const v = ink ? 208 : 30;
-      data[i] = v;
-      data[i + 1] = v - 4;
-      data[i + 2] = ink ? 198 : 32;
-      data[i + 3] = 255;
-    }
-  }
-  const tex = new THREE.DataTexture(data, size, size, THREE.RGBAFormat);
-  tex.magFilter = THREE.NearestFilter;
-  tex.minFilter = THREE.NearestFilter;
-  tex.needsUpdate = true;
-  return tex;
-}
 
 /* ==========================================================================
    VIEWMODEL 3D DA SHOTGUN EM 1ª PESSOA
    ========================================================================== */
 
+/** Enquadramento de 1ª pessoa: onde a arma e as mãos devem cair na tela. */
+const FIRST_PERSON_FIT = {
+  /** Direção do cano (do punho até a boca) no espaço da câmera. */
+  aim: new THREE.Vector3(-0.16, -0.04, -0.985),
+  /** Onde a mão direita (punho da coronha) deve ficar, em metros. */
+  gripPoint: new THREE.Vector3(0.13, -0.105, -0.32),
+  /** Rolagem da arma em torno do próprio eixo (rad). */
+  roll: -0.05,
+} as const;
+
 /**
- * Modelo em 1ª pessoa da shotgun de pump:
- * - coronha de madeira rebaixada com punho;
- * - receptor de aço com guarda-mato e gatilho;
- * - cano + tubo de cartuchos com ponteira de mira;
- * - bomba de polímero que desliza para trás a cada disparo.
+ * Modelo em 1ª pessoa da shotgun de pump.
+ *
+ * A geometria vem de `buildShotgunModel` (a mesma das peças do mundo e da
+ * arma em 3ª pessoa); aqui ela só recebe luz própria, as duas mãos enluvadas
+ * e a animação de empunhadura. O enquadramento é resolvido a partir de onde
+ * a mão direita deve cair na tela — nunca de um chute de posição/rotação.
  */
 export class DoomShotgunViewmodel {
   readonly viewScene = new THREE.Scene();
   readonly viewCamera: THREE.PerspectiveCamera;
 
   private readonly rootGroup = new THREE.Group();
-  private readonly animGroup = new THREE.Group();
+  private readonly gunGroup = new THREE.Group();
   private readonly pumpGroup = new THREE.Group();
   private readonly muzzleFlash: THREE.Mesh;
   private readonly muzzleFlashMaterial: THREE.MeshBasicMaterial;
   private readonly ejectShell: THREE.Mesh;
+  private readonly materials: ShotgunMaterialSet;
   /** Luva esquerda na bomba e a lanterna de apoio presa sob o cano. */
   private leftHandGroup: THREE.Group | null = null;
   private mountedFlashlightGroup: THREE.Group | null = null;
   private mountedLensMaterial: THREE.MeshBasicMaterial | null = null;
   private mountedLightOn = false;
   private mountedLightDim = false;
+
+  /** Pose base (sem balanço nem recuo) calculada para o lado dominante. */
+  private readonly basePosition = new THREE.Vector3();
+  private readonly baseQuaternion = new THREE.Quaternion();
 
   private equipped = false;
   private equipProgress = 0;
@@ -318,7 +315,6 @@ export class DoomShotgunViewmodel {
   private handSign: 1 | -1 = 1;
   /** Pose da luta contra a teia (null = solto). */
   private webStruggle: WebStrugglePose | null = null;
-
 
   constructor(aspect: number) {
     this.viewCamera = new THREE.PerspectiveCamera(
@@ -341,467 +337,44 @@ export class DoomShotgunViewmodel {
     rimLight.position.set(0.7, -0.5, -0.9);
     this.viewScene.add(ambient, keyLight, fillLight, rimLight);
 
-    const steelMat = new THREE.MeshLambertMaterial({
-      color: 0x68737f,
-      flatShading: true,
-    });
-    const darkSteelMat = new THREE.MeshLambertMaterial({
-      color: 0x454c56,
-      flatShading: true,
-    });
-    const woodMat = new THREE.MeshLambertMaterial({
-      color: 0x6e4a2c,
-      flatShading: true,
-    });
-    const woodDarkMat = new THREE.MeshLambertMaterial({
-      color: 0x4e3019,
-      flatShading: true,
-    });
-    const polymerMat = new THREE.MeshLambertMaterial({
-      color: 0x33383f,
-      flatShading: true,
-    });
-    const brassMat = new THREE.MeshLambertMaterial({
-      color: 0xc19a52,
-      flatShading: true,
-    });
-    const brassDarkMat = new THREE.MeshLambertMaterial({
-      color: 0x8e6f36,
-      flatShading: true,
-    });
-    const steelDarkMat = new THREE.MeshLambertMaterial({
-      color: 0x59626d,
-      flatShading: true,
-    });
-    const rubberMat = new THREE.MeshLambertMaterial({
-      color: 0x24272b,
-      flatShading: true,
-    });
-    const rubberDarkMat = new THREE.MeshLambertMaterial({
-      color: 0x14171a,
-      flatShading: true,
-    });
-    const labelMat = new THREE.MeshLambertMaterial({ map: createShotgunLabelTexture() });
-    const gun = new THREE.Group();
-
-    // ---- Helpers de modelagem -------------------------------------------
-    /** Extruda um perfil lateral (avanço no eixo Z × altura Y) na largura X. */
-    const extrudeProfile = (
-      profile: ReadonlyArray<readonly [number, number]>,
-      width: number,
-      bevel: number
-    ): THREE.ExtrudeGeometry => {
-      const shape = new THREE.Shape();
-      shape.moveTo(profile[0][0], profile[0][1]);
-      for (let i = 1; i < profile.length; i++) shape.lineTo(profile[i][0], profile[i][1]);
-      shape.closePath();
-      const depth = Math.max(0.002, width - bevel * 2);
-      const geometry = new THREE.ExtrudeGeometry(shape, {
-        depth,
-        bevelEnabled: bevel > 0,
-        bevelThickness: bevel,
-        bevelSize: bevel,
-        bevelSegments: 2,
-        curveSegments: 3,
-        steps: 1,
-      });
-      geometry.translate(0, 0, -depth / 2);
-      geometry.rotateY(-Math.PI / 2);
-      geometry.computeVertexNormals();
-      return geometry;
+    const lambert = (color: number): THREE.MeshLambertMaterial =>
+      new THREE.MeshLambertMaterial({ color, flatShading: true });
+    this.materials = {
+      steel: lambert(0x6b7480),
+      steelBright: lambert(0x9aa4b0),
+      steelDark: lambert(0x3f454d),
+      polymer: lambert(0x2e3339),
+      polymerDark: lambert(0x20242a),
+      wood: lambert(0x6b4a2d),
+      woodDark: lambert(0x472d17),
+      rubber: lambert(0x1b1d20),
+      brass: lambert(0xc19a52),
+      cavity: lambert(0x0d0f12),
     };
 
-    /** Corpo de revolução em torno do eixo do cano (perfil raio × Z). */
-    const latheZ = (
-      profile: ReadonlyArray<readonly [number, number]>,
-      segments = 18
-    ): THREE.LatheGeometry => {
-      const points = profile.map(([radius, z]) => new THREE.Vector2(radius, z));
-      const geometry = new THREE.LatheGeometry(points, segments);
-      geometry.rotateX(Math.PI / 2);
-      geometry.computeVertexNormals();
-      return geometry;
-    };
-
-    const add = (
-      geometry: THREE.BufferGeometry,
-      material: THREE.Material,
-      position: [number, number, number],
-      rotation: [number, number, number] = [0, 0, 0],
-      parent: THREE.Object3D = gun
-    ): THREE.Mesh => {
-      const mesh = new THREE.Mesh(geometry, material);
-      mesh.position.set(...position);
-      mesh.rotation.set(...rotation);
-      parent.add(mesh);
-      return mesh;
-    };
-
-    /** Cápsula esticada entre dois pontos — dedos, tendões, antebraço. */
-    const capsuleBetween = (
-      parent: THREE.Object3D,
-      from: THREE.Vector3,
-      to: THREE.Vector3,
-      radius: number,
-      material: THREE.Material
-    ): THREE.Mesh => {
-      const dir = new THREE.Vector3().subVectors(to, from);
-      const length = Math.max(0.001, dir.length());
-      const mesh = new THREE.Mesh(new THREE.CapsuleGeometry(radius, length, 4, 10), material);
-      mesh.position.copy(from).addScaledVector(dir, 0.5);
-      mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
-      parent.add(mesh);
-      return mesh;
-    };
-
-    // ---- 1. CORONHA DE NOGUEIRA ------------------------------------------
-    // Perfil real de coronha americana: dorso subindo até o coice, punho
-    // estreito (onde a mão direita fecha) e a barriga rebaixada na frente.
-    const stockProfile: ReadonlyArray<readonly [number, number]> = [
-      [0.062, 0.030],
-      [0.112, 0.034],
-      [0.150, 0.024],
-      [0.196, 0.040],
-      [0.268, 0.046],
-      [0.330, 0.048],
-      [0.352, 0.042],
-      [0.360, 0.008],
-      [0.352, -0.082],
-      [0.330, -0.090],
-      [0.262, -0.070],
-      [0.196, -0.052],
-      [0.152, -0.046],
-      [0.128, -0.088],
-      [0.104, -0.100],
-      [0.078, -0.086],
-      [0.070, -0.056],
-      [0.062, -0.026],
-    ];
-    // Na 1ª pessoa a coronha fica atrás da câmera (não é visível e só ocuparia
-    // a tela); ela é marcada para sumir do viewmodel e reaparece no modelo de
-    // 3ª pessoa usado pelos outros jogadores.
-    const stockBody = add(extrudeProfile(stockProfile, 0.05, 0.005), woodMat, [0, 0, 0]);
-    stockBody.name = 'ShotgunStockMesh';
-    // Coice de borracha com frisos.
-    add(extrudeProfile([
-      [0.352, 0.044],
-      [0.372, 0.038],
-      [0.376, -0.076],
-      [0.354, -0.086],
-    ], 0.052, 0.004), rubberMat, [0, 0, 0]).name = 'ShotgunStockMesh';
-    for (let i = 0; i < 3; i++) {
-      add(new THREE.BoxGeometry(0.052, 0.004, 0.005), rubberDarkMat, [0, 0.026 - i * 0.03, 0.362 + i * 0.002]);
-    }
-    // Joelho do punho e cunha de reforço no encontro com o receptor.
-    add(extrudeProfile([
-      [0.058, 0.030],
-      [0.078, 0.030],
-      [0.070, -0.062],
-      [0.058, -0.024],
-    ], 0.044, 0.003), woodDarkMat, [0, 0, 0]).name = 'ShotgunStockMesh';
-    // Textura de checagem do punho (faixas finas atravessando a madeira).
-    for (let i = 0; i < 7; i++) {
-      add(new THREE.BoxGeometry(0.0504, 0.0022, 0.0042), woodDarkMat, [0, -0.030 - i * 0.008, 0.096 + i * 0.0035]);
-    }
-    // Olhal e argola de bandoleira.
-    add(new THREE.TorusGeometry(0.008, 0.0022, 5, 10), brassMat, [0, -0.096, 0.300], [0, Math.PI / 2, 0]);
-
-    // ---- 2. RECEPTOR DE AÇO ----------------------------------------------
-    const receiverProfile: ReadonlyArray<readonly [number, number]> = [
-      [-0.104, 0.026],
-      [-0.020, 0.030],
-      [0.040, 0.030],
-      [0.064, 0.022],
-      [0.064, -0.022],
-      [0.040, -0.032],
-      [-0.030, -0.032],
-      [-0.076, -0.028],
-      [-0.104, -0.020],
-    ];
-    add(extrudeProfile(receiverProfile, 0.046, 0.004), steelMat, [0, 0, 0]);
-    // Tampa do ferrolho com frisos de aderência.
-    add(new THREE.BoxGeometry(0.048, 0.008, 0.05), darkSteelMat, [0, 0.030, 0.010]);
-    for (let i = 0; i < 5; i++) {
-      add(new THREE.BoxGeometry(0.050, 0.0022, 0.0035), steelMat, [0, 0.036, -0.006 + i * 0.009]);
-    }
-    // Porta de ejeção (lado direito, o que a câmera vê).
-    add(extrudeProfile([
-      [0.028, 0.016],
-      [0.046, 0.012],
-      [0.046, -0.012],
-      [0.028, -0.016],
-    ], 0.004, 0.001), darkSteelMat, [0.023, 0, 0]);
-    // Plaqueta de série e parafusos.
-    add(new THREE.PlaneGeometry(0.034, 0.014), labelMat, [0.0234, -0.004, -0.072], [0, Math.PI / 2, 0]);
-    for (const sz of [-0.086, 0.040]) {
-      add(new THREE.CylinderGeometry(0.0032, 0.0032, 0.0042, 8), steelDarkMat, [0.0234, 0.014, sz], [0, 0, Math.PI / 2]);
-    }
-    // Botão de trava do ferrolho e trava de segurança no guarda-mato.
-    add(new THREE.CylinderGeometry(0.0042, 0.0042, 0.006, 10), steelDarkMat, [0.026, -0.018, 0.030], [0, 0, Math.PI / 2]);
-    add(new THREE.BoxGeometry(0.0034, 0.007, 0.016), darkSteelMat, [0.0245, -0.002, 0.006]);
-    // Porta de alimentação e elevador de cartucho, embaixo do receptor.
-    add(new THREE.BoxGeometry(0.028, 0.012, 0.058), darkSteelMat, [0, -0.036, -0.014]);
-    add(new THREE.BoxGeometry(0.020, 0.004, 0.046), steelDarkMat, [0, -0.043, -0.014]);
-
-    // ---- 3. GUARDA-MATO E GATILHO ----------------------------------------
-    add(new THREE.TorusGeometry(0.026, 0.0062, 6, 14, Math.PI * 1.15), darkSteelMat,
-      [0, -0.056, -0.004], [Math.PI / 2, 0, Math.PI * 0.12]);
-    add(new THREE.BoxGeometry(0.0075, 0.024, 0.009), steelDarkMat, [0, -0.052, 0.004], [0.28, 0, 0]);
-    add(new THREE.BoxGeometry(0.0022, 0.018, 0.016), darkSteelMat, [0.0205, -0.048, 0.030]);
-
-    // ---- 4. CANO COM TRILHO DE MIRA --------------------------------------
-    const BARREL_Y = 0.026;
-    const BARREL_END = -0.622;
-    add(latheZ([
-      [0.0150, -0.090],
-      [0.0176, -0.104],
-      [0.0170, -0.300],
-      [0.0164, -0.560],
-      [0.0182, -0.596],
-      [0.0182, BARREL_END],
-      [0.0110, BARREL_END - 0.002],
-      [0.0110, BARREL_END - 0.012],
-      [0.0000, BARREL_END - 0.012],
-    ], 20), steelMat, [0, BARREL_Y, 0]);
-    // Trilho ventilado sobre o cano (perfilada de caça).
-    add(new THREE.BoxGeometry(0.008, 0.007, 0.40), darkSteelMat, [0, BARREL_Y + 0.019, -0.300]);
-    for (let i = 0; i < 9; i++) {
-      add(new THREE.BoxGeometry(0.0035, 0.006, 0.012), steelMat, [0, BARREL_Y + 0.018, -0.130 - i * 0.043]);
-    }
-    // Massa de mira de latão na boca do cano.
-    add(new THREE.SphereGeometry(0.0042, 10, 8), brassMat, [0, BARREL_Y + 0.024, BARREL_END + 0.010]);
-
-    // ---- 5. TUBO DE CARTUCHOS, CINTA E TAMPA -----------------------------
-    add(latheZ([
-      [0.0000, 0.010],
-      [0.0120, 0.004],
-      [0.0132, -0.010],
-      [0.0128, -0.470],
-      [0.0148, -0.486],
-      [0.0148, -0.500],
-      [0.0000, -0.500],
-    ], 16), darkSteelMat, [0, -0.008, 0]);
-    add(new THREE.CylinderGeometry(0.016, 0.016, 0.016, 14), brassMat, [0, -0.008, -0.494], [Math.PI / 2, 0, 0]);
-    for (let i = 0; i < 8; i++) {
-      const angle = (i / 8) * Math.PI * 2;
-      add(new THREE.BoxGeometry(0.0016, 0.0016, 0.014), brassDarkMat,
-        [Math.cos(angle) * 0.0155, -0.008 + Math.sin(angle) * 0.0155, -0.494]);
-    }
-    // Cinta que une cano e tubo, com parafuso.
-    add(new THREE.BoxGeometry(0.036, 0.048, 0.014), darkSteelMat, [0, 0.008, -0.470]);
-    add(new THREE.CylinderGeometry(0.0034, 0.0034, 0.04, 8), steelDarkMat, [0, 0.008, -0.470], [0, 0, Math.PI / 2]);
-    add(new THREE.BoxGeometry(0.022, 0.016, 0.02), darkSteelMat, [0, -0.030, -0.470]);
-
-    // ---- 6. BOMBA (GUARDA-MÃO) — desliza para trás a cada disparo --------
-    this.pumpGroup.position.set(0, -0.008, -0.250);
-    const pumpProfile: Array<readonly [number, number]> = [
-      [0.0150, -0.084],
-      [0.0248, -0.080],
-      [0.0272, -0.070],
-    ];
-    for (let i = 0; i < 5; i++) {
-      const z = -0.058 + i * 0.024;
-      pumpProfile.push([0.0272, z]);
-      pumpProfile.push([0.0238, z + 0.007]);
-      pumpProfile.push([0.0252, z + 0.012]);
-    }
-    pumpProfile.push([0.0268, 0.062]);
-    pumpProfile.push([0.0250, 0.076]);
-    pumpProfile.push([0.0150, 0.082]);
-    const pumpMesh = new THREE.Mesh(latheZ(pumpProfile, 18), polymerMat);
-    this.pumpGroup.add(pumpMesh);
-    // Tampa traseira da bomba com cintas metálicas.
-    add(new THREE.TorusGeometry(0.0274, 0.0028, 5, 16), darkSteelMat, [0, 0, 0.086], [0, 0, 0], this.pumpGroup);
-    add(new THREE.TorusGeometry(0.0274, 0.0028, 5, 16), darkSteelMat, [0, 0, -0.088], [0, 0, 0], this.pumpGroup);
-    gun.add(this.pumpGroup);
-
-    // ---- 7. LANTERNA DE APOIO ACOPLADA SOB O CANO ------------------------
-    // Presa por duas braçadeiras no tubo de cartuchos, à frente da bomba: é o
-    // apoio da arma e a fonte de luz enquanto a shotgun está nas duas mãos.
-    const mountedFlashlight = new THREE.Group();
-    mountedFlashlight.name = 'ShotgunMountedFlashlight';
-    mountedFlashlight.position.set(0, -0.038, -0.512);
-    gun.add(mountedFlashlight);
-    const flashBodyMat = new THREE.MeshLambertMaterial({ color: 0x9aa4ad, flatShading: true });
-    const flashDarkMat = new THREE.MeshLambertMaterial({ color: 0x22262c, flatShading: true });
-    const flashLensMat = new THREE.MeshBasicMaterial({ color: 0x1a1e24 });
-    // Corpo cilíndrico com anéis de aderência.
-    add(latheZ([
-      [0.0000, 0.036],
-      [0.0118, 0.032],
-      [0.0132, 0.018],
-      [0.0126, -0.052],
-      [0.0148, -0.062],
-      [0.0000, -0.064],
-    ], 16), flashBodyMat, [0, 0, 0], [0, 0, 0], mountedFlashlight);
-    for (let i = 0; i < 3; i++) {
-      add(new THREE.TorusGeometry(0.0134, 0.0018, 5, 14), flashDarkMat, [0, 0, 0.010 - i * 0.016], [0, 0, 0], mountedFlashlight);
-    }
-    // Cabeça, refletor e lente.
-    add(latheZ([
-      [0.0130, -0.058],
-      [0.0206, -0.070],
-      [0.0218, -0.086],
-      [0.0206, -0.090],
-      [0.0000, -0.090],
-    ], 18), flashDarkMat, [0, 0, 0], [0, 0, 0], mountedFlashlight);
-    const flashLens = add(new THREE.CircleGeometry(0.0186, 20), flashLensMat, [0, 0, -0.0902], [0, Math.PI, 0], mountedFlashlight);
-    flashLens.name = 'ShotgunMountedLens';
-    // Braçadeiras no tubo de cartuchos.
-    for (const zOff of [0.020, -0.030]) {
-      add(new THREE.TorusGeometry(0.0205, 0.0032, 5, 14, Math.PI * 1.4), flashDarkMat,
-        [0, 0.006, zOff], [Math.PI / 2, 0, Math.PI * 0.30], mountedFlashlight);
-      add(new THREE.BoxGeometry(0.007, 0.012, 0.009), darkSteelMat, [0, 0.028, zOff], [0, 0, 0], mountedFlashlight);
-    }
-    // Botão de pressão traseiro e cabo que corre até o receptor.
-    add(new THREE.CylinderGeometry(0.0055, 0.0055, 0.008, 10), darkSteelMat, [0, 0, 0.040], [Math.PI / 2, 0, 0], mountedFlashlight);
-    for (let i = 0; i < 6; i++) {
-      const t = i / 5;
-      add(new THREE.TorusGeometry(0.0034, 0.0016, 4, 8), darkSteelMat,
-        [0.014 + t * 0.006, 0.030 - t * 0.002, 0.052 + i * 0.038], [0, 0, 0], mountedFlashlight);
-    }
-
-    this.mountedLensMaterial = flashLensMat;
-    this.mountedFlashlightGroup = mountedFlashlight;
-
-    // ---- 8. AS DUAS MÃOS NA ARMA -----------------------------------------
-    // Luvas pressurizadas do traje no mesmo vocabulário do taser: palma em
-    // cápsula achatada, dorso almofadado com os nós dos dedos, quatro dedos
-    // enrolados por baixo do tubo e o polegar cruzando por cima. O punho e o
-    // mangote saem na diagonal do canto inferior da tela.
-    const gloveMat = new THREE.MeshLambertMaterial({ color: 0x8b929a, flatShading: true });
-    const glovePadMat = new THREE.MeshLambertMaterial({ color: 0x5b636b, flatShading: true });
-    const gloveSeamMat = new THREE.MeshLambertMaterial({ color: 0x2b3036 });
-    const sleeveMat = new THREE.MeshLambertMaterial({ color: 0x5a6459, flatShading: true });
-    const cuffMat = new THREE.MeshLambertMaterial({ color: 0x9aa4ab, flatShading: true });
-
-    /**
-     * Luva fechada em volta de um tubo da arma (eixo Z). O referencial da luva
-     * é local: +X é o lado de fora (onde fica o dorso da mão), -X é o lado do
-     * corpo, e o tubo atravessa o grupo em Z.
-     */
-    const buildGripGlove = (
-      parent: THREE.Object3D,
-      options: {
-        name: string;
-        position: [number, number, number];
-        gripRadius: number;
-        handScale: number;
-        sleeveDir: THREE.Vector3;
-        sleeveLength: number;
-      }
-    ): THREE.Group => {
-      const glove = new THREE.Group();
-      glove.name = options.name;
-      glove.position.set(...options.position);
-      // Espelhada em X: a câmera olha o lado esquerdo do cano, então a palma e
-      // os dedos só ficam visíveis desse lado.
-      glove.scale.x = -1;
-      parent.add(glove);
-
-      const R = options.gripRadius;
-      const s = options.handScale;
-      const fingerR = 0.0098 * s;
-
-      // Palma: cápsula achatada encostada na lateral do tubo, com o dorso
-      // almofadado por fora. É o volume que dá a leitura de "mão".
-      const palm = new THREE.Mesh(new THREE.CapsuleGeometry(0.031 * s, 0.074 * s, 4, 12), gloveMat);
-      palm.position.set(R * 0.98, -0.004 * s, 0.002);
-      palm.rotation.set(0.02, 0, 0.06);
-      palm.scale.set(0.60, 1.0, 0.88);
-      glove.add(palm);
-      const backPad = new THREE.Mesh(new THREE.CapsuleGeometry(0.020 * s, 0.058 * s, 4, 10), glovePadMat);
-      backPad.position.set(R * 1.22, 0.004, 0.0);
-      backPad.scale.set(0.40, 1.0, 0.86);
-      glove.add(backPad);
-      // Nós dos dedos no dorso: quatro bossas alinhadas em Z.
-      for (let f = 0; f < 4; f++) {
-        const knuckle = new THREE.Mesh(new THREE.SphereGeometry(fingerR * 1.12, 10, 8), glovePadMat);
-        knuckle.position.set(R * 1.28, 0.002, 0.036 * s - f * 0.024 * s);
-        knuckle.scale.set(0.58, 0.9, 1);
-        glove.add(knuckle);
-      }
-
-      // Dedos: contornam o tubo por baixo, em três falanges, e voltam para o
-      // lado de dentro — é esse arco que faz a mão "agarrar" em vez de flutuar.
-      const fingerZ = [0.034, 0.011, -0.012, -0.035];
-      const fingerLen = [1.0, 1.04, 0.98, 0.88];
-      for (let f = 0; f < 4; f++) {
-        const z = fingerZ[f] * s;
-        const r = fingerR * fingerLen[f];
-        const points = [
-          new THREE.Vector3(R * 1.06, -R * 0.52, z + 0.002),
-          new THREE.Vector3(R * 0.80, -R * 1.14, z),
-          new THREE.Vector3(R * 0.04, -R * 1.38, z - 0.002),
-          new THREE.Vector3(R * -0.74, -R * 1.12, z - 0.004),
-          new THREE.Vector3(R * -1.0, -R * 0.62, z - 0.006),
-        ];
-        for (let i = 0; i < points.length - 1; i++) {
-          capsuleBetween(glove, points[i], points[i + 1], r * (1 - i * 0.05), gloveMat);
-          if (i > 0) {
-            const joint = new THREE.Mesh(
-              new THREE.TorusGeometry(r * 0.98 * (1 - i * 0.05), 0.0015 * s, 4, 10),
-              gloveSeamMat
-            );
-            joint.position.copy(points[i]);
-            joint.rotation.set(0, Math.PI / 2, 0);
-            glove.add(joint);
-          }
-        }
-      }
-
-      // Polegar cruzando por cima do tubo, apontando para a frente.
-      const thumbBase = new THREE.Vector3(R * 1.16, R * 0.5, -0.040 * s);
-      const thumbMid = new THREE.Vector3(R * 0.42, R * 1.06, -0.066 * s);
-      const thumbTip = new THREE.Vector3(-R * 0.5, R * 0.98, -0.076 * s);
-      capsuleBetween(glove, thumbBase, thumbMid, fingerR * 1.3, gloveMat);
-      capsuleBetween(glove, thumbMid, thumbTip, fingerR * 1.06, gloveMat);
-      const thumbJoint = new THREE.Mesh(new THREE.SphereGeometry(fingerR * 1.24, 10, 8), glovePadMat);
-      thumbJoint.position.copy(thumbMid);
-      glove.add(thumbJoint);
-
-      // Punho abaixo do polegar, anel de vedação e mangote do traje.
-      const cuffDir = options.sleeveDir.clone().normalize();
-      const wristStart = new THREE.Vector3(R * 0.85, -0.050 * s, 0.044 * s);
-      const wristEnd = wristStart.clone().addScaledVector(cuffDir, 0.050 * s);
-      capsuleBetween(glove, wristStart, wristEnd, 0.0225 * s, gloveMat);
-      const cuffRing = new THREE.Mesh(new THREE.TorusGeometry(0.0238 * s, 0.0038 * s, 6, 16), cuffMat);
-      cuffRing.position.copy(wristEnd);
-      cuffRing.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), cuffDir);
-      glove.add(cuffRing);
-      const sleeveStart = wristEnd.clone().addScaledVector(cuffDir, 0.006 * s);
-      const sleeveEnd = sleeveStart.clone().addScaledVector(cuffDir, options.sleeveLength);
-      capsuleBetween(glove, sleeveStart, sleeveEnd, 0.0238 * s, sleeveMat);
-      for (let i = 0; i < 2; i++) {
-        const band = new THREE.Mesh(new THREE.TorusGeometry(0.0247 * s, 0.003 * s, 5, 14), glovePadMat);
-        band.position.copy(sleeveStart).addScaledVector(cuffDir, 0.030 + i * 0.034);
-        band.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), cuffDir);
-        glove.add(band);
-      }
-      return glove;
-    };
-
-    // Mão direita no punho (atrás do gatilho) e mão esquerda na bomba. Ambas
-    // ficam no lado +X, que é o lado da arma que a câmera enxerga.
-    buildGripGlove(gun, {
-      name: 'ShotgunHandRight',
-      position: [0, -0.030, 0.106],
-      gripRadius: 0.028,
-      handScale: 0.94,
-      sleeveDir: new THREE.Vector3(0.62, -0.74, 0.26),
-      sleeveLength: 0.17,
-    });
-    this.leftHandGroup = buildGripGlove(this.pumpGroup, {
-      name: 'ShotgunHandLeft',
-      position: [0, 0, 0],
-      gripRadius: 0.0278,
-      handScale: 1.0,
-      sleeveDir: new THREE.Vector3(0.58, -0.78, 0.22),
-      sleeveLength: 0.18,
+    // Em 1ª pessoa a coronha fica atrás da câmera: ela é construída (a arma
+    // precisa existir inteira para a 3ª pessoa) mas escondida aqui.
+    const model = buildShotgunModel(this.materials, { withStock: false });
+    this.gunGroup = model.root;
+    this.pumpGroup = model.pump;
+    for (const hidden of model.firstPersonHidden) hidden.visible = false;
+    this.gunGroup.name = 'ShotgunGun';
+    this.gunGroup.traverse((node) => {
+      if (node.name === 'ShotgunStock' || node.name === 'ShotgunGripWood') node.visible = false;
     });
 
+    // Estojo ejetado: sai pela porta de ejeção, no lado direito do receptor.
+    this.ejectShell = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.0095, 0.0095, 0.05, 10),
+      this.materials.brass
+    );
+    this.ejectShell.name = 'ShotgunEjectShell';
+    this.ejectShell.visible = false;
+    this.gunGroup.add(this.ejectShell);
 
-    // ---- Clarão de boca + estojo ejetado ----------------------------------
+    this.buildMountedFlashlight(this.gunGroup);
+
+    // ---- Clarão de boca ----------------------------------------------------
     this.muzzleFlashMaterial = new THREE.MeshBasicMaterial({
       color: 0xffd27a,
       transparent: true,
@@ -815,51 +388,133 @@ export class DoomShotgunViewmodel {
     );
     this.muzzleFlash.name = 'ShotgunMuzzleFlash';
     this.muzzleFlash.rotation.x = -Math.PI * 0.5;
-    this.muzzleFlash.position.set(0, 0.026, -0.60);
-    gun.add(this.muzzleFlash);
+    model.muzzleAnchor.add(this.muzzleFlash);
 
-    this.ejectShell = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.0095, 0.0095, 0.05, 8),
-      brassMat
+    // ---- As duas mãos na arma ----------------------------------------------
+    const gloveMats: ShotgunGloveMaterials = {
+      glove: lambert(0x8b929a),
+      pad: lambert(0x5b636b),
+      seam: lambert(0x2b3036),
+      cuff: lambert(0x9aa4ab),
+      sleeve: lambert(0x5a6459),
+    };
+    // Mão direita no punho da coronha: o punho tem seção ~0,040 × 0,046.
+    model.gripAnchor.add(
+      buildShotgunGlove(gloveMats, {
+        side: 'right',
+        radius: 0.0212,
+        scale: 0.98,
+        sleeveDirection: new THREE.Vector3(0.34, -0.9, 0.26),
+        sleeveLength: 0.05,
+      })
     );
-    this.ejectShell.name = 'ShotgunEjectShell';
-    this.ejectShell.visible = false;
-    gun.add(this.ejectShell);
-
-    // Posicionamento em 1ª pessoa: arma na diagonal inferior direita
-    // A arma desce e converge para o centro da mira, com o cano mais visível.
-    // Recorta a parte que fica atrás da câmera: coronha, coice, punho de
-    // madeira e a mão que o segura não aparecem em 1ª pessoa.
-    gun.traverse((node) => {
-      if (node.name === 'ShotgunStockMesh') node.visible = false;
+    // Mão esquerda no guarda-mão (raio real da peça) — viaja com a bomba.
+    this.leftHandGroup = buildShotgunGlove(gloveMats, {
+      side: 'left',
+      radius: SHOTGUN_METRICS.foreEndHalfHeight,
+      scale: 1,
+      sleeveDirection: new THREE.Vector3(0.4, -0.88, 0.26),
+      sleeveLength: 0.2,
     });
+    model.pumpAnchor.add(this.leftHandGroup);
 
-    this.animGroup.name = 'ShotgunAnimGroup';
-    this.animGroup.position.set(0.010, 0.030, -0.30);
-    this.animGroup.rotation.set(0.05, 0.34, -0.04);
-    this.animGroup.scale.setScalar(1.0);
-    this.animGroup.add(gun);
-    this.rootGroup.add(this.animGroup);
+    // ---- Enquadramento -----------------------------------------------------
+    this.applyFit();
     this.rootGroup.name = 'ShotgunViewmodelRoot';
-    this.rootGroup.position.set(0.155, -0.085, 0.02);
+    this.rootGroup.add(this.gunGroup);
     this.rootGroup.visible = false;
     this.viewScene.add(this.rootGroup);
   }
 
-  createThirdPersonWeapon(): THREE.Object3D {
-    const gun = this.animGroup.children[0].clone(true);
-    for (const name of ['ShotgunMuzzleFlash', 'ShotgunEjectShell']) {
-      const effect = gun.getObjectByName(name);
-      if (effect) effect.visible = false;
+  /**
+   * Resolve a posição/orientação da arma a partir do ponto onde a mão direita
+   * deve cair na tela. Assim a luva fica exatamente em volta do punho — a mão
+   * obedece à modelagem, e não o contrário.
+   */
+  private applyFit(): void {
+    const M = SHOTGUN_METRICS;
+    const forward = FIRST_PERSON_FIT.aim.clone().normalize();
+    const zAxis = forward.clone().negate(); // +Z da arma aponta para o atirador
+    const xAxis = new THREE.Vector3()
+      .crossVectors(new THREE.Vector3(0, 1, 0), zAxis)
+      .normalize();
+    const yAxis = new THREE.Vector3().crossVectors(zAxis, xAxis).normalize();
+    // Rolagem: gira a arma em torno do próprio eixo do cano.
+    const roll = new THREE.Quaternion().setFromAxisAngle(zAxis, FIRST_PERSON_FIT.roll);
+    xAxis.applyQuaternion(roll);
+    yAxis.applyQuaternion(roll);
+
+    const basis = new THREE.Matrix4().makeBasis(xAxis, yAxis, zAxis);
+    if (this.handSign < 0) {
+      const mirror = new THREE.Matrix4().makeScale(-1, 1, 1);
+      basis.premultiply(mirror).multiply(mirror);
     }
-    // Em 3ª pessoa a arma é vista de fora: a coronha e a mão do gatilho voltam.
-    gun.traverse((node) => {
-      if (node.name === 'ShotgunStockMesh' || node.name === 'ShotgunHandRight') {
-        node.visible = true;
-      }
-    });
-    gun.position.set(0, 0.085, -0.085);
-    return gun;
+    this.baseQuaternion.setFromRotationMatrix(basis);
+    // A arma entra na cena pela âncora do punho: o ponto da mão comanda.
+    const gripLocal = new THREE.Vector3(0, M.gripAnchor.y, M.gripAnchor.z);
+    const gripWorld = gripLocal.clone().applyQuaternion(this.baseQuaternion);
+    this.basePosition.copy(FIRST_PERSON_FIT.gripPoint).sub(gripWorld);
+    if (this.handSign < 0) this.basePosition.x *= -1;
+    this.rootGroup.position.copy(this.basePosition);
+    this.rootGroup.quaternion.copy(this.baseQuaternion);
+  }
+
+  /** Lanterna de apoio: braçadeira no tubo de cartuchos, à frente da bomba. */
+  private buildMountedFlashlight(parent: THREE.Object3D): void {
+    const add = createMeshAdder(parent);
+    const M = SHOTGUN_METRICS;
+    const light = new THREE.Group();
+    light.name = 'ShotgunMountedFlashlight';
+    // Presa sob o tubo de cartuchos, logo à frente do guarda-mão.
+    light.position.set(0, M.magazineY - M.magazineRadius - 0.013, -0.34);
+    parent.add(light);
+
+    const bodyMat = this.materials.steelBright;
+    const darkMat = this.materials.steelDark;
+    const lensMat = new THREE.MeshBasicMaterial({ color: 0x1a1e24 });
+    // Corpo cilíndrico com anéis de aderência e cabeça alargada.
+    add(latheZ([
+      [0.0, 0.05],
+      [0.0124, 0.046],
+      [0.0132, 0.03],
+      [0.0126, -0.03],
+      [0.0, -0.034],
+    ], 16), bodyMat, [0, 0, 0]);
+    for (let i = 0; i < 3; i++) {
+      add(new THREE.TorusGeometry(0.0134, 0.0016, 5, 14), darkMat, [0, 0, 0.014 - i * 0.016]);
+    }
+    add(latheZ([
+      [0.0130, -0.03],
+      [0.0204, -0.044],
+      [0.0216, -0.062],
+      [0.0204, -0.068],
+      [0.0, -0.068],
+    ], 18), darkMat, [0, 0, 0]);
+    const lens = add(new THREE.CircleGeometry(0.0186, 20), lensMat, [0, 0, -0.0682], [0, Math.PI, 0]);
+    lens.name = 'ShotgunMountedLens';
+    // Braçadeira abraçando o tubo de cartuchos + botão traseiro.
+    add(new THREE.TorusGeometry(0.0128, 0.0032, 6, 16, Math.PI * 1.45), darkMat,
+      [0, M.magazineRadius + 0.012, 0.006], [Math.PI / 2, 0, Math.PI * 0.28]);
+    add(new THREE.BoxGeometry(0.006, 0.012, 0.008), darkMat, [0, M.magazineRadius + 0.008, 0.006]);
+    add(new THREE.CylinderGeometry(0.0055, 0.0055, 0.008, 10), darkMat, [0, -0.013, 0.052], [Math.PI / 2, 0, 0]);
+
+    this.mountedLensMaterial = lensMat;
+    this.mountedFlashlightGroup = light;
+    // Guarda a referência do adder para não vazar: o grupo já está na cena.
+    void add;
+  }
+
+  /**
+   * Arma de 3ª pessoa (a que os outros jogadores veem nas mãos do aliado):
+   * a mesma modelagem, agora com a coronha, sem as luvas do viewmodel — as
+   * mãos do traje do aliado é que a seguram, pelas âncoras.
+   */
+  createThirdPersonWeapon(): THREE.Object3D {
+    const model = buildShotgunModel(this.materials, { withStock: true });
+    model.root.name = 'ShotgunThirdPerson';
+    // Menor e mais simples: vista de longe, o detalhe miúdo vira ruído.
+    model.root.scale.setScalar(0.92);
+    return model.root;
   }
 
   setAspect(aspect: number): void {
@@ -869,7 +524,10 @@ export class DoomShotgunViewmodel {
   }
 
   setHandedness(hand: 'right' | 'left'): void {
-    this.handSign = hand === 'left' ? -1 : 1;
+    const next: 1 | -1 = hand === 'left' ? -1 : 1;
+    if (next === this.handSign) return;
+    this.handSign = next;
+    if (this.rootGroup.parent) this.applyFit();
   }
 
   get isEquipped(): boolean {
@@ -883,6 +541,16 @@ export class DoomShotgunViewmodel {
   /** Verdadeiro enquanto o cano está recuando (a arma "trabalhou"). */
   get isFiring(): boolean {
     return this.fireTimer > 0 || this.pumpTimer > 0;
+  }
+
+  /** Âncora da mão direita no espaço do viewmodel (testes e depuração). */
+  getGripAnchor(): THREE.Object3D | null {
+    return this.gunGroup.getObjectByName('WeaponGripAnchor') ?? null;
+  }
+
+  /** Âncora da mão esquerda (guarda-mão) no espaço do viewmodel. */
+  getPumpAnchor(): THREE.Object3D | null {
+    return this.pumpGroup.getObjectByName('WeaponSupportAnchor') ?? null;
   }
 
   equip(): void {
@@ -902,7 +570,7 @@ export class DoomShotgunViewmodel {
     this.muzzleFlashMaterial.opacity = 0.95;
     this.muzzleFlash.rotation.z = Math.random() * Math.PI;
     this.ejectShell.visible = true;
-    this.ejectShell.position.set(0.040, 0.016, 0.012);
+    this.ejectShell.position.set(0.03, 0.004, 0.11);
     this.ejectShell.rotation.set(Math.random() * 3, Math.random() * 3, 0);
   }
 
@@ -915,8 +583,7 @@ export class DoomShotgunViewmodel {
   update(dt: number, bobPhase: number, planarSpeed: number, slideAmount = 0): void {
     const step = Math.min(0.05, Math.max(0.0005, dt));
     const target = this.equipped ? 1 : 0;
-    this.equipProgress +=
-      (target - this.equipProgress) * (1 - Math.exp(-13 * step));
+    this.equipProgress += (target - this.equipProgress) * (1 - Math.exp(-13 * step));
     this.rootGroup.visible = this.equipProgress > 0.02;
     if (!this.rootGroup.visible) return;
 
@@ -925,45 +592,46 @@ export class DoomShotgunViewmodel {
     this.recoil = Math.max(0, this.recoil - step * 6.2);
     this.recoilPitch = Math.max(0, this.recoilPitch - step * 5.4);
 
-    // Arma Guardada -> Baixo (fora da tela) quando não está equipada
+    // Arma guardada -> baixo (fora da tela) quando não está equipada.
     const lowered = 1 - this.equipProgress;
     const slide = THREE.MathUtils.clamp(slideAmount, 0, 1);
     const bobAmount = Math.min(1, planarSpeed / 5.2) * (1 - slide);
     const bobX = Math.sin(bobPhase) * 0.011 * bobAmount;
     const bobY = Math.abs(Math.cos(bobPhase)) * 0.009 * bobAmount;
 
-    this.rootGroup.position.set(
-      (0.150 - slide * 0.025) * this.handSign + bobX,
-      -0.135 - lowered * 0.42 + bobY - slide * 0.03,
-      0.02 + this.recoil * 0.075
-    );
-    this.rootGroup.rotation.set(
-      this.recoilPitch * 0.16 + slide * 0.06,
-      -this.handSign * this.swayX * 0.5,
-      lowered * 0.5 - this.recoilPitch * 0.05 - slide * 0.16 * this.handSign
-    );
+    // Tudo parte da pose base resolvida em `applyFit`: o balanço, o recuo e o
+    // deslize são deslocamentos em cima dela, nunca uma pose nova.
+    this.rootGroup.position.copy(this.basePosition);
+    this.rootGroup.position.x += this.handSign * (-slide * 0.02) + bobX;
+    this.rootGroup.position.y += -lowered * 0.42 + bobY - slide * 0.03;
+    this.rootGroup.position.z += this.recoil * 0.06;
+    this.rootGroup.quaternion.copy(this.baseQuaternion);
+    this.rootGroup.rotateX(this.recoilPitch * 0.16 + slide * 0.06 + lowered * 0.35);
+    this.rootGroup.rotateY(-this.handSign * this.swayX * 0.5);
+    this.rootGroup.rotateZ((-this.recoilPitch * 0.05 - slide * 0.16 + lowered * 0.4) * this.handSign);
 
     this.applyWebStruggle();
 
-    // Bombeamento: a bomba recua e volta (0.62s no total)
+    // Bombeamento: a bomba recua e volta (0.62s no total).
     const pumpPhase = this.pumpTimer > 0 ? 1 - this.pumpTimer / 0.62 : 1;
     let pumpOffset = 0;
     if (this.pumpTimer > 0) {
       const p = Math.min(1, pumpPhase * 2.1);
-      pumpOffset = p < 0.42 ? -(p / 0.42) * 0.085 : -0.085 * (1 - (p - 0.42) / 0.58);
+      pumpOffset = p < 0.42 ? -(p / 0.42) * SHOTGUN_METRICS.pumpTravel : -SHOTGUN_METRICS.pumpTravel * (1 - (p - 0.42) / 0.58);
     }
-    this.pumpGroup.position.z = -0.25 + pumpOffset;
+    this.pumpGroup.position.z = SHOTGUN_METRICS.foreEndCenterZ + pumpOffset;
 
-    // Clarão de boca + estojo ejetado
+    // Clarão de boca + estojo ejetado.
     this.muzzleFlashMaterial.opacity = Math.max(
       0,
       this.muzzleFlashMaterial.opacity - step * 12
     );
     if (this.ejectShell.visible) {
       this.ejectShell.position.x += step * 0.42;
-      this.ejectShell.position.y -= step * 0.5;
+      this.ejectShell.position.y += step * 0.26;
+      this.ejectShell.position.z -= step * 0.12;
       this.ejectShell.rotation.z += step * 9;
-      if (this.ejectShell.position.y < -0.24) this.ejectShell.visible = false;
+      if (this.ejectShell.position.y > 0.26) this.ejectShell.visible = false;
     }
 
     // Lanterna de apoio acoplada: acende junto com o feixe e pisca com a bateria.
@@ -986,10 +654,6 @@ export class DoomShotgunViewmodel {
   }
 
   /**
-   * Estado da lanterna de apoio presa sob o cano: acompanha o feixe principal
-   * (e a bateria) sem precisar de uma lanterna empunhada.
-   */
-  /**
    * Braços presos pela seda: a escopeta pesa para baixo e para dentro, e cada
    * arranco do operador levanta a arma antes do contragolpe.
    */
@@ -1009,9 +673,8 @@ export class DoomShotgunViewmodel {
     this.rootGroup.position.y +=
       (-0.065 - strain * 0.02 + Math.max(0, yank) * 0.04 + breath * 0.004) * b;
     this.rootGroup.position.z += (0.05 - yank * 0.02) * b;
-    this.rootGroup.rotation.x += (0.18 + strain * 0.07 - yank * 0.12) * b;
-    this.rootGroup.rotation.z +=
-      (-0.14 - strain * 0.05 + tremor * 0.05) * this.handSign * b;
+    this.rootGroup.rotateX((0.18 + strain * 0.07 - yank * 0.12) * b);
+    this.rootGroup.rotateZ((-0.14 - strain * 0.05 + tremor * 0.05) * this.handSign * b);
   }
 
   setMountedFlashlight(on: boolean, dim = false): void {

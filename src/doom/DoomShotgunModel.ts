@@ -1,0 +1,755 @@
+import * as THREE from 'three';
+
+/* ==========================================================================
+   MODELAGEM 3D DA SHOTGUN DE PUMP (FONTE ÚNICA DE VERDADE)
+   --------------------------------------------------------------------------
+   Um único construtor alimenta as três situações em que a arma aparece:
+   o viewmodel de 1ª pessoa, a arma nas mãos dos aliados em 3ª pessoa e as
+   peças soltas que o jogador recolhe no mundo. Assim as peças do chão são
+   literalmente as mesmas peças da arma montada — e não uma reinterpretação
+   aproximada feita de caixas.
+
+   Referencial canônico ("espaço da arma"):
+     -Z = direção do cano (a boca do tiro está em z negativo)
+     +Y = para cima
+     +X = lado direito da arma (lado da porta de ejeção)
+   Origem: encontro do cano com o receptor, na altura do eixo da alma.
+   Todas as cotas estão em metros e seguem uma escopeta pump clássica de
+   cano longo (~0,98 m de comprimento total, cano de 0,50 m).
+   ========================================================================== */
+
+export interface ShotgunMaterialSet {
+  /** Aço azulado do receptor e do cano. */
+  steel: THREE.Material;
+  /** Aço claro: arestas vivas, parafusos, trilho, colarinhos. */
+  steelBright: THREE.Material;
+  /** Aço escuro: tubo de cartuchos, ferrolho, interior das cavidades. */
+  steelDark: THREE.Material;
+  /** Polímero do guarda-mão. */
+  polymer: THREE.Material;
+  /** Polímero escuro: nervuras e colarinhos do guarda-mão. */
+  polymerDark: THREE.Material;
+  /** Nogueira da coronha. */
+  wood: THREE.Material;
+  /** Nogueira escura: frisos de checagem e cunhas. */
+  woodDark: THREE.Material;
+  /** Borracha do coice e do soleira. */
+  rubber: THREE.Material;
+  /** Latão: massa de mira, cartuchos, pequenos detalhes. */
+  brass: THREE.Material;
+  /** Cavidades (boca do cano, porta de ejeção, alça de alimentação). */
+  cavity: THREE.Material;
+}
+
+/** Cotas da arma, expostas para os testes e para a pose das mãos. */
+export const SHOTGUN_METRICS = {
+  /** Raio externo do cano (12 gauge: ~21,6 mm de diâmetro). */
+  barrelRadius: 0.0108,
+  /** Raio da alma. */
+  boreRadius: 0.0093,
+  /** Posição da boca do cano no eixo Z. */
+  muzzleZ: -0.5,
+  /** Centro do tubo de cartuchos (abaixo do cano). */
+  magazineY: -0.0215,
+  magazineRadius: 0.0102,
+  /** Comprimento do receptor (z negativo = frente). */
+  receiverFrontZ: -0.03,
+  receiverRearZ: 0.2,
+  receiverHalfWidth: 0.02,
+  receiverTopY: 0.024,
+  receiverBottomY: -0.034,
+  /** Guarda-mão (bomba): centro, meio-comprimento e curso do bombeamento. */
+  foreEndCenterZ: -0.16,
+  foreEndHalfLength: 0.1,
+  foreEndHalfWidth: 0.023,
+  foreEndHalfHeight: 0.0255,
+  foreEndCenterY: -0.0105,
+  pumpTravel: 0.085,
+  /** Coronha. */
+  stockRearZ: 0.475,
+  /** Âncora da mão direita (punho da coronha). */
+  gripAnchor: { y: -0.023, z: 0.225, pitchX: 0.346 },
+  /** Âncora da mão esquerda (guarda-mão), em relação ao grupo da bomba. */
+  pumpAnchor: { rollZ: 1.21 },
+} as const;
+
+/* --------------------------------------------------------------------------
+   Helpers de modelagem
+   -------------------------------------------------------------------------- */
+
+/** Extruda um perfil lateral (Z × Y) na largura X, com bisel opcional. */
+export function extrudeProfile(
+  profile: ReadonlyArray<readonly [number, number]>,
+  width: number,
+  bevel = 0,
+  curveSegments = 3
+): THREE.ExtrudeGeometry {
+  const shape = new THREE.Shape();
+  shape.moveTo(profile[0][0], profile[0][1]);
+  for (let i = 1; i < profile.length; i++) shape.lineTo(profile[i][0], profile[i][1]);
+  shape.closePath();
+  const depth = Math.max(0.002, width - bevel * 2);
+  const geometry = new THREE.ExtrudeGeometry(shape, {
+    depth,
+    bevelEnabled: bevel > 0,
+    bevelThickness: bevel,
+    bevelSize: bevel,
+    bevelSegments: 2,
+    curveSegments,
+    steps: 1,
+  });
+  geometry.translate(0, 0, -depth / 2);
+  geometry.rotateY(-Math.PI / 2);
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+/** Corpo de revolução em torno do eixo Z (perfil [raio, z]). */
+export function latheZ(
+  profile: ReadonlyArray<readonly [number, number]>,
+  segments = 20
+): THREE.LatheGeometry {
+  const points = profile.map(([radius, z]) => new THREE.Vector2(radius, z));
+  const geometry = new THREE.LatheGeometry(points, segments);
+  geometry.rotateX(Math.PI / 2);
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+export type MeshAdder = (
+  geometry: THREE.BufferGeometry,
+  material: THREE.Material,
+  position: [number, number, number],
+  rotation?: [number, number, number],
+  parent?: THREE.Object3D
+) => THREE.Mesh;
+
+export function createMeshAdder(defaultParent: THREE.Object3D): MeshAdder {
+  return (geometry, material, position, rotation = [0, 0, 0], parent = defaultParent) => {
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.position.set(...position);
+    mesh.rotation.set(...rotation);
+    parent.add(mesh);
+    return mesh;
+  };
+}
+
+/** Cápsula esticada entre dois pontos — dedos, punho, mangote. */
+export function capsuleBetween(
+  parent: THREE.Object3D,
+  from: THREE.Vector3,
+  to: THREE.Vector3,
+  radius: number,
+  material: THREE.Material
+): THREE.Mesh {
+  const dir = new THREE.Vector3().subVectors(to, from);
+  const length = Math.max(0.001, dir.length());
+  const mesh = new THREE.Mesh(new THREE.CapsuleGeometry(radius, length, 4, 10), material);
+  mesh.position.copy(from).addScaledVector(dir, 0.5);
+  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
+  parent.add(mesh);
+  return mesh;
+}
+
+/** Anel de parafuso/pino: cabeça cilíndrica rente à superfície. */
+function addScrew(
+  add: MeshAdder,
+  parent: THREE.Object3D,
+  position: [number, number, number],
+  material: THREE.Material,
+  axis: 'x' | 'y' | 'z' = 'x'
+): void {
+  const rotation: [number, number, number] =
+    axis === 'x' ? [0, 0, Math.PI / 2] : axis === 'y' ? [0, 0, 0] : [Math.PI / 2, 0, 0];
+  add(new THREE.CylinderGeometry(0.0032, 0.0032, 0.0022, 10), material, position, rotation, parent);
+  const slot = add(
+    new THREE.BoxGeometry(0.005, 0.0008, 0.0012),
+    material,
+    position,
+    rotation,
+    parent
+  );
+  slot.translateX(0.0012);
+}
+
+/* --------------------------------------------------------------------------
+   Peças
+   -------------------------------------------------------------------------- */
+
+/**
+ * Cano + tubo de cartuchos + cinta + massa de mira.
+ * Vai de z = +0.01 (boca da câmara, dentro do receptor) até a boca em
+ * z = -0.50, com a alma vazia para a boca nunca virar um disco sólido.
+ */
+export function buildShotgunBarrelAssembly(mats: ShotgunMaterialSet): THREE.Group {
+  const group = new THREE.Group();
+  group.name = 'ShotgunBarrelAssembly';
+  const add = createMeshAdder(group);
+  const M = SHOTGUN_METRICS;
+  const barrelLength = Math.abs(M.muzzleZ) + 0.01;
+
+  // Tubo do cano (aberto nas duas pontas) e alma vazia.
+  add(
+    new THREE.CylinderGeometry(M.barrelRadius, M.barrelRadius, barrelLength, 20, 1, true),
+    mats.steel,
+    [0, 0, 0.005 - barrelLength / 2],
+    [Math.PI / 2, 0, 0]
+  ).name = 'BarrelOuter';
+  add(
+    new THREE.CylinderGeometry(M.boreRadius, M.boreRadius, barrelLength, 20, 1, true),
+    mats.cavity,
+    [0, 0, 0.005 - barrelLength / 2],
+    [Math.PI / 2, 0, 0]
+  ).name = 'BarrelBore';
+
+  // Boca do cano: anel de aço vivo + parede da alma visível.
+  const muzzleRim = add(
+    new THREE.RingGeometry(M.boreRadius, M.barrelRadius, 22),
+    mats.steelBright,
+    [0, 0, M.muzzleZ + 0.0004],
+    [0, Math.PI, 0]
+  );
+  muzzleRim.name = 'MuzzleRim';
+  const breechRim = add(
+    new THREE.RingGeometry(M.boreRadius, M.barrelRadius, 22),
+    mats.steelBright,
+    [0, 0, 0.0045],
+    [0, 0, 0]
+  );
+  breechRim.name = 'BreechRim';
+
+  // Reforço da câmara: o cano engrossa onde encaixa no receptor.
+  add(
+    latheZ([
+      [0.0135, 0.008],
+      [0.0138, -0.01],
+      [0.0138, -0.062],
+      [0.0124, -0.082],
+      [0.0112, -0.094],
+    ], 20),
+    mats.steel,
+    [0, 0, 0]
+  );
+  // Extrator: pequena lâmina de aço na altura da câmara.
+  add(new THREE.BoxGeometry(0.0032, 0.0026, 0.03), mats.steelBright, [0.0118, 0.006, -0.05]);
+
+  // Trilho ventilado sobre o cano + massa de mira de latão.
+  add(
+    new THREE.BoxGeometry(0.0072, 0.0042, 0.43),
+    mats.steelDark,
+    [0, M.barrelRadius + 0.0022, -0.275]
+  ).name = 'BarrelRib';
+  for (let i = 0; i < 10; i++) {
+    add(
+      new THREE.BoxGeometry(0.0034, 0.0034, 0.009),
+      mats.steel,
+      [0, M.barrelRadius + 0.0044, -0.075 - i * 0.042]
+    );
+  }
+  add(
+    new THREE.SphereGeometry(0.0029, 10, 8),
+    mats.brass,
+    [0, M.barrelRadius + 0.0058, M.muzzleZ + 0.014]
+  ).name = 'FrontSight';
+
+  // Tubo de cartuchos, paralelo e colado sob o cano.
+  const magLength = 0.452;
+  add(
+    new THREE.CylinderGeometry(M.magazineRadius, M.magazineRadius, magLength, 16, 1, false),
+    mats.steelDark,
+    [0, M.magazineY, -0.032 - magLength / 2],
+    [Math.PI / 2, 0, 0]
+  ).name = 'MagazineTube';
+  // Tampa dianteira do tubo com anel de retenção da mola.
+  add(
+    latheZ([
+      [0.0124, 0],
+      [0.0124, -0.012],
+      [0.0106, -0.016],
+      [0.0106, -0.019],
+      [0.0, -0.019],
+    ], 16),
+    mats.steelBright,
+    [0, M.magazineY, -0.484]
+  ).name = 'MagazineCap';
+  for (let i = 0; i < 12; i++) {
+    const a = (i / 12) * Math.PI * 2;
+    add(
+      new THREE.BoxGeometry(0.0014, 0.0014, 0.011),
+      mats.steelDark,
+      [
+        Math.cos(a) * 0.0124,
+        M.magazineY + Math.sin(a) * 0.0124,
+        -0.476,
+      ]
+    );
+  }
+
+  // Cinta que prende cano e tubo perto da boca, com parafuso passante.
+  add(
+    new THREE.BoxGeometry(0.030, 0.046, 0.013),
+    mats.steelDark,
+    [0, (M.magazineY) / 2, -0.436]
+  ).name = 'BarrelBand';
+  add(
+    new THREE.CylinderGeometry(0.0034, 0.0034, 0.032, 8),
+    mats.steelBright,
+    [0, (M.magazineY) / 2 + 0.002, -0.436],
+    [0, 0, Math.PI / 2]
+  );
+  addScrew(add, group, [0.0155, (M.magazineY) / 2 - 0.008, -0.436], mats.steelBright, 'x');
+
+  return group;
+}
+
+/**
+ * Receptor de aço: tampa do ferrolho, porta de ejeção no lado direito,
+ * porta de alimentação embaixo, guarda-mato aberto, gatilho e travas.
+ */
+export function buildShotgunReceiver(mats: ShotgunMaterialSet): THREE.Group {
+  const group = new THREE.Group();
+  group.name = 'ShotgunReceiver';
+  const add = createMeshAdder(group);
+
+  // Carcaça: perfil lateral extrudado, com o dorso levemente mais alto atrás.
+  const shellProfile: ReadonlyArray<readonly [number, number]> = [
+    [-0.030, 0.014],
+    [-0.030, -0.016],
+    [0.010, -0.030],
+    [0.110, -0.034],
+    [0.200, -0.032],
+    [0.200, 0.018],
+    [0.130, 0.023],
+    [0.010, 0.024],
+  ];
+  add(extrudeProfile(shellProfile, 0.04, 0.004), mats.steel, [0, 0, 0]);
+  // Tampa do ferrolho com frisos de aderência (a "costela" do receptor).
+  add(new THREE.BoxGeometry(0.041, 0.006, 0.12), mats.steelBright, [0, 0.026, 0.085]);
+  for (let i = 0; i < 6; i++) {
+    add(new THREE.BoxGeometry(0.043, 0.0018, 0.0055), mats.steel, [0, 0.0295, 0.035 + i * 0.019]);
+  }
+
+  // Porta de ejeção (lado direito) com o ferrolho aparecendo dentro.
+  add(
+    new THREE.BoxGeometry(0.004, 0.020, 0.09),
+    mats.cavity,
+    [0.0205, 0.002, 0.11]
+  ).name = 'EjectionPort';
+  add(new THREE.BoxGeometry(0.004, 0.014, 0.052), mats.steelBright, [0.0218, 0.002, 0.128]).name =
+    'Bolt';
+  // Alavanca de manejo do ferrolho saindo pela porta.
+  add(
+    new THREE.CylinderGeometry(0.0034, 0.0034, 0.026, 8),
+    mats.steelDark,
+    [0.0235, 0.0, 0.108],
+    [Math.PI / 2, 0, 0]
+  );
+  add(
+    new THREE.SphereGeometry(0.0042, 8, 6),
+    mats.steelDark,
+    [0.0235, 0.0, 0.096]
+  );
+
+  // Porta de alimentação + elevador de cartucho na parte de baixo.
+  add(new THREE.BoxGeometry(0.026, 0.004, 0.086), mats.cavity, [0, -0.033, 0.085]).name =
+    'LoadingPort';
+  add(new THREE.BoxGeometry(0.020, 0.0034, 0.062), mats.steelBright, [0, -0.0305, 0.09]).name =
+    'Carrier';
+
+  // Guarda-mato ABERTO (nunca uma silhueta cheia): dois montantes, o arco
+  // inferior e o gatilho pendurado no meio — dá para ver através dele.
+  add(new THREE.BoxGeometry(0.030, 0.030, 0.009), mats.steel, [0, -0.049, 0.055]).name =
+    'GuardFront';
+  add(new THREE.BoxGeometry(0.030, 0.030, 0.009), mats.steel, [0, -0.049, 0.130]).name =
+    'GuardRear';
+  add(new THREE.BoxGeometry(0.030, 0.009, 0.086), mats.steel, [0, -0.0625, 0.0925]).name =
+    'GuardBottom';
+  add(new THREE.BoxGeometry(0.0075, 0.022, 0.008), mats.steelDark, [0, -0.05, 0.088], [0.22, 0, 0]).name =
+    'Trigger';
+  // Trava de segurança (pino transversal atrás do guarda-mato) e botão de
+  // liberação da bomba, no lado direito.
+  add(
+    new THREE.CylinderGeometry(0.0032, 0.0032, 0.046, 10),
+    mats.steelBright,
+    [0, -0.038, 0.158],
+    [0, 0, Math.PI / 2]
+  ).name = 'Safety';
+  add(new THREE.BoxGeometry(0.0035, 0.012, 0.026), mats.steelBright, [0.0212, -0.014, 0.055]).name =
+    'SlideRelease';
+  // Pinos do mecanismo (um à frente, um atrás) na lateral direita.
+  for (const z of [0.015, 0.182]) {
+    addScrew(add, group, [0.0208, -0.008, z], mats.steelBright, 'x');
+  }
+
+  return group;
+}
+
+/**
+ * Guarda-mão (bomba) de polímero com nervuras, colarinhos e as barras de
+ * ação de aço que desaparecem dentro do receptor ao bombear.
+ * Construído centrado na própria origem: o chamador o posiciona.
+ */
+export function buildShotgunForend(mats: ShotgunMaterialSet): THREE.Group {
+  const group = new THREE.Group();
+  group.name = 'ShotgunForend';
+  const add = createMeshAdder(group);
+  const M = SHOTGUN_METRICS;
+  const half = M.foreEndHalfLength;
+
+  // Corpo ovalado envolvendo cano e tubo de cartuchos, oco por dentro.
+  add(
+    new THREE.CylinderGeometry(M.foreEndHalfHeight, M.foreEndHalfHeight, half * 2, 20, 1, true),
+    mats.polymer,
+    [0, 0, 0],
+    [Math.PI / 2, 0, 0]
+  ).name = 'PumpBody';
+  const body = group.children[group.children.length - 1];
+  body.scale.set(M.foreEndHalfWidth / M.foreEndHalfHeight, 1, 1);
+  // Alma oca: o conjunto cano/tubo passa por aqui sem clipping.
+  add(
+    new THREE.CylinderGeometry(0.017, 0.017, half * 2 + 0.006, 16, 1, true),
+    mats.cavity,
+    [0, 0.0035, 0],
+    [Math.PI / 2, 0, 0]
+  ).name = 'PumpBore';
+
+  // Nervuras horizontais de aderência (o "corrugado" do guarda-mão).
+  for (let i = 0; i < 9; i++) {
+    const z = -half + 0.012 + i * 0.021;
+    const rib = add(
+      new THREE.CylinderGeometry(M.foreEndHalfHeight + 0.0016, M.foreEndHalfHeight + 0.0016, 0.006, 20, 1, false),
+      mats.polymerDark,
+      [0, 0, z],
+      [Math.PI / 2, 0, 0]
+    );
+    rib.name = 'PumpRib';
+    rib.scale.set(M.foreEndHalfWidth / M.foreEndHalfHeight, 1, 1);
+  }
+  // Colarinhos de aço nas duas pontas.
+  for (const z of [-half - 0.004, half + 0.004]) {
+    const collar = add(
+      new THREE.CylinderGeometry(M.foreEndHalfHeight + 0.001, M.foreEndHalfHeight + 0.001, 0.012, 20, 1, false),
+      mats.steelDark,
+      [0, 0, z],
+      [Math.PI / 2, 0, 0]
+    );
+    collar.name = 'PumpEndCollar';
+    collar.scale.set(M.foreEndHalfWidth / M.foreEndHalfHeight, 1, 1);
+  }
+  // Barras de ação: duas hastes de aço que ligam a bomba ao ferrolho.
+  for (const x of [-0.0155, 0.0155]) {
+    add(
+      new THREE.BoxGeometry(0.005, 0.0075, 0.115),
+      mats.steelBright,
+      [x, -0.019, half + 0.03]
+    ).name = 'ActionBar';
+  }
+
+  return group;
+}
+
+/**
+ * Coronha de nogueira: punho estreito (onde a mão direita fecha), barriga,
+ * soleira emborrachada com frisos e olhal de bandoleira.
+ */
+export function buildShotgunStock(mats: ShotgunMaterialSet): THREE.Group {
+  const group = new THREE.Group();
+  group.name = 'ShotgunStock';
+  const add = createMeshAdder(group);
+
+  // Perfil lateral da coronha inteira (do encontro com o receptor ao coice).
+  const stockProfile: ReadonlyArray<readonly [number, number]> = [
+    [0.196, 0.018],
+    [0.196, -0.036],
+    [0.232, -0.044],
+    [0.268, -0.056],
+    [0.300, -0.068],
+    [0.360, -0.070],
+    [0.430, -0.060],
+    [0.452, -0.048],
+    [0.452, 0.008],
+    [0.392, 0.012],
+    [0.330, 0.014],
+    [0.286, 0.014],
+    [0.246, 0.014],
+  ];
+  add(extrudeProfile(stockProfile, 0.04, 0.004), mats.wood, [0, 0, 0]).name = 'StockWood';
+
+  // Punho (empunhadura): um pouco mais estreito que a coronha, com checagem.
+  const gripProfile: ReadonlyArray<readonly [number, number]> = [
+    [0.196, 0.018],
+    [0.196, -0.036],
+    [0.238, -0.046],
+    [0.286, -0.052],
+    [0.300, -0.048],
+    [0.282, -0.012],
+    [0.246, 0.014],
+  ];
+  add(extrudeProfile(gripProfile, 0.036, 0.003), mats.woodDark, [0, 0, 0]).name = 'GripWood';
+  for (let i = 0; i < 6; i++) {
+    const line = add(
+      new THREE.BoxGeometry(0.0375, 0.030, 0.0022),
+      mats.woodDark,
+      [0, -0.028, 0.212 + i * 0.013],
+      [0.28, 0, 0]
+    );
+    line.name = 'GripCheckering';
+  }
+
+  // Soleira de borracha com frisos e o olhal de bandoleira.
+  add(extrudeProfile(
+    [
+      [0.452, 0.012],
+      [0.476, 0.010],
+      [0.478, -0.052],
+      [0.452, -0.050],
+    ],
+    0.042,
+    0.003
+  ), mats.rubber, [0, 0, 0]).name = 'StockButtPad';
+  for (let i = 0; i < 5; i++) {
+    add(
+      new THREE.BoxGeometry(0.0432, 0.0032, 0.0042),
+      mats.cavity,
+      [0, 0.004 - i * 0.011, 0.4662]
+    );
+  }
+  add(
+    new THREE.TorusGeometry(0.0075, 0.0018, 6, 12),
+    mats.steelBright,
+    [0, -0.062, 0.356],
+    [0, Math.PI / 2, 0]
+  );
+
+  return group;
+}
+
+export interface ShotgunModel {
+  /** Grupo raiz da arma no espaço canônico (ver comentário do arquivo). */
+  readonly root: THREE.Group;
+  /** Grupo do guarda-mão — desliza em Z a cada bombeada. */
+  readonly pump: THREE.Group;
+  /** Âncora da mão direita (punho da coronha), filha da raiz. */
+  readonly gripAnchor: THREE.Object3D;
+  /** Âncora da mão esquerda (guarda-mão), filha da bomba. */
+  readonly pumpAnchor: THREE.Object3D;
+  /** Âncora da boca do cano (clarão, som e feixe). */
+  readonly muzzleAnchor: THREE.Object3D;
+  /** Malhas que só existem em 1ª pessoa (coronha atrás da câmera). */
+  readonly firstPersonHidden: THREE.Object3D[];
+}
+
+/**
+ * Monta a escopeta completa no espaço canônico.
+ *
+ * @param withStock Quando `false` a coronha é construída mas marcada em
+ *   `firstPersonHidden` — em 1ª pessoa ela fica atrás da câmera e só
+ *   atrapalharia o enquadramento.
+ */
+export function buildShotgunModel(
+  mats: ShotgunMaterialSet,
+  options: { withStock?: boolean } = {}
+): ShotgunModel {
+  const M = SHOTGUN_METRICS;
+  const root = new THREE.Group();
+  root.name = 'ShotgunModel';
+
+  const barrel = buildShotgunBarrelAssembly(mats);
+  const receiver = buildShotgunReceiver(mats);
+  const stock = buildShotgunStock(mats);
+  root.add(barrel, receiver, stock);
+
+  const pump = buildShotgunForend(mats);
+  pump.position.set(0, M.foreEndCenterY, M.foreEndCenterZ);
+  root.add(pump);
+
+  const gripAnchor = new THREE.Object3D();
+  gripAnchor.name = 'WeaponGripAnchor';
+  gripAnchor.position.set(0, M.gripAnchor.y, M.gripAnchor.z);
+  gripAnchor.rotation.set(M.gripAnchor.pitchX, 0, 0);
+  root.add(gripAnchor);
+
+  const pumpAnchor = new THREE.Object3D();
+  pumpAnchor.name = 'WeaponSupportAnchor';
+  pumpAnchor.rotation.set(0, 0, M.pumpAnchor.rollZ);
+  pump.add(pumpAnchor);
+
+  const muzzleAnchor = new THREE.Object3D();
+  muzzleAnchor.name = 'ShotgunMuzzleAnchor';
+  muzzleAnchor.position.set(0, 0, M.muzzleZ);
+  root.add(muzzleAnchor);
+
+  return {
+    root,
+    pump,
+    gripAnchor,
+    pumpAnchor,
+    muzzleAnchor,
+    firstPersonHidden: options.withStock === false ? [stock] : [],
+  };
+}
+
+/* --------------------------------------------------------------------------
+   Mãos enluvadas
+   --------------------------------------------------------------------------
+   A luva é construída no mesmo referencial das âncoras (eixo do tubo = Z
+   local), com a mesma convenção do rig do traje em 3ª pessoa:
+     · mão direita  → palma no lado +X, dedos contornando por baixo até -X;
+     · mão esquerda → imagem espelhada (palma no lado -X).
+   Todos os raios derivam do raio do tubo agarrado, então a mão encosta na
+   peça em vez de flutuar ao redor dela.
+   -------------------------------------------------------------------------- */
+
+export interface ShotgunGloveMaterials {
+  /** Borracha da luva. */
+  glove: THREE.Material;
+  /** Dorso almofadado e nós dos dedos. */
+  pad: THREE.Material;
+  /** Costuras e anéis de articulação. */
+  seam: THREE.Material;
+  /** Anel rígido de vedação do punho. */
+  cuff: THREE.Material;
+  /** Mangote do traje que sai de quadro. */
+  sleeve: THREE.Material;
+}
+
+export interface ShotgunGloveOptions {
+  side: 'right' | 'left';
+  /** Raio do tubo agarrado (cano, guarda-mão ou punho da coronha). */
+  radius: number;
+  /** Escala geral da mão (1 = mão成人 em escala real). */
+  scale?: number;
+  /** Direção do mangote no referencial da luva. */
+  sleeveDirection?: THREE.Vector3;
+  /** Comprimento do mangote. */
+  sleeveLength?: number;
+}
+
+/**
+ * Luva fechada em volta de um tubo (eixo Z local).
+ * O resultado é filho da âncora correspondente da arma.
+ */
+export function buildShotgunGlove(
+  mats: ShotgunGloveMaterials,
+  options: ShotgunGloveOptions
+): THREE.Group {
+  const mirror = options.side === 'right' ? 1 : -1;
+  const s = options.scale ?? 1;
+  const R = options.radius;
+  const fingerR = 0.0086 * s;
+  const glove = new THREE.Group();
+  glove.name = `ShotgunGlove_${options.side}`;
+
+  /** Ponto sobre a superfície do tubo: ângulo em rad, 0 = lado da palma. */
+  const surface = (angle: number, radial: number, z: number): THREE.Vector3 =>
+    new THREE.Vector3(mirror * radial * Math.cos(angle), -radial * Math.sin(angle), z);
+
+  // ---- Palma ---------------------------------------------------------------
+  // Bloco achatado encostado no tubo do lado da palma: a face interna fica
+  // exatamente sobre a superfície da peça (raio R), sem penetrar nem pairar.
+  const palmThickness = 0.021 * s;
+  const palm = new THREE.Mesh(new THREE.BoxGeometry(palmThickness * 2, 0.058 * s, 0.070 * s), mats.glove);
+  palm.position.set(mirror * (R + palmThickness), 0.006 * s, 0);
+  palm.rotation.set(0, 0, mirror * 0.08);
+  glove.add(palm);
+  // Dorso almofadado por fora da palma.
+  const back = new THREE.Mesh(
+    new THREE.BoxGeometry(palmThickness * 0.9, 0.05 * s, 0.062 * s),
+    mats.pad
+  );
+  back.position.set(mirror * (R + palmThickness * 1.85), 0.010 * s, 0.002);
+  back.rotation.set(0, 0, mirror * 0.08);
+  glove.add(back);
+
+  // ---- Quatro dedos contornando o tubo ------------------------------------
+  // Cada dedo nasce na base da palma (25°), passa por baixo (90°) e sobe
+  // pelo lado oposto (170°): é esse arco que faz a mão agarrar a peça.
+  const fingerSpanZ = 0.0195 * s;
+  const sweeps: Array<readonly number[]> = [
+    [0.52, 0.50, 0.44, 0.34],
+    [0.54, 0.52, 0.44, 0.32],
+    [0.50, 0.48, 0.42, 0.30],
+    [0.44, 0.42, 0.36, 0.26],
+  ];
+  for (let f = 0; f < 4; f++) {
+    const z = (f - 1.5) * fingerSpanZ;
+    // A linha de centro dos dedos passa a um raio do dedo da superfície: o
+    // arco encosta na peça em vez de atravessá-la.
+    const radial = R + fingerR * 1.12;
+    const seg = sweeps[f];
+    const joints = [surface(0.30, radial, z + mirror * 0.001)];
+    let angle = 0.3;
+    for (let i = 0; i < seg.length; i++) {
+      angle += seg[i];
+      const shrink = (i / seg.length) * fingerR * 0.45;
+      joints.push(surface(angle, radial - shrink, z - mirror * 0.0006 * (i + 1)));
+    }
+    for (let i = 0; i < joints.length - 1; i++) {
+      capsuleBetween(glove, joints[i], joints[i + 1], fingerR * (1 - i * 0.055), mats.glove);
+    }
+    const start = joints[0];
+    const mid = joints[2];
+    const outer = joints[3];
+    const tip = joints[joints.length - 1];
+    // Nó do dedo na base e anel de articulação no meio.
+    const knuckle = new THREE.Mesh(new THREE.SphereGeometry(fingerR * 1.06, 10, 8), mats.pad);
+    knuckle.position.copy(start);
+    glove.add(knuckle);
+    for (const at of [mid, outer]) {
+      const joint = new THREE.Mesh(
+        new THREE.SphereGeometry(fingerR * 0.92, 8, 6),
+        mats.seam
+      );
+      joint.position.copy(at);
+      glove.add(joint);
+    }
+    // Ponta arredondada encostando na peça.
+    const tipCap = new THREE.Mesh(new THREE.SphereGeometry(fingerR * 0.8, 8, 6), mats.glove);
+    tipCap.position.copy(tip);
+    glove.add(tipCap);
+  }
+
+  // ---- Polegar cruzando por cima ------------------------------------------
+  // Nasce na palma, sobe pelo dorso do tubo e desce do outro lado.
+  const thumbR = fingerR * 1.22;
+  const thumbA = surface(-0.45, R + thumbR * 1.3, -0.024 * s);
+  const thumbB = surface(-1.05, R + thumbR * 1.4, -0.038 * s);
+  const thumbC = surface(-1.65, R + thumbR * 1.3, -0.047 * s);
+  const thumbD = surface(-2.15, R + thumbR * 1.05, -0.052 * s);
+  capsuleBetween(glove, thumbA, thumbB, thumbR, mats.glove);
+  capsuleBetween(glove, thumbB, thumbC, thumbR * 0.92, mats.glove);
+  capsuleBetween(glove, thumbC, thumbD, thumbR * 0.8, mats.glove);
+  const thumbJoint = new THREE.Mesh(new THREE.SphereGeometry(thumbR * 1.04, 10, 8), mats.pad);
+  thumbJoint.position.copy(thumbB);
+  glove.add(thumbJoint);
+
+  // ---- Punho, anel de vedação e mangote -----------------------------------
+  const sleeveDir = (options.sleeveDirection ?? new THREE.Vector3(0.42, -0.86, 0.30))
+    .clone()
+    .normalize();
+  sleeveDir.x *= mirror;
+  const wristStart = new THREE.Vector3(mirror * (R + palmThickness * 0.9), -0.024 * s, 0.030 * s);
+  const wristEnd = wristStart.clone().addScaledVector(sleeveDir, 0.05 * s);
+  capsuleBetween(glove, wristStart, wristEnd, 0.042 * s, mats.glove);
+  const cuffRing = new THREE.Mesh(
+    new THREE.TorusGeometry(0.046 * s, 0.0055 * s, 6, 18),
+    mats.cuff
+  );
+  cuffRing.position.copy(wristEnd);
+  cuffRing.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), sleeveDir);
+  glove.add(cuffRing);
+  const sleeveStart = wristEnd.clone().addScaledVector(sleeveDir, 0.008 * s);
+  const sleeveEnd = sleeveStart.clone().addScaledVector(sleeveDir, options.sleeveLength ?? 0.2);
+  capsuleBetween(glove, sleeveStart, sleeveEnd, 0.045 * s, mats.sleeve);
+  for (let i = 0; i < 2; i++) {
+    const band = new THREE.Mesh(
+      new THREE.TorusGeometry(0.0465 * s, 0.004 * s, 5, 16),
+      mats.seam
+    );
+    band.position.copy(sleeveStart).addScaledVector(sleeveDir, 0.034 + i * 0.038);
+    band.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), sleeveDir);
+    glove.add(band);
+  }
+
+  return glove;
+}
