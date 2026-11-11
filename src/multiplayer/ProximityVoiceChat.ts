@@ -604,10 +604,14 @@ export interface ProximityVoiceChatHooks {
  * - Gate vocal com Histerese + Hangover de 380–560ms + Pre-Roll (ZERO cortes no meio da fala!);
  * - Reuso limpo de `RTCRtpTransceiver` (`replaceTrack` sem renegociação colidente) + pacotes de ~108ms
  *   (~9 pkt/s) para NUNCA travar ou bugar o microfone dos outros jogadores da sala!
+ * - Chave de privacidade local: desligar o recurso libera a captura e silencia
+ *   entrada/saída sem derrubar a conexão do jogador com a sala.
  */
 export class ProximityVoiceChatManager {
   private mode: VoiceActivationMode = 'PTT';
   private pttHeld = false;
+  /** Preferência local: desliga captura E reprodução da comunicação por voz. */
+  private voiceEnabled = true;
   private forceSilenced = false;
   private permissionState: MicPermissionState = 'idle';
 
@@ -644,6 +648,37 @@ export class ProximityVoiceChatManager {
     return this.mode;
   }
 
+  get isVoiceEnabled(): boolean {
+    return this.voiceEnabled;
+  }
+
+  /**
+   * Preferência de privacidade do jogador. Ao desligar, interrompe a captura,
+   * solta a trilha enviada aos pares e corta imediatamente todas as vozes
+   * recebidas — sem deixar o ícone de microfone ativo no navegador.
+   */
+  setVoiceEnabled(enabled: boolean): void {
+    if (this.disposed || this.voiceEnabled === Boolean(enabled)) return;
+    this.voiceEnabled = Boolean(enabled);
+
+    if (!this.voiceEnabled) {
+      this.pttHeld = false;
+      this.gateState = createInitialVoiceGateState();
+      this.releaseMicrophoneInput();
+      this.detachOutboundTrackFromPeers();
+      for (const peer of this.peers.values()) {
+        peer.lastAudibleGain = 0;
+        peer.gainNode.gain.setValueAtTime(0, this.audioCtx?.currentTime ?? 0);
+      }
+    } else if (this.mode === 'OPEN') {
+      this.resumeAudioContextIfNeeded();
+      void this.ensureMicrophoneInitialized();
+    }
+
+    this.syncOutboundGate();
+    this.hooks.onStatusChanged?.();
+  }
+
   get isPushToTalkHeld(): boolean {
     return this.pttHeld;
   }
@@ -653,18 +688,20 @@ export class ProximityVoiceChatManager {
   }
 
   get isSpeaking(): boolean {
-    return this.gateState.gateOpen && !this.forceSilenced;
+    return this.voiceEnabled && this.gateState.gateOpen && !this.forceSilenced;
   }
 
   get voiceLevel(): number {
-    return this.forceSilenced ? 0 : this.gateState.smoothedLevel;
+    return !this.voiceEnabled || this.forceSilenced
+      ? 0
+      : this.gateState.smoothedLevel;
   }
 
   /**
    * Indica se o microfone está armado para captar voz agora (segurando [B] ou em modo ABERTO).
    */
   get isMicArmed(): boolean {
-    if (this.forceSilenced) return false;
+    if (!this.voiceEnabled || this.forceSilenced) return false;
     if (this.mode === 'OPEN') return true;
     return this.pttHeld;
   }
@@ -680,7 +717,7 @@ export class ProximityVoiceChatManager {
   }
 
   setPushToTalkHeld(held: boolean): void {
-    if (this.disposed) return;
+    if (this.disposed || !this.voiceEnabled) return;
     if (this.pttHeld === held) return;
     this.pttHeld = held;
     if (held) {
@@ -692,7 +729,7 @@ export class ProximityVoiceChatManager {
   }
 
   cycleVoiceMode(): VoiceActivationMode {
-    if (this.disposed) return this.mode;
+    if (this.disposed || !this.voiceEnabled) return this.mode;
     if (this.mode === 'PTT') {
       this.mode = 'OPEN';
       this.resumeAudioContextIfNeeded();
@@ -708,7 +745,7 @@ export class ProximityVoiceChatManager {
   }
 
   setVoiceMode(nextMode: VoiceActivationMode): void {
-    if (this.disposed || this.mode === nextMode) return;
+    if (this.disposed || !this.voiceEnabled || this.mode === nextMode) return;
     this.mode = nextMode;
     if (nextMode === 'OPEN') {
       this.resumeAudioContextIfNeeded();
@@ -751,7 +788,7 @@ export class ProximityVoiceChatManager {
   }
 
   async ensureMicrophoneInitialized(): Promise<boolean> {
-    if (this.disposed) return false;
+    if (this.disposed || !this.voiceEnabled) return false;
     if (this.micStream && this.permissionState === 'granted') {
       this.resumeAudioContextIfNeeded();
       return true;
@@ -784,7 +821,7 @@ export class ProximityVoiceChatManager {
         video: false,
       });
 
-      if (this.disposed) {
+      if (this.disposed || !this.voiceEnabled) {
         for (const tr of stream.getTracks()) tr.stop();
         return false;
       }
@@ -856,6 +893,77 @@ export class ProximityVoiceChatManager {
       this.permissionState = 'denied';
       this.hooks.onStatusChanged?.();
       return false;
+    }
+  }
+
+  /** Interrompe apenas a entrada do microfone; o contexto continua vivo para ouvir o jogo. */
+  private releaseMicrophoneInput(): void {
+    if (this.relayProcessorNode) {
+      try {
+        this.relayProcessorNode.onaudioprocess = null;
+        this.relayProcessorNode.disconnect();
+      } catch {
+        // Ignorar
+      }
+      this.relayProcessorNode = null;
+    }
+    if (this.silentZeroGain) {
+      try {
+        this.silentZeroGain.disconnect();
+      } catch {
+        // Ignorar
+      }
+      this.silentZeroGain = null;
+    }
+    for (const node of [
+      this.micSourceNode,
+      this.micHighpassNode,
+      this.micCompressorNode,
+      this.analyserNode,
+      this.outboundGateGain,
+    ]) {
+      try {
+        node?.disconnect();
+      } catch {
+        // Ignorar
+      }
+    }
+    this.micSourceNode = null;
+    this.micHighpassNode = null;
+    this.micCompressorNode = null;
+    this.analyserNode = null;
+    this.outboundGateGain = null;
+
+    if (this.micStream) {
+      for (const track of this.micStream.getTracks()) {
+        try {
+          track.stop();
+        } catch {
+          // Ignorar
+        }
+      }
+      this.micStream = null;
+    }
+    this.outboundDestNode = null;
+    this.permissionState = 'idle';
+    this.relayAccumWritePos = 0;
+    this.prevIdlePreRollChunk = null;
+    this.preRollFlushedForPhrase = false;
+    this.lastAudioCallbackMs = 0;
+  }
+
+  /** Remove a trilha de envio sem fechar as conexões WebRTC de recepção. */
+  private detachOutboundTrackFromPeers(): void {
+    for (const peer of this.peers.values()) {
+      try {
+        for (const sender of peer.pc?.getSenders?.() ?? []) {
+          if (sender.track?.kind === 'audio') {
+            void sender.replaceTrack(null).catch(() => {});
+          }
+        }
+      } catch {
+        // A conexão pode estar fechando durante a troca da configuração.
+      }
     }
   }
 
@@ -1068,6 +1176,7 @@ export class ProximityVoiceChatManager {
   ensurePeer(peerId: string): void {
     if (
       this.disposed ||
+      !this.voiceEnabled ||
       !peerId ||
       peerId === this.hooks.localPlayerId ||
       this.peers.has(peerId)
@@ -1374,6 +1483,7 @@ export class ProximityVoiceChatManager {
   async handleIncomingSignal(payload: VoiceSignalPayload): Promise<void> {
     if (
       this.disposed ||
+      !this.voiceEnabled ||
       !payload ||
       payload.toId !== this.hooks.localPlayerId ||
       payload.fromId === this.hooks.localPlayerId
@@ -1439,6 +1549,7 @@ export class ProximityVoiceChatManager {
   handleIncomingRelayChunk(payload: VoiceRelayChunkPayload): void {
     if (
       this.disposed ||
+      !this.voiceEnabled ||
       !payload ||
       payload.fromId === this.hooks.localPlayerId ||
       !payload.muLawB64
@@ -1604,6 +1715,11 @@ export class ProximityVoiceChatManager {
       }
     }
 
+    // Não cria nem acorda um AudioContext quando a preferência de voz está
+    // desligada — isso também evita qualquer pedido indireto de áudio ao
+    // navegador durante uma partida sem comunicação por voz.
+    if (!this.voiceEnabled) return;
+
     const ctx =
       remotePeers.length > 0 ? this.ensureAudioContext() : this.audioCtx;
     if (!ctx) return;
@@ -1652,7 +1768,7 @@ export class ProximityVoiceChatManager {
       const headY = rp.pos.y + 1.55;
       const headZ = rp.pos.z;
 
-      if (rp.dead) {
+      if (rp.dead || !this.voiceEnabled) {
         entry.lastAudibleGain = 0;
         entry.gainNode.gain.setTargetAtTime(0, tNow, 0.02);
         continue;

@@ -2619,6 +2619,17 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
     });
     expect(voiceMgr.activationMode).toBe('PTT');
     expect(voiceMgr.isMicArmed).toBe(false);
+    expect(voiceMgr.isVoiceEnabled).toBe(true);
+
+    // A preferência de privacidade desliga captura e recepção sem expulsar o
+    // jogador da sala; reativar não muda o modo PTT escolhido.
+    voiceMgr.setVoiceEnabled(false);
+    expect(voiceMgr.isVoiceEnabled).toBe(false);
+    voiceMgr.setPushToTalkHeld(true);
+    expect(voiceMgr.isMicArmed).toBe(false);
+    expect(voiceMgr.voiceLevel).toBe(0);
+    voiceMgr.setVoiceEnabled(true);
+    expect(voiceMgr.isVoiceEnabled).toBe(true);
 
     voiceMgr.setPushToTalkHeld(true);
     expect(voiceMgr.isMicArmed).toBe(true);
@@ -4620,9 +4631,9 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
   });
 });
 
-describe('Botão de Pausa no HUD, Tela de Pausa Completa & 26 Configurações Reais', () => {
-  it('define 26 opções reais (>= 20) em 5 categorias com sanitização segura, persistência em localStorage e restauração de padrões', () => {
-    expect(DOOM_SETTINGS_DESCRIPTORS.length).toBe(26);
+describe('Botão de Pausa no HUD, Tela de Pausa Completa & 27 Configurações Reais', () => {
+  it('define 27 opções reais (>= 20) em 5 categorias com sanitização segura, persistência em localStorage e restauração de padrões', () => {
+    expect(DOOM_SETTINGS_DESCRIPTORS.length).toBe(27);
     expect(DOOM_SETTINGS_DESCRIPTORS.length).toBeGreaterThanOrEqual(20);
     expect(SETTINGS_CATEGORIES.map((c) => c.id)).toEqual([
       'video',
@@ -4661,12 +4672,14 @@ describe('Botão de Pausa no HUD, Tela de Pausa Completa & 26 Configurações Re
       resolutionHeight: '8k' as unknown as '250p',
       showCrosshair: 'laser' as unknown as 'dot',
       invertMouseY: true,
+      voiceChatEnabled: false,
     });
     expect(sanitized.fov).toBe(105);
     expect(sanitized.masterVolume).toBe(0);
     expect(sanitized.resolutionHeight).toBe('250p');
     expect(sanitized.showCrosshair).toBe('dot');
     expect(sanitized.invertMouseY).toBe(true);
+    expect(sanitized.voiceChatEnabled).toBe(false);
 
     const prevStorage = (globalThis as Record<string, unknown>).localStorage;
     const mem = new Map<string, string>();
@@ -4751,7 +4764,7 @@ describe('Botão de Pausa no HUD, Tela de Pausa Completa & 26 Configurações Re
     expect(anyNegativeScale).toBe(false);
   });
 
-  it('monta o Botão de Pausa visível no HUD, abre a Tela de Pausa com 26 opções interativas sem recriar DOM no hover e confirma Reiniciar/Sair em 2 cliques', () => {
+  it('monta o Botão de Pausa visível no HUD, abre a Tela de Pausa com 27 opções interativas sem recriar DOM no hover e confirma Reiniciar/Sair em 2 cliques', () => {
     interface PauseMockEl {
       tagName: string;
       id: string;
@@ -5041,7 +5054,7 @@ describe('Botão de Pausa no HUD, Tela de Pausa Completa & 26 Configurações Re
       expect(pauseMenu.open).toBe(true);
       expect(pauseOpenedCount).toBe(1);
 
-      // 2. Navegar para Configurações exibe exatamente as 26 linhas persistentes
+      // 2. Navegar para Configurações exibe exatamente as 27 linhas persistentes
       const openSettingsBtn = viewportEl.querySelector(
         '[data-pause-action="open-settings"]'
       )!;
@@ -5049,7 +5062,7 @@ describe('Botão de Pausa no HUD, Tela de Pausa Completa & 26 Configurações Re
       expect(pauseMenu.subView).toBe('settings');
 
       const rowsBefore = viewportEl.querySelectorAll('.setting-row');
-      expect(rowsBefore.length).toBe(26);
+      expect(rowsBefore.length).toBe(27);
       const firstRowRef = rowsBefore[0];
       const firstSegBtn = firstRowRef.querySelector('.setting-seg-btn')!;
       expect(firstSegBtn).not.toBeNull();
@@ -5063,6 +5076,16 @@ describe('Botão de Pausa no HUD, Tela de Pausa Completa & 26 Configurações Re
       // Clicar na opção "180p" altera imediatamente o store sem recriar os elementos!
       firstSegBtn.dispatch('click');
       expect(store.value.resolutionHeight).toBe('180p');
+
+      const voiceRow = Array.from(
+        viewportEl.querySelectorAll('.setting-row')
+      ).find((row) => row.dataset.settingKey === 'voiceChatEnabled')!;
+      const voiceToggle = voiceRow.querySelector('.setting-toggle-btn')!;
+      expect(store.value.voiceChatEnabled).toBe(true);
+      voiceToggle.dispatch('click');
+      expect(store.value.voiceChatEnabled).toBe(false);
+      voiceToggle.dispatch('click');
+      expect(store.value.voiceChatEnabled).toBe(true);
 
       store.set('fov', 90);
       store.set('masterVolume', 55);

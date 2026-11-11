@@ -466,6 +466,26 @@ export class DoomMultiplayerCoordinator {
     return this.voiceChat.voiceLevel;
   }
 
+  get isVoiceChatEnabled(): boolean {
+    return this.voiceChat.isVoiceEnabled;
+  }
+
+  /** Aplica a preferência de voz sem desconectar o jogador da sala. */
+  setVoiceChatEnabled(enabled: boolean): void {
+    this.voiceChat.setVoiceEnabled(enabled);
+    if (enabled) {
+      // Um jogador pode ter entrado enquanto a voz estava desligada; reconstrói
+      // somente os pares atuais ao reativar, sem renegociar a sala inteira.
+      for (const player of this.roster) {
+        if (player.id !== this.session.localPlayerId) {
+          this.voiceChat.ensurePeer(player.id);
+        }
+      }
+    }
+    this.refreshVoiceHudBar();
+    this.renderSquadHud();
+  }
+
   get localVoiceSpeaking(): boolean {
     return this.voiceChat.isSpeaking;
   }
@@ -2649,10 +2669,15 @@ export class DoomMultiplayerCoordinator {
     this.voiceModeBtnEl.classList.toggle('speaking', speaking);
     this.voiceModeBtnEl.classList.toggle(
       'muted',
-      mode === 'MUTED' && !this.voiceChat.isPushToTalkHeld
+      !this.voiceChat.isVoiceEnabled ||
+        (mode === 'MUTED' && !this.voiceChat.isPushToTalkHeld)
     );
 
-    if (perm === 'denied') {
+    if (!this.voiceChat.isVoiceEnabled) {
+      this.voiceModeBtnEl.textContent = '[🔇 VOZ DESATIVADA]';
+      this.voiceHintEl.textContent = 'CONFIGURAÇÕES P/ ATIVAR';
+      this.voiceHintEl.classList.remove('warn');
+    } else if (perm === 'denied') {
       this.voiceModeBtnEl.textContent = '[🔇 MIC BLOQUEADO]';
       this.voiceHintEl.textContent = 'LIBERE NO NAVEGADOR';
       this.voiceHintEl.classList.add('warn');
@@ -2682,6 +2707,7 @@ export class DoomMultiplayerCoordinator {
       this.voiceHintEl.classList.remove('warn');
     }
 
+    this.voiceModeBtnEl.disabled = !this.voiceChat.isVoiceEnabled;
     const pct = Math.round(Math.min(100, lvl * 100));
     this.voiceMeterFillEl.style.width = `${pct}%`;
     this.voiceMeterFillEl.classList.toggle('loud', lvl >= 0.62);

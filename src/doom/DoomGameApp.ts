@@ -1045,6 +1045,9 @@ export class DoomGameApp {
       uiVolume: s.uiVolume,
       reverbAmount: s.reverbAmount,
     });
+    // A preferência global controla a privacidade da voz: desativar não apenas
+    // muta o HUD, mas libera a captura do microfone e silencia os aliados.
+    this.multiplayer?.setVoiceChatEnabled(s.voiceChatEnabled);
     this.syncAudioFocusMute();
 
     if (s.crouchMode === 'hold') {
@@ -1265,6 +1268,7 @@ export class DoomGameApp {
         },
       }
     );
+    this.multiplayer.setVoiceChatEnabled(this.settingsStore.value.voiceChatEnabled);
     this.multiplayer.seedInitialLocalPose(this.position, this.yaw);
   }
 

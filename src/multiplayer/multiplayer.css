@@ -763,6 +763,15 @@
   color: #e2a6a6;
 }
 
+.oof-coop-voice-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.78;
+  background: #151718;
+  border-color: #4a5150;
+  color: #aeb8b4;
+  box-shadow: none;
+}
+
 .oof-coop-voice-meter {
   flex: 1;
   min-width: 44px;

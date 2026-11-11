@@ -17,7 +17,7 @@ export type SettingsCategoryId =
   | 'interface';
 
 /**
- * Conjunto completo de 26 opções reais de configuração do jogo,
+ * Conjunto completo de 27 opções reais de configuração do jogo,
  * persistidas em localStorage e conectadas diretamente à engine WebGL / WebAudio / Input / HUD.
  */
 export interface DoomGameSettings {
@@ -30,12 +30,13 @@ export interface DoomGameSettings {
   crtScanlines: CrtScanlineMode; // off | subtle | strong (padrão 'off')
   lightFlicker: boolean; // Oscilação das lâmpadas do corredor (padrão true)
 
-  // 2. ÁUDIO & ACÚSTICA (5 opções)
+  // 2. ÁUDIO & ACÚSTICA (6 opções)
   masterVolume: number; // 0..100 % (padrão 82)
   sfxVolume: number; // 0..100 % (padrão 94)
   uiVolume: number; // 0..100 % (padrão 90)
   reverbAmount: number; // 0..100 % (padrão 68)
   muteWhenUnfocused: boolean; // Silenciar ao minimizar aba (padrão false)
+  voiceChatEnabled: boolean; // Microfone 8-bit por proximidade (padrão true)
 
   // 3. CONTROLES & MIRA (6 opções)
   mouseSensitivity: number; // 20..250 % (padrão 100)
@@ -51,7 +52,7 @@ export interface DoomGameSettings {
   showCrosshair: CrosshairStyle; // off | dot | cross (padrão 'dot')
   showFpsCounter: boolean; // Contador de FPS e resolução interna (padrão false)
 
-  // 5. INTERFACE & ACESSIBILIDADE (4 opções -> Total: 26 opções)
+  // 5. INTERFACE & ACESSIBILIDADE (4 opções -> Total: 27 opções)
   shortcutsHubIdleOpacity: number; // 15..95 % opacidade da HUB em repouso (padrão 52)
   viewmodelHand: DominantHandMode; // right | left (padrão 'right')
   bloodOverlayScale: number; // 25..100 % intensidade de sangue nas bordas (padrão 100)
@@ -72,6 +73,7 @@ export const DEFAULT_DOOM_SETTINGS: Readonly<DoomGameSettings> = Object.freeze({
   uiVolume: 90,
   reverbAmount: 68,
   muteWhenUnfocused: false,
+  voiceChatEnabled: true,
 
   mouseSensitivity: 100,
   invertMouseY: false,
@@ -276,6 +278,16 @@ export const DOOM_SETTINGS_DESCRIPTORS: ReadonlyArray<SettingControlSpec> = [
     kind: 'toggle',
     onLabel: 'Sim',
     offLabel: 'Não',
+  },
+  {
+    key: 'voiceChatEnabled',
+    category: 'audio',
+    label: 'Microfone 8-Bit por Proximidade',
+    description:
+      'Permite enviar e receber a voz digital do esquadrão no modo cooperativo. Desative para não solicitar o microfone e silenciar o canal de voz.',
+    kind: 'toggle',
+    onLabel: 'Ativo',
+    offLabel: 'Desativado',
   },
 
   // --- CONTROLES & MIRA (6) ---
@@ -508,6 +520,7 @@ export function sanitizeDoomSettings(
     uiVolume: Math.round(clampNum(r.uiVolume, 0, 100, d.uiVolume)),
     reverbAmount: Math.round(clampNum(r.reverbAmount, 0, 100, d.reverbAmount)),
     muteWhenUnfocused: clampBool(r.muteWhenUnfocused, d.muteWhenUnfocused),
+    voiceChatEnabled: clampBool(r.voiceChatEnabled, d.voiceChatEnabled),
 
     mouseSensitivity: Math.round(
       clampNum(r.mouseSensitivity, 20, 250, d.mouseSensitivity)
