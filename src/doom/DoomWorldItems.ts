@@ -886,16 +886,22 @@ export class DoomWorldItems {
     const crate = new THREE.Group();
     crate.name = 'SupplyCrate';
 
-    // Medidas do baú. O pé (0.52 x 0.42) é o mesmo do estojo antigo para a caixa
-    // continuar apoiada na superfície dos obstáculos de carga.
-    const halfX = 0.26;                 // meia largura externa
-    const halfZ = 0.21;                 // meia profundidade externa
+    // Medidas do baú. O pé (0.52 x 0.42), a altura da boca (0.185) e o piso
+    // interno (0.094) são os mesmos do modelo anterior: a caixa continua
+    // apoiada no topo dos obstáculos de carga, dentro do footprint do colisor
+    // e com os itens pousando exatamente onde já pousavam.
+    const halfX = 0.26;                 // meia largura do corpo
+    const halfZ = 0.21;                 // meia profundidade do corpo
     const wall = 0.045;                 // espessura das paredes
     const innerX = halfX - wall;        // 0.215 — vão livre para os itens
     const innerZ = halfZ - wall;        // 0.165
     const floorTop = 0.08;              // topo do fundo de madeira
     const linerTop = 0.094;             // piso interno: onde os itens pousam
-    const wallTop = 0.185;              // boca do baú: onde a portinhola encosta
+    const wallTop = 0.185;              // boca do baú: onde a tampa assenta
+    const lidT = 0.022;                 // espessura da tampa
+    const over = 0.004;                 // balanço da tampa sobre o corpo
+    const lidHalfX = halfX + over;      // 0.264
+    const lidHalfZ = halfZ + over;      // 0.214
 
     /** Peça cúbica nomeada; as de madeira recebem UV métrico (tábuas do mesmo tamanho em todas). */
     const add = (
@@ -914,30 +920,41 @@ export class DoomWorldItems {
       parent.add(mesh);
       return mesh;
     };
-    /** Rebite esférico de latão, sempre meio embutido na peça que recebe. */
+    /**
+     * Rebite em forma de disco de latão, centrado na face da peça: metade
+     * cravado, metade de fora. Nada de esfera boiando a milímetros da madeira.
+     */
     const rivet = (
       name: string,
       pos: [number, number, number],
+      axis: 'x' | 'y' | 'z',
       parent: THREE.Object3D = crate
     ): THREE.Mesh => {
-      const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.006, 8, 6), this.matBrass);
+      const mesh = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.0045, 0.0045, 0.0022, 8),
+        this.matBrass
+      );
       mesh.name = name;
+      if (axis === 'x') mesh.rotation.z = Math.PI * 0.5;
+      else if (axis === 'z') mesh.rotation.x = Math.PI * 0.5;
       mesh.position.set(pos[0], pos[1], pos[2]);
       parent.add(mesh);
       return mesh;
     };
 
-    // 1) Dois trilhos de ferro: as únicas peças que tocam o obstáculo (y = 0).
-    for (const x of [-0.2, 0.2]) add('SupplySkid', [0.06, 0.03, 0.44], [x, 0.015, 0], this.matDarkIron);
+    // 1) Dois patins de ferro: as únicas peças que tocam o obstáculo (y = 0).
+    for (const x of [-0.17, 0.17]) {
+      add('SupplySkid', [0.08, 0.03, 0.44], [x, 0.015, 0], this.matDarkIron);
+    }
 
-    // 2) Fundo apoiado nos trilhos + forro escuro que vira o piso do interior.
+    // 2) Fundo apoiado nos patins + forro escuro que vira o piso do interior.
     add('SupplyBase', [halfX * 2, 0.05, halfZ * 2], [0, 0.055, 0], this.matCrateWood, crate, true);
     add('SupplyLiner', [innerX * 2, 0.018, innerZ * 2], [0, linerTop - 0.009, 0], this.matDarkIron);
 
     // 3) Quatro paredes de madeira: frente/fundo correm na largura inteira e as
     //    laterais encaixam entre elas — nenhuma face no mesmo plano de outra.
-    const wallH = wallTop - floorTop;          // 0.105
-    const wallY = (wallTop + floorTop) * 0.5;  // 0.1325
+    const wallH = wallTop - floorTop;            // 0.105
+    const wallY = (wallTop + floorTop) * 0.5;    // 0.1325
     for (const z of [halfZ - wall * 0.5, -(halfZ - wall * 0.5)]) {
       add('SupplyWall', [halfX * 2, wallH, wall], [0, wallY, z], this.matCrateWood, crate, true);
     }
@@ -945,98 +962,119 @@ export class DoomWorldItems {
       add('SupplyWall', [wall, wallH, innerZ * 2], [x, wallY, 0], this.matCrateWood, crate, true);
     }
 
-    // 4) Cantoneiras rebitadas nas quatro quinas. Param logo abaixo da saia da
-    //    portinhola (0.172 contra 0.173), então nada se atravessa na quina.
-    const bracketBottom = 0.065;
-    const bracketTop = 0.172;
-    const bracketH = bracketTop - bracketBottom;
-    const bracketY = (bracketTop + bracketBottom) * 0.5;
+    // 4) Cantoneiras em L nas quatro quinas: uma aba em cada face, 1 mm
+    //    cravada na madeira e 3 mm para fora, dobrando a aresta como uma
+    //    cantoneira dobrada de verdade. Terminam 1 mm ABAIXO da boca para a
+    //    tampa assentar sem bater nelas.
+    const postBottom = 0.075;
+    const postTop = 0.184;
+    const postH = postTop - postBottom;          // 0.109
+    const postY = (postTop + postBottom) * 0.5;  // 0.1295
     for (const sx of [-1, 1]) {
       for (const sz of [-1, 1]) {
-        const bx = sx * (halfX - 0.021);       // 0.215 .. 0.263 (cobre a quina por fora)
-        const bz = sz * (halfZ - 0.020);       // 0.165 .. 0.215
-        add('SupplyCorner', [0.048, bracketH, 0.045], [bx, bracketY, bz], this.matDarkIron);
-        // Dois rebites por cantoneira: um na face lateral, um na face da frente/fundo.
-        for (const y of [0.092, 0.148]) {
-          rivet('SupplyRivet', [sx * 0.266, y, bz]);
-          rivet('SupplyRivet', [bx, y, sz * 0.218]);
-        }
+        add('SupplyCorner', [0.004, postH, 0.0335], [sx * 0.261, postY, sz * 0.19275], this.matDarkIron);
+        add('SupplyCorner', [0.0345, postH, 0.0035], [sx * 0.24525, postY, sz * 0.21075], this.matDarkIron);
+        rivet('SupplyRivet', [sx * 0.243, 0.13, sz * 0.2125], 'z');
       }
     }
 
-    // 5) Plaqueta de identificação na frente, com os dois parafusos dela.
-    add('SupplyLabel', [0.15, 0.036, 0.006], [0, 0.135, halfZ + 0.004], this.matBrass);
-    for (const x of [-0.062, 0.062]) rivet('SupplyLabelScrew', [x, 0.135, halfZ + 0.008]);
-
-    // 6) Alças laterais ABERTAS (montantes + punho cilíndrico), do lado de fora
-    //    da parede — não uma barra atravessando a caixa.
-    for (const sx of [-1, 1]) {
-      for (const z of [-0.06, 0.06]) {
-        add('SupplyHandleMount', [0.022, 0.022, 0.022], [sx * 0.268, 0.135, z], this.matDarkIron);
+    // 5) Cintas de aço verticais na frente e no tardoz: descem do topo do fundo
+    //    até 1 mm abaixo da boca, cravadas 1 mm na madeira.
+    const strapBottom = 0.033;
+    const strapTop = 0.184;
+    const strapH = strapTop - strapBottom;            // 0.151
+    const strapY = (strapTop + strapBottom) * 0.5;    // 0.1085
+    for (const sz of [-1, 1]) {
+      for (const x of [-0.13, 0.13]) {
+        add('SupplyStrap', [0.036, strapH, 0.005], [x, strapY, sz * 0.2115], this.matDarkIron);
+        rivet('SupplyRivet', [x, 0.1, sz * 0.214], 'z');
       }
-      const grip = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.008, 0.13, 10), this.matBrass);
+    }
+
+    // 6) Plaqueta de identificação entre as cintas da frente, com os parafusos.
+    add('SupplyLabel', [0.10, 0.032, 0.004], [0, 0.116, 0.212], this.matBrass);
+    for (const x of [-0.042, 0.042]) rivet('SupplyLabelScrew', [x, 0.116, 0.214], 'z');
+
+    // 7) Alças laterais: dois suportes por lado segurando um punho cilíndrico
+    //    que corre no sentido da profundidade.
+    for (const sx of [-1, 1]) {
+      for (const z of [-0.05, 0.05]) {
+        add('SupplyHandleMount', [0.018, 0.018, 0.018], [sx * 0.264, 0.1325, z], this.matDarkIron);
+      }
+      const grip = new THREE.Mesh(new THREE.CylinderGeometry(0.007, 0.007, 0.12, 10), this.matBrass);
       grip.name = 'SupplyHandleGrip';
       grip.rotation.x = Math.PI * 0.5;
-      grip.position.set(sx * 0.284, 0.135, 0);
+      grip.position.set(sx * 0.278, 0.1325, 0);
       crate.add(grip);
     }
 
-    // 7) Dobradiças de tambor: o eixo da portinhola, na borda de trás do baú.
-    const hingeZ = -halfZ;
-    for (const x of [-0.16, 0.16]) {
-      const hinge = new THREE.Mesh(new THREE.CylinderGeometry(0.013, 0.013, 0.07, 10), this.matBrass);
-      hinge.name = 'SupplyHinge';
-      hinge.rotation.z = Math.PI * 0.5;
-      hinge.position.set(x, wallTop, hingeZ);
-      crate.add(hinge);
+    // 8) Dobradiças de tambor no tardoz: o eixo fica 5 mm ABAIXO da boca, então
+    //    o latão aparece inteiro em vez de ficar engolido pela tampa.
+    for (const x of [-0.185, 0.185]) {
+      const barrel = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.012, 0.012, 0.07, 10),
+        this.matBrass
+      );
+      barrel.name = 'SupplyHinge';
+      barrel.rotation.z = Math.PI * 0.5;   // eixo do tambor ao longo de X
+      barrel.position.set(x, 0.168, -0.2);
+      crate.add(barrel);
+      add('SupplyHingePlate', [0.05, 0.03, 0.005], [x, 0.164, -0.2115], this.matDarkIron);
     }
 
-    // 8) PORTINHOLA: grupo articulado na borda traseira. A origem do grupo é a
+    // 9) TAMPA: grupo articulado na borda de trás. A origem do grupo é a
     //    dobradiça, então girar em X abre a tampa como um baú de verdade.
     const lid = new THREE.Group();
     lid.name = 'SupplyLid';
-    lid.position.set(0, wallTop, hingeZ);
+    lid.position.set(0, wallTop, -halfZ);
     lid.rotation.x = CRATE_LID_CLOSED_ROTATION;
     crate.add(lid);
 
-    const lidT = 0.024;                 // espessura do painel da portinhola
-    // Painel: fecha exatamente sobre a boca (0.185) e cobre toda a área externa.
-    add('SupplyLidPanel', [halfX * 2, lidT, halfZ * 2], [0, lidT * 0.5, halfZ], this.matCrateWood, lid, true);
-    // Saia: friso que desce por fora das paredes e veda a fresta da tampa. O
-    // topo entra 2 mm no painel (fica escondido) e a traseira para antes da
-    // dobradiça, para a saia não mergulhar na parede de trás quando abre.
-    const skirtH = 0.014;
-    const skirtY = -0.005;
+    // Painel: fecha sobre a boca com 4 mm de balanço por fora (o beiço de um
+    // baú de verdade) — sem nenhuma saia estilo aba larga.
     add(
-      'SupplyLidSkirt',
-      [halfX * 2 + 0.02, skirtH, 0.018],
-      [0, skirtY, halfZ * 2 + 0.009],
+      'SupplyLidPanel',
+      [lidHalfX * 2, lidT, lidHalfZ * 2],
+      [0, lidT * 0.5, halfZ],
       this.matCrateWood,
       lid,
       true
     );
+
+    // Moldura em relevo: quatro réguas formando um retângulo em volta da tampa
+    // e deixando um painel rebaixado no centro (topo de baú, não uma tábua lisa).
+    for (const z of [0.412, 0.008]) {
+      add('SupplyLidRail', [lidHalfX * 2, 0.008, 0.024], [0, 0.026, z], this.matCrateWood, lid, true);
+    }
     for (const sx of [-1, 1]) {
-      add(
-        'SupplyLidSkirt',
-        [0.018, skirtH, halfZ * 2 - 0.0125],
-        [sx * (halfX + 0.002), skirtY, halfZ * 2 * 0.5 - 0.00125],
-        this.matCrateWood,
-        lid,
-        true
-      );
+      add('SupplyLidRail', [0.024, 0.008, 0.38], [sx * 0.252, 0.026, 0.21], this.matCrateWood, lid, true);
     }
-    // Cintas de aço no topo (com rebites), placas das dobradiças e plaqueta central.
-    for (const z of [0.115, 0.305]) {
-      add('SupplyLidStrap', [halfX * 2 + 0.01, 0.008, 0.05], [0, lidT, z], this.matDarkIron, lid);
-      for (const sx of [-1, 1]) rivet('SupplyLidRivet', [sx * 0.24, lidT + 0.006, z], lid);
+
+    // Cintas de aço cruzando a tampa no sentido da profundidade e passando por
+    // cima da moldura (as pontas ficam enterradas nas réguas, sem degrau).
+    for (const x of [-0.13, 0.13]) {
+      add('SupplyLidStrap', [0.036, 0.0115, 0.408], [x, 0.02825, 0.214], this.matDarkIron, lid);
+      rivet('SupplyLidRivet', [x, 0.034, 0.214], 'y', lid);
     }
-    for (const x of [-0.16, 0.16]) {
-      add('SupplyHingePlate', [0.06, 0.006, 0.06], [x, lidT - 0.001, 0.04], this.matBrass, lid);
+
+    // Folhas das dobradiças: chapas de latão no painel rebaixado, na mesma
+    // linha dos tambores de trás.
+    for (const x of [-0.185, 0.185]) {
+      add('SupplyHingeLeaf', [0.05, 0.004, 0.04], [x, 0.024, 0.044], this.matBrass, lid);
     }
-    add('SupplyLidPlate', [0.1, 0.006, 0.1], [0, lidT - 0.001, 0.21], this.matBrass, lid);
-    // Trinco e cadeado: o lacre que sinaliza que o caixote ainda está fechado.
-    add('SupplyLatch', [0.05, 0.034, 0.012], [0, -0.011, halfZ * 2 + 0.015], this.matDarkIron, lid);
-    add('SupplyPadlock', [0.022, 0.02, 0.014], [0, -0.036, halfZ * 2 + 0.017], this.matBrass, lid);
+
+    // 10) Fecho: o trinco desce pela testa da tampa e o cadeado (com a argola)
+    //     fica pendurado nele; a presilha que o recebe fica no corpo do baú.
+    add('SupplyLatch', [0.05, 0.042, 0.004], [0, -0.001, 0.426], this.matDarkIron, lid);
+    add('SupplyPadlock', [0.024, 0.026, 0.012], [0, -0.024, 0.434], this.matBrass, lid);
+    const shackle = new THREE.Mesh(
+      new THREE.TorusGeometry(0.007, 0.0022, 6, 12),
+      this.matBrass
+    );
+    shackle.name = 'SupplyPadlockShackle';
+    shackle.position.set(0, -0.005, 0.434);
+    lid.add(shackle);
+    add('SupplyLatchCatch', [0.05, 0.024, 0.005], [0, 0.148, 0.2115], this.matDarkIron);
 
     return { crate, lid };
   }

@@ -129,22 +129,50 @@ describe('Modelagem do caixote de suprimentos lacrado', () => {
       ).toBe(true);
     }
 
-    // Portinhola fechada: assentada na boca (0.185) e cobrindo toda a área de cima.
+    // Tampa fechada: assentada na boca (0.185) e cobrindo TODA a área de cima,
+    // com os 4 mm de balanço do beiço de um baú (nada de vão pelas laterais).
     const panel = parts.find((p) => p.name === 'SupplyLidPanel')!.box;
     expect(panel.min.y).toBeCloseTo(0.185, 4);
-    expect(panel.max.y).toBeCloseTo(0.209, 4);
-    expect(panel.min.x).toBeCloseTo(-0.26, 4);
-    expect(panel.max.x).toBeCloseTo(0.26, 4);
-    expect(panel.min.z).toBeCloseTo(-0.21, 4);
-    expect(panel.max.z).toBeCloseTo(0.21, 4);
+    expect(panel.max.y).toBeCloseTo(0.207, 4);
+    expect(panel.min.x).toBeLessThanOrEqual(-0.26);
+    expect(panel.max.x).toBeGreaterThanOrEqual(0.26);
+    expect(panel.min.z).toBeLessThanOrEqual(-0.21);
+    expect(panel.max.z).toBeGreaterThanOrEqual(0.21);
+    // O balanço não pode virar uma aba larga: no máximo 6 mm por fora do corpo.
+    expect(panel.max.x).toBeLessThanOrEqual(0.266);
+    expect(panel.max.z).toBeLessThanOrEqual(0.216);
 
-    // A saia desce por fora das paredes: veda a emenda sem invadir o vão.
-    const walls = parts.filter((p) => p.name === 'SupplyWall').map((p) => p.box);
-    const skirts = parts.filter((p) => p.name === 'SupplyLidSkirt');
-    expect(skirts).toHaveLength(3);
-    for (const skirt of skirts) {
-      expect(walls.some((w) => w.intersectsBox(skirt.box)), 'saia não encosta na parede').toBe(true);
-      expect(skirt.box.clone().intersect(CAVITY).isEmpty(), 'saia invade o vão').toBe(true);
+    // A moldura em relevo fica inteira em cima da tampa (painel rebaixado), e
+    // as réguas laterais não podem invadir o vão dos itens.
+    const rails = parts.filter((p) => p.name === 'SupplyLidRail');
+    expect(rails).toHaveLength(4);
+    for (const rail of rails) {
+      expect(rail.box.min.y).toBeGreaterThanOrEqual(0.207 - 1e-6);
+      expect(rail.box.clone().intersect(CAVITY).isEmpty(), 'régua invade o vão').toBe(true);
+    }
+    // O painel rebaixado (centro da tampa) fica mais baixo que a moldura.
+    const railTop = Math.max(...rails.map((r) => r.box.max.y));
+    const straps = parts.filter((p) => p.name === 'SupplyLidStrap');
+    expect(straps).toHaveLength(2);
+    for (const strap of straps) {
+      expect(strap.box.max.y).toBeGreaterThan(railTop);
+    }
+
+    // O trinco desce pela TESTA da tampa, fora do corpo: nunca por dentro.
+    const latch = parts.find((p) => p.name === 'SupplyLatch')!.box;
+    expect(latch.min.z).toBeGreaterThanOrEqual(0.214 - 1e-6);
+    expect(latch.min.z).toBeGreaterThan(0.21);
+    const padlock = parts.find((p) => p.name === 'SupplyPadlock')!.box;
+    expect(padlock.min.z).toBeGreaterThan(0.214);
+    // ... e a presilha que o recebe fica no corpo, sem tocar no trinco.
+    const catchBox = parts.find((p) => p.name === 'SupplyLatchCatch')!.box;
+    expect(catchBox.intersectsBox(latch)).toBe(false);
+
+    // As dobradiças ficam 5 mm ABAIXO da boca: o tambor aparece inteiro, em
+    // vez de ficar engolido pela tampa.
+    for (const hinge of parts.filter((p) => p.name === 'SupplyHinge')) {
+      expect(hinge.box.max.y).toBeLessThan(0.185);
+      expect(hinge.box.clone().intersect(panel).isEmpty()).toBe(true);
     }
   });
 
