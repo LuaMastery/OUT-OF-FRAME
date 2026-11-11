@@ -331,7 +331,11 @@ export function buildShotgunReceiver(mats: ShotgunMaterialSet): THREE.Group {
     [0.130, 0.023],
     [0.010, 0.024],
   ];
-  add(extrudeProfile(shellProfile, 0.04, 0.004), mats.steel, [0, 0, 0]);
+  // Carcaça com os lados arredondados (bisel de 9 mm numa largura de 40 mm):
+  // o receptor de uma escopeta tem flancos abaulados, e não faces planas —
+  // com bisel de 4 mm a peça virava uma chapa e a luz batia nela como numa
+  // caixa de papelão.
+  add(extrudeProfile(shellProfile, 0.04, 0.009), mats.steel, [0, 0, 0]);
   // Tampa do ferrolho com frisos de aderência (a "costela" do receptor).
   add(new THREE.BoxGeometry(0.041, 0.006, 0.12), mats.steelBright, [0, 0.026, 0.085]);
   for (let i = 0; i < 6; i++) {
@@ -489,7 +493,9 @@ export function buildShotgunStock(mats: ShotgunMaterialSet): THREE.Group {
     [0.286, 0.014],
     [0.246, 0.014],
   ];
-  add(extrudeProfile(stockProfile, 0.04, 0.004), mats.wood, [0, 0, 0]).name = 'StockWood';
+  // Corpo da coronha também de flancos abaulados: com a coronha aparecendo em
+  // 1ª pessoa, a chapa reta ficava evidente no canto da tela.
+  add(extrudeProfile(stockProfile, 0.042, 0.011), mats.wood, [0, 0, 0]).name = 'StockWood';
 
   // Punho (empunhadura): um pouco mais estreito que a coronha, com checagem.
   // A seção é FORTEMENTE biselada (0,040 m de largura com bisel de 0,012):
