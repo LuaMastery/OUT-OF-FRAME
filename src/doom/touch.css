@@ -110,9 +110,9 @@
   display: grid;
   grid-template-columns: repeat(2, auto);
   grid-template-areas:
-    'taser sprint'
-    'shotgun crouch'
-    'use dance';
+    'shotgun sprint'
+    'use crouch'
+    'dance .';
   gap: 10px;
   align-items: end;
   justify-items: end;
@@ -120,7 +120,10 @@
 }
 
 [data-area="shotgun"] { grid-area: shotgun; }
-[data-area="taser"] { grid-area: taser; }
+[data-area="sprint"] { grid-area: sprint; }
+[data-area="use"] { grid-area: use; }
+[data-area="crouch"] { grid-area: crouch; }
+[data-area="dance"] { grid-area: dance; }
 
 .oof-touch-btn {
   pointer-events: auto;

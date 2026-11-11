@@ -84,7 +84,7 @@ describe('Peças nas salas especiais', () => {
     }
   });
 
-  it('mantém a munição sobre o forro e dentro das bordas das caixas, inclusive junto ao Taser', () => {
+  it('mantém a munição sobre o forro e dentro das bordas das caixas', () => {
     for (const seed of [1, 42, 500, 9011, 75012]) {
       const layout = createRandomArenaLayout({ worldSeed: seed, playerSeed: 2 });
       const scene = new THREE.Scene();

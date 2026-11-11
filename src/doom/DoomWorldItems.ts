@@ -18,11 +18,6 @@ import { getThemedRoomByKeyItemId } from './DoomRooms';
 import { createDoomPropMaterial, DoomSharedUniforms } from './DoomShader';
 import { buildShotgunPickup, createShotgunPickupMaterials, type ShotgunPickupId } from './DoomShotgunPickups';
 import {
-  buildTaserBody,
-  TASER_COLORS,
-  type TaserBodyMaterials,
-} from './DoomTaserModel';
-import {
   normalizeShotgunPartSlotCount,
   SHOTGUN_PARTS_PER_SET,
   type ShotgunPartId,
@@ -183,9 +178,6 @@ export class DoomWorldItems {
   private readonly matFlameOuter: THREE.MeshBasicMaterial;
   private readonly matFlameMid: THREE.MeshBasicMaterial;
   private readonly matFlameCore: THREE.MeshBasicMaterial;
-  /** Paleta DOOM do Taser de contenção, criada só quando o item existe no mapa. */
-  private taserMaterials: TaserBodyMaterials | null = null;
-
   // Sombras projetadas dos caixotes: mancha de contato + projeção da luz
   // dominante da arena (e do feixe da lanterna) sobre a superfície de apoio.
   private readonly shadowDecalTexture: THREE.DataTexture;
@@ -670,14 +662,6 @@ export class DoomWorldItems {
   }
 
   private populateLabyrinthItems(): void {
-    // Taser shares a shell crate rather than replacing any loot or adding a 26th crate.
-    // Both clients derive the same crate from the shared world seed.
-    const shellCrates = this.arenaLayout.cratePlacements
-      .map((placement, index) => placement.itemId === 'shotgun_shells' ? index : -1)
-      .filter(index => index >= 0);
-    const taserCrateIndex = shellCrates.length
-      ? shellCrates[this.arenaLayout.worldSeed % shellCrates.length]
-      : -1;
     this.arenaLayout.cratePlacements.forEach((p, idx) => {
       const world = gridCellToWorld(p.gx, p.gz);
       const wx = world.x + p.ox;
@@ -703,13 +687,10 @@ export class DoomWorldItems {
 
       // Apoiado FISICAMENTE sobre o forro interno do caixote (y = 0.095), alinhado à bandeja sem flutuar nem atravessar paredes!
       const itemMesh = this.buildItemMesh(p.itemId);
-      if (idx === taserCrateIndex) itemMesh.name = 'WorldTaserShells';
-      // Na bandeja compartilhada, manter os cartuchos separados do Taser e das bordas.
-      if (idx === taserCrateIndex) itemMesh.scale.setScalar(.75);
-      itemMesh.position.set(0, 0.095, idx === taserCrateIndex ? -0.075 : 0.01);
+      itemMesh.position.set(0, 0.095, 0.01);
       // Caixote lacrado: o conteúdo fica escondido até a tampa abrir.
       itemMesh.visible = false;
-      itemMesh.rotation.y = idx === taserCrateIndex ? 0 : p.itemTiltYaw;
+      itemMesh.rotation.y = p.itemTiltYaw;
       crate.add(itemMesh);
 
       this.root.add(group);
@@ -749,25 +730,6 @@ export class DoomWorldItems {
         crate: crateState,
         restY: itemMesh.position.y,
       });
-      if (idx === taserCrateIndex) {
-        // The shell box sits at the rear of the liner and the Taser at the front;
-        // neither crosses the tray's rims or intersects the other pickup.
-        const taser = this.buildItemMesh('field_taser');
-        taser.name = 'WorldTaser';
-        taser.position.set(0, 0.095, 0.075);
-        taser.visible = false;
-        crate.add(taser);
-        const offset = new THREE.Vector3(0, 0, 0.075).applyAxisAngle(new THREE.Vector3(0, 1, 0), p.crateYaw);
-        this.pickups.push({
-          id: 'pickup-field-taser', itemId: 'field_taser', group, itemMesh: taser,
-          position: new THREE.Vector3(wx + offset.x, p.baseY + 0.18, wz + offset.z),
-          cellWorldX: world.x, cellWorldZ: world.z,
-          radarJitterX: p.radarJitterX, radarJitterZ: p.radarJitterZ,
-          collected: false,
-          crate: crateState,
-          restY: taser.position.y,
-        });
-      }
     });
 
     // Peças soltas no piso das salas especiais, não em caixotes.
@@ -1087,76 +1049,10 @@ export class DoomWorldItems {
   }
 
 
-  /**
-   * Paleta DOOM do Taser: plástico amarelo de segurança, borracha recartilhada
-   * e metais reaproveitados das outras peças de mundo (ferro, aço, latão).
-   */
-  private getTaserMaterials(): TaserBodyMaterials {
-    if (this.taserMaterials) return this.taserMaterials;
-    const flat = (
-      color: number,
-      baseLight: number,
-      specular: number,
-      emissiveBoost = 0,
-      pattern?: (x: number, y: number) => number
-    ) => {
-      const r = (color >> 16) & 0xff;
-      const g = (color >> 8) & 0xff;
-      const b = color & 0xff;
-      return createDoomPropMaterial(
-        makeDetailedPixelTex(32, 32, (px) => {
-          for (let y = 0; y < 32; y++) {
-            for (let x = 0; x < 32; x++) {
-              const grain = ((x * 5 + y * 13) % 7) - 3;
-              const accent = pattern ? pattern(x, y) : 0;
-              const shade = grain * 2 + accent;
-              px(
-                x,
-                y,
-                Math.max(0, Math.min(255, r + shade)),
-                Math.max(0, Math.min(255, g + shade)),
-                Math.max(0, Math.min(255, b + shade))
-              );
-            }
-          }
-        }),
-        this.sharedUniforms,
-        { baseLight, specular, emissiveBoost }
-      );
-    };
-
-    this.taserMaterials = {
-      shell: flat(TASER_COLORS.shell, 0.62, 0.2),
-      shellShade: flat(TASER_COLORS.shellShade, 0.55, 0.16),
-      graphite: this.matDarkIron,
-      rubber: flat(TASER_COLORS.rubber, 0.4, 0.06, 0, (x, y) =>
-        (Math.floor(x / 4) + Math.floor(y / 4)) % 2 === 0 ? 12 : -10
-      ),
-      gloveDark: flat(TASER_COLORS.gloveDark, 0.38, 0.05),
-      steel: this.matCleanSteel,
-      steelDark: this.matDarkIron,
-      brass: this.matBrass,
-      ceramic: flat(TASER_COLORS.ceramic, 0.68, 0.12),
-      glass: flat(TASER_COLORS.glass, 0.5, 0.4, 0.32),
-      strap: flat(TASER_COLORS.strap, 0.48, 0.1),
-      label: this.matPaper,
-    };
-    return this.taserMaterials;
-  }
-
   private buildItemMesh(itemId: string): THREE.Object3D {
     const holder = new THREE.Group();
 
-    if (itemId === 'field_taser') {
-      // O MESMO corpo do modelo de 1ª pessoa, deitado de lado no forro do
-      // caixote: bico para -X, empunhadura para a frente e painel de carga
-      // virado para cima, com folga para os cartuchos e para a tampa.
-      const taser = buildTaserBody(this.getTaserMaterials());
-      taser.group.scale.setScalar(0.68);
-      taser.group.rotation.set(0, 1.72, -Math.PI / 2);
-      taser.group.position.set(0.0879, 0.0462, -0.0402);
-      holder.add(taser.group);
-    } else if (itemId === 'shotgun_receiver' || itemId === 'shotgun_barrel' ||
+    if (itemId === 'shotgun_receiver' || itemId === 'shotgun_barrel' ||
                itemId === 'shotgun_pump' || itemId === 'shotgun_stock' || itemId === 'shotgun_shells') {
       const model = buildShotgunPickup(itemId as ShotgunPickupId, this.shotgunMaterials);
       // Cartuchos maiores e contrastantes continuam dentro da bandeja do caixote.
@@ -1863,15 +1759,9 @@ export class DoomWorldItems {
     for (let i = 0; i < this.pickups.length; i++) {
       const p = this.pickups[i];
       if (p.collected) continue;
-      // The Taser and shells occupy the same crate; show only one radar signal
-      // until the shells are collected, then keep a signal for the Taser alone.
-      if (p.itemId === 'field_taser' && this.pickups.some(other =>
-        other !== p && other.group === p.group && !other.collected
-      )) continue;
 
       const isHighSignature =
         p.itemId === 'rusty_knife' ||
-        p.itemId === 'field_taser' ||
         p.itemId === 'sector_b_key' ||
         p.itemId.startsWith('key_') ||
         p.itemId === 'field_radar' ||

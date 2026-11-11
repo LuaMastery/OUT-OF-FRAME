@@ -1,5 +1,4 @@
 import * as THREE from 'three';
-import { TASER_STUN_SECONDS } from './DoomTaser';
 import { planSpiderObstaclePath, SpiderNavigationSpace, spiderColliderBlocks } from './DoomSpiderNavigation';
 import { SoundEngine } from '../engine/audio/SoundEngine';
 import { StaticColliderBox } from '../engine/physics/SpatialSweep';
@@ -117,7 +116,6 @@ export type SpiderBehaviorState =
   | 'FRENZY_CHASE'
   | 'CINEMATIC_SEQUENCE'
   | 'FLEE_RETREAT'
-  | 'STUNNED'
   | 'DEAD';
 
 export type SpiderCinematicMode =
@@ -525,132 +523,6 @@ function createTentacleTubeGeometry(): {
  * - Escala chão, paredes e teto livremente, tece armadilhas de teia e dispara em velocidade absurda ao avistar o jogador.
  * - Ao alcançar o jogador: desfere ataque brutal, projeta seus 4 tentáculos orgânicos para puxar o Ragdoll desacordado até o Ninho de Teias!
  */
-/**
- * Rig elétrico da aranha atordoada.
- *
- * Substitui os três riscos estáticos por feixes que se redesenham a cada
- * quadro: arcos entre as articulações, halo azulado, faíscas que pulam do
- * corpo e uma luz real que ilumina o cenário em volta.
- */
-class SpiderShockRig {
-  readonly group = new THREE.Group();
-  private readonly arcs: THREE.Line[] = [];
-  private readonly glow: THREE.Line[] = [];
-  private readonly sparks: THREE.Mesh[] = [];
-  private light: THREE.PointLight | null = null;
-  private seed = 1234567;
-  private readonly rand = (): number => {
-    this.seed = (this.seed * 16807) % 2147483647;
-    return this.seed / 2147483647;
-  };
-
-  get visible(): boolean {
-    return this.group.visible;
-  }
-
-  set visible(value: boolean) {
-    this.group.visible = value;
-    if (this.light) this.light.visible = value;
-  }
-
-  build(parent: THREE.Object3D): void {
-    this.group.name = 'SpiderTaserArcs';
-    const coreMat = new THREE.LineBasicMaterial({ color: 0xe8fbff, transparent: true, opacity: 1 });
-    const glowMat = new THREE.LineBasicMaterial({ color: 0x6fe0ff, transparent: true, opacity: 0.5 });
-    const sparkMat = new THREE.MeshBasicMaterial({ color: 0xbfe9ff });
-    for (let i = 0; i < 5; i++) {
-      const core = new THREE.Line(new THREE.BufferGeometry().setFromPoints(this.trail(i)), coreMat);
-      core.frustumCulled = false;
-      core.visible = false;
-      this.group.add(core);
-      this.arcs.push(core);
-      const halo = new THREE.Line(new THREE.BufferGeometry().setFromPoints(this.trail(i)), glowMat);
-      halo.frustumCulled = false;
-      halo.scale.setScalar(1.06);
-      halo.visible = false;
-      this.group.add(halo);
-      this.glow.push(halo);
-    }
-    for (let i = 0; i < 6; i++) {
-      const spark = new THREE.Mesh(new THREE.SphereGeometry(0.035, 5, 4), sparkMat);
-      spark.visible = false;
-      this.group.add(spark);
-      this.sparks.push(spark);
-    }
-    this.light = new THREE.PointLight(0x9fe4ff, 0, 5.5);
-    this.light.position.set(0, 0.4, 0);
-    this.light.visible = false;
-    this.group.add(this.light);
-    this.group.visible = false;
-    parent.add(this.group);
-  }
-
-  /** Traçado de um arco, do dorso até uma articulação, com zigue-zague curto. */
-  private trail(index: number): THREE.Vector3[] {
-    const angles = [0.4, 1.5, 2.6, 3.7, 4.9];
-    const a = angles[index] ?? 0;
-    const inner = new THREE.Vector3(Math.cos(a) * 0.16, 0.3 + (index % 2) * 0.05, Math.sin(a) * 0.16);
-    const outer = new THREE.Vector3(Math.cos(a) * 0.4, 0.16 + (index % 3) * 0.06, Math.sin(a) * 0.34);
-    const points: THREE.Vector3[] = [];
-    const steps = 6;
-    for (let i = 0; i <= steps; i++) {
-      const t = i / steps;
-      const wobble = Math.sin(t * Math.PI) * 0.05;
-      points.push(
-        new THREE.Vector3(
-          inner.x + (outer.x - inner.x) * t + (this.rand() - 0.5) * wobble * 2,
-          inner.y + (outer.y - inner.y) * t + (this.rand() - 0.5) * wobble * 2,
-          inner.z + (outer.z - inner.z) * t + (this.rand() - 0.5) * wobble * 2
-        )
-      );
-    }
-    return points;
-  }
-
-  /** Redesenha feixes e faíscas; `intensity` cai devagar quando o efeito acaba. */
-  update(dt: number, intensity: number): void {
-    const on = this.group.visible && intensity > 0.02;
-    this.seed = (this.seed * 48271 + 11) % 2147483647;
-    for (let i = 0; i < this.arcs.length; i++) {
-      const core = this.arcs[i];
-      const halo = this.glow[i];
-      // Alterna quais arcos aparecem, como uma descarga que salta de ponto em ponto.
-      const active = on && ((Math.floor(this.seed / (i + 3)) + i) % 3 !== 0 || i < 2);
-      core.visible = active;
-      halo.visible = active;
-      if (!active) continue;
-      core.geometry.setFromPoints(this.trail(i));
-      halo.geometry.setFromPoints(this.trail(i));
-      const flicker = 0.6 + 0.4 * Math.abs(Math.sin((this.seed % 977) * 0.001 + i));
-      (core.material as THREE.LineBasicMaterial).opacity = Math.min(1, 0.6 + flicker * 0.4);
-      (halo.material as THREE.LineBasicMaterial).opacity = 0.2 + flicker * 0.3;
-    }
-    for (let i = 0; i < this.sparks.length; i++) {
-      const spark = this.sparks[i];
-      const active = on && this.rand() > 0.45;
-      spark.visible = active;
-      if (!active) continue;
-      const a = this.rand() * Math.PI * 2;
-      const r = 0.25 + this.rand() * 0.5;
-      spark.position.set(Math.cos(a) * r, 0.12 + this.rand() * 0.32, Math.sin(a) * r);
-      const s = 0.3 + this.rand() * 0.6;
-      spark.scale.setScalar(s);
-    }
-    if (this.light) {
-      this.light.intensity = on ? 1.1 * intensity * (0.55 + 0.45 * Math.abs(Math.sin(this.seed))) : 0;
-      this.light.visible = on;
-    }
-    // O grupo inteiro treme com a descarga.
-    if (on) {
-      this.group.rotation.set(
-        Math.sin(this.seed * 0.0007) * 0.05 * intensity,
-        Math.sin(this.seed * 0.0013) * 0.06 * intensity,
-        0
-      );
-    }
-    void dt;
-  }
-}
 
 export class DoomSpider {
   private readonly rootGroup = new THREE.Group();
@@ -688,11 +560,6 @@ export class DoomSpider {
   private surfaceMode: SpiderSurfaceMode = 'CEILING';
   private state: SpiderBehaviorState = 'STALK_PATROL';
   private shotgunHealth = 100;
-  private stunRemaining = 0;
-  private readonly stunArcs = new SpiderShockRig();
-  /** Tempo desde o último choque, usado pela animação de convulsão. */
-  private shockTime = 0;
-  private shockGlow = 0;
   private stateTimer = 0;
   private surfaceDecisionTimer = 3.5;
   private webCooldownTimer = 14.0;
@@ -758,8 +625,6 @@ export class DoomSpider {
 
     this.buildProceduralLimbSpecs();
     this.buildBodyCore();
-    // Arcos elétricos presos ao corpo (acompanham parede/teto) com halo e luz.
-    this.stunArcs.build(this.bodyGroup);
     this.buildProceduralLimbMeshes();
     this.buildProceduralTentacleMeshes();
 
@@ -767,21 +632,6 @@ export class DoomSpider {
   }
 
   get isDead(): boolean { return this.state === 'DEAD'; }
-  get isStunned(): boolean { return this.state === 'STUNNED'; }
-
-  /** Captures are never interrupted: only a free, living spider can be stunned. */
-  applyTaserStun(duration = TASER_STUN_SECONDS): boolean {
-    if (this.isDead || this.state === 'CINEMATIC_SEQUENCE' || !Number.isFinite(duration) || duration <= 0) return false;
-    this.stunRemaining = Math.max(this.stunRemaining, Math.min(duration, TASER_STUN_SECONDS));
-    this.state = 'STUNNED';
-    this.stateTimer = 0;
-    this.smoothVel.set(0, 0, 0);
-    this.commandedSpeed = 0;
-    // Reação imediata ao choque: corpo travado, patas recolhidas e arcos vivos.
-    this.shockTime = 0;
-    this.stunArcs.visible = true;
-    return true;
-  }
 
   /** During abduction the victim remains attached until the nest, never dropped. */
   applyShotgunDamage(damage: number): boolean {
@@ -807,14 +657,11 @@ export class DoomSpider {
     this.deathTime = 0;
     this.deathPlayed = false;
     this.shotgunHealth = 0;
-    this.stunRemaining = 0;
     this.smoothVel.set(0, 0, 0);
     this.commandedSpeed = 0;
     this.cinematicMode = null;
     this.cinematicRagdollHooks = null;
     this.remoteDrivenCinematic = false;
-    this.stunArcs.visible = false;
-    this.shockGlow = 0;
     this.hideCaptureTentacles();
     this.rootGroup.visible = true;
     // Guarda onde cada pata estava no instante da morte para as pernas
@@ -996,7 +843,7 @@ export class DoomSpider {
   relocateAwayAfterAbduction(
     avoidWorldPositions?: readonly THREE.Vector3[]
   ): void {
-    if (this.isDead || this.isStunned) return;
+    if (this.isDead) return;
     let bestCell = pickRandomWalkableCellFarFrom(
       this.webManager.lairCenter.x,
       this.webManager.lairCenter.z,
@@ -1043,7 +890,7 @@ export class DoomSpider {
   finishAbductionRetreat(
     observerPositions?: readonly THREE.Vector3[]
   ): void {
-    if (this.isDead || this.isStunned) return;
+    if (this.isDead) return;
     this.cinematicMode = null;
     this.lastCinematicMode = null;
     this.cinematicRagdollHooks = null;
@@ -1091,7 +938,6 @@ export class DoomSpider {
     fwdZ: number;
     state: SpiderBehaviorState;
     shotgunHealth: number;
-    stunRemaining: number;
     surfaceMode: SpiderSurfaceMode;
     cinematicMode: SpiderCinematicMode | null;
     cinematicProgress: number;
@@ -1115,7 +961,6 @@ export class DoomSpider {
       fwdZ: this.currentForward.z,
       state: this.state,
       shotgunHealth: this.shotgunHealth,
-      stunRemaining: this.stunRemaining,
       surfaceMode: this.surfaceMode,
       cinematicMode:
         this.state === 'CINEMATIC_SEQUENCE' ? this.cinematicMode : null,
@@ -1214,7 +1059,7 @@ export class DoomSpider {
     listenerPos?: THREE.Vector3,
     listenerYaw = 0
   ): void {
-    if (this.isDead || this.isStunned || this.state === 'CINEMATIC_SEQUENCE') return;
+    if (this.isDead || this.state === 'CINEMATIC_SEQUENCE') return;
     this.postAbductionGraceTimer = 0;
     this.lastKnownPlayerPos.copy(lairPos);
     this.searchingAroundLastKnown = false;
@@ -1253,7 +1098,7 @@ export class DoomSpider {
     listenerPos?: THREE.Vector3,
     listenerYaw = 0
   ): void {
-    if (this.isDead || this.isStunned) return;
+    if (this.isDead) return;
     this.hideCaptureTentacles();
     this.cinematicRagdollHooks = null;
     const audioPos = listenerPos ?? threatPos;
@@ -1319,7 +1164,6 @@ export class DoomSpider {
       fwdZ: number;
       state: string;
       shotgunHealth?: number;
-      stunRemaining?: number;
       surfaceMode: 'FLOOR' | 'WALL' | 'CEILING';
       cinematicMode?: SpiderCinematicMode | null;
       cinematicProgress?: number;
@@ -1336,20 +1180,6 @@ export class DoomSpider {
 
     if (typeof pkt.shotgunHealth === 'number' && Number.isFinite(pkt.shotgunHealth)) {
       this.shotgunHealth = Math.max(0, Math.min(100, pkt.shotgunHealth));
-    }
-    if (typeof pkt.stunRemaining === 'number' && Number.isFinite(pkt.stunRemaining)) {
-      this.stunRemaining = Math.max(0, Math.min(TASER_STUN_SECONDS, pkt.stunRemaining));
-    }
-    const remoteShock = pkt.state === 'STUNNED';
-    this.stunArcs.visible = remoteShock;
-    if (remoteShock) {
-      // O cliente reproduz o mesmo choque do host.
-      this.updateShockAnimation(safeDt, elapsed, 0);
-    } else if (this.shockGlow > 0) {
-      this.shockGlow = 0;
-      this.chitinMat.uniforms.uShockGlow.value = 0;
-      this.eyeMat.uniforms.uShockGlow.value = 0;
-      this.stunArcs.visible = false;
     }
     if (pkt.state === 'DEAD') {
       this.shotgunHealth = 0;
@@ -1670,7 +1500,7 @@ export class DoomSpider {
     listenerPos?: THREE.Vector3,
     listenerYaw = 0
   ): void {
-    if (this.isDead || this.isStunned || this.state === 'CINEMATIC_SEQUENCE') return;
+    if (this.isDead || this.state === 'CINEMATIC_SEQUENCE') return;
 
     this.lastKnownPlayerPos.copy(trapWorldPos);
     this.searchingAroundLastKnown = false;
@@ -2281,97 +2111,6 @@ export class DoomSpider {
     }
   }
 
-  /**
-   * Convulsão da aranha sob descarga elétrica.
-   *
-   * A cena tem começo, meio e fim: o impacto arqueia o corpo e recolhe as
-   * patas para perto do tronco (o bicho "encolhe"), as patas tremem em
-   * frequências diferentes como um curto-circuito, a quitina e os olhos
-   * acendem em azul e, ao acabar a carga, ela relaxa e retoma a caça.
-   */
-  private updateShockAnimation(dt: number, elapsed: number, distance: number): void {
-    this.shockTime += dt;
-    // Curva do efeito: sobe rápido no impacto e some nos últimos 25% da carga.
-    const normalized = this.stunRemaining / TASER_STUN_SECONDS;
-    const impact = Math.max(0, 1 - this.shockTime * 3.2);
-    const dying = Math.min(1, normalized / 0.25);
-    const envelope = Math.min(0.85, 0.2 + normalized * 0.65) * dying;
-    this.shockGlow = envelope;
-
-    // Shaders: veios elétricos na casca e olhos azuis.
-    this.chitinMat.uniforms.uShockGlow.value = envelope;
-    this.eyeMat.uniforms.uShockGlow.value = Math.min(1, envelope * 1.4);
-    this.chitinMat.uniforms.uRageGlow.value = 0;
-    this.eyeMat.uniforms.uRageGlow.value = 0;
-
-    // Corpo arqueado no impacto, tremendo em alta frequência.
-    const convulsion = Math.sin(elapsed * 47) * 0.055 * envelope;
-    const jitterX = Math.sin(elapsed * 61.3) * 0.02 * envelope;
-    const jitterZ = Math.cos(elapsed * 54.7) * 0.02 * envelope;
-    this.bodyGroup.position.set(jitterX, 0, jitterZ);
-    this.bodyGroup.rotation.x = -0.12 * impact * envelope;
-    this.bodyGroup.rotation.z = 0.06 * impact * envelope;
-
-    // Patas recolhidas e chacoalhando: cada uma com fase e frequência próprias.
-    for (let i = 0; i < this.limbs.length; i++) {
-      const rt = this.limbs[i];
-      const spec = this.limbSpecs[i];
-      rt.stepping = false;
-      rt.stepT = 0;
-      const pull = smoothStep01(Math.min(1, this.shockTime / 0.5)) * envelope;
-      const rootWorld = this.tmpA
-        .copy(this.bodyPos)
-        .addScaledVector(this.tmpRight.copy(this.currentForward).cross(this.currentUp).normalize(), spec.rootLocal.x)
-        .addScaledVector(this.currentUp, spec.rootLocal.y);
-      const inward = this.tmpB.copy(rt.footWorld).sub(rootWorld);
-      if (inward.lengthSq() < 1e-5) inward.set(0, -1, 0);
-      inward.normalize();
-      const curlTarget = rootWorld
-        .clone()
-        .addScaledVector(inward, spec.totalLength * (0.42 - 0.18 * pull))
-        .addScaledVector(this.currentUp, 0.16 * impact);
-      rt.footWorld.lerp(curlTarget, Math.min(1, dt * 3.2));
-      // Tremor do tarso: amplitude maior perto do fim do efeito.
-      const tremor = (0.055 + 0.035 * impact) * envelope;
-      rt.footWorld.x += Math.sin(elapsed * (33 + i * 7.5) + i) * tremor;
-      rt.footWorld.y += Math.cos(elapsed * (27 + i * 5.3) + i * 1.7) * tremor * 0.6;
-      rt.footWorld.z += Math.cos(elapsed * (37 + i * 6.1) + i * 2.3) * tremor;
-      rt.targetWorld.copy(rt.footWorld);
-    }
-
-    // Quelíceras travadas abertas, palpos encolhidos, abdômen vibrando.
-    this.leftCheliceraPivot.rotation.set(0.3, 0.18, -0.34 * envelope);
-    this.rightCheliceraPivot.rotation.set(0.3, -0.18, 0.34 * envelope);
-    this.leftPalpPivot.rotation.set(-0.3, 0.24, 0.1 + convulsion);
-    this.rightPalpPivot.rotation.set(-0.3, -0.24, -0.1 - convulsion);
-    this.abdomenPivot.rotation.set(0.2 + convulsion * 0.6, Math.sin(elapsed * 21) * 0.08, 0);
-    const pulse = 1 + Math.sin(elapsed * 26) * 0.03 * envelope;
-    this.abdomenPivot.scale.set(pulse, pulse, 1);
-
-    // Arcos e faíscas do rig elétrico seguem a carga.
-    this.stunArcs.update(dt, envelope);
-    this.stunArcs.visible = envelope > 0.02;
-
-    // IK normal, mas com o corpo travado e as patas acima recolhidas.
-    this.updateBodyAndLimbsIK(dt, elapsed, this.bodyPos, 0, distance);
-    this.bodyGroup.position.set(jitterX, 0, jitterZ);
-    this.bodyGroup.rotation.x = -0.12 * impact * envelope;
-    this.bodyGroup.rotation.z = 0.06 * impact * envelope;
-
-    if (this.stunRemaining <= 0) {
-      this.state = 'STALK_PATROL';
-      this.stateTimer = 0;
-      this.pathRepathTimer = 0;
-      this.webCooldownTimer = Math.max(this.webCooldownTimer, 16.0);
-      this.stunArcs.visible = false;
-      this.shockGlow = 0;
-      this.chitinMat.uniforms.uShockGlow.value = 0;
-      this.eyeMat.uniforms.uShockGlow.value = 0;
-      this.bodyGroup.position.set(0, 0, 0);
-      this.bodyGroup.rotation.set(0, 0, 0);
-    }
-  }
-
   update(
     dt: number,
     elapsed: number,
@@ -2399,12 +2138,6 @@ export class DoomSpider {
     }
 
     const safeDt = Math.min(0.05, Math.max(0.0005, dt));
-    if (this.isStunned) {
-      this.stunRemaining = Math.max(0, this.stunRemaining - safeDt);
-      const distance = Math.hypot(playerPos.x - this.bodyPos.x, playerPos.z - this.bodyPos.z);
-      this.updateShockAnimation(safeDt, elapsed, distance);
-      return { cameraShakeAmount: 0, playerDistance: distance };
-    }
     const frameStartX = this.bodyPos.x;
     const frameStartY = this.bodyPos.y;
     const frameStartZ = this.bodyPos.z;

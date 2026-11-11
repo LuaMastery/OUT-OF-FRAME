@@ -19,8 +19,7 @@ export type InventoryItemKind =
   | 'note'
   | 'shotgun_part'
   | 'shotgun'
-  | 'shotgun_ammo'
-  | 'taser';
+  | 'shotgun_ammo';
 
 export interface InventoryItemDef {
   id: string;
@@ -72,7 +71,6 @@ export interface DoomInventoryCallbacks {
   onUseBattery: (chargeAmount: number) => boolean;
   onUseFlare: () => boolean;
   onToggleShotgun?: () => void;
-  onToggleTaser?: () => void;
   onUseKnife: () => { cutWeb: boolean };
   onUseKey?: (itemId?: string) => boolean | void;
   onToggleRadar?: () => boolean;
@@ -390,17 +388,6 @@ export const ITEM_CATALOG: Record<string, InventoryItemDef> = {
     stackable: false,
     usable: true,
     actionLabel: 'Alternar [R]',
-    droppable: false,
-  },
-  field_taser: {
-    id: 'field_taser',
-    kind: 'taser',
-    name: 'Taser de contenção',
-    category: 'Equipamento tático',
-    description: 'Dispositivo elétrico de curto alcance. Atordoa a aranha por 5 segundos sem causar dano; a bateria recarrega automaticamente em 9 segundos. Não interrompe uma captura em andamento. Pressione [J] para equipar e clique para disparar.',
-    stackable: false,
-    usable: true,
-    actionLabel: 'Equipar [J]',
     droppable: false,
   },
   shotgun_receiver: {
@@ -2599,8 +2586,7 @@ export class DoomInventory {
       def.kind === 'radar' ||
       def.kind === 'walkie' ||
       def.kind === 'shotgun_part' ||
-      def.kind === 'shotgun' ||
-      def.kind === 'taser'
+      def.kind === 'shotgun'
     ) {
       return;
     }
@@ -3167,11 +3153,6 @@ export class DoomInventory {
       this.wakeShortcutsHub(6000, 'SHOTGUN MONTADA · PROCURE CARTUCHOS · [H] EQUIPAR');
       this.sound.playInventorySelect(true);
       this.renderGrid(); this.renderInspector();
-      return true;
-    }
-    if (def.kind === 'taser') {
-      if (!fromQuickShortcut) this.callbacks.onCloseRequest();
-      this.callbacks.onToggleTaser?.();
       return true;
     }
     if (def.kind === 'shotgun') {

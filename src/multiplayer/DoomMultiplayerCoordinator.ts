@@ -1,5 +1,4 @@
 import * as THREE from 'three';
-import { TASER_RECHARGE_SECONDS } from '../doom/DoomTaser';
 import { DoomAstronaut } from '../doom/DoomAstronaut';
 import { parseQuickItemAction, QUICK_ITEM_DURATIONS, HeldWeapon, QuickHandheldKind, QuickItemAction } from '../doom/DoomItemAction';
 import {
@@ -123,7 +122,6 @@ export interface MultiplayerCoordinatorHooks {
   /** Peças que o anfitrião preparou no próprio mundo (fonte da verdade da sala). */
   getLocalShotgunPartSlots?: () => number;
   onShotgunShot?: (origin: THREE.Vector3, direction: THREE.Vector3) => void;
-  onTaserShot?: (origin: THREE.Vector3, direction: THREE.Vector3) => void;
   onRescuedByAlly: (rescuerName: string) => void;
   onAbductionInterruptedByAlly: (
     rescuerName: string,
@@ -270,7 +268,6 @@ export class DoomMultiplayerCoordinator {
   private localRadioActive = false;
 
   private latestSpiderPacket: NetworkSpiderPacket | null = null;
-  private readonly remoteTaserLastShot = new Map<string, number>();
   private latestSpiderReceivedPerfMs = -Infinity;
   private readonly observerPositionsScratch: THREE.Vector3[] = [];
   private poseSendAccum = 0;
@@ -2139,7 +2136,7 @@ export class DoomMultiplayerCoordinator {
     if (Number.isFinite(pkt.ts) && pkt.ts > ent.lastItemPoseTs) {
       ent.lastItemPoseTs = pkt.ts;
       ent.quickItemAction = parseQuickItemAction(pkt.quickItemAction);
-      ent.heldWeapon = pkt.heldWeapon === 'shotgun' || pkt.heldWeapon === 'taser' ? pkt.heldWeapon : null;
+      ent.heldWeapon = pkt.heldWeapon === 'shotgun' ? pkt.heldWeapon : null;
     }
     ent.slideTarget = typeof pkt.slide === 'number' && Number.isFinite(pkt.slide)
       ? Math.max(0, Math.min(1, pkt.slide)) : 0;
@@ -2342,26 +2339,8 @@ export class DoomMultiplayerCoordinator {
       x: origin.x, y: origin.y, z: origin.z, dx: direction.x, dy: direction.y, dz: direction.z, ts: Date.now() });
   }
 
-  emitTaserShot(origin: THREE.Vector3, direction: THREE.Vector3): void {
-    this.client.broadcastWorldEvent({ kind: 'taser_shot', senderId: this.session.localPlayerId,
-      x: origin.x, y: origin.y, z: origin.z, dx: direction.x, dy: direction.y, dz: direction.z, ts: Date.now() });
-  }
-
   private handleWorldEvent(ev: NetworkWorldEvent): void {
-    if (ev.kind === 'taser_shot') {
-      if (!this.client.isHost || ev.senderId === this.session.localPlayerId) return;
-      const ally = this.allies.get(ev.senderId);
-      if (!ally || ally.dead || ally.inSequence || [ev.x, ev.y, ev.z, ev.dx, ev.dy, ev.dz].some(v => !Number.isFinite(v))) return;
-      const origin = new THREE.Vector3(ev.x, ev.y, ev.z);
-      const direction = new THREE.Vector3(ev.dx, ev.dy, ev.dz);
-      if (Math.hypot(origin.x - ally.currentPos.x, origin.z - ally.currentPos.z) > 3 ||
-          Math.abs(origin.y - ally.currentPos.y) > 3 || direction.lengthSq() < 0.9 || direction.lengthSq() > 1.1) return;
-      const now = performance.now();
-      const last = this.remoteTaserLastShot.get(ev.senderId);
-      if (last !== undefined && now - last < TASER_RECHARGE_SECONDS * 1000 - 1000) return;
-      this.remoteTaserLastShot.set(ev.senderId, now);
-      this.hooks.onTaserShot?.(origin, direction.normalize());
-    } else if (ev.kind === 'shotgun_shot') {
+    if (ev.kind === 'shotgun_shot') {
       if (!this.client.isHost || ev.senderId === this.session.localPlayerId) return;
       const ally = this.allies.get(ev.senderId);
       const values = [ev.x, ev.y, ev.z, ev.dx, ev.dy, ev.dz];

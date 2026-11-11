@@ -45,7 +45,6 @@ import { DoomFlashlight } from './DoomFlashlight';
 import { DoomShotgunViewmodel, SHOTGUN_ITEM_ID, SHOTGUN_AMMO_ITEM_ID, shotgunImpactDistance, computeShotgunBlastDamage } from './DoomShotgun';
 import { DoomInventory, ITEM_CATALOG } from './DoomInventory';
 import { QUICK_ITEM_DURATIONS, QuickHandheldKind } from './DoomItemAction';
-import { DoomTaserViewmodel, TASER_ITEM_ID, TASER_RECHARGE_SECONDS, TASER_STUN_SECONDS, taserImpactDistance, advanceTaserRecharge } from './DoomTaser';
 import {
   buildDoomLabyrinth,
   DoomLightSource,
@@ -326,10 +325,6 @@ export class DoomGameApp {
   private readonly flashlight: DoomFlashlight;
   private readonly shotgun: DoomShotgunViewmodel;
   private arenaLayout!: DoomArenaLayout;
-  private readonly taser: DoomTaserViewmodel;
-  private taserRechargeRemaining = 0;
-  private readonly taserHudEl: HTMLDivElement;
-  private wasSpiderStunned = false;
   private shotgunNextShotMs = 0;
   private readonly inventory: DoomInventory;
   private readonly radar: DoomRadar;
@@ -607,10 +602,6 @@ export class DoomGameApp {
     this.shotgunObjectiveEl.className = 'doom-shotgun-objective';
     this.shotgunObjectiveEl.setAttribute('aria-live', 'polite');
     this.viewportEl.appendChild(this.shotgunObjectiveEl);
-    this.taserHudEl = document.createElement('div');
-    this.taserHudEl.className = 'doom-taser-status hidden';
-    this.taserHudEl.setAttribute('aria-live', 'polite');
-    this.viewportEl.appendChild(this.taserHudEl);
 
     this.danceMenu = new DoomDanceMenu(
       this.viewportEl,
@@ -649,7 +640,6 @@ export class DoomGameApp {
     this.sharedUniforms = createDoomSharedUniforms();
     this.flashlight = new DoomFlashlight(aspect);
     this.shotgun = new DoomShotgunViewmodel(aspect);
-    this.taser = new DoomTaserViewmodel(aspect);
 
     // Gera layout aleatório a cada partida (caixas, itens, spawn do jogador, ninho, teias e aranha),
     // mantendo o mundo sincronizado por código de sala no Co-op enquanto o spawn de cada jogador varia!
@@ -767,7 +757,6 @@ export class DoomGameApp {
         return true;
       },
       onToggleShotgun: () => this.toggleShotgun(),
-      onToggleTaser: () => this.toggleTaser(),
       onUseFlare: () => {
         if (this.webManager.isLockedInMultiplayerCocoon) {
           this.sound.playStruggleEffort();
@@ -955,10 +944,6 @@ export class DoomGameApp {
         this.suppressReleasePause();
         this.multiplayer.openRadioChatInput();
       },
-      onTaserPress: () => {
-        if (this.taser.isEquipped) this.fireTaser();
-        else this.toggleTaser();
-      },
       onShotgunPress: () => {
         if (this.shotgun.isEquipped) this.fireShotgun();
         else this.toggleShotgun();
@@ -1097,7 +1082,6 @@ export class DoomGameApp {
 
     this.flashlight.setHandedness(s.viewmodelHand);
     this.shotgun.setHandedness(s.viewmodelHand);
-    this.taser.setHandedness(s.viewmodelHand);
     this.flashlight.setHeadBobMultiplier(s.headBobIntensity / 100);
     this.inventory.setUserInterfaceSettings({
       hubIdleOpacityPercent: s.shortcutsHubIdleOpacity,
@@ -1193,9 +1177,8 @@ export class DoomGameApp {
       this.sound,
       {
         createQuickItemProps: () => this.flashlight.createThirdPersonQuickProps(),
-        createWeaponProps: () => ({ shotgun: this.shotgun.createThirdPersonWeapon(), taser: this.taser.createThirdPersonWeapon() }),
+        createWeaponProps: () => ({ shotgun: this.shotgun.createThirdPersonWeapon() }),
         onShotgunShot: (origin, direction) => { this.applyShotgunHit(origin, direction); },
-        onTaserShot: (origin, direction) => { this.applyTaserHit(origin, direction); },
         getLocalShotgunPartSlots: () => this.worldItems.getShotgunPartSlotCount(),
         onShotgunPartSlotsChanged: (slots) => {
           // O anfitrião define a quantidade de peças: um conjunto completo das
@@ -1381,7 +1364,6 @@ export class DoomGameApp {
     });
     this.flashlight.forceStowImmediate();
     this.shotgun.stow();
-    this.taser.stow();
     this.astronaut.setFirstPersonMode(true);
     this.sharedUniforms.uFlashlightIntensity.value = 0;
     this.cameraShake = 0;
@@ -1897,11 +1879,6 @@ export class DoomGameApp {
           return;
         }
 
-        if (e.code === 'KeyJ' && !e.repeat && !this.inventory.open) {
-          e.preventDefault();
-          this.toggleTaser();
-          return;
-        }
         if (e.code === 'KeyH' && !e.repeat && !this.inventory.open) {
           e.preventDefault();
           this.toggleShotgun();
@@ -2293,10 +2270,6 @@ export class DoomGameApp {
           return;
         }
         if (e.button === 0) {
-          if (this.taser.isEquipped && hadPointerLockBeforeClick) {
-            this.fireTaser();
-            return;
-          }
           if (this.shotgun.isEquipped && hadPointerLockBeforeClick) {
             this.fireShotgun();
             return;
@@ -2414,7 +2387,6 @@ export class DoomGameApp {
     this.camera.updateProjectionMatrix();
     this.flashlight.setAspect(aspect);
     this.shotgun.setAspect(aspect);
-    this.taser.setAspect(aspect);
     this.renderer.setSize(w, h);
     this.compositor.resize(w, h);
   }
@@ -2451,15 +2423,13 @@ export class DoomGameApp {
           (this.activeSequence !== 'DEAD_TERMINATED' &&
             this.seqTime < 0.42 &&
             this.flashlight.isVisibleInView));
-      // The active weapon takes priority over a different weapon that is lowering.
-      const showTaser = this.activeSequence === 'NONE' && (this.taser.isEquipped || (!this.shotgun.isEquipped && this.taser.isVisibleInView));
-      const showShotgun = this.activeSequence === 'NONE' && !showTaser && this.shotgun.isVisibleInView;
+      const showShotgun = this.activeSequence === 'NONE' && this.shotgun.isVisibleInView;
       this.compositor.render(
         this.renderer,
         this.scene,
         this.camera,
-        showViewmodel ? (showTaser ? this.taser.viewScene : showShotgun ? this.shotgun.viewScene : this.flashlight.viewScene) : undefined,
-        showViewmodel ? (showTaser ? this.taser.viewCamera : showShotgun ? this.shotgun.viewCamera : this.flashlight.viewCamera) : undefined
+        showViewmodel ? (showShotgun ? this.shotgun.viewScene : this.flashlight.viewScene) : undefined,
+        showViewmodel ? (showShotgun ? this.shotgun.viewCamera : this.flashlight.viewCamera) : undefined
       );
       this.rafId = requestAnimationFrame(loop);
     };
@@ -2492,7 +2462,6 @@ export class DoomGameApp {
     this.sound.stopDungeonAtmosphere?.();
     this.sound.winSurvivors?.();
     this.shotgun.stow();
-    this.taser.stow();
     this.inventory.setPauseMenuHidden(true);
     const survivors = this.multiplayer
       ? this.multiplayer.getSurvivingPlayerNames(this.localPlayerName, false)
@@ -2527,35 +2496,6 @@ export class DoomGameApp {
     this.shotgunObjectiveEl.classList.toggle('hidden', !this.engaged || this.inventory.open || this.pauseMenu.open || Boolean(this.danceId) || this.activeSequence !== 'NONE');
   }
 
-  private updateTaserHud(): void {
-    const hidden = !this.engaged || !this.taser.isEquipped || this.inventory.open || this.pauseMenu.open ||
-      this.danceMenu.isOpen || Boolean(this.danceId) || this.activeSequence !== 'NONE';
-    this.taserHudEl.classList.toggle('hidden', hidden);
-    const text = this.taserRechargeRemaining > 0
-      ? `TASER · RECARREGANDO ${Math.ceil(this.taserRechargeRemaining)}s`
-      : 'TASER PRONTO · 8m · CLIQUE OU TOQUE EM TASER';
-    if (this.taserHudEl.textContent !== text) this.taserHudEl.textContent = text;
-  }
-
-  private toggleTaser(): void {
-    if (!this.engaged || this.pauseMenu.open || this.inventory.open || this.inventory.gameOverVisible || this.inventory.victoryVisible ||
-        this.activeSequence !== 'NONE' || this.danceMenu.isOpen || this.multiplayer?.isChatTyping) return;
-    if (!this.inventory.hasItem(TASER_ITEM_ID)) {
-      this.inventory.wakeShortcutsHub(4000, 'TASER NÃO ENCONTRADO · PROCURE NOS CAIXOTES');
-      return;
-    }
-    if (this.taser.isEquipped) {
-      this.taser.stow();
-      this.inventory.wakeShortcutsHub(2500, 'TASER GUARDADO · [J] EQUIPAR');
-    } else {
-      this.stopDance('action');
-      this.shotgun.stow();
-      this.taser.equip();
-      this.inventory.wakeShortcutsHub(4500, 'TASER · CLIQUE PARA ATORDOAR · ALCANCE 8m');
-    }
-    this.updateTaserHud();
-  }
-
   /**
    * Sinal tático [V]: marca um ponto à frente da mira por alguns segundos.
    * Tem duração limitada e exige recarga entre os usos — nunca fica fixo.
@@ -2582,42 +2522,6 @@ export class DoomGameApp {
     );
   }
 
-  private fireTaser(): void {
-    if (!this.engaged || !this.taser.isEquipped || this.pauseMenu.open || this.inventory.open ||
-        this.inventory.gameOverVisible || this.danceMenu.isOpen || this.danceId ||
-        this.activeSequence !== 'NONE' || this.multiplayer?.isChatTyping) return;
-    if (this.taserRechargeRemaining > 0) {
-      this.inventory.wakeShortcutsHub(2200, `TASER RECARREGANDO · ${Math.ceil(this.taserRechargeRemaining)}s`);
-      return;
-    }
-    this.taserRechargeRemaining = TASER_RECHARGE_SECONDS;
-    this.taser.fire();
-    this.sound.playTaserDischarge();
-    const direction = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion).normalize();
-    const hit = !this.multiplayer || this.multiplayer.isHost
-      ? this.applyTaserHit(this.camera.position, direction) : false;
-    if (this.multiplayer && !this.multiplayer.isHost) this.multiplayer.emitTaserShot(this.camera.position, direction);
-    if (!hit) this.inventory.wakeShortcutsHub(3000, 'TASER DISPARADO · RECARREGANDO');
-    this.updateTaserHud();
-  }
-
-  /** The host checks range, line of sight and capture state independently of the shooter. */
-  private applyTaserHit(origin: THREE.Vector3, direction: THREE.Vector3): boolean {
-    if (this.spider.isDead || this.multiplayer?.getActiveRemoteAbduction()) return false;
-    if (taserImpactDistance(origin, direction, this.spider.position, this.colliders.map(c => c.box)) === null) return false;
-    if (!this.spider.applyTaserStun()) return false;
-    // Som do choque: estalo, zumbido e o guincho do bicho, posicionado no corredor.
-    const shockDelta = new THREE.Vector3().subVectors(this.spider.position, this.position);
-    const shockPan = THREE.MathUtils.clamp(
-      new THREE.Vector3(-Math.cos(this.yaw), 0, Math.sin(this.yaw)).dot(shockDelta.normalize()),
-      -1,
-      1
-    );
-    this.sound.playSpiderShock?.(shockPan, this.position.distanceTo(this.spider.position));
-    this.inventory.wakeShortcutsHub(3500, `ARANHA ATORDOADA · ${TASER_STUN_SECONDS}s`);
-    return true;
-  }
-
   private toggleShotgun(): void {
     if (!this.engaged || this.pauseMenu.open || this.inventory.open || this.activeSequence !== 'NONE' || this.danceMenu.isOpen) return;
     if (!this.inventory.hasItem(SHOTGUN_ITEM_ID)) {
@@ -2631,8 +2535,7 @@ export class DoomGameApp {
       this.inventory.wakeShortcutsHub(2500, 'SHOTGUN GUARDADA · [H] EQUIPAR');
     } else {
       this.stopDance('action');
-      this.taser.stow();
-      // As duas mãos passam a segurar a arma: a lanterna avulsa é guardada e
+        // As duas mãos passam a segurar a arma: a lanterna avulsa é guardada e
       // vira iluminação acoplada sob o cano.
       if (this.flashlight.isEquipped) this.flashlight.forceStowImmediate();
       this.shotgun.equip();
@@ -2677,7 +2580,6 @@ export class DoomGameApp {
 
     this.suppressReleasePause();
     this.shotgun.stow();
-    this.taser.stow();
     // A prévia não pode bloquear a cena nem permitir iniciar dança durante a captura.
     this.danceMenu.setOpen(false);
     // A Aranha arrancando o jogador cancela qualquer coreografia em andamento
@@ -3464,7 +3366,6 @@ export class DoomGameApp {
     this.keys.clear();
     this.touchControls.resetTransientInputs();
     this.shotgun.stow();
-    this.taser.stow();
     this.stopDance('capture');
     void victimId;
   }
@@ -3556,7 +3457,6 @@ export class DoomGameApp {
     const ambientCell = worldToGridCell(this.position.x, this.position.z);
     this.sound.setDoomAmbientZone(this.ambientZoneTracker.update(ambientCell.gx, ambientCell.gz, dt));
     this.updateShotgunObjective();
-    this.updateTaserHud();
     this.monitorSpiderDeath(dt);
     if (this.inventory.victoryVisible) {
       // Com a tela de vitória na frente o mundo congela: nada de andar, atirar
@@ -3595,7 +3495,6 @@ export class DoomGameApp {
     }
 
     this.elapsed += dt;
-    this.taserRechargeRemaining = advanceTaserRecharge(this.taserRechargeRemaining, dt);
     this.specialRoomDoors.update(dt);
 
     // Anfitrião confere a cada quadro se o Ninho encheu (todos os vivos
@@ -3845,7 +3744,7 @@ export class DoomGameApp {
     );
     this.webStruggleDanger = computeWebDanger({
       spiderDistance: spiderPlanarDist,
-      spiderHunting: this.spider.isChasingOrAlert && !this.spider.isStunned,
+      spiderHunting: this.spider.isChasingOrAlert,
       devourSecondsLeft: this.cocoonDevourTimerSec,
       devourMaxSeconds: this.cocoonDevourMaxSec,
     });
@@ -3903,7 +3802,7 @@ export class DoomGameApp {
         this.cocoonDevourTimerSec = this.cocoonDevourMaxSec;
       }
       const nestIsFull = Boolean(this.multiplayer) && !this.multiplayer!.hasFreeLivingPlayer();
-      if (!this.spider.isDead && !this.spider.isStunned && !nestIsFull) {
+      if (!this.spider.isDead && !nestIsFull) {
         this.cocoonDevourTimerSec = Math.max(0, this.cocoonDevourTimerSec - dt);
       }
       const ratio = Math.max(
@@ -3921,8 +3820,6 @@ export class DoomGameApp {
         ? 'A EQUIPE INTEIRA ESTÁ IMOBILIZADA'
         : this.spider.isDead
         ? 'ARANHA DESTRUÍDA · UM OPERADOR PODE CORTAR A TEIA'
-        : this.spider.isStunned
-        ? 'ARANHA ATORDOADA · PROCURE O CASULO'
         : isCrit
         ? `A ARANHA ESTÁ VOLTANDO PARA DEVORAR VOCÊ (${Math.ceil(this.cocoonDevourTimerSec)}s)!`
         : `A TEIA SEGURA VOCÊ — DEVORAÇÃO EM ${Math.ceil(this.cocoonDevourTimerSec)}s`;
@@ -3931,7 +3828,7 @@ export class DoomGameApp {
         this.sound.playStruggleEffort();
       }
 
-      if (isCrit && !this.spider.isStunned && !this.cocoonReturnTriggered) {
+      if (isCrit && !this.cocoonReturnTriggered) {
         this.cocoonReturnTriggered = true;
         this.spider.commandReturnToDevourVictim(this.position);
       }
@@ -3939,7 +3836,6 @@ export class DoomGameApp {
       if (
         !nestIsFull &&
         !this.spider.isDead &&
-        !this.spider.isStunned &&
         this.cocoonDevourTimerSec <= 0
       ) {
         const devourSpiderPos = new THREE.Vector3(
@@ -4166,9 +4062,7 @@ export class DoomGameApp {
     // Preso na teia: as armas também são arrastadas pela seda (nada de seguir
     // firme na mão como se o operador estivesse livre).
     this.shotgun.setWebStruggle(webStrugglePose);
-    this.taser.setWebStruggle(webStrugglePose);
     this.shotgun.update(dt, this.bobPhase, planarSpeed, this.slideState.slideAmount);
-    this.taser.update(dt, this.bobPhase, planarSpeed, this.slideState.slideAmount);
 
     const spiderHearsSprint =
       sprinting || (isSliding && this.slideState.slideTimer < 0.2);
@@ -4314,10 +4208,6 @@ export class DoomGameApp {
       return;
     }
 
-    if (this.spider.isStunned && !this.wasSpiderStunned && this.multiplayer && !this.multiplayer.isHost) {
-      this.inventory.wakeShortcutsHub(3000, 'ARANHA ATORDOADA!');
-    }
-    this.wasSpiderStunned = this.spider.isStunned;
     this.cameraShake = Math.max(
       this.cameraShake * Math.exp(-8 * dt),
       spiderOut.cameraShakeAmount
@@ -4395,15 +4285,12 @@ export class DoomGameApp {
       },
       (pickedItemId) => {
         pickedUpAnyItem = true;
-        const pickedKind = pickedItemId === TASER_ITEM_ID ? 'taser'
-          : Object.hasOwn(QUICK_ITEM_DURATIONS, pickedItemId) ? pickedItemId
+        const pickedKind = Object.hasOwn(QUICK_ITEM_DURATIONS, pickedItemId) ? pickedItemId
           : ITEM_CATALOG[pickedItemId]?.kind;
         if (pickedKind && Object.hasOwn(QUICK_ITEM_DURATIONS, pickedKind) && pickedKind !== 'radar' && pickedKind !== 'walkie') {
           this.flashlight.triggerQuickItemAction(pickedKind as QuickHandheldKind, 'pickup');
         }
-        if (pickedItemId === TASER_ITEM_ID) {
-          this.inventory.wakeShortcutsHub(6000, 'TASER ENCONTRADO · [J] EQUIPAR · CLIQUE PARA DISPARAR');
-        } else if (this.inventory.getAvailableShotgunParts().some(id => id === pickedItemId)) {
+        if (this.inventory.getAvailableShotgunParts().some(id => id === pickedItemId)) {
           const availableParts = this.inventory.getAvailableShotgunParts();
           const count = availableParts.filter(id => this.inventory.hasItem(id)).length;
           this.inventory.wakeShortcutsHub(6500, count === availableParts.length
@@ -4573,7 +4460,7 @@ export class DoomGameApp {
         crouch: this.crouchAmount,
         slide: this.slideState.slideAmount,
         quickItemAction: this.flashlight.quickItemAction,
-        heldWeapon: this.taser.isEquipped ? 'taser' : this.shotgun.isEquipped ? 'shotgun' : null,
+        heldWeapon: this.shotgun.isEquipped ? 'shotgun' : null,
         flashlightOn: fl.beamIntensity > 0.05,
         flashDir: this.sharedUniforms.uFlashlightDir.value,
         health: this.playerHealth,
@@ -5270,10 +5157,8 @@ export class DoomGameApp {
     this.spectatorHudEl.remove();
     this.danceHudEl.remove();
     this.shotgunObjectiveEl.remove();
-    this.taserHudEl.remove();
     this.danceMenu.destroy();
     this.shotgun.dispose();
-    this.taser.dispose();
     this.specialRoomDoors.dispose();
     this.pauseMenu.destroy();
     this.touchControls.destroy();

@@ -16,7 +16,6 @@ const ICON_BY_KIND: Record<InventoryItemKind, string> = {
   shotgun_part: 'shotgun_receiver',
   shotgun: 'shotgun',
   shotgun_ammo: 'shotgun_shells',
-  taser: 'taser',
 };
 
 /** Peças e chaves possuem identidade visual própria, inclusive nos atalhos e na inspeção. */

@@ -3,7 +3,6 @@ import * as THREE from 'three';
 import { DoomAstronaut } from '../src/doom/DoomAstronaut';
 import { DoomFlashlight } from '../src/doom/DoomFlashlight';
 import { DoomShotgunViewmodel } from '../src/doom/DoomShotgun';
-import { DoomTaserViewmodel } from '../src/doom/DoomTaser';
 import { QUICK_ITEM_DURATIONS, QuickHandheldKind, parseQuickItemAction } from '../src/doom/DoomItemAction';
 import { createDoomSharedUniforms } from '../src/doom/DoomShader';
 import { computeDoomDancePose } from '../src/doom/DoomDance';
@@ -43,8 +42,7 @@ describe('Objetos e ações 3D dos aliados', () => {
   it('mantém armas distintas visíveis somente enquanto equipadas e preserva prioridades das poses', () => {
     const ally = new DoomAstronaut(new THREE.Scene(), createDoomSharedUniforms());
     const shotgun = new DoomShotgunViewmodel(1);
-    const taser = new DoomTaserViewmodel(1);
-    ally.setThirdPersonWeaponProps({ shotgun: shotgun.createThirdPersonWeapon(), taser: taser.createThirdPersonWeapon() });
+    ally.setThirdPersonWeaponProps({ shotgun: shotgun.createThirdPersonWeapon() });
     ally.setThirdPersonItemProps(new DoomFlashlight(1).createThirdPersonQuickProps());
     ally.updateThirdPersonAlly(new THREE.Vector3(), 0, 0, 0, 0, 0, true, false);
     ally.applyThirdPersonHeldWeapon('shotgun');

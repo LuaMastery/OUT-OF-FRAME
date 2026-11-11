@@ -8,7 +8,6 @@ export const QUICK_ITEM_DURATIONS = {
   key: 0.58,
   radar: 0.68,
   walkie: 0.68,
-  taser: 0.62,
   shotgun_receiver: 0.62,
   shotgun_barrel: 0.62,
   shotgun_pump: 0.62,
@@ -17,7 +16,7 @@ export const QUICK_ITEM_DURATIONS = {
 } as const;
 
 export type QuickHandheldKind = keyof typeof QUICK_ITEM_DURATIONS;
-export type HeldWeapon = 'shotgun' | 'taser';
+export type HeldWeapon = 'shotgun';
 
 export interface QuickItemAction {
   kind: QuickHandheldKind;

@@ -7,10 +7,6 @@ import {
 } from './DoomAstronaut';
 import { computeAdaptiveVerticalFov } from './DoomTouchControls';
 import type { WebStrugglePose } from './DoomWebStruggle';
-import {
-  buildTaserBody,
-  createTaserLambertMaterials,
-} from './DoomTaserModel';
 
 import { QUICK_ITEM_DURATIONS, QuickHandheldKind, QuickItemAction } from './DoomItemAction';
 export type { QuickHandheldKind } from './DoomItemAction';
@@ -876,16 +872,6 @@ export class DoomFlashlight {
     );
 
     // Peças e munição coletadas também têm representação própria, sem montar a arma automaticamente.
-    // Taser: o mesmo corpo do viewmodel, girado de lado na luva esquerda.
-    const taserPickup = new THREE.Group();
-    const taserPickupAim = new THREE.Group();
-    taserPickupAim.rotation.y = 0.52;
-    const taserPickupBody = buildTaserBody(createTaserLambertMaterials());
-    taserPickupBody.group.name = 'TaserPickupBody';
-    taserPickupBody.group.position.set(0.022, 0.104, 0.034);
-    taserPickupBody.group.rotation.z = 0.06;
-    taserPickupAim.add(taserPickupBody.group);
-    taserPickup.add(taserPickupAim);
     const pickupMats = createShotgunPickupMaterials();
     // O mesmo modelo do chão, girado para ficar na mão.
     const heldPickup = (id: 'shotgun_receiver' | 'shotgun_barrel' | 'shotgun_pump' | 'shotgun_stock' | 'shotgun_shells') => {
@@ -911,7 +897,6 @@ export class DoomFlashlight {
       key: keyProp,
       radar: radarProp,
       walkie: walkieProp,
-      taser: taserPickup,
       shotgun_receiver: receiverPickup,
       shotgun_barrel: barrelPickup,
       shotgun_pump: pumpPickup,
