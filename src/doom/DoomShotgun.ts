@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { createAstronautMaterials } from './DoomAstronaut';
 import { computeAdaptiveVerticalFov } from './DoomTouchControls';
 import type { WebStrugglePose } from './DoomWebStruggle';
 import {
@@ -391,12 +392,15 @@ export class DoomShotgunViewmodel {
     model.muzzleAnchor.add(this.muzzleFlash);
 
     // ---- As duas mãos na arma ----------------------------------------------
+    // As mãos em 1ª pessoa são as luvas do próprio Traje Biológico Nível-A:
+    // borracha preta, anel carmim de vedação e mangote chartreuse. Nenhuma cor
+    // própria — os materiais vêm do traje, então a mão na tela é a mesma peça
+    // que o jogador vê no braço do aliado em 3ª pessoa.
+    const astroMats = createAstronautMaterials();
     const gloveMats: ShotgunGloveMaterials = {
-      glove: lambert(0x8b929a),
-      pad: lambert(0x5b636b),
-      seam: lambert(0x2b3036),
-      cuff: lambert(0x9aa4ab),
-      sleeve: lambert(0x5a6459),
+      glove: astroMats.bootRubber,
+      cuff: astroMats.anodizedCrimson,
+      sleeve: astroMats.astroCamo,
     };
     // Mão direita no punho da coronha: o punho tem seção ~0,040 × 0,046.
     model.gripAnchor.add(
@@ -408,10 +412,13 @@ export class DoomShotgunViewmodel {
         sleeveLength: 0.05,
       })
     );
-    // Mão esquerda no guarda-mão (raio real da peça) — viaja com a bomba.
+    // Mão esquerda no guarda-mão — viaja com a bomba. O guarda-mão é um oval
+    // (mais alto que largo), então a luva fecha no raio MÉDIO: assim os dedos
+    // encostam na parte de baixo (onde o oval é mais alto) em vez de flutuarem
+    // ao redor da peça.
     this.leftHandGroup = buildShotgunGlove(gloveMats, {
       side: 'left',
-      radius: SHOTGUN_METRICS.foreEndHalfHeight,
+      radius: (SHOTGUN_METRICS.foreEndHalfWidth + SHOTGUN_METRICS.foreEndHalfHeight) / 2,
       scale: 1,
       sleeveDirection: new THREE.Vector3(0.4, -0.88, 0.26),
       sleeveLength: 0.2,

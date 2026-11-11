@@ -58,12 +58,19 @@ export const SHOTGUN_METRICS = {
   receiverHalfWidth: 0.02,
   receiverTopY: 0.024,
   receiverBottomY: -0.034,
-  /** Guarda-mão (bomba): centro, meio-comprimento e curso do bombeamento. */
+  /**
+   * Guarda-mão (bomba): centro, meio-comprimento e curso do bombeamento.
+   * A altura/centro cobrem o envelope inteiro do que passa por dentro dele —
+   * cano (até +0,0108), nervura ventilada (até +0,0160) e tubo de cartuchos
+   * (até -0,0317) — com parede de ~3 mm, para que nenhuma peça fique
+   * coincidente com a superfície externa do polímero (o que causava
+   * cintilação de profundidade ao longo de todo o guarda-mão).
+   */
   foreEndCenterZ: -0.16,
   foreEndHalfLength: 0.1,
   foreEndHalfWidth: 0.023,
-  foreEndHalfHeight: 0.0255,
-  foreEndCenterY: -0.0105,
+  foreEndHalfHeight: 0.028,
+  foreEndCenterY: -0.008,
   pumpTravel: 0.085,
   /** Coronha. */
   stockRearZ: 0.475,
@@ -239,11 +246,13 @@ export function buildShotgunBarrelAssembly(mats: ShotgunMaterialSet): THREE.Grou
     mats.steelDark,
     [0, M.barrelRadius + 0.0022, -0.275]
   ).name = 'BarrelRib';
+  // Postes da nervura ventilada: ficam ABAIXO do topo do guarda-mão, senão
+  // atravessam o polímero e aparecem furando a peça.
   for (let i = 0; i < 10; i++) {
     add(
-      new THREE.BoxGeometry(0.0034, 0.0034, 0.009),
+      new THREE.BoxGeometry(0.0034, 0.0028, 0.009),
       mats.steel,
-      [0, M.barrelRadius + 0.0044, -0.075 - i * 0.042]
+      [0, M.barrelRadius + 0.0038, -0.075 - i * 0.042]
     );
   }
   add(
@@ -405,13 +414,17 @@ export function buildShotgunForend(mats: ShotgunMaterialSet): THREE.Group {
   ).name = 'PumpBody';
   const body = group.children[group.children.length - 1];
   body.scale.set(M.foreEndHalfWidth / M.foreEndHalfHeight, 1, 1);
-  // Alma oca: o conjunto cano/tubo passa por aqui sem clipping.
-  add(
-    new THREE.CylinderGeometry(0.017, 0.017, half * 2 + 0.006, 16, 1, true),
+  // Alma oca oval: envolve o cano, a nervura e o tubo de cartuchos de uma vez
+  // (altura útil de -0,0330 a +0,0172 no espaço da arma). Antes era um círculo
+  // de raio 0,017 e o tubo de cartuchos atravessava a parede inferior.
+  const bore = add(
+    new THREE.CylinderGeometry(0.0251, 0.0251, half * 2 + 0.006, 20, 1, true),
     mats.cavity,
-    [0, 0.0035, 0],
+    [0, 0.0001, 0],
     [Math.PI / 2, 0, 0]
-  ).name = 'PumpBore';
+  );
+  bore.name = 'PumpBore';
+  bore.scale.set(0.0145 / 0.0251, 1, 1);
 
   // Nervuras horizontais de aderência (o "corrugado" do guarda-mão).
   for (let i = 0; i < 9; i++) {
@@ -436,12 +449,15 @@ export function buildShotgunForend(mats: ShotgunMaterialSet): THREE.Group {
     collar.name = 'PumpEndCollar';
     collar.scale.set(M.foreEndHalfWidth / M.foreEndHalfHeight, 1, 1);
   }
-  // Barras de ação: duas hastes de aço que ligam a bomba ao ferrolho.
+  // Barras de ação: duas hastes de aço que ligam a bomba ao ferrolho. O
+  // comprimento cobre o curso inteiro do bombeamento (0,085 m) e ainda deixa
+  // a ponta dentro do receptor — antes elas se soltavam da carcaça no fim do
+  // curso e ficavam flutuando no vão entre a bomba e o receptor.
   for (const x of [-0.0155, 0.0155]) {
     add(
-      new THREE.BoxGeometry(0.005, 0.0075, 0.115),
+      new THREE.BoxGeometry(0.005, 0.0075, 0.17),
       mats.steelBright,
-      [x, -0.019, half + 0.03]
+      [x, -0.019, half + 0.0575]
     ).name = 'ActionBar';
   }
 
@@ -590,8 +606,22 @@ export function buildShotgunModel(
 }
 
 /* --------------------------------------------------------------------------
-   Mãos enluvadas
+   Mãos enluvadas do Traje Biológico Nível-A
    --------------------------------------------------------------------------
+   As mãos da arma em 1ª pessoa são as MESMAS luvas do personagem — não uma
+   luva genérica. Nenhuma cor é inventada aqui: a luva é montada com o
+   conjunto de materiais do traje (`createAstronautMaterials`), então a mão
+   na tela e o braço do aliado em 3ª pessoa são literalmente a mesma peça:
+
+     · borracha butílica preta fosca ......... `bootRubber`
+     · anel carmim de vedação do punho ....... `anodizedCrimson`
+     · mangote em polímero chartreuse ........ `astroCamo`
+
+   As cotas seguem o rig do traje (`createAstronautArmRig`): punho de ~0,10 m
+   de diâmetro, quatro dedos de ~0,058 m contornando a peça e polegar de dois
+   segmentos cruzando por cima. É a anatomia do personagem, não a de uma mão
+   qualquer.
+
    A luva é construída no mesmo referencial das âncoras (eixo do tubo = Z
    local), com a mesma convenção do rig do traje em 3ª pessoa:
      · mão direita  → palma no lado +X, dedos contornando por baixo até -X;
@@ -601,15 +631,11 @@ export function buildShotgunModel(
    -------------------------------------------------------------------------- */
 
 export interface ShotgunGloveMaterials {
-  /** Borracha da luva. */
+  /** Borracha butílica preta fosca da luva química (igual ao traje). */
   glove: THREE.Material;
-  /** Dorso almofadado e nós dos dedos. */
-  pad: THREE.Material;
-  /** Costuras e anéis de articulação. */
-  seam: THREE.Material;
-  /** Anel rígido de vedação do punho. */
+  /** Anel carmim de vedação hermética do punho (igual ao traje). */
   cuff: THREE.Material;
-  /** Mangote do traje que sai de quadro. */
+  /** Mangote pressurizado em polímero chartreuse (igual ao traje). */
   sleeve: THREE.Material;
 }
 
@@ -617,7 +643,7 @@ export interface ShotgunGloveOptions {
   side: 'right' | 'left';
   /** Raio do tubo agarrado (cano, guarda-mão ou punho da coronha). */
   radius: number;
-  /** Escala geral da mão (1 = mão成人 em escala real). */
+  /** Escala geral da mão (1 = luva do traje em escala real). */
   scale?: number;
   /** Direção do mangote no referencial da luva. */
   sleeveDirection?: THREE.Vector3;
@@ -626,7 +652,7 @@ export interface ShotgunGloveOptions {
 }
 
 /**
- * Luva fechada em volta de um tubo (eixo Z local).
+ * Luva do Traje Nível-A fechada em volta de um tubo (eixo Z local).
  * O resultado é filho da âncora correspondente da arma.
  */
 export function buildShotgunGlove(
@@ -636,7 +662,7 @@ export function buildShotgunGlove(
   const mirror = options.side === 'right' ? 1 : -1;
   const s = options.scale ?? 1;
   const R = options.radius;
-  const fingerR = 0.0086 * s;
+  const fingerR = 0.0090 * s;
   const glove = new THREE.Group();
   glove.name = `ShotgunGlove_${options.side}`;
 
@@ -644,26 +670,30 @@ export function buildShotgunGlove(
   const surface = (angle: number, radial: number, z: number): THREE.Vector3 =>
     new THREE.Vector3(mirror * radial * Math.cos(angle), -radial * Math.sin(angle), z);
 
-  // ---- Palma ---------------------------------------------------------------
+  // ---- Palma e dorso -------------------------------------------------------
   // Bloco achatado encostado no tubo do lado da palma: a face interna fica
   // exatamente sobre a superfície da peça (raio R), sem penetrar nem pairar.
+  // É o equivalente à concha metacarpiana do rig do traje (0,042 × 0,066 ×
+  // 0,076 m), achatada contra a peça agarrada.
   const palmThickness = 0.021 * s;
   const palm = new THREE.Mesh(new THREE.BoxGeometry(palmThickness * 2, 0.058 * s, 0.070 * s), mats.glove);
   palm.position.set(mirror * (R + palmThickness), 0.006 * s, 0);
   palm.rotation.set(0, 0, mirror * 0.08);
   glove.add(palm);
-  // Dorso almofadado por fora da palma.
+  // Dorso da mão: mesmo bloco de borracha, sem almofada de outra cor — no
+  // traje a luva é uniforme, do punho à ponta dos dedos.
   const back = new THREE.Mesh(
-    new THREE.BoxGeometry(palmThickness * 0.9, 0.05 * s, 0.062 * s),
-    mats.pad
+    new THREE.BoxGeometry(palmThickness * 0.95, 0.052 * s, 0.064 * s),
+    mats.glove
   );
-  back.position.set(mirror * (R + palmThickness * 1.85), 0.010 * s, 0.002);
+  back.position.set(mirror * (R + palmThickness * 1.9), 0.010 * s, 0.002);
   back.rotation.set(0, 0, mirror * 0.08);
   glove.add(back);
 
   // ---- Quatro dedos contornando o tubo ------------------------------------
   // Cada dedo nasce na base da palma (25°), passa por baixo (90°) e sobe
   // pelo lado oposto (170°): é esse arco que faz a mão agarrar a peça.
+  // Comprimento total ~0,058 m por dedo, como no rig do traje.
   const fingerSpanZ = 0.0195 * s;
   const sweeps: Array<readonly number[]> = [
     [0.52, 0.50, 0.44, 0.34],
@@ -689,29 +719,25 @@ export function buildShotgunGlove(
     }
     const start = joints[0];
     const mid = joints[2];
-    const outer = joints[3];
     const tip = joints[joints.length - 1];
-    // Nó do dedo na base e anel de articulação no meio.
-    const knuckle = new THREE.Mesh(new THREE.SphereGeometry(fingerR * 1.06, 10, 8), mats.pad);
+    // Nó do dedo na base e a articulação do meio: borracha, como no traje —
+    // a luva química não tem anéis metálicos aparentes.
+    const knuckle = new THREE.Mesh(new THREE.SphereGeometry(fingerR * 1.08, 10, 8), mats.glove);
     knuckle.position.copy(start);
     glove.add(knuckle);
-    for (const at of [mid, outer]) {
-      const joint = new THREE.Mesh(
-        new THREE.SphereGeometry(fingerR * 0.92, 8, 6),
-        mats.seam
-      );
-      joint.position.copy(at);
-      glove.add(joint);
-    }
+    const midJoint = new THREE.Mesh(new THREE.SphereGeometry(fingerR * 0.94, 8, 6), mats.glove);
+    midJoint.position.copy(mid);
+    glove.add(midJoint);
     // Ponta arredondada encostando na peça.
-    const tipCap = new THREE.Mesh(new THREE.SphereGeometry(fingerR * 0.8, 8, 6), mats.glove);
+    const tipCap = new THREE.Mesh(new THREE.SphereGeometry(fingerR * 0.82, 8, 6), mats.glove);
     tipCap.position.copy(tip);
     glove.add(tipCap);
   }
 
   // ---- Polegar cruzando por cima ------------------------------------------
-  // Nasce na palma, sobe pelo dorso do tubo e desce do outro lado.
-  const thumbR = fingerR * 1.22;
+  // Nasce na palma, sobe pelo dorso do tubo e desce do outro lado. Dois
+  // segmentos, como o polegar do rig do traje.
+  const thumbR = fingerR * 1.24;
   const thumbA = surface(-0.45, R + thumbR * 1.3, -0.024 * s);
   const thumbB = surface(-1.05, R + thumbR * 1.4, -0.038 * s);
   const thumbC = surface(-1.65, R + thumbR * 1.3, -0.047 * s);
@@ -719,37 +745,44 @@ export function buildShotgunGlove(
   capsuleBetween(glove, thumbA, thumbB, thumbR, mats.glove);
   capsuleBetween(glove, thumbB, thumbC, thumbR * 0.92, mats.glove);
   capsuleBetween(glove, thumbC, thumbD, thumbR * 0.8, mats.glove);
-  const thumbJoint = new THREE.Mesh(new THREE.SphereGeometry(thumbR * 1.04, 10, 8), mats.pad);
+  const thumbJoint = new THREE.Mesh(new THREE.SphereGeometry(thumbR * 1.06, 10, 8), mats.glove);
   thumbJoint.position.copy(thumbB);
   glove.add(thumbJoint);
 
-  // ---- Punho, anel de vedação e mangote -----------------------------------
+  // ---- Punho, anel carmim de vedação e mangote chartreuse -----------------
+  // A sequência é a do traje: borracha preta → anel carmim → manga amarela.
   const sleeveDir = (options.sleeveDirection ?? new THREE.Vector3(0.42, -0.86, 0.30))
     .clone()
     .normalize();
   sleeveDir.x *= mirror;
+  const sleeveQuat = new THREE.Quaternion().setFromUnitVectors(
+    new THREE.Vector3(0, 1, 0),
+    sleeveDir
+  );
   const wristStart = new THREE.Vector3(mirror * (R + palmThickness * 0.9), -0.024 * s, 0.030 * s);
-  const wristEnd = wristStart.clone().addScaledVector(sleeveDir, 0.05 * s);
-  capsuleBetween(glove, wristStart, wristEnd, 0.042 * s, mats.glove);
-  const cuffRing = new THREE.Mesh(
-    new THREE.TorusGeometry(0.046 * s, 0.0055 * s, 6, 18),
+  const wristEnd = wristStart.clone().addScaledVector(sleeveDir, 0.046 * s);
+  capsuleBetween(glove, wristStart, wristEnd, 0.047 * s, mats.glove);
+
+  // Anel liso de travamento hermético — a mesma peça carmim do punho do traje.
+  const sealRing = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.0565 * s, 0.0545 * s, 0.021 * s, 14),
     mats.cuff
   );
-  cuffRing.position.copy(wristEnd);
-  cuffRing.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), sleeveDir);
-  glove.add(cuffRing);
-  const sleeveStart = wristEnd.clone().addScaledVector(sleeveDir, 0.008 * s);
-  const sleeveEnd = sleeveStart.clone().addScaledVector(sleeveDir, options.sleeveLength ?? 0.2);
-  capsuleBetween(glove, sleeveStart, sleeveEnd, 0.045 * s, mats.sleeve);
-  for (let i = 0; i < 2; i++) {
-    const band = new THREE.Mesh(
-      new THREE.TorusGeometry(0.0465 * s, 0.004 * s, 5, 16),
-      mats.seam
-    );
-    band.position.copy(sleeveStart).addScaledVector(sleeveDir, 0.034 + i * 0.038);
-    band.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), sleeveDir);
-    glove.add(band);
-  }
+  sealRing.position.copy(wristEnd);
+  sealRing.quaternion.copy(sleeveQuat);
+  glove.add(sealRing);
+
+  // Mangote pressurizado: afunila do punho para o cotovelo (0,055 → 0,068 m),
+  // exatamente como a manga do antebraço do personagem.
+  const sleeveLength = options.sleeveLength ?? 0.2;
+  const sleeveStart = wristEnd.clone().addScaledVector(sleeveDir, 0.013 * s);
+  const sleeve = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.068 * s, 0.055 * s, sleeveLength, 12),
+    mats.sleeve
+  );
+  sleeve.position.copy(sleeveStart).addScaledVector(sleeveDir, sleeveLength / 2);
+  sleeve.quaternion.copy(sleeveQuat);
+  glove.add(sleeve);
 
   return glove;
 }
