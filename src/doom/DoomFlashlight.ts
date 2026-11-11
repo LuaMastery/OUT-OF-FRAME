@@ -6,6 +6,10 @@ import {
   createAstronautMaterials,
 } from './DoomAstronaut';
 import { computeAdaptiveVerticalFov } from './DoomTouchControls';
+import {
+  buildTaserBody,
+  createTaserLambertMaterials,
+} from './DoomTaserModel';
 
 import { QUICK_ITEM_DURATIONS, QuickHandheldKind, QuickItemAction } from './DoomItemAction';
 export type { QuickHandheldKind } from './DoomItemAction';
@@ -867,14 +871,16 @@ export class DoomFlashlight {
     );
 
     // Peças e munição coletadas também têm representação própria, sem montar a arma automaticamente.
-    const pickupBox = (w: number, h: number, d: number, mat: THREE.Material, x = 0, y = h / 2, z = 0) => {
-      const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
-      mesh.position.set(x, y, z);
-      return mesh;
-    };
+    // Taser: o mesmo corpo do viewmodel, girado de lado na luva esquerda.
     const taserPickup = new THREE.Group();
-    const taserYellow = new THREE.MeshLambertMaterial({ color: 0xd7a627, flatShading: true });
-    taserPickup.add(pickupBox(0.065, 0.13, 0.08, taserYellow), pickupBox(0.04, 0.07, 0.045, darkRingMat, 0, -0.025));
+    const taserPickupAim = new THREE.Group();
+    taserPickupAim.rotation.y = 0.52;
+    const taserPickupBody = buildTaserBody(createTaserLambertMaterials());
+    taserPickupBody.group.name = 'TaserPickupBody';
+    taserPickupBody.group.position.set(0.022, 0.104, 0.034);
+    taserPickupBody.group.rotation.z = 0.06;
+    taserPickupAim.add(taserPickupBody.group);
+    taserPickup.add(taserPickupAim);
     const pickupMats = createShotgunPickupMaterials();
     // O mesmo modelo do chão, girado para ficar na mão.
     const heldPickup = (id: 'shotgun_receiver' | 'shotgun_barrel' | 'shotgun_pump' | 'shotgun_stock' | 'shotgun_shells') => {

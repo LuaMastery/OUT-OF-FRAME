@@ -18,6 +18,11 @@ import { getThemedRoomByKeyItemId } from './DoomRooms';
 import { createDoomPropMaterial, DoomSharedUniforms } from './DoomShader';
 import { buildShotgunPickup, createShotgunPickupMaterials, type ShotgunPickupId } from './DoomShotgunPickups';
 import {
+  buildTaserBody,
+  TASER_COLORS,
+  type TaserBodyMaterials,
+} from './DoomTaserModel';
+import {
   normalizeShotgunPartSlotCount,
   SHOTGUN_PARTS_PER_SET,
   type ShotgunPartId,
@@ -178,6 +183,8 @@ export class DoomWorldItems {
   private readonly matFlameOuter: THREE.MeshBasicMaterial;
   private readonly matFlameMid: THREE.MeshBasicMaterial;
   private readonly matFlameCore: THREE.MeshBasicMaterial;
+  /** Paleta DOOM do Taser de contenção, criada só quando o item existe no mapa. */
+  private taserMaterials: TaserBodyMaterials | null = null;
 
   // Sombras projetadas dos caixotes: mancha de contato + projeção da luz
   // dominante da arena (e do feixe da lanterna) sobre a superfície de apoio.
@@ -1080,22 +1087,75 @@ export class DoomWorldItems {
   }
 
 
+  /**
+   * Paleta DOOM do Taser: plástico amarelo de segurança, borracha recartilhada
+   * e metais reaproveitados das outras peças de mundo (ferro, aço, latão).
+   */
+  private getTaserMaterials(): TaserBodyMaterials {
+    if (this.taserMaterials) return this.taserMaterials;
+    const flat = (
+      color: number,
+      baseLight: number,
+      specular: number,
+      emissiveBoost = 0,
+      pattern?: (x: number, y: number) => number
+    ) => {
+      const r = (color >> 16) & 0xff;
+      const g = (color >> 8) & 0xff;
+      const b = color & 0xff;
+      return createDoomPropMaterial(
+        makeDetailedPixelTex(32, 32, (px) => {
+          for (let y = 0; y < 32; y++) {
+            for (let x = 0; x < 32; x++) {
+              const grain = ((x * 5 + y * 13) % 7) - 3;
+              const accent = pattern ? pattern(x, y) : 0;
+              const shade = grain * 2 + accent;
+              px(
+                x,
+                y,
+                Math.max(0, Math.min(255, r + shade)),
+                Math.max(0, Math.min(255, g + shade)),
+                Math.max(0, Math.min(255, b + shade))
+              );
+            }
+          }
+        }),
+        this.sharedUniforms,
+        { baseLight, specular, emissiveBoost }
+      );
+    };
+
+    this.taserMaterials = {
+      shell: flat(TASER_COLORS.shell, 0.62, 0.2),
+      shellShade: flat(TASER_COLORS.shellShade, 0.55, 0.16),
+      graphite: this.matDarkIron,
+      rubber: flat(TASER_COLORS.rubber, 0.4, 0.06, 0, (x, y) =>
+        (Math.floor(x / 4) + Math.floor(y / 4)) % 2 === 0 ? 12 : -10
+      ),
+      gloveDark: flat(TASER_COLORS.gloveDark, 0.38, 0.05),
+      steel: this.matCleanSteel,
+      steelDark: this.matDarkIron,
+      brass: this.matBrass,
+      ceramic: flat(TASER_COLORS.ceramic, 0.68, 0.12),
+      glass: flat(TASER_COLORS.glass, 0.5, 0.4, 0.32),
+      strap: flat(TASER_COLORS.strap, 0.48, 0.1),
+      label: this.matPaper,
+    };
+    return this.taserMaterials;
+  }
+
   private buildItemMesh(itemId: string): THREE.Object3D {
     const holder = new THREE.Group();
 
     if (itemId === 'field_taser') {
-      const yellow = new THREE.MeshLambertMaterial({ color: 0xd7a627, flatShading: true });
-      const body = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.065, 0.08), yellow);
-      body.position.y = 0.075;
-      const grip = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.075, 0.07), this.matDarkIron);
-      grip.position.set(0.045, 0.0375, 0);
-      const rail = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.014, 0.065), this.matDarkIron);
-      rail.position.set(0.035, 0.114, 0);
-      holder.add(body, grip, rail);
-      for (const z of [-0.026, 0.026]) {
-        const tip = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.012, 0.012), this.matCleanSteel);
-        tip.position.set(-0.1, 0.075, z); holder.add(tip);
-      }
+      // O MESMO corpo do modelo de 1ª pessoa, deitado de lado no forro do
+      // caixote: bico para -X, empunhadura para a frente e painel de carga
+      // virado para cima, com folga para os cartuchos e para a tampa.
+      const taser = buildTaserBody(this.getTaserMaterials());
+      taser.group.scale.setScalar(0.68);
+      taser.group.rotation.set(0, 1.72, -Math.PI / 2);
+      taser.group.position.set(0.0879, 0.0462, -0.0402);
+      holder.add(taser.group);
     } else if (itemId === 'shotgun_receiver' || itemId === 'shotgun_barrel' ||
                itemId === 'shotgun_pump' || itemId === 'shotgun_stock' || itemId === 'shotgun_shells') {
       const model = buildShotgunPickup(itemId as ShotgunPickupId, this.shotgunMaterials);
