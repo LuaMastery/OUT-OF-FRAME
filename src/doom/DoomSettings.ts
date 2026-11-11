@@ -36,7 +36,7 @@ export interface DoomGameSettings {
   uiVolume: number; // 0..100 % (padrão 90)
   reverbAmount: number; // 0..100 % (padrão 68)
   muteWhenUnfocused: boolean; // Silenciar ao minimizar aba (padrão false)
-  voiceChatEnabled: boolean; // Microfone 8-bit por proximidade (padrão true)
+  retroVoiceEffectEnabled: boolean; // Efeito sonoro retro 8-bit da voz (padrão true)
 
   // 3. CONTROLES & MIRA (6 opções)
   mouseSensitivity: number; // 20..250 % (padrão 100)
@@ -73,7 +73,7 @@ export const DEFAULT_DOOM_SETTINGS: Readonly<DoomGameSettings> = Object.freeze({
   uiVolume: 90,
   reverbAmount: 68,
   muteWhenUnfocused: false,
-  voiceChatEnabled: true,
+  retroVoiceEffectEnabled: true,
 
   mouseSensitivity: 100,
   invertMouseY: false,
@@ -280,11 +280,11 @@ export const DOOM_SETTINGS_DESCRIPTORS: ReadonlyArray<SettingControlSpec> = [
     offLabel: 'Não',
   },
   {
-    key: 'voiceChatEnabled',
+    key: 'retroVoiceEffectEnabled',
     category: 'audio',
-    label: 'Microfone 8-Bit por Proximidade',
+    label: 'Efeito de Voz Retro 8-Bit',
     description:
-      'Permite enviar e receber a voz digital do esquadrão no modo cooperativo. Desative para não solicitar o microfone e silenciar o canal de voz.',
+      'Liga ou desliga apenas a textura sonora 8-bit da comunicação. O microfone, o relay/WebRTC, o rádio e a voz por proximidade continuam funcionando.',
     kind: 'toggle',
     onLabel: 'Ativo',
     offLabel: 'Desativado',
@@ -494,10 +494,20 @@ function clampChoice<T extends string>(
 }
 
 export function sanitizeDoomSettings(
-  raw: Partial<Record<keyof DoomGameSettings, unknown>> | null | undefined
+  raw:
+    | (Partial<Record<keyof DoomGameSettings, unknown>> & {
+        /** Migração das versões que chamavam o efeito de `voiceChatEnabled`. */
+        voiceChatEnabled?: unknown;
+      })
+    | null
+    | undefined
 ): DoomGameSettings {
   const r = raw ?? {};
   const d = DEFAULT_DOOM_SETTINGS;
+  const legacyRetroVoice =
+    typeof r.voiceChatEnabled === 'boolean'
+      ? r.voiceChatEnabled
+      : d.retroVoiceEffectEnabled;
   return {
     resolutionHeight: clampChoice(
       r.resolutionHeight,
@@ -520,7 +530,10 @@ export function sanitizeDoomSettings(
     uiVolume: Math.round(clampNum(r.uiVolume, 0, 100, d.uiVolume)),
     reverbAmount: Math.round(clampNum(r.reverbAmount, 0, 100, d.reverbAmount)),
     muteWhenUnfocused: clampBool(r.muteWhenUnfocused, d.muteWhenUnfocused),
-    voiceChatEnabled: clampBool(r.voiceChatEnabled, d.voiceChatEnabled),
+    retroVoiceEffectEnabled: clampBool(
+      r.retroVoiceEffectEnabled,
+      legacyRetroVoice
+    ),
 
     mouseSensitivity: Math.round(
       clampNum(r.mouseSensitivity, 20, 250, d.mouseSensitivity)

@@ -1,8 +1,4 @@
-import {
-  getAvailableShotgunPartIds,
-  SHOTGUN_PART_IDS,
-  SHOTGUN_ITEM_ID,
-} from './DoomShotgun';
+import { getRequiredShotgunPartIds, SHOTGUN_ITEM_ID } from './DoomShotgun';
 import { getInventoryItemIcon } from './DoomInventoryIcons';
 import { SoundEngine } from '../engine/audio/SoundEngine';
 import {
@@ -63,11 +59,6 @@ export interface PlayerVitalsSnapshot {
 }
 
 export interface DoomInventoryCallbacks {
-  /**
-   * Quantidade de peças da shotgun que existem nesta partida (1 a 4).
-   * Vem do layout do mundo: solo = 4, co-op = número de jogadores no servidor.
-   */
-  getShotgunPartSlotCount?: () => number;
   onToggleFlashlightFromUI: () => void;
   onUseHeal: (
     healAmount: number,
@@ -3116,12 +3107,15 @@ export class DoomInventory {
   }
 
   /**
-   * Peças realmente presentes no mapa desta partida. Em co-op com menos
-   * jogadores a arma é montada com as peças que existem no servidor.
+   * Peças exigidas para montar a arma nesta partida.
+   *
+   * A arma completa sempre depende das QUATRO peças — corpo, cano, bomba e
+   * coronha — mesmo em salas onde o mundo tem vários conjuntos espalhados
+   * (um para cada jogador). Ter duas vezes a mesma peça não adianta: falta
+   * juntar os outros tipos.
    */
   getAvailableShotgunParts(): readonly import('./DoomShotgun').ShotgunPartId[] {
-    const slots = this.callbacks.getShotgunPartSlotCount?.() ?? SHOTGUN_PART_IDS.length;
-    return getAvailableShotgunPartIds(slots);
+    return getRequiredShotgunPartIds();
   }
 
   private useSelectedItem(): void {

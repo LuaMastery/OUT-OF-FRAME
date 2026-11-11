@@ -7,13 +7,14 @@ import {
 } from './DoomArenaRandomizer';
 import { DoomInventory } from './DoomInventory';
 import { gridCellToWorld } from './DoomMazeBuilder';
+import { applyMetricBoxUvs } from './DoomObstacles';
 import { ProbableEquipmentSignal } from './DoomRadar';
 import { getThemedRoomByKeyItemId } from './DoomRooms';
 import { createDoomPropMaterial, DoomSharedUniforms } from './DoomShader';
 import { buildShotgunPickup, createShotgunPickupMaterials, type ShotgunPickupId } from './DoomShotgunPickups';
 import {
-  getAvailableShotgunPartIds,
-  SHOTGUN_PART_IDS,
+  normalizeShotgunPartSlotCount,
+  SHOTGUN_PARTS_PER_SET,
   type ShotgunPartId,
 } from './DoomShotgun';
 
@@ -60,9 +61,12 @@ export interface ActiveMagnesiumFlare {
   maxSec: number;
 }
 
-/** Tampa fechada apoiada no caixote (rad) e aberta para trás (rad). */
-const CRATE_LID_CLOSED_ROTATION = -0.10;
-const CRATE_LID_OPEN_ROTATION = -2.35;
+/**
+ * Portinhola FECHADA: assentada na boca do baú (0 rad = paralela ao fundo, sem
+ * fresta) e ABERTA para trás (~115°), apoiada nas dobradiças de tambor.
+ */
+export const CRATE_LID_CLOSED_ROTATION = 0;
+export const CRATE_LID_OPEN_ROTATION = -2.0;
 
 /** Distância máxima (m) em que o jogador consegue abrir um caixote. */
 export const CRATE_INTERACT_RANGE = 2.2;
@@ -712,33 +716,30 @@ export class DoomWorldItems {
 
     // Peças soltas no piso das salas especiais, não em caixotes.
     this.spawnShotgunParts(this.arenaLayout.shotgunRoomPlacements);
-    this.spawnedShotgunPartIds = this.arenaLayout.shotgunRoomPlacements.map((p) => p.itemId);
   }
 
   /**
-   * Ajusta as peças da shotgun ao número real de jogadores do servidor.
+   * Ajusta as peças da shotgun à quantidade real de jogadores do servidor.
    *
-   * O mundo recebe uma peça por jogador no momento da criação; se mais gente
-   * entrar depois, as peças que faltam aparecem nas salas especiais ainda sem
-   * peça. Peças já recolhidas nunca são removidas, então ninguém perde o que
+   * Cada jogador precisa das QUATRO peças para montar a sua arma, então o mundo
+   * guarda um conjunto completo por jogador. Se mais gente entrar depois, novos
+   * conjuntos inteiros aparecem nas salas especiais — nunca meias armações.
+   * Peças já recolhidas nunca são removidas, então ninguém perde o que
    * conquistou.
    */
   syncShotgunPartSlots(desiredSlotCount: number): number {
-    const parts = getAvailableShotgunPartIds(desiredSlotCount);
-    if (parts.length <= this.spawnedShotgunPartIds.length) {
+    const desired = normalizeShotgunPartSlotCount(desiredSlotCount);
+    if (desired <= this.spawnedShotgunPartIds.length) {
       return this.spawnedShotgunPartIds.length;
     }
-    const usedRooms = new Set(this.arenaLayout.shotgunRoomPlacements.map((p) => p.roomId));
-    const extra: ShotgunRoomPlacement[] = [];
-    for (const itemId of parts) {
-      if (this.spawnedShotgunPartIds.includes(itemId)) continue;
-      const placement = this.findFreeShotgunRoomPlacement(itemId, usedRooms);
-      if (!placement) break;
-      usedRooms.add(placement.roomId);
-      extra.push(placement);
+    const plan = this.planFullShotgunPartPlacements(desired);
+    if (plan.length <= this.spawnedShotgunPartIds.length) {
+      return this.spawnedShotgunPartIds.length;
     }
-    if (extra.length) this.spawnShotgunParts(extra);
-    this.spawnedShotgunPartIds = [...this.spawnedShotgunPartIds, ...extra.map((p) => p.itemId)];
+    // O plano é incremental: as primeiras posições são exatamente as que já
+    // existem no mundo, então basta criar as peças novas do final da lista.
+    const extra = plan.slice(this.spawnedShotgunPartIds.length);
+    this.spawnShotgunParts(extra);
     return this.spawnedShotgunPartIds.length;
   }
 
@@ -747,26 +748,31 @@ export class DoomWorldItems {
     return this.spawnedShotgunPartIds.length;
   }
 
-  /** Salas especiais ainda sem peça, escolhidas de forma determinística. */
-  private findFreeShotgunRoomPlacement(
-    itemId: ShotgunPartId,
-    usedRooms: ReadonlySet<string>
-  ): ShotgunRoomPlacement | null {
-    const free = this.arenaLayout.shotgunRoomPlacements.find(
-      (p) => !usedRooms.has(p.roomId) && !this.spawnedShotgunPartIds.includes(p.itemId)
-    );
-    if (free) {
-      return { ...free, itemId };
+  /** Quantos conjuntos completos (4 peças) o mundo oferece nesta partida. */
+  getShotgunPartSetCount(): number {
+    return Math.floor(this.spawnedShotgunPartIds.length / SHOTGUN_PARTS_PER_SET);
+  }
+
+  /**
+   * Plano determinístico das peças da partida.
+   *
+   * Recalcula o plano do zero porque o mundo pode ter sido criado com menos
+   * jogadores; como o sorteio é incremental, as peças já existentes permanecem
+   * nas mesmas salas e células.
+   */
+  private planFullShotgunPartPlacements(
+    slotCount: number
+  ): readonly ShotgunRoomPlacement[] {
+    try {
+      return planShotgunRoomPlacements(
+        this.arenaLayout.worldSeed,
+        this.arenaLayout.roomFurniturePlacements,
+        slotCount
+      );
+    } catch {
+      // Sem espaço para todas as peças: mantém o plano que já deu certo.
+      return this.arenaLayout.shotgunRoomPlacements;
     }
-    // Sem sala livre no layout original: procura outra sala sem peça no mesmo
-    // mundo. O plano completo (4 peças) garante até quatro salas distintas.
-    const candidates = planShotgunRoomPlacements(
-      this.arenaLayout.worldSeed,
-      this.arenaLayout.roomFurniturePlacements,
-      SHOTGUN_PART_IDS.length
-    );
-    const spare = candidates.find((p) => !usedRooms.has(p.roomId));
-    return spare ? { ...spare, itemId } : null;
   }
 
   /** Cria os modelos 3D das peças nas posições indicadas. */
@@ -774,7 +780,11 @@ export class DoomWorldItems {
     for (const p of placements) {
       const pos = gridCellToWorld(p.gx, p.gz);
       const group = new THREE.Group();
-      group.name = `RoomShotgun_${p.itemId}`;
+      // Um conjunto por jogador: a segunda coronha vira `..._shotgun_stock_2`,
+      // para cada peça continuar com nome e identificador próprios no mundo.
+      const copies = this.spawnedShotgunPartIds.filter((id) => id === p.itemId).length;
+      const suffix = copies > 0 ? `_${copies + 1}` : '';
+      group.name = `RoomShotgun_${p.itemId}${suffix}`;
       group.position.set(pos.x, 0, pos.z);
       const itemMesh = this.buildItemMesh(p.itemId);
       itemMesh.rotation.y = p.yaw;
@@ -782,11 +792,12 @@ export class DoomWorldItems {
       group.add(itemMesh);
       this.root.add(group);
       this.pickups.push({
-        id: `pickup-${p.itemId}`, itemId: p.itemId, group, itemMesh,
+        id: `pickup-${p.itemId}${suffix}`, itemId: p.itemId, group, itemMesh,
         position: new THREE.Vector3(pos.x, .06, pos.z),
         cellWorldX: pos.x, cellWorldZ: pos.z, radarJitterX: 0, radarJitterZ: 0,
         collected: false,
       });
+      this.spawnedShotgunPartIds.push(p.itemId);
     }
   }
 
@@ -808,85 +819,176 @@ export class DoomWorldItems {
   }
 
   /**
-   * Constrói um caixote de suprimento LACRADO (fundo, quatro paredes, cantoneiras
-   * rebitadas de ferro, alças laterais, cintas de aço e tampa ripada com
-   * dobradiças). O interior só aparece quando o jogador interage e a tampa abre.
+   * Constrói o caixote de suprimento LACRADO da partida.
+   *
+   * A caixa é fechada de verdade: fundo de madeira sobre dois trilhos de ferro,
+   * quatro paredes encaixadas (as laterais terminam ENTRE a frente e o fundo,
+   * então nenhuma face divide o mesmo plano de outra), cantoneiras rebitadas nas
+   * quatro quinas, plaqueta de identificação, alças laterais abertas e uma
+   * PORTINHOLA articulada por duas dobradiças de tambor na borda de trás.
+   *
+   * Fechada, a portinhola assenta exatamente na boca do baú (y = 0.185) e a saia
+   * desce por fora das paredes para vedar a emenda; o trinco com cadeado na
+   * frente é o que mostra que o caixote ainda não foi aberto. O interior — forro
+   * escuro em y = 0.094 e os itens sobre ele — só aparece quando o jogador
+   * interage e a portinhola sobe.
    */
   private buildSupplyCrate(): { crate: THREE.Group; lid: THREE.Group } {
     const crate = new THREE.Group();
     crate.name = 'SupplyCrate';
-    const box = (name: string, w: number, h: number, d: number,
-      x: number, y: number, z: number, material: THREE.Material, parent: THREE.Object3D = crate) => {
-      const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), material);
+
+    // Medidas do baú. O pé (0.52 x 0.42) é o mesmo do estojo antigo para a caixa
+    // continuar apoiada na superfície dos obstáculos de carga.
+    const halfX = 0.26;                 // meia largura externa
+    const halfZ = 0.21;                 // meia profundidade externa
+    const wall = 0.045;                 // espessura das paredes
+    const innerX = halfX - wall;        // 0.215 — vão livre para os itens
+    const innerZ = halfZ - wall;        // 0.165
+    const floorTop = 0.08;              // topo do fundo de madeira
+    const linerTop = 0.094;             // piso interno: onde os itens pousam
+    const wallTop = 0.185;              // boca do baú: onde a portinhola encosta
+
+    /** Peça cúbica nomeada; as de madeira recebem UV métrico (tábuas do mesmo tamanho em todas). */
+    const add = (
+      name: string,
+      size: [number, number, number],
+      pos: [number, number, number],
+      material: THREE.ShaderMaterial,
+      parent: THREE.Object3D = crate,
+      metric = false
+    ): THREE.Mesh => {
+      const geo = new THREE.BoxGeometry(size[0], size[1], size[2]);
+      if (metric) applyMetricBoxUvs(geo, size[0], size[1], size[2], { metersPerTile: 0.26 });
+      const mesh = new THREE.Mesh(geo, material);
       mesh.name = name;
-      mesh.position.set(x, y, z);
+      mesh.position.set(pos[0], pos[1], pos[2]);
+      parent.add(mesh);
+      return mesh;
+    };
+    /** Rebite esférico de latão, sempre meio embutido na peça que recebe. */
+    const rivet = (
+      name: string,
+      pos: [number, number, number],
+      parent: THREE.Object3D = crate
+    ): THREE.Mesh => {
+      const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.006, 8, 6), this.matBrass);
+      mesh.name = name;
+      mesh.position.set(pos[0], pos[1], pos[2]);
       parent.add(mesh);
       return mesh;
     };
 
-    // Trilhos apoiados no suporte, com o fundo do caixote sobre eles.
-    for (const x of [-.2, .2]) box('SupplySkid', .06, .03, .44, x, .015, 0, this.matDarkIron);
-    box('SupplyBase', .52, .05, .42, 0, .055, 0, this.matCrateWood);
-    box('SupplyLiner', .42, .018, .32, 0, .085, 0, this.matDarkIron);
+    // 1) Dois trilhos de ferro: as únicas peças que tocam o obstáculo (y = 0).
+    for (const x of [-0.2, 0.2]) add('SupplySkid', [0.06, 0.03, 0.44], [x, 0.015, 0], this.matDarkIron);
 
-    // Paredes altas o bastante para esconder o conteúdo até a tampa abrir.
-    for (const z of [-.188, .188]) box('SupplyRim', .52, .105, .045, 0, .1275, z, this.matCrateWood);
-    for (const x of [-.238, .238]) box('SupplyRim', .045, .105, .331, x, .1275, 0, this.matCrateWood);
-    // Ripas verticais de reforço nas faces de fora.
-    for (const x of [-.16, 0, .16]) {
-      box('SupplyRib', .03, .095, .012, x, .1275, .212, this.matDarkIron);
-      box('SupplyRib', .03, .095, .012, x, .1275, -.212, this.matDarkIron);
+    // 2) Fundo apoiado nos trilhos + forro escuro que vira o piso do interior.
+    add('SupplyBase', [halfX * 2, 0.05, halfZ * 2], [0, 0.055, 0], this.matCrateWood, crate, true);
+    add('SupplyLiner', [innerX * 2, 0.018, innerZ * 2], [0, linerTop - 0.009, 0], this.matDarkIron);
+
+    // 3) Quatro paredes de madeira: frente/fundo correm na largura inteira e as
+    //    laterais encaixam entre elas — nenhuma face no mesmo plano de outra.
+    const wallH = wallTop - floorTop;          // 0.105
+    const wallY = (wallTop + floorTop) * 0.5;  // 0.1325
+    for (const z of [halfZ - wall * 0.5, -(halfZ - wall * 0.5)]) {
+      add('SupplyWall', [halfX * 2, wallH, wall], [0, wallY, z], this.matCrateWood, crate, true);
     }
-    // Cantoneiras de ferro com rebites.
-    for (const x of [-.245, .245]) for (const z of [-.195, .195]) {
-      box('SupplyCorner', .034, .12, .034, x, .1275, z, this.matDarkIron);
-      for (const y of [.085, .1275, .18]) {
-        const rivet = new THREE.Mesh(new THREE.SphereGeometry(.007, 8, 6), this.matBrass);
-        rivet.name = 'SupplyRivet';
-        rivet.position.set(x, y, z + Math.sign(z) * .018);
-        crate.add(rivet);
+    for (const x of [halfX - wall * 0.5, -(halfX - wall * 0.5)]) {
+      add('SupplyWall', [wall, wallH, innerZ * 2], [x, wallY, 0], this.matCrateWood, crate, true);
+    }
+
+    // 4) Cantoneiras rebitadas nas quatro quinas. Param logo abaixo da saia da
+    //    portinhola (0.172 contra 0.173), então nada se atravessa na quina.
+    const bracketBottom = 0.065;
+    const bracketTop = 0.172;
+    const bracketH = bracketTop - bracketBottom;
+    const bracketY = (bracketTop + bracketBottom) * 0.5;
+    for (const sx of [-1, 1]) {
+      for (const sz of [-1, 1]) {
+        const bx = sx * (halfX - 0.021);       // 0.215 .. 0.263 (cobre a quina por fora)
+        const bz = sz * (halfZ - 0.020);       // 0.165 .. 0.215
+        add('SupplyCorner', [0.048, bracketH, 0.045], [bx, bracketY, bz], this.matDarkIron);
+        // Dois rebites por cantoneira: um na face lateral, um na face da frente/fundo.
+        for (const y of [0.092, 0.148]) {
+          rivet('SupplyRivet', [sx * 0.266, y, bz]);
+          rivet('SupplyRivet', [bx, y, sz * 0.218]);
+        }
       }
     }
-    // Plaqueta de identificação na frente.
-    box('SupplyLabel', .14, .034, .004, 0, .125, .2125, this.matBrass);
-    // Alças laterais, abertas (não uma barra atravessando a parede).
-    for (const x of [-.27, .27]) {
-      for (const z of [-.065, .065]) box('SupplyHandleMount', .025, .024, .018, x, .125, z, this.matDarkIron);
-      box('SupplyHandleGrip', .02, .018, .13, x + Math.sign(x) * .018, .125, 0, this.matBrass);
-    }
-    // Cintas de aço que lacram o caixote sobre a tampa: o lacre é o que sinaliza
-    // que ele ainda está fechado. Duas fitas correndo no sentido da largura.
-    for (const z of [-.10, .10]) {
-      box('SupplyStrap', .52, .012, .05, 0, .223, z, this.matDarkIron);
-      box('SupplyStrapLatch', .056, .014, .022, 0, .229, z, this.matBrass);
+
+    // 5) Plaqueta de identificação na frente, com os dois parafusos dela.
+    add('SupplyLabel', [0.15, 0.036, 0.006], [0, 0.135, halfZ + 0.004], this.matBrass);
+    for (const x of [-0.062, 0.062]) rivet('SupplyLabelScrew', [x, 0.135, halfZ + 0.008]);
+
+    // 6) Alças laterais ABERTAS (montantes + punho cilíndrico), do lado de fora
+    //    da parede — não uma barra atravessando a caixa.
+    for (const sx of [-1, 1]) {
+      for (const z of [-0.06, 0.06]) {
+        add('SupplyHandleMount', [0.022, 0.022, 0.022], [sx * 0.268, 0.135, z], this.matDarkIron);
+      }
+      const grip = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.008, 0.13, 10), this.matBrass);
+      grip.name = 'SupplyHandleGrip';
+      grip.rotation.x = Math.PI * 0.5;
+      grip.position.set(sx * 0.284, 0.135, 0);
+      crate.add(grip);
     }
 
-    // Tampa articulada na borda traseira (a dobradiça fica no fundo do grupo,
-    // então girar o grupo levanta a tampa como uma tampa de baú de verdade).
-    const lid = new THREE.Group();
-    lid.name = 'SupplyLid';
-    const hingeZ = -.212;
-    lid.position.set(0, .212, hingeZ);
-    lid.rotation.x = CRATE_LID_CLOSED_ROTATION;
-    crate.add(lid);
-    box('SupplyLidPanel', .52, .022, .43, 0, .011, .215, this.matCrateWood, lid);
-    // Saia da tampa: encaixa por fora das paredes e cobra o conteúdo até abrir.
-    box('SupplyLidSkirt', .54, .05, .022, 0, -.014, .425, this.matCrateWood, lid);
-    for (const x of [-.262, .262]) box('SupplyLidSkirt', .022, .05, .45, x, -.014, .215, this.matCrateWood, lid);
-    for (const z of [-.02, .10]) {
-      box('SupplyLidStrap', .53, .008, .05, 0, .024, z, this.matDarkIron, lid);
-    }
-    // Ripas do topo da tampa.
-    for (const x of [-.16, 0, .16]) {
-      box('SupplyLidRib', .028, .006, .40, x, .025, .215, this.matBrass, lid);
-    }
-    for (const x of [-.16, .16]) {
-      const hinge = new THREE.Mesh(new THREE.CylinderGeometry(.014, .014, .065, 10), this.matBrass);
+    // 7) Dobradiças de tambor: o eixo da portinhola, na borda de trás do baú.
+    const hingeZ = -halfZ;
+    for (const x of [-0.16, 0.16]) {
+      const hinge = new THREE.Mesh(new THREE.CylinderGeometry(0.013, 0.013, 0.07, 10), this.matBrass);
       hinge.name = 'SupplyHinge';
-      hinge.rotation.z = Math.PI / 2;
-      hinge.position.set(x, .212, hingeZ);
+      hinge.rotation.z = Math.PI * 0.5;
+      hinge.position.set(x, wallTop, hingeZ);
       crate.add(hinge);
     }
+
+    // 8) PORTINHOLA: grupo articulado na borda traseira. A origem do grupo é a
+    //    dobradiça, então girar em X abre a tampa como um baú de verdade.
+    const lid = new THREE.Group();
+    lid.name = 'SupplyLid';
+    lid.position.set(0, wallTop, hingeZ);
+    lid.rotation.x = CRATE_LID_CLOSED_ROTATION;
+    crate.add(lid);
+
+    const lidT = 0.024;                 // espessura do painel da portinhola
+    // Painel: fecha exatamente sobre a boca (0.185) e cobre toda a área externa.
+    add('SupplyLidPanel', [halfX * 2, lidT, halfZ * 2], [0, lidT * 0.5, halfZ], this.matCrateWood, lid, true);
+    // Saia: friso que desce por fora das paredes e veda a fresta da tampa. O
+    // topo entra 2 mm no painel (fica escondido) e a traseira para antes da
+    // dobradiça, para a saia não mergulhar na parede de trás quando abre.
+    const skirtH = 0.014;
+    const skirtY = -0.005;
+    add(
+      'SupplyLidSkirt',
+      [halfX * 2 + 0.02, skirtH, 0.018],
+      [0, skirtY, halfZ * 2 + 0.009],
+      this.matCrateWood,
+      lid,
+      true
+    );
+    for (const sx of [-1, 1]) {
+      add(
+        'SupplyLidSkirt',
+        [0.018, skirtH, halfZ * 2 - 0.0125],
+        [sx * (halfX + 0.002), skirtY, halfZ * 2 * 0.5 - 0.00125],
+        this.matCrateWood,
+        lid,
+        true
+      );
+    }
+    // Cintas de aço no topo (com rebites), placas das dobradiças e plaqueta central.
+    for (const z of [0.115, 0.305]) {
+      add('SupplyLidStrap', [halfX * 2 + 0.01, 0.008, 0.05], [0, lidT, z], this.matDarkIron, lid);
+      for (const sx of [-1, 1]) rivet('SupplyLidRivet', [sx * 0.24, lidT + 0.006, z], lid);
+    }
+    for (const x of [-0.16, 0.16]) {
+      add('SupplyHingePlate', [0.06, 0.006, 0.06], [x, lidT - 0.001, 0.04], this.matBrass, lid);
+    }
+    add('SupplyLidPlate', [0.1, 0.006, 0.1], [0, lidT - 0.001, 0.21], this.matBrass, lid);
+    // Trinco e cadeado: o lacre que sinaliza que o caixote ainda está fechado.
+    add('SupplyLatch', [0.05, 0.034, 0.012], [0, -0.011, halfZ * 2 + 0.015], this.matDarkIron, lid);
+    add('SupplyPadlock', [0.022, 0.02, 0.014], [0, -0.036, halfZ * 2 + 0.017], this.matBrass, lid);
+
     return { crate, lid };
   }
 

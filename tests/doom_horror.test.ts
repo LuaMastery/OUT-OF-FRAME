@@ -130,6 +130,7 @@ import {
 } from '../src/multiplayer/MultiplayerService';
 import {
   computeLairCaptivePositions,
+  cycleSpectatorTargetId,
   DoomMultiplayerCoordinator,
   TACTICAL_PING_COOLDOWN_SECONDS,
   TACTICAL_PING_DURATION_SECONDS,
@@ -3891,17 +3892,11 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
           false
         );
 
+        // Captura sincronizada sem banner textual ou indicação automática de localização.
         const captureBanner = viewportEl.children.find((c) =>
           c.className.includes('oof-coop-capture-banner')
-        )!;
-        expect(captureBanner).toBeDefined();
-        expect(captureBanner.className).toContain('phase-capturing');
-        expect(captureBanner.children[0].textContent).toContain(
-          'ESTÁ SENDO CAPTURADO'
         );
-        expect(captureBanner.children[1].textContent).toContain(
-          'TENTE GOLPEAR A ARANHA'
-        );
+        expect(captureBanner).toBeUndefined();
         expect(
           coordinator.hasTrappedAllyInRescueRange(
             new THREE.Vector3(10, 0, 10),
@@ -3910,7 +3905,7 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
           )
         ).toBe(true);
 
-        // Jogador tenta golpear a Aranha: NÃO liberta o amigo (JÁ ERA!) e muda o banner para phase-doomed!
+        // Jogador tenta golpear a Aranha: NÃO liberta o amigo durante o arrasto.
         const rescuedMidCapture = coordinator.tryRescueNearbyTrappedAlly(
           new THREE.Vector3(10, 0, 10),
           spiderWorldPos,
@@ -3953,9 +3948,7 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
           },
           false
         );
-        expect(captureBanner.className).toContain('phase-doomed');
-        expect(captureBanner.children[0].textContent).toContain('JÁ ERA');
-        expect(captureBanner.children[1].textContent).toContain('NINHO');
+        expect(captureBanner).toBeUndefined();
 
         // Agora a Aranha chegou ao NINHO e depositou o amigo no casulo (cocoonLocked: true, inSequence: false) ->
         // SOMENTE LÁ NO NINHO o resgate funciona!
@@ -4020,8 +4013,7 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
           },
           false
         );
-        expect(captureBanner.className).toContain('phase-nest-rescue');
-        expect(captureBanner.children[0].textContent).toContain('NINHO');
+        expect(captureBanner).toBeUndefined();
 
         const savedAtNest = coordinator.tryRescueNearbyTrappedAlly(
           new THREE.Vector3(41, 0, 69),
@@ -4129,6 +4121,16 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
       (globalThis as Record<string, unknown>).window = prevWindow;
       (globalThis as Record<string, unknown>).document = prevDocument;
     }
+  });
+
+  it('alterna o espectador apenas entre operadores vivos e preserva o fallback quando o alvo sai', () => {
+    const ids = ['alpha', 'bravo', 'charlie'];
+    expect(cycleSpectatorTargetId(ids, null, 1)).toBe('alpha');
+    expect(cycleSpectatorTargetId(ids, null, -1)).toBe('charlie');
+    expect(cycleSpectatorTargetId(ids, 'alpha', 1)).toBe('bravo');
+    expect(cycleSpectatorTargetId(ids, 'bravo', -1)).toBe('alpha');
+    expect(cycleSpectatorTargetId(['alpha', 'charlie'], 'bravo', 1)).toBe('alpha');
+    expect(cycleSpectatorTargetId([], 'alpha', 1)).toBeNull();
   });
 
   it('amarra todos os capturados juntos na teia do Ninho e encerra a partida quando não sobra ninguém solto', () => {
@@ -4672,14 +4674,14 @@ describe('Botão de Pausa no HUD, Tela de Pausa Completa & 27 Configurações Re
       resolutionHeight: '8k' as unknown as '250p',
       showCrosshair: 'laser' as unknown as 'dot',
       invertMouseY: true,
-      voiceChatEnabled: false,
+      retroVoiceEffectEnabled: false,
     });
     expect(sanitized.fov).toBe(105);
     expect(sanitized.masterVolume).toBe(0);
     expect(sanitized.resolutionHeight).toBe('250p');
     expect(sanitized.showCrosshair).toBe('dot');
     expect(sanitized.invertMouseY).toBe(true);
-    expect(sanitized.voiceChatEnabled).toBe(false);
+    expect(sanitized.retroVoiceEffectEnabled).toBe(false);
 
     const prevStorage = (globalThis as Record<string, unknown>).localStorage;
     const mem = new Map<string, string>();
@@ -5079,13 +5081,13 @@ describe('Botão de Pausa no HUD, Tela de Pausa Completa & 27 Configurações Re
 
       const voiceRow = Array.from(
         viewportEl.querySelectorAll('.setting-row')
-      ).find((row) => row.dataset.settingKey === 'voiceChatEnabled')!;
+      ).find((row) => row.dataset.settingKey === 'retroVoiceEffectEnabled')!;
       const voiceToggle = voiceRow.querySelector('.setting-toggle-btn')!;
-      expect(store.value.voiceChatEnabled).toBe(true);
+      expect(store.value.retroVoiceEffectEnabled).toBe(true);
       voiceToggle.dispatch('click');
-      expect(store.value.voiceChatEnabled).toBe(false);
+      expect(store.value.retroVoiceEffectEnabled).toBe(false);
       voiceToggle.dispatch('click');
-      expect(store.value.voiceChatEnabled).toBe(true);
+      expect(store.value.retroVoiceEffectEnabled).toBe(true);
 
       store.set('fov', 90);
       store.set('masterVolume', 55);

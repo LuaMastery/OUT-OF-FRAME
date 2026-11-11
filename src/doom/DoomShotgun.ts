@@ -33,13 +33,40 @@ export const SHOTGUN_PART_IDS: readonly ShotgunPartId[] = [
   'shotgun_stock',
 ];
 
+/** Peças de um conjunto completo: a arma só fica pronta com as quatro juntas. */
+export const SHOTGUN_PARTS_PER_SET = SHOTGUN_PART_IDS.length;
+
+/** Máximo de conjuntos completos preparados pelo servidor (um por jogador da sala). */
+export const MAX_SHOTGUN_PART_SETS = 8;
+
+/** Máximo de peças da shotgun que uma partida pode ter no mundo. */
+export const MAX_SHOTGUN_PART_SLOTS = SHOTGUN_PARTS_PER_SET * MAX_SHOTGUN_PART_SETS;
+
 /**
- * Quantas peças da shotgun existem numa partida.
+ * Quantos conjuntos completos de peças o servidor prepara.
+ *
+ * Um jogador nunca monta a arma com um pedaço só: CADA jogador precisa das
+ * quatro peças (corpo, cano, bomba e coronha). O mundo então recebe um conjunto
+ * completo por jogador presente — sozinho é 1 conjunto (4 peças); em co-op com
+ * dois jogadores são 2 conjuntos (8 peças) e assim por diante, até o limite de
+ * jogadores da sala.
+ */
+export function resolveShotgunPartSetCount(
+  playerCount: number,
+  isMultiplayer = false
+): number {
+  if (!isMultiplayer) return 1;
+  const players = Math.max(1, Math.floor(playerCount));
+  return Math.max(1, Math.min(MAX_SHOTGUN_PART_SETS, players));
+}
+
+/**
+ * Quantas peças da shotgun existem numa partida (sempre múltiplos de 4).
  *
  * Solo mantém o conjunto completo (4 peças), para que a arma ainda possa ser
- * montada sozinho. Em co-op são geradas tantas peças quantos forem os jogadores
- * no servidor no momento em que o mundo é criado, respeitando o limite do
- * conjunto — 1 jogador = 1 peça, 2 = 2, 3 = 3, 4 ou mais = 4.
+ * montada sozinho. Em co-op o servidor prepara um conjunto completo para cada
+ * jogador presente no momento em que o mundo é criado — 1 jogador = 4 peças,
+ * 2 = 8, 3 = 12 — para que cada um tenha a sua própria shotgun para montar.
  *
  * O valor é fixado na geração do mundo (`DoomArenaLayout`) e viaja junto com o
  * layout, então todos os jogadores da sala veem exatamente as mesmas peças.
@@ -48,17 +75,41 @@ export function resolveShotgunPartSlotCount(
   playerCount: number,
   isMultiplayer = false
 ): number {
-  if (!isMultiplayer) return SHOTGUN_PART_IDS.length;
-  const players = Math.max(1, Math.floor(playerCount));
-  return Math.max(1, Math.min(SHOTGUN_PART_IDS.length, players));
+  return resolveShotgunPartSetCount(playerCount, isMultiplayer) * SHOTGUN_PARTS_PER_SET;
 }
 
-/** Peças que realmente existem no mapa, na ordem canônica do conjunto. */
+/** Arredonda uma contagem livre de peças para conjuntos completos fechados. */
+export function normalizeShotgunPartSlotCount(slotCount: number): number {
+  const sets = Math.max(1, Math.ceil(Math.floor(slotCount) / SHOTGUN_PARTS_PER_SET));
+  return Math.min(MAX_SHOTGUN_PART_SETS, sets) * SHOTGUN_PARTS_PER_SET;
+}
+
+/**
+ * Peças que realmente existem no mapa.
+ *
+ * O conjunto completo se repete quantas vezes for necessário: 4 peças é uma
+ * shotgun, 8 peças são duas shotguns completas (uma por jogador) e assim por
+ * diante. A ordem canônica é mantida dentro de cada conjunto.
+ */
 export function getAvailableShotgunPartIds(
-  slotCount: number = SHOTGUN_PART_IDS.length
+  slotCount: number = SHOTGUN_PARTS_PER_SET
 ): ShotgunPartId[] {
-  const total = Math.max(1, Math.min(SHOTGUN_PART_IDS.length, Math.floor(slotCount)));
-  return SHOTGUN_PART_IDS.slice(0, total);
+  const total = Math.max(1, Math.min(MAX_SHOTGUN_PART_SLOTS, Math.floor(slotCount)));
+  const ids: ShotgunPartId[] = [];
+  for (let i = 0; i < total; i++) {
+    ids.push(SHOTGUN_PART_IDS[i % SHOTGUN_PARTS_PER_SET]);
+  }
+  return ids;
+}
+
+/**
+ * Os QUATRO tipos de peça exigidos para montar a arma.
+ *
+ * Montar a shotgun sempre depende do conjunto inteiro — nunca de uma peça
+ * apenas — mesmo quando o mundo tem vários conjuntos espalhados pelas salas.
+ */
+export function getRequiredShotgunPartIds(): ShotgunPartId[] {
+  return [...SHOTGUN_PART_IDS];
 }
 
 export interface ShotgunPartDef {
@@ -175,12 +226,18 @@ export function canAssembleShotgun(
   return countShotgunPartsOwned(hasItem) === SHOTGUN_PART_IDS.length;
 }
 
-/** Lista das peças que ainda faltam (para o feedback do HUD). */
+/**
+ * Lista das peças que ainda faltam (para o feedback do HUD).
+ *
+ * A exigência é sempre o conjunto COMPLETO: ter duas vezes a mesma peça não
+ * substitui as outras, então a contagem ignora repetições.
+ */
 export function getMissingShotgunParts(
   hasItem: (itemId: string) => boolean,
   availableParts: readonly ShotgunPartId[] = SHOTGUN_PART_IDS
 ): ShotgunPartId[] {
-  return availableParts.filter((id) => !hasItem(id));
+  const required = new Set(availableParts.length ? availableParts : SHOTGUN_PART_IDS);
+  return SHOTGUN_PART_IDS.filter((id) => required.has(id) && !hasItem(id));
 }
 
 /** Rótulo curto do estado de montagem ("2/4 PEÇAS"). */

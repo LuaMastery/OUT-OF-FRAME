@@ -19,9 +19,11 @@ import {
   THEMED_ROOMS,
   getThemedRoomMiniMapTile,
   type DoomRoomId,
+  type ThemedRoomDefinition,
 } from './DoomRooms';
 import {
   getAvailableShotgunPartIds,
+  normalizeShotgunPartSlotCount,
   resolveShotgunPartSlotCount,
   SHOTGUN_PART_IDS,
   type ShotgunPartId,
@@ -92,9 +94,10 @@ export interface CreateArenaLayoutOptions {
   /** Jogadores presentes no servidor quando o mundo foi criado (padrão: 1). */
   playerCount?: number;
   /**
-   * Força a quantidade de peças da shotgun (1 a 4). Usado pelo anfitrião para
-   * semear o mundo com a mesma contagem para todos, independente do momento em
-   * que cada cliente entrou na sala.
+   * Força a quantidade de peças da shotgun (sempre múltiplo de 4: um conjunto
+   * completo por jogador). Usado pelo anfitrião para semear o mundo com a mesma
+   * contagem para todos, independente do momento em que cada cliente entrou na
+   * sala.
    */
   shotgunPartSlots?: number;
   /** Sala cooperativa, mesmo antes de outros jogadores entrarem. O padrão é solo. */
@@ -414,10 +417,77 @@ export function buildRandomCrateLootPool(
 }
 
 /**
- * Distribui uma peça por sala especial acessível, sem repetir salas.
+ * Células de uma sala especial onde uma peça pode ficar: piso livre, longe da
+ * porta e com caminho desimpedido a partir do vestíbulo.
+ */
+function collectShotgunPlacementCandidates(
+  room: ThemedRoomDefinition,
+  furniture: readonly RoomFurniturePlacement[]
+): GridCoord[] {
+  const dx = room.outwardDir === 'E' ? 1 : room.outwardDir === 'W' ? -1 : 0;
+  const dz = room.outwardDir === 'S' ? 1 : room.outwardDir === 'N' ? -1 : 0;
+  const start = { gx: room.doorGx + dx, gz: room.doorGz + dz };
+  const queue = [start];
+  const seen = new Set<string>();
+  const candidates: GridCoord[] = [];
+  while (queue.length) {
+    const cell = queue.shift()!;
+    const key = `${cell.gx},${cell.gz}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (cell.gx < room.minGx || cell.gx > room.maxGx || cell.gz < room.minGz || cell.gz > room.maxGz ||
+        getThemedRoomMiniMapTile(cell.gx, cell.gz) !== '.') continue;
+    const world = gridCellToWorld(cell.gx, cell.gz);
+    // A 0.7m clearance accommodates the player's cylinder and the largest model.
+    if (furniture.some(f => world.x >= f.minX - .7 && world.x <= f.maxX + .7 &&
+                            world.z >= f.minZ - .7 && world.z <= f.maxZ + .7)) continue;
+    if (Math.abs(cell.gx - room.doorGx) + Math.abs(cell.gz - room.doorGz) >= 3) candidates.push(cell);
+    for (const [x, z] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const next = { gx: cell.gx + x, gz: cell.gz + z };
+      const nextWorld = gridCellToWorld(next.gx, next.gz);
+      // Also validate the entire step, not just its two endpoints.
+      const blocked = furniture.some(f => {
+        const minX = f.minX - .56, maxX = f.maxX + .56;
+        const minZ = f.minZ - .56, maxZ = f.maxZ + .56;
+        return x !== 0
+          ? world.z >= minZ && world.z <= maxZ && Math.max(world.x, nextWorld.x) >= minX && Math.min(world.x, nextWorld.x) <= maxX
+          : world.x >= minX && world.x <= maxX && Math.max(world.z, nextWorld.z) >= minZ && Math.min(world.z, nextWorld.z) <= maxZ;
+      });
+      if (!blocked) queue.push(next);
+    }
+  }
+  return candidates;
+}
+
+/** Distância mínima (em células) entre duas peças caídas na mesma sala. */
+const MIN_SHOTGUN_PIECE_CELL_GAP = 2;
+
+/** Primeira célula livre da lista que respeita o afastamento das peças já usadas. */
+function takeSpacedShotgunCell(
+  candidates: readonly GridCoord[],
+  used: readonly GridCoord[],
+  minGap: number
+): GridCoord | null {
+  for (const cell of candidates) {
+    if (used.some(u => Math.hypot(u.gx - cell.gx, u.gz - cell.gz) < minGap)) continue;
+    if (used.some(u => u.gx === cell.gx && u.gz === cell.gz)) continue;
+    return cell;
+  }
+  return null;
+}
+
+/**
+ * Distribui as peças da shotgun pelas salas especiais acessíveis.
  *
- * A quantidade de peças vem de `partSlotCount`: solo mantém as quatro, co-op
- * gera uma para cada jogador do servidor (limitado a quatro).
+ * O mundo recebe um CONJUNTO COMPLETO (corpo, cano, bomba e coronha) para cada
+ * jogador da sala, então a contagem de `partSlotCount` é sempre múltipla de
+ * quatro. As peças são distribuídas em rodízio entre as salas: as quatro de um
+ * mesmo conjunto caem em salas diferentes sempre que possível, e uma sala só
+ * recebe mais de uma peça quando já não há salas livres — nunca duas peças na
+ * mesma célula nem coladas umas nas outras.
+ *
+ * O plano é incremental: pedir mais peças mantém exatamente as posições já
+ * sorteadas, então quem entra depois na sala vê as mesmas peças dos outros.
  */
 export function planShotgunRoomPlacements(
   worldSeed: number,
@@ -427,46 +497,50 @@ export function planShotgunRoomPlacements(
   const rng = createSeededRng((worldSeed ^ 0x1792f0c5) >>> 0);
   const partIds = getAvailableShotgunPartIds(partSlotCount);
   const rooms = shuffleInPlace([...THEMED_ROOMS], rng);
+  const candidatePool = rooms.map(room => shuffleInPlace(
+    collectShotgunPlacementCandidates(room, furniture),
+    rng
+  ));
+  const usedPerRoom: GridCoord[][] = rooms.map(() => []);
   const result: ShotgunRoomPlacement[] = [];
-  for (const room of rooms) {
-    const dx = room.outwardDir === 'E' ? 1 : room.outwardDir === 'W' ? -1 : 0;
-    const dz = room.outwardDir === 'S' ? 1 : room.outwardDir === 'N' ? -1 : 0;
-    const start = { gx: room.doorGx + dx, gz: room.doorGz + dz };
-    const queue = [start];
-    const seen = new Set<string>();
-    const candidates: GridCoord[] = [];
-    while (queue.length) {
-      const cell = queue.shift()!;
-      const key = `${cell.gx},${cell.gz}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      if (cell.gx < room.minGx || cell.gx > room.maxGx || cell.gz < room.minGz || cell.gz > room.maxGz ||
-          getThemedRoomMiniMapTile(cell.gx, cell.gz) !== '.') continue;
-      const world = gridCellToWorld(cell.gx, cell.gz);
-      // A 0.7m clearance accommodates the player's cylinder and the largest model.
-      if (furniture.some(f => world.x >= f.minX - .7 && world.x <= f.maxX + .7 &&
-                              world.z >= f.minZ - .7 && world.z <= f.maxZ + .7)) continue;
-      if (Math.abs(cell.gx - room.doorGx) + Math.abs(cell.gz - room.doorGz) >= 3) candidates.push(cell);
-      for (const [x, z] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-        const next = { gx: cell.gx + x, gz: cell.gz + z };
-        const nextWorld = gridCellToWorld(next.gx, next.gz);
-        // Also validate the entire step, not just its two endpoints.
-        const blocked = furniture.some(f => {
-          const minX = f.minX - .56, maxX = f.maxX + .56;
-          const minZ = f.minZ - .56, maxZ = f.maxZ + .56;
-          return x !== 0
-            ? world.z >= minZ && world.z <= maxZ && Math.max(world.x, nextWorld.x) >= minX && Math.min(world.x, nextWorld.x) <= maxX
-            : world.x >= minX && world.x <= maxX && Math.max(world.z, nextWorld.z) >= minZ && Math.min(world.z, nextWorld.z) <= maxZ;
-        });
-        if (!blocked) queue.push(next);
-      }
+
+  for (let i = 0; i < partIds.length; i++) {
+    // Rodízio em duas voltas: primeiro as salas que ainda NÃO têm peça (para as
+    // quatro de um conjunto caírem em salas diferentes), depois as que já têm.
+    const preference: number[] = [];
+    for (let step = 0; step < rooms.length; step++) {
+      const roomIdx = (i + step) % rooms.length;
+      if (usedPerRoom[roomIdx].length === 0) preference.push(roomIdx);
     }
-    if (!candidates.length) continue;
-    const cell = candidates[rngInt(rng, 0, candidates.length)];
-    result.push({ itemId: partIds[result.length], roomId: room.id, ...cell, yaw: rngRange(rng, -Math.PI, Math.PI) });
-    if (result.length === partIds.length) return result;
+    for (let step = 0; step < rooms.length; step++) {
+      const roomIdx = (i + step) % rooms.length;
+      if (usedPerRoom[roomIdx].length > 0) preference.push(roomIdx);
+    }
+    let placed: { roomIdx: number; cell: GridCoord } | null = null;
+    // O afastamento é relaxado se nenhuma sala tiver espaço folgado.
+    for (const minGap of [MIN_SHOTGUN_PIECE_CELL_GAP, 1]) {
+      for (const roomIdx of preference) {
+        if (placed) break;
+        const cell = takeSpacedShotgunCell(candidatePool[roomIdx], usedPerRoom[roomIdx], minGap);
+        if (cell) placed = { roomIdx, cell };
+      }
+      if (placed) break;
+    }
+    if (!placed) break;
+    usedPerRoom[placed.roomIdx].push(placed.cell);
+    result.push({
+      itemId: partIds[i],
+      roomId: rooms[placed.roomIdx].id,
+      gx: placed.cell.gx,
+      gz: placed.cell.gz,
+      yaw: rngRange(rng, -Math.PI, Math.PI),
+    });
   }
-  throw new Error('Não há salas especiais acessíveis suficientes para distribuir as peças da shotgun.');
+
+  if (result.length < partIds.length) {
+    throw new Error('Não há salas especiais acessíveis suficientes para distribuir as peças da shotgun.');
+  }
+  return result;
 }
 
 /**
@@ -920,10 +994,12 @@ export function createRandomArenaLayout(
         ? 'WALL'
         : 'FLOOR';
 
-  const shotgunPartSlotCount = resolveShotgunPartSlotCount(
-    options.shotgunPartSlots ?? options.playerCount ?? 1,
-    Boolean(options.isMultiplayer)
-  );
+  // `shotgunPartSlots` já é a contagem de peças decidida pelo anfitrião; sem
+  // ela, o mundo nasce com um conjunto completo (4 peças) por jogador.
+  const shotgunPartSlotCount =
+    options.shotgunPartSlots != null
+      ? normalizeShotgunPartSlotCount(options.shotgunPartSlots)
+      : resolveShotgunPartSlotCount(options.playerCount ?? 1, Boolean(options.isMultiplayer));
 
   return {
     worldSeed,

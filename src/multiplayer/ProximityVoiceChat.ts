@@ -610,8 +610,10 @@ export interface ProximityVoiceChatHooks {
 export class ProximityVoiceChatManager {
   private mode: VoiceActivationMode = 'PTT';
   private pttHeld = false;
-  /** Preferência local: desliga captura E reprodução da comunicação por voz. */
+  /** Compatibilidade legada para bloquear todo o canal; o ajuste do jogo usa o efeito retro abaixo. */
   private voiceEnabled = true;
+  /** Preferência local: altera somente a coloração/quantização audível da voz. */
+  private retroVoiceEffectEnabled = true;
   private forceSilenced = false;
   private permissionState: MicPermissionState = 'idle';
 
@@ -654,10 +656,26 @@ export class ProximityVoiceChatManager {
     return this.voiceEnabled;
   }
 
+  get isRetroVoiceEffectEnabled(): boolean {
+    return this.retroVoiceEffectEnabled;
+  }
+
   /**
-   * Preferência de privacidade do jogador. Ao desligar, interrompe a captura,
-   * solta a trilha enviada aos pares e corta imediatamente todas as vozes
-   * recebidas — sem deixar o ícone de microfone ativo no navegador.
+   * Liga/desliga apenas o DSP retro 8-bit. A captura, os tracks já negociados,
+   * o relay/WebRTC e a reprodução espacial continuam vivos nos dois estados.
+   */
+  setRetroVoiceEffectEnabled(enabled: boolean): void {
+    if (this.disposed || this.retroVoiceEffectEnabled === Boolean(enabled)) return;
+    this.retroVoiceEffectEnabled = Boolean(enabled);
+    for (const peer of this.peers.values()) {
+      this.applyRetroVoiceEffect(peer);
+    }
+    this.hooks.onStatusChanged?.();
+  }
+
+  /**
+   * Compatibilidade com o contrato antigo de privacidade global. O fluxo atual
+   * de configurações não chama este método: usa `setRetroVoiceEffectEnabled`.
    */
   setVoiceEnabled(enabled: boolean): void {
     if (this.disposed || this.voiceEnabled === Boolean(enabled)) return;
@@ -787,6 +805,27 @@ export class ProximityVoiceChatManager {
       this.sharedRetroCurve = buildRetro8BitQuantizerCurve(56, 1.18, 2048);
     }
     return this.sharedRetroCurve;
+  }
+
+  private applyRetroVoiceEffect(entry: RemotePeerAudioEntry): void {
+    const now = this.audioCtx?.currentTime ?? 0;
+    if (entry.retro8BitShaper) {
+      entry.retro8BitShaper.curve = this.retroVoiceEffectEnabled
+        ? this.getRetroQuantizerCurve()
+        : null;
+    }
+    if (entry.retroToneNode) {
+      entry.retroToneNode.frequency.setTargetAtTime(
+        this.retroVoiceEffectEnabled ? 6200 : 16000,
+        now,
+        0.025
+      );
+      entry.retroToneNode.Q.setTargetAtTime(
+        this.retroVoiceEffectEnabled ? 0.65 : 0.01,
+        now,
+        0.025
+      );
+    }
   }
 
   async ensureMicrophoneInitialized(): Promise<boolean> {
@@ -1308,6 +1347,7 @@ export class ProximityVoiceChatManager {
       lastAudibleGain: 0,
     };
     this.peers.set(peerId, entry);
+    this.applyRetroVoiceEffect(entry);
 
     this.initWebRtcForPeer(entry);
   }

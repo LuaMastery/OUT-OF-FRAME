@@ -14,7 +14,9 @@ import {
   StaticColliderBox,
 } from '../engine/physics/SpatialSweep';
 import {
+  cycleSpectatorTargetId,
   DoomMultiplayerCoordinator,
+  SpectatorTarget,
   TACTICAL_PING_DURATION_SECONDS,
 } from '../multiplayer/DoomMultiplayerCoordinator';
 import {
@@ -437,6 +439,16 @@ export class DoomGameApp {
   private readonly cocoonSubEl: HTMLDivElement;
   private readonly cocoonBarFillEl: HTMLDivElement;
   private readonly cocoonHintEl: HTMLDivElement;
+  private readonly spectatorHudEl: HTMLDivElement;
+  private readonly spectatorTargetEl: HTMLDivElement;
+  private readonly spectatorStatusEl: HTMLDivElement;
+  private readonly spectatorHintEl: HTMLDivElement;
+  private readonly spectatorCameraAnchorScratch = new THREE.Vector3();
+  private readonly spectatorCameraDesiredScratch = new THREE.Vector3();
+  private readonly spectatorCameraSafeScratch = new THREE.Vector3();
+  private readonly spectatorCameraLookScratch = new THREE.Vector3();
+  private spectatorMode = false;
+  private spectatorTargetId: string | null = null;
   private readonly danceMenu: DoomDanceMenu;
   private readonly danceHudEl: HTMLDivElement;
   private readonly shotgunObjectiveEl: HTMLDivElement;
@@ -536,7 +548,7 @@ export class DoomGameApp {
     this.cocoonHintEl = document.createElement('div');
     this.cocoonHintEl.className = 'doom-cocoon-hint';
     this.cocoonHintEl.textContent =
-      '[E / ESPAÇO] Pedir Socorro no Rádio  •  [B] Gritar por Voz 3D';
+      '[E / ESPAÇO] Resistir  •  [B] Falar por Voz 3D';
     this.cocoonHudEl.append(
       this.cocoonTitleEl,
       this.cocoonSubEl,
@@ -544,6 +556,29 @@ export class DoomGameApp {
       this.cocoonHintEl
     );
     this.viewportEl.appendChild(this.cocoonHudEl);
+
+    // HUD persistente do modo espectador: aparece só depois da morte no Co-op.
+    this.spectatorHudEl = document.createElement('div');
+    this.spectatorHudEl.id = 'doom-spectator-hud';
+    this.spectatorHudEl.className = 'doom-spectator-hud';
+    const spectatorKicker = document.createElement('div');
+    spectatorKicker.className = 'doom-spectator-kicker';
+    spectatorKicker.textContent = 'SINAL DE VIDA ENCERRADO';
+    this.spectatorTargetEl = document.createElement('div');
+    this.spectatorTargetEl.className = 'doom-spectator-target';
+    this.spectatorStatusEl = document.createElement('div');
+    this.spectatorStatusEl.className = 'doom-spectator-status';
+    this.spectatorHintEl = document.createElement('div');
+    this.spectatorHintEl.className = 'doom-spectator-hint';
+    this.spectatorHintEl.textContent =
+      '[A / ←] anterior  ·  [D / →] próximo  ·  [ESC] sair da sala';
+    this.spectatorHudEl.append(
+      spectatorKicker,
+      this.spectatorTargetEl,
+      this.spectatorStatusEl,
+      this.spectatorHintEl
+    );
+    this.viewportEl.appendChild(this.spectatorHudEl);
 
     // HUD de dança em 3ª pessoa (nome da coreografia + dicas de controle)
     this.danceHudEl = document.createElement('div');
@@ -610,9 +645,11 @@ export class DoomGameApp {
 
     // Gera layout aleatório a cada partida (caixas, itens, spawn do jogador, ninho, teias e aranha),
     // mantendo o mundo sincronizado por código de sala no Co-op enquanto o spawn de cada jogador varia!
-    // Peças da shotgun: solo fica com as 4; co-op gera uma peça por jogador do
-    // servidor (1 a 4). A contagem é fixada agora e entra no layout, então todos
-    // os clientes da sala recebem exatamente as mesmas peças.
+    // Peças da shotgun: a arma completa exige sempre as quatro peças (corpo,
+    // cano, bomba e coronha). O servidor prepara um conjunto inteiro por
+    // jogador — solo = 4 peças, dois jogadores = 8 — para que cada um tenha a
+    // sua própria shotgun para montar. A contagem é fixada agora e entra no
+    // layout, então todos os clientes da sala recebem as mesmas peças.
     const arenaLayout = createRandomArenaLayout(
       initialMultiplayerSession
         ? {
@@ -685,7 +722,6 @@ export class DoomGameApp {
     };
 
     this.inventory = new DoomInventory(this.viewportEl, this.sound, {
-      getShotgunPartSlotCount: () => this.arenaLayout.shotgunPartSlotCount,
       onToggleFlashlightFromUI: () => {
         const equipping = this.flashlight.toggle();
         this.sound.playFlashlightMotion(equipping);
@@ -727,10 +763,6 @@ export class DoomGameApp {
       onUseFlare: () => {
         if (this.webManager.isLockedInMultiplayerCocoon) {
           this.sound.playStruggleEffort();
-          this.multiplayer?.emitCocoonDistressCall(
-            this.position,
-            this.cocoonDevourTimerSec
-          );
           return false;
         }
         this.flashlight.triggerQuickItemAction('flare');
@@ -745,10 +777,6 @@ export class DoomGameApp {
       onUseKnife: () => {
         if (this.webManager.isLockedInMultiplayerCocoon) {
           this.sound.playStruggleEffort();
-          this.multiplayer?.emitCocoonDistressCall(
-            this.position,
-            this.cocoonDevourTimerSec
-          );
           return { cutWeb: false };
         }
         this.flashlight.triggerQuickItemAction('knife');
@@ -1045,9 +1073,9 @@ export class DoomGameApp {
       uiVolume: s.uiVolume,
       reverbAmount: s.reverbAmount,
     });
-    // A preferência global controla a privacidade da voz: desativar não apenas
-    // muta o HUD, mas libera a captura do microfone e silencia os aliados.
-    this.multiplayer?.setVoiceChatEnabled(s.voiceChatEnabled);
+    // A preferência altera somente o filtro/coloração retro da voz. Captura,
+    // relay/WebRTC, rádio e proximidade continuam ativos.
+    this.multiplayer?.setRetroVoiceEffectEnabled(s.retroVoiceEffectEnabled);
     this.syncAudioFocusMute();
 
     if (s.crouchMode === 'hold') {
@@ -1162,8 +1190,9 @@ export class DoomGameApp {
         onTaserShot: (origin, direction) => { this.applyTaserHit(origin, direction); },
         getLocalShotgunPartSlots: () => this.worldItems.getShotgunPartSlotCount(),
         onShotgunPartSlotsChanged: (slots) => {
-          // O anfitrião define a quantidade de peças; quem entrou depois passa a
-          // ver as mesmas peças nas salas especiais.
+          // O anfitrião define a quantidade de peças: um conjunto completo das
+          // quatro para cada jogador da sala. Quem entrou depois passa a ver as
+          // mesmas peças nas salas especiais.
           const applied = this.worldItems.syncShotgunPartSlots(slots);
           this.arenaLayout = { ...this.arenaLayout, shotgunPartSlotCount: applied };
         },
@@ -1268,7 +1297,9 @@ export class DoomGameApp {
         },
       }
     );
-    this.multiplayer.setVoiceChatEnabled(this.settingsStore.value.voiceChatEnabled);
+    this.multiplayer.setRetroVoiceEffectEnabled(
+      this.settingsStore.value.retroVoiceEffectEnabled
+    );
     this.multiplayer.seedInitialLocalPose(this.position, this.yaw);
   }
 
@@ -1315,6 +1346,278 @@ export class DoomGameApp {
     this.requestCanvasPointerLockOnly();
   }
 
+  /** Entra no modo espectador após a animação de morte da Aranha no Co-op. */
+  private enterSpectatorMode(): void {
+    if (!this.multiplayer || this.spectatorMode || this.disposed) return;
+    this.spectatorMode = true;
+    this.spectatorTargetId = null;
+    this.activeSequence = 'DEAD_TERMINATED';
+    this.permadeathTimerId = 0;
+    this.multiplayer.closeRadioChatInput(false);
+    this.inventory.setOpen(false);
+    this.pauseMenu.setOpen(false, 'main', true);
+    this.cocoonHudEl.classList.remove('is-visible', 'is-critical');
+    this.doorLockPromptEl.classList.remove('is-visible', 'can-unlock');
+    this.inventory.setAbductionScreenFX(0, 0, 0, 0);
+    this.keys.clear();
+    this.touchControls.resetTransientInputs();
+    this.touchControls.syncState({
+      overlayBlocked: true,
+      inCaptureSequence: true,
+      isSprinting: false,
+      isCrouchedOrSliding: false,
+      canTriggerSlide: false,
+      interactContext: 'NONE',
+      inMultiplayer: true,
+      isPushToTalkActive: false,
+    });
+    this.flashlight.forceStowImmediate();
+    this.shotgun.stow();
+    this.taser.stow();
+    this.astronaut.setFirstPersonMode(true);
+    this.sharedUniforms.uFlashlightIntensity.value = 0;
+    this.cameraShake = 0;
+    this.setCameraFov(this.settingsStore.value.fov);
+    this.spectatorHudEl.classList.add('is-visible');
+    this.selectSpectatorTarget(1);
+  }
+
+  private leaveSpectatorMode(): void {
+    this.spectatorMode = false;
+    this.spectatorTargetId = null;
+    this.spectatorHudEl.classList.remove('is-visible');
+  }
+
+  private selectSpectatorTarget(direction: 1 | -1): void {
+    if (!this.multiplayer) return;
+    const targets = this.multiplayer.getSpectatorTargets();
+    if (targets.length === 0) {
+      this.spectatorTargetId = null;
+      return;
+    }
+    this.spectatorTargetId = cycleSpectatorTargetId(
+      targets.map((target) => target.id),
+      this.spectatorTargetId,
+      direction
+    );
+  }
+
+  private resolveSpectatorTarget(): SpectatorTarget | null {
+    if (!this.multiplayer) return null;
+    const targets = this.multiplayer.getSpectatorTargets();
+    if (targets.length === 0) return null;
+    let target = targets.find((item) => item.id === this.spectatorTargetId) ?? null;
+    if (!target) {
+      target = targets[0];
+      this.spectatorTargetId = target.id;
+    }
+    return target;
+  }
+
+  private updateSpectatorHud(target: SpectatorTarget | null): void {
+    if (!target) {
+      this.spectatorTargetEl.textContent = 'NENHUM OPERADOR VIVO';
+      this.spectatorStatusEl.textContent = 'O sinal da equipe foi perdido.';
+      return;
+    }
+    this.spectatorTargetEl.textContent = `OBSERVANDO: ${target.name}`;
+    this.spectatorStatusEl.textContent = target.cocoonLocked
+      ? 'PRESO NA TEIA DO NINHO'
+      : target.beingDragged
+        ? 'SENDO ARRASTADO PELA ARANHA'
+        : target.inSequence
+          ? 'EM CENA DE CAPTURA'
+          : `OPERADOR ATIVO · ${Math.max(0, Math.round(target.health))}%`;
+  }
+
+  private updateSpectatorCamera(dt: number, target: SpectatorTarget | null): void {
+    const desired = this.spectatorCameraDesiredScratch;
+    const anchor = this.spectatorCameraAnchorScratch;
+    const safe = this.spectatorCameraSafeScratch;
+    const lookAt = this.spectatorCameraLookScratch;
+
+    if (target) {
+      const forwardX = -Math.sin(target.yaw);
+      const forwardZ = -Math.cos(target.yaw);
+      anchor.set(target.position.x, target.position.y + 1.05, target.position.z);
+      desired.set(
+        target.position.x - forwardX * 3.55,
+        target.position.y + 2.15,
+        target.position.z - forwardZ * 3.55
+      );
+      lookAt.copy(anchor);
+    } else {
+      const spiderPos = this.spider.position;
+      anchor.set(spiderPos.x, Math.max(0.85, spiderPos.y), spiderPos.z);
+      desired.set(spiderPos.x, spiderPos.y + 3.1, spiderPos.z + 4.6);
+      lookAt.set(spiderPos.x, spiderPos.y + 0.85, spiderPos.z);
+    }
+
+    // A câmera não atravessa as paredes do labirinto nem os móveis sólidos.
+    // O alvo é o ponto de partida; se o enquadramento traseiro estiver bloqueado,
+    // ele encurta até o último ponto livre, em vez de saltar para dentro da parede.
+    safe.copy(anchor);
+    const dx = desired.x - anchor.x;
+    const dy = desired.y - anchor.y;
+    const dz = desired.z - anchor.z;
+    let safeFraction = 1;
+    for (let step = 1; step <= 16; step++) {
+      const fraction = step / 16;
+      const x = anchor.x + dx * fraction;
+      const y = Math.max(0.24, Math.min(5.8, anchor.y + dy * fraction));
+      const z = anchor.z + dz * fraction;
+      const blocked = this.colliders.some((collider) => {
+        const box = collider.box;
+        return (
+          y >= box.min.y - 0.2 &&
+          y <= box.max.y + 0.2 &&
+          x >= box.min.x - 0.22 &&
+          x <= box.max.x + 0.22 &&
+          z >= box.min.z - 0.22 &&
+          z <= box.max.z + 0.22
+        );
+      });
+      if (blocked) {
+        safeFraction = (step - 1) / 16;
+        break;
+      }
+    }
+    safe.set(
+      anchor.x + dx * safeFraction,
+      Math.max(0.24, Math.min(5.8, anchor.y + dy * safeFraction)),
+      anchor.z + dz * safeFraction
+    );
+    this.camera.position.lerp(safe, 1 - Math.exp(-8.5 * Math.max(0, dt)));
+    this.camera.lookAt(lookAt);
+    this.sharedUniforms.uFlashlightIntensity.value = 0;
+  }
+
+  /**
+   * Mantém o mundo vivo enquanto a câmera morta acompanha o esquadrão. Se o
+   * antigo anfitrião morreu, ele ainda transmite a Aranha até a sala escolher
+   * outro anfitrião; o cadáver nunca volta a ser candidato da IA.
+   */
+  private updateSpectatorMode(dt: number): void {
+    if (!this.multiplayer) return;
+    this.elapsed += dt;
+    this.specialRoomDoors.update(dt);
+    const target = this.resolveSpectatorTarget();
+    this.updateSpectatorHud(target);
+    this.updateSpectatorCamera(dt, target);
+    this.radar.update(
+      this.position.x,
+      this.position.z,
+      this.yaw,
+      this.elapsed,
+      [],
+      true
+    );
+
+    const remoteAbduction = this.multiplayer.getActiveRemoteAbduction();
+    if (remoteAbduction) {
+      this.spider.updateRemoteCinematicSequence(
+        dt,
+        this.elapsed,
+        remoteAbduction.mode,
+        remoteAbduction.progress,
+        remoteAbduction.spiderPos,
+        remoteAbduction.victimPos,
+        remoteAbduction.ragdollHooks
+      );
+    } else if (this.multiplayer.isHost) {
+      this.spider.ensureExitedCinematic(
+        this.multiplayer.getObserverWorldPositions(
+          this.position,
+          this.multiplayer.localPlayerId,
+          true
+        )
+      );
+      const starvingVictimPos = this.multiplayer.getStarvingCocoonVictimPos(
+        this.position,
+        false,
+        0
+      );
+      if (starvingVictimPos) {
+        this.spider.commandReturnToDevourVictim(starvingVictimPos);
+      }
+      const candidates = this.multiplayer.buildSpiderPlayerCandidates({
+        pos: this.position,
+        yaw: this.yaw,
+        sprinting: false,
+        crouching: false,
+        flashlightOn: false,
+        flashlightDir: new THREE.Vector3(0, 0, -1),
+        voiceLevel: 0,
+        ensnared: false,
+        afk: false,
+        localDead: true,
+      });
+      if (candidates.length > 0) {
+        const chosen = this.spider.selectBestMultiplayerCandidate(candidates);
+        this.spider.update(
+          dt,
+          this.elapsed,
+          chosen.pos,
+          chosen.yaw,
+          chosen.sprinting,
+          chosen.crouching,
+          chosen.flashlightOn,
+          chosen.flashlightDir,
+          this.worldItems.getActiveFlares(),
+          () => {
+            if (!chosen.isLocal) {
+              this.multiplayer?.notifyAuthoritativeSpiderCaughtAlly(
+                chosen.id,
+                this.spider.position
+              );
+            }
+          },
+          chosen.voiceLevel ?? 0,
+          this.position,
+          this.yaw
+        );
+      }
+    } else {
+      const remotePacket = this.multiplayer.getFreshRemoteSpiderPacket(3500);
+      if (remotePacket) {
+        this.spider.applyRemoteNetworkState(
+          dt,
+          this.elapsed,
+          remotePacket,
+          this.camera.position,
+          0,
+          () => {}
+        );
+      }
+    }
+
+    this.multiplayer.update(
+      dt,
+      this.elapsed,
+      this.camera,
+      {
+        pos: this.position,
+        yaw: this.yaw,
+        pitch: this.pitch,
+        speed: 0,
+        bobPhase: 0,
+        crouch: 0,
+        flashlightOn: false,
+        flashDir: new THREE.Vector3(0, 0, -1),
+        health: 0,
+        bleeding: false,
+        ensnared: false,
+        inSequence: false,
+        dead: true,
+        afk: false,
+        walkieTalkieActive: false,
+      },
+        this.spider.getNetworkSnapshot(remoteAbduction?.allyId ?? null),
+      false
+    );
+    this.updateFlickeringLightsAndAudio();
+  }
+
   private finalizePermanentDeath(): void {
     if (this.disposed) return;
     if (this.permadeathTimerId) {
@@ -1323,6 +1626,7 @@ export class DoomGameApp {
     }
     this.sound.setWorldPaused(false);
     this.cocoonHudEl.classList.remove('is-visible', 'is-critical');
+    this.leaveSpectatorMode();
     this.onPermanentDeathExit?.();
   }
 
@@ -1498,6 +1802,20 @@ export class DoomGameApp {
           }
         }
         this.sound.unlock();
+
+        if (this.spectatorMode) {
+          if (e.code === 'ArrowRight' || e.code === 'KeyD') {
+            e.preventDefault();
+            this.selectSpectatorTarget(1);
+          } else if (e.code === 'ArrowLeft' || e.code === 'KeyA') {
+            e.preventDefault();
+            this.selectSpectatorTarget(-1);
+          } else if (e.code === 'Escape') {
+            e.preventDefault();
+            this.finalizePermanentDeath();
+          }
+          return;
+        }
 
         if (this.inventory.gameOverVisible) {
           if (e.code === 'Enter' || e.code === 'Space' || e.code === 'Escape') {
@@ -2659,10 +2977,16 @@ export class DoomGameApp {
         } catch {
           // ignorar
         }
-        this.inventory.showGameOver();
-        this.permadeathTimerId = window.setTimeout(() => {
-          this.finalizePermanentDeath();
-        }, 3800);
+        if (this.multiplayer) {
+          // No Co-op, a morte encerra o controle local, mas não expulsa o
+          // operador da sala: ele passa a assistir os sobreviventes.
+          this.enterSpectatorMode();
+        } else {
+          this.inventory.showGameOver();
+          this.permadeathTimerId = window.setTimeout(() => {
+            this.finalizePermanentDeath();
+          }, 3800);
+        }
       }
       return;
     }
@@ -3032,9 +3356,7 @@ export class DoomGameApp {
       this.webManager.placePlayerInWakingLairWeb(isCoop);
       if (this.pendingAbductionLairNotify && this.multiplayer) {
         this.pendingAbductionLairNotify = false;
-        this.multiplayer.notifyLocalAbductionFinished(
-          this.webManager.lairLocalCaptivePos
-        );
+        this.multiplayer.notifyLocalAbductionFinished();
         this.maybeStartSquadDevouredSequence();
       }
       this.playerHealth = 22;
@@ -3245,6 +3567,11 @@ export class DoomGameApp {
     }
     const isLocalAfk = this.refreshLocalAfkStatus();
 
+    if (this.spectatorMode) {
+      this.updateSpectatorMode(dt);
+      return;
+    }
+
     if (this.activeSequence === 'DEAD_TERMINATED') {
       this.touchControls.syncState({
         overlayBlocked: true,
@@ -3326,7 +3653,9 @@ export class DoomGameApp {
           abductionMode: this.currentAbductionMode,
           abductionProgress: this.currentAbductionProgress,
           abductionSpiderPos: this.currentAbductionSpiderPos,
-          dead: this.activeSequence === 'PERMADEATH_EXECUTION',
+          dead:
+            this.activeSequence === 'PERMADEATH_EXECUTION' ||
+            this.spectatorMode,
           afk: isLocalAfk,
         },
         this.spider.getNetworkSnapshot(this.multiplayer?.localPlayerId ?? null),
@@ -3526,7 +3855,7 @@ export class DoomGameApp {
 
     // Em Multiplayer, enquanto estiver 100% preso no Casulo de Teia do Ninho:
     // - Não pode sair sozinho; conta regressiva até a Aranha voltar faminta para devorá-lo!
-    // - [E] ou [Espaço] emite alerta SOS no rádio para os amigos virem cortá-lo a tempo!
+    // - Nenhuma coordenada ou alerta automático é transmitido: os operadores precisam procurar.
     if (this.webManager.isLockedInMultiplayerCocoon) {
       if (this.cocoonDevourTimerSec <= 0 && !this.cocoonReturnTriggered) {
         this.cocoonDevourMaxSec = this.multiplayer?.hasLivingAllies() ? 45 : 14;
@@ -3548,21 +3877,17 @@ export class DoomGameApp {
       this.cocoonHudEl.classList.toggle('is-critical', isCrit);
       this.cocoonBarFillEl.style.width = `${(ratio * 100).toFixed(1)}%`;
       this.cocoonSubEl.textContent = nestIsFull
-        ? 'O NINHO ESTÁ CHEIO · NÃO HÁ MAIS NINGUÉM SOLTO PARA CORTAR A TEIA'
+        ? 'A EQUIPE INTEIRA ESTÁ IMOBILIZADA'
         : this.spider.isDead
-        ? 'ARANHA DESTRUÍDA · CHAME UM AMIGO PARA CORTAR A TEIA NO NINHO'
+        ? 'ARANHA DESTRUÍDA · UM OPERADOR PODE CORTAR A TEIA'
         : this.spider.isStunned
-        ? 'ARANHA ATORDOADA · CHAME UM AMIGO PARA CORTAR A TEIA NO NINHO'
+        ? 'ARANHA ATORDOADA · PROCURE O CASULO'
         : isCrit
-        ? `A ARANHA ESTÁ VOLTANDO PARA DEVORAR VOCÊ (${Math.ceil(this.cocoonDevourTimerSec)}s)! GRITE PELO RÁDIO [E / ESPAÇO]!`
-        : `CHAME UM AMIGO PARA CORTAR A TEIA [E / FACA] — DEVORAÇÃO EM ${Math.ceil(this.cocoonDevourTimerSec)}s ([ESPAÇO] RÁDIO SOS)`;
+        ? `A ARANHA ESTÁ VOLTANDO PARA DEVORAR VOCÊ (${Math.ceil(this.cocoonDevourTimerSec)}s)!`
+        : `A TEIA SEGURA VOCÊ — DEVORAÇÃO EM ${Math.ceil(this.cocoonDevourTimerSec)}s`;
 
       if (interactPressed || strugglePressed) {
         this.sound.playStruggleEffort();
-        this.multiplayer?.emitCocoonDistressCall(
-          this.position,
-          this.cocoonDevourTimerSec
-        );
       }
 
       if (isCrit && !this.spider.isStunned && !this.cocoonReturnTriggered) {
@@ -4650,6 +4975,7 @@ export class DoomGameApp {
   }> = [];
 
   private updateFlickeringLightsAndAudio(): void {
+    const listenerPos = this.spectatorMode ? this.camera.position : this.position;
     let nearestLamp: THREE.Vector3 | null = null;
     let nearestDist = Infinity;
     let nearestJustFlickered = false;
@@ -4686,8 +5012,8 @@ export class DoomGameApp {
       const justFlickered = isDim && !this.prevLightDimState[i];
       this.prevLightDimState[i] = isDim;
 
-      const dx = src.position.x - this.position.x;
-      const dz = src.position.z - this.position.z;
+      const dx = src.position.x - listenerPos.x;
+      const dz = src.position.z - listenerPos.z;
       const d2 = dx * dx + dz * dz;
       const d = Math.sqrt(d2);
       if (d < nearestDist) {
@@ -4711,8 +5037,8 @@ export class DoomGameApp {
             isDim: false,
             panelEmission: 1.0,
           };
-      const dx = aSrc.position.x - this.position.x;
-      const dz = aSrc.position.z - this.position.z;
+      const dx = aSrc.position.x - listenerPos.x;
+      const dz = aSrc.position.z - listenerPos.z;
       const d2 = dx * dx + dz * dz;
       const slot = this.rankedLightScratch[this.lights.length + j];
       slot.position = aSrc.position;
@@ -4752,8 +5078,8 @@ export class DoomGameApp {
     for (let f = 0; f < flares.length; f++) {
       const fl = flares[f];
       const d = Math.hypot(
-        fl.position.x - this.position.x,
-        fl.position.z - this.position.z
+        fl.position.x - listenerPos.x,
+        fl.position.z - listenerPos.z
       );
       if (d < nearestFlareDist) {
         nearestFlareDist = d;
@@ -4786,14 +5112,14 @@ export class DoomGameApp {
 
     if (!(this.pauseMenu.open && !this.multiplayer)) {
       this.sound.updateSpatialLampAudio(
-        this.position,
+        listenerPos,
         this.yaw,
         nearestLamp,
         nearestDist,
         nearestJustFlickered
       );
       this.sound.updateSpatialFlareAudio(
-        this.position,
+        listenerPos,
         this.yaw,
         nearestFlarePos,
         nearestFlareDist,
@@ -4820,6 +5146,7 @@ export class DoomGameApp {
     this.roomBannerEl.remove();
     this.doorLockPromptEl.remove();
     this.cocoonHudEl.remove();
+    this.spectatorHudEl.remove();
     this.danceHudEl.remove();
     this.shotgunObjectiveEl.remove();
     this.taserHudEl.remove();

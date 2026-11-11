@@ -4,7 +4,11 @@ import { createRandomArenaLayout } from '../src/doom/DoomArenaRandomizer';
 import { buildDoomLabyrinth, gridCellToWorld } from '../src/doom/DoomMazeBuilder';
 import { createDoomTextures } from '../src/doom/DoomTextures';
 import { createDoomSharedUniforms } from '../src/doom/DoomShader';
-import { DoomWorldItems } from '../src/doom/DoomWorldItems';
+import {
+  CRATE_LID_CLOSED_ROTATION,
+  CRATE_LID_OPEN_ROTATION,
+  DoomWorldItems,
+} from '../src/doom/DoomWorldItems';
 import { resolveCylinderWorldCollisions, sweepSegmentVsBox } from '../src/engine/physics/SpatialSweep';
 import type { DoomInventory } from '../src/doom/DoomInventory';
 
@@ -93,7 +97,8 @@ describe('Estojos de suprimentos sobre obstáculos', () => {
         expect(items.getPickupsSnapshot().find(p => p.id === `pickup-${i}`)!.collected).toBe(false);
         const crateNode = scene.getObjectByName(`SupplyLocation_${i}`)!.getObjectByName('SupplyCrate')!;
         const lid = crateNode.getObjectByName('SupplyLid')!;
-        expect(lid.rotation.x).toBeLessThan(-0.05); // tampa fechada
+        // Portinhola fechada: assentada na boca do baú, sem fresta.
+        expect(lid.rotation.x).toBeCloseTo(CRATE_LID_CLOSED_ROTATION, 5);
         expect(inventory.addItem).not.toHaveBeenCalled();
         // Interagir abre a tampa...
         let opened = 0;
@@ -104,7 +109,7 @@ describe('Estojos de suprimentos sobre obstáculos', () => {
         for (let frame = 0; frame < 40; frame++) {
           items.updateAndCheckPickups(.016, 0, player, camera, lookAt, false, inventory);
         }
-        expect(lid.rotation.x).toBeLessThan(-1.6);
+        expect(lid.rotation.x).toBeLessThan(CRATE_LID_OPEN_ROTATION * 0.8);
         expect(items.getPickupsSnapshot().find(p => p.id === `pickup-${i}`)!.collected).toBe(true);
       }
     }

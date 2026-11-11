@@ -23,11 +23,11 @@ describe('Rádio no modo solo e no cooperativo', () => {
       }
       for (const room of THEMED_ROOMS) expect(solo.cratePlacements.some(p => p.itemId === room.keyItemId)).toBe(true);
       expect(solo.cratePlacements.filter(p => p.itemId === 'shotgun_shells').length).toBeGreaterThanOrEqual(2);
-      // Solo mantém as 4 peças; o co-op começa com 1 jogador (1 peça), então
-      // apenas a primeira peça coincide — as demais são o que o esquadrão junta.
+      // Mesmo com um jogador só, o co-op precisa do conjunto COMPLETO: as
+      // quatro peças ficam exatamente onde o solo as coloca.
       expect(solo.shotgunRoomPlacements).toHaveLength(4);
-      expect(coop.shotgunRoomPlacements).toHaveLength(1);
-      expect(coop.shotgunRoomPlacements[0]).toEqual(solo.shotgunRoomPlacements[0]);
+      expect(coop.shotgunRoomPlacements).toHaveLength(4);
+      expect(coop.shotgunRoomPlacements).toEqual(solo.shotgunRoomPlacements);
       const items = new DoomWorldItems(new THREE.Scene(), createDoomSharedUniforms(), solo);
       expect(items.getPickupsSnapshot().some(p => p.itemId === radio)).toBe(false);
       expect(items.getUncollectedEquipmentSignals()).toHaveLength(29);

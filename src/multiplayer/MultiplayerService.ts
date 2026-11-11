@@ -246,9 +246,7 @@ export type NetworkWorldEvent =
   | {
       kind: 'abduction_finished';
       victimId: string;
-      /** Posição exata do casulo no Ninho (todos os presos ficam juntos lá). */
-      lairX?: number;
-      lairZ?: number;
+      /** Apenas transição de estado; a posição segue pelos pacotes de pose. */
       ts: number;
     }
   | {
@@ -293,15 +291,6 @@ export type NetworkWorldEvent =
       ts: number;
     }
   | {
-      kind: 'sos_alert';
-      senderId: string;
-      senderName: string;
-      sectorName: string;
-      x: number;
-      z: number;
-      ts: number;
-    }
-  | {
       kind: 'room_unlocked';
       senderId: string;
       senderName: string;
@@ -312,8 +301,9 @@ export type NetworkWorldEvent =
   | {
       /**
        * O anfitrião informa quantas peças da shotgun o servidor preparou.
-       * Co-op: uma peça por jogador presente (1 a 4). Serve para que quem entra
-       * depois veja exatamente a mesma quantidade de peças do resto da equipe.
+       * Co-op: um conjunto completo das quatro peças por jogador presente
+       * (4, 8, 12...). Serve para que quem entra depois veja exatamente a mesma
+       * quantidade de peças do resto da equipe.
        */
       kind: 'shotgun_slots';
       senderId: string;
@@ -1308,6 +1298,11 @@ export class MultiplayerRoomClient {
 
   get isHost(): boolean {
     return this.currentHostId === this.session.localPlayerId;
+  }
+
+  /** Host efetivo após migração; não congela no host inicial da sessão. */
+  get hostPlayerId(): string {
+    return this.currentHostId;
   }
 
   get isLocalAfk(): boolean {
