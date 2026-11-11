@@ -4,6 +4,7 @@ import {
   createTaserLambertMaterials,
   TASER_COLORS,
 } from './DoomTaserModel';
+import type { WebStrugglePose } from './DoomWebStruggle';
 import { computeAdaptiveVerticalFov } from './DoomTouchControls';
 
 export const TASER_ITEM_ID = 'field_taser';
@@ -110,6 +111,8 @@ export class DoomTaserViewmodel {
   private handSign: 1 | -1 = 1;
   private swayX = 0;
   private swayY = 0;
+  /** Pose da luta contra a teia (null = solto). */
+  private webStruggle: WebStrugglePose | null = null;
   private readonly arcPoints: THREE.Vector3[] = [];
 
   constructor(aspect: number) {
@@ -451,8 +454,34 @@ export class DoomTaserViewmodel {
     this.root.scale.setScalar(1.1);
     this.root.scale.x *= this.handSign;
 
+    this.applyWebStruggle();
+
     this.swayX *= 1 - Math.min(1, step * 6);
     this.swayY *= 1 - Math.min(1, step * 6);
+  }
+
+  /**
+   * Braços presos pela seda: a arma é arrastada para baixo e para dentro, e
+   * cada arranco do operador levanta o conjunto antes do contragolpe.
+   */
+  setWebStruggle(pose: WebStrugglePose | null): void {
+    this.webStruggle = pose && pose.bound01 > 0.001 ? pose : null;
+  }
+
+  private applyWebStruggle(): void {
+    const pose = this.webStruggle;
+    if (!pose) return;
+    const b = pose.bound01;
+    const yank = pose.yank * b;
+    const strain = Math.max(0, Math.min(1, pose.strain01)) * b;
+    const breath = pose.breath * b;
+    const tremor = pose.tremor * b;
+    this.root.position.x += (-0.055 * this.handSign + tremor * 0.004) * b;
+    this.root.position.y +=
+      (-0.07 - strain * 0.02 + Math.max(0, yank) * 0.045 + breath * 0.004) * b;
+    this.root.position.z += (0.06 - yank * 0.025) * b;
+    this.root.rotation.x += (0.2 + strain * 0.08 - yank * 0.14) * b;
+    this.root.rotation.z += (-0.16 - strain * 0.06 + tremor * 0.05) * this.handSign * b;
   }
 
   dispose(): void {

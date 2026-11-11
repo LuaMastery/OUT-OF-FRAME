@@ -18,6 +18,7 @@ import {
   MAX_LAIR_CAPTIVES,
 } from '../multiplayer/DoomMultiplayerCoordinator';
 import { createDoomPropMaterial, DoomSharedUniforms } from './DoomShader';
+import type { WebStrugglePose } from './DoomWebStruggle';
 
 export interface SpiderWebTrap {
   id: number;
@@ -456,10 +457,70 @@ function buildCatenarySilkGroup(
     cur.lerpVectors(a, b, t);
     cur.y -= 4 * t * (1 - t) * sag;
     const rSeg = radius * (1 - 0.25 * Math.sin(t * Math.PI));
-    grp.add(buildSilkStrandMesh(prev, cur, rSeg, mat));
+    const strand = buildSilkStrandMesh(prev, cur, rSeg, mat);
+    // Cada segmento guarda o seu pivô (o ponto onde nasce): assim a vibração
+    // dobra o cabo a partir da ancoragem, como seda esticada, sem reposicionar
+    // a malha inteira nem regenerar geometria a cada quadro.
+    strand.userData = {
+      ...strand.userData,
+      strandPivot: prev.clone(),
+      strandRestPos: strand.position.clone(),
+      strandRestQuat: strand.quaternion.clone(),
+      strandIndex: i - 1,
+      strandCount: segments,
+      strandSeed: (i * 7.31 + a.x * 13.7 + b.z * 5.9) % 6.283,
+    };
+    grp.add(strand);
     prev = cur.clone();
   }
   return grp;
+}
+
+/**
+ * Faz um cabo de seda vibrar: cada segmento gira em torno do ponto em que
+ * nasce, com amplitude crescente rumo à ponta solta (efeito de chicote).
+ *
+ * @param amp amplitude em radianos do segmento mais externo
+ * @param stretch 0..1 deformação elástica (a seda esticada afina e vibra mais)
+ */
+function vibrateSilkCable(
+  cable: THREE.Object3D,
+  amp: number,
+  phase: number,
+  stretch: number,
+  scratchQ: THREE.Quaternion,
+  scratchE: THREE.Euler,
+  scratchV: THREE.Vector3
+): void {
+  for (const strand of cable.children) {
+    const pivot = strand.userData?.strandPivot as THREE.Vector3 | undefined;
+    const restPos = strand.userData?.strandRestPos as THREE.Vector3 | undefined;
+    const restQuat = strand.userData?.strandRestQuat as
+      | THREE.Quaternion
+      | undefined;
+    if (!pivot || !restPos || !restQuat) continue;
+    const index = (strand.userData?.strandIndex as number) ?? 0;
+    const count = (strand.userData?.strandCount as number) ?? 1;
+    const seed = (strand.userData?.strandSeed as number) ?? 0;
+    // A ponta solta balança mais que a raiz presa na ancoragem.
+    const reach = (index + 1) / Math.max(1, count);
+    const wave =
+      Math.sin(phase * 1.0 + seed + index * 0.85) * amp * reach +
+      Math.sin(phase * 2.3 + seed * 1.7) * amp * 0.35 * reach;
+    const lateral = Math.cos(phase * 0.8 + seed * 2.1) * amp * 0.6 * reach;
+    scratchE.set(wave, 0, lateral, 'XYZ');
+    scratchQ.setFromEuler(scratchE);
+    strand.quaternion.copy(scratchQ).multiply(restQuat);
+    scratchV.copy(restPos).sub(pivot).applyQuaternion(scratchQ).add(pivot);
+    strand.position.copy(scratchV);
+    if (stretch > 0.001) {
+      // Seda esticada: o segmento afina de lado e estica no comprimento.
+      const thin = 1 - 0.16 * stretch * reach;
+      strand.scale.set(thin, 1 + 0.05 * stretch * reach, thin);
+    } else if (strand.scale.x !== 1) {
+      strand.scale.set(1, 1, 1);
+    }
+  }
 }
 
 /**
@@ -617,6 +678,13 @@ export class DoomSpiderWebManager {
   // Contador incrementado toda vez que fios ao redor do jogador se rompem / são cortados
   private webSnapBurstSeq = 0;
 
+  /** Pose da luta do jogador no quadro (alimenta a vibração dos fios). */
+  private strugglePose: WebStrugglePose | null = null;
+  private struggleClock = 0;
+  private readonly silkScratchQuat = new THREE.Quaternion();
+  private readonly silkScratchEuler = new THREE.Euler();
+  private readonly silkScratchVec = new THREE.Vector3();
+
   constructor(
     scene: THREE.Scene,
     sharedUniforms: DoomSharedUniforms,
@@ -684,6 +752,56 @@ export class DoomSpiderWebManager {
     for (const tc of arenaLayout.initialWebTrapCells) {
       const presetW = gridCellToWorld(tc.gx, tc.gz);
       this.spawnWebTrap(presetW.x, presetW.z, true);
+    }
+  }
+
+  /** Amplitude do "wobble" do casulo: cresce com o esforço e o pânico. */
+  private cocoonWobble(struggleInput: boolean): number {
+    const pose = this.strugglePose;
+    if (!pose) return struggleInput ? 0.08 : 0;
+    const bound = pose.bound01;
+    if (bound <= 0.001) return 0;
+    const heave = Math.abs(pose.yank) * bound;
+    return (0.012 + 0.07 * pose.effort01 + 0.03 * pose.panic01 + heave * 0.05) * bound;
+  }
+
+  /** O fôlego levanta e abaixa o casulo alguns milímetros. */
+  private struggleBreathLift(): number {
+    const pose = this.strugglePose;
+    if (!pose) return 0;
+    return pose.breath * 0.008 * pose.bound01;
+  }
+
+  /** 0..1 — o quanto a seda está sendo esticada agora. */
+  private currentSilkStretch(): number {
+    const pose = this.strugglePose;
+    if (!pose) return 0;
+    return Math.max(0, Math.min(1, pose.strain01)) * pose.bound01;
+  }
+
+  /**
+   * Faz a seda ao redor do corpo vibrar com a luta: quase parada quando a
+   * Aranha está longe e chicoteando quando o operador se debate.
+   */
+  private animateSnareSilk(dt: number): void {
+    this.struggleClock += dt;
+    const pose = this.strugglePose;
+    const bound = pose ? pose.bound01 : 0;
+    if (!pose || bound <= 0.001) return;
+    const effort = Math.max(0, Math.min(1, pose.effort01)) * bound;
+    const stretch = this.currentSilkStretch();
+    const amp = (0.003 + 0.042 * effort + 0.014 * pose.agitation01) * bound;
+    const phase = this.struggleClock * (4.5 + 7 * effort);
+    for (const cable of this.playerSnareTetherGroup.children) {
+      vibrateSilkCable(
+        cable,
+        amp,
+        phase,
+        stretch,
+        this.silkScratchQuat,
+        this.silkScratchEuler,
+        this.silkScratchVec
+      );
     }
   }
 
@@ -1637,8 +1755,10 @@ export class DoomSpiderWebManager {
     struggleInput: boolean,
     hasKnife: boolean,
     sound: SoundEngine,
-    onWebTriggeredAlertSpider: (trapPos: THREE.Vector3) => void
+    onWebTriggeredAlertSpider: (trapPos: THREE.Vector3) => void,
+    struggle: WebStrugglePose | null = null
   ): { speedMultiplier: number } {
+    this.strugglePose = struggle;
     // 1. Caso o jogador tenha acabado de acordar no centro do Ninho de Teia da Aranha:
     if (this.inWakingLairWeb) {
       if (this.lockedInMultiplayerCocoon) {
@@ -1650,7 +1770,7 @@ export class DoomSpiderWebManager {
           this.lairCenter.z
         );
         const snapBack = Math.min(1, dt * 10.0);
-        const wobble = struggleInput ? 0.08 : 0;
+        const wobble = this.cocoonWobble(struggleInput);
         // Cada preso tem seu ponto no anel: ninguém fica empilhado no centro.
         const spot = this.lairLocalSpot.lengthSq() > 0 ? this.lairLocalSpot : this.lairCenter;
         playerPos.x += (spot.x - playerPos.x) * snapBack;
@@ -1664,7 +1784,7 @@ export class DoomSpiderWebManager {
           );
           this.lairCocoonRing.scale.set(
             1 + wobble,
-            1 - wobble * 0.4,
+            1 - wobble * 0.4 + this.struggleBreathLift(),
             1 + wobble
           );
         }
@@ -1756,7 +1876,13 @@ export class DoomSpiderWebManager {
           (playerPos.z + this.ensnaredPos.z) * 0.5
         );
         const ratio = this.ensnaredRemaining / this.ensnaredMaxDuration;
-        this.playerSnareTetherGroup.scale.set(1, 0.45 + 0.55 * ratio, 1);
+        this.animateSnareSilk(dt);
+        const squeeze = 1 - this.currentSilkStretch() * 0.05;
+        this.playerSnareTetherGroup.scale.set(
+          squeeze,
+          0.45 + 0.55 * ratio,
+          squeeze
+        );
       } else {
         this.playerSnareTetherGroup.visible = false;
         this.webSnapBurstSeq++;

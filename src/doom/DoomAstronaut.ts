@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { HeldWeapon, QuickHandheldKind, QuickItemAction } from './DoomItemAction';
 import { AstronautRagdoll, RAGDOLL_IDX } from './DoomRagdoll';
+import type { WebStrugglePose } from './DoomWebStruggle';
 import { createDoomPropMaterial, DoomSharedUniforms } from './DoomShader';
 import {
   clampDoomDanceValue as clampDanceValue,
@@ -1542,7 +1543,8 @@ export class DoomAstronaut {
     draggedBySpider = false,
     spiderWorldPos?: THREE.Vector3 | null,
     dt = 1 / 60,
-    slideAmount = 0
+    slideAmount = 0,
+    webStruggle?: WebStrugglePose | null
   ): void {
     this.root.visible = true;
     this.setFirstPersonMode(false);
@@ -1581,28 +1583,108 @@ export class DoomAstronaut {
     if (trappedOrDowned) {
       this.thirdPersonFlashlightGroup.visible = false;
       this.thirdPersonWebCocoonGroup.visible = true;
-      const subtleBreath = Math.sin(bobPhase * 2.4) * 0.03;
-      this.bodyPivot.position.set(0, -0.22, 0);
-      this.bodyPivot.rotation.set(0.2, subtleBreath * 0.3, subtleBreath * 0.2);
-      this.hipsGroup.position.set(0, 0.86, 0);
-      this.torsoGroup.rotation.set(0.16, 0, 0);
-      this.headGroup.rotation.set(-0.14 + subtleBreath, subtleBreath * 0.5, 0);
-      this.leftLeg.hipPivot.rotation.set(0.48, 0, -0.06);
-      this.leftLeg.kneePivot.rotation.set(-0.82, 0, 0);
-      this.leftLeg.anklePivot.rotation.set(0.34, 0, 0);
-      this.rightLeg.hipPivot.rotation.set(0.48, 0, 0.06);
-      this.rightLeg.kneePivot.rotation.set(-0.82, 0, 0);
-      this.rightLeg.anklePivot.rotation.set(0.34, 0, 0);
-      this.leftArm.shoulderPivot.rotation.set(0.48 + subtleBreath, 0.36, -0.12);
-      this.leftArm.elbowPivot.rotation.set(0.98, 0, 0);
-      this.leftArm.setGripPose('sprawled');
-      this.rightArm.shoulderPivot.rotation.set(0.48 - subtleBreath, -0.36, 0.12);
-      this.rightArm.elbowPivot.rotation.set(0.98, 0, 0);
-      this.rightArm.setGripPose('sprawled');
+
+      // Sem pose de luta (chamadas remotas antigas): o fôlego sutil de antes,
+      // sem nenhuma mudança de comportamento.
+      if (!webStruggle) {
+        const subtleBreath = Math.sin(bobPhase * 2.4) * 0.03;
+        this.bodyPivot.position.set(0, -0.22, 0);
+        this.bodyPivot.rotation.set(0.2, subtleBreath * 0.3, subtleBreath * 0.2);
+        this.hipsGroup.position.set(0, 0.86, 0);
+        this.torsoGroup.rotation.set(0.16, 0, 0);
+        this.headGroup.rotation.set(-0.14 + subtleBreath, subtleBreath * 0.5, 0);
+        this.leftLeg.hipPivot.rotation.set(0.48, 0, -0.06);
+        this.leftLeg.kneePivot.rotation.set(-0.82, 0, 0);
+        this.leftLeg.anklePivot.rotation.set(0.34, 0, 0);
+        this.rightLeg.hipPivot.rotation.set(0.48, 0, 0.06);
+        this.rightLeg.kneePivot.rotation.set(-0.82, 0, 0);
+        this.rightLeg.anklePivot.rotation.set(0.34, 0, 0);
+        this.leftArm.shoulderPivot.rotation.set(0.48 + subtleBreath, 0.36, -0.12);
+        this.leftArm.elbowPivot.rotation.set(0.98, 0, 0);
+        this.leftArm.setGripPose('sprawled');
+        this.rightArm.shoulderPivot.rotation.set(0.48 - subtleBreath, -0.36, 0.12);
+        this.rightArm.elbowPivot.rotation.set(0.98, 0, 0);
+        this.rightArm.setGripPose('sprawled');
+        this.thirdPersonWebCocoonGroup.scale.set(1, 1, 1);
+        return;
+      }
+
+      // Luta contra a seda: o operador se debate de verdade — tronco
+      // arqueando, braços arrancando, pernas chutando e cabeça jogada para
+      // trás — e tudo cresce com o perigo.
+      const bound = webStruggle.bound01;
+      const yank = webStruggle.yank * bound;
+      const strain = Math.max(0, Math.min(1, webStruggle.strain01)) * bound;
+      const effort = Math.max(0, Math.min(1, webStruggle.effort01)) * bound;
+      const panic = webStruggle.panic01 * bound;
+      const breath = webStruggle.breath * bound;
+      const tremor = webStruggle.tremor * bound;
+      const sway = webStruggle.sway * bound;
+      const heave = Math.max(0, yank);
+      const pulling = yank > 0.12 || strain > 0.45;
+
+      // O corpo afunda no casulo conforme cansa e empina a cada arranco.
+      this.bodyPivot.position.set(
+        sway * 0.012,
+        -0.22 + heave * 0.05 + effort * 0.03 + breath * 0.006,
+        0
+      );
+      this.bodyPivot.rotation.set(
+        0.2 - yank * 0.16 + breath * 0.05,
+        sway * 0.06,
+        sway * 0.05 + tremor * 0.02
+      );
+      this.hipsGroup.position.set(0, 0.86 - effort * 0.03 + breath * 0.008, 0);
+      // Tronco arqueia para trás ao puxar os fios...
+      this.torsoGroup.rotation.set(
+        0.16 + strain * 0.12 + breath * 0.02,
+        -sway * 0.04,
+        tremor * 0.03
+      );
+      // ... e a cabeça vai junto, batendo no capacete no contragolpe.
+      this.headGroup.rotation.set(
+        -0.14 + breath * 0.05 + heave * 0.12 + panic * 0.04,
+        sway * 0.05 + tremor * 0.02,
+        tremor * 0.03
+      );
+
+      // Pernas chutando alternadas (a seda prende as coxas, os joelhos lutam).
+      const kickL = breath * 0.16 * (0.25 + effort);
+      const kickR = -breath * 0.16 * (0.25 + effort);
+      this.leftLeg.hipPivot.rotation.set(0.48 + kickL * 0.5, 0, -0.06);
+      this.leftLeg.kneePivot.rotation.set(-0.82 + kickL, 0, 0);
+      this.leftLeg.anklePivot.rotation.set(0.34 - kickL * 0.4, 0, 0);
+      this.rightLeg.hipPivot.rotation.set(0.48 + kickR * 0.5, 0, 0.06);
+      this.rightLeg.kneePivot.rotation.set(-0.82 + kickR, 0, 0);
+      this.rightLeg.anklePivot.rotation.set(0.34 - kickR * 0.4, 0, 0);
+
+      // Braços: presos ao tronco pela seda, arrancando para cima no puxão.
+      this.leftArm.shoulderPivot.rotation.set(
+        0.48 + breath * 0.04 + heave * 0.34 + strain * 0.12,
+        0.36 - strain * 0.1,
+        -0.12 - strain * 0.08 - tremor * 0.04
+      );
+      this.leftArm.elbowPivot.rotation.set(0.98 - heave * 0.3, 0, 0);
+      this.leftArm.setGripPose(pulling ? 'claw' : 'sprawled');
+      this.rightArm.shoulderPivot.rotation.set(
+        0.48 - breath * 0.04 + heave * 0.34 + strain * 0.12,
+        -0.36 + strain * 0.1,
+        0.12 + strain * 0.08 + tremor * 0.04
+      );
+      this.rightArm.elbowPivot.rotation.set(0.98 - heave * 0.3, 0, 0);
+      this.rightArm.setGripPose(pulling ? 'claw' : 'sprawled');
+
+      // A seda do casulo estica junto com o esforço.
+      this.thirdPersonWebCocoonGroup.scale.set(
+        1 + strain * 0.06,
+        1 - strain * 0.03,
+        1 + strain * 0.06
+      );
       return;
     }
 
     this.thirdPersonWebCocoonGroup.visible = false;
+    this.thirdPersonWebCocoonGroup.scale.set(1, 1, 1);
 
     const slide = Number.isFinite(slideAmount) ? THREE.MathUtils.clamp(slideAmount, 0, 1) : 0;
     const crouch = THREE.MathUtils.clamp(crouchAmount, 0, 1);

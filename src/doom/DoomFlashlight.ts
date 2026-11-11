@@ -6,6 +6,7 @@ import {
   createAstronautMaterials,
 } from './DoomAstronaut';
 import { computeAdaptiveVerticalFov } from './DoomTouchControls';
+import type { WebStrugglePose } from './DoomWebStruggle';
 import {
   buildTaserBody,
   createTaserLambertMaterials,
@@ -176,6 +177,9 @@ export class DoomFlashlight {
 
   // Grupo de ação rápida em 1ª pessoa (atalhos [1], [2], [3] e uso de objetos)
   private readonly quickRootGroup = new THREE.Group();
+  /** Pose da luta contra a teia (null = solto): alimenta braços e lanterna. */
+  private webStruggle: WebStrugglePose | null = null;
+  private webStruggleClock = 0;
   private readonly quickAnimGroup = new THREE.Group();
   private readonly knifeBladePivot = new THREE.Group();
   private readonly quickPropMeshes: Record<QuickHandheldKind, THREE.Object3D>;
@@ -406,6 +410,7 @@ export class DoomFlashlight {
     model.add(this.rightAstronautArm.root);
 
     this.animGroup.add(model);
+    this.rootGroup.name = 'FlashlightViewmodelRoot';
     this.rootGroup.add(this.animGroup);
     this.rootGroup.visible = false;
     this.viewScene.add(this.rootGroup);
@@ -1255,8 +1260,18 @@ export class DoomFlashlight {
     );
   }
 
+  /**
+   * Entrega a pose da luta contra a teia (`DoomWebStruggle`) para o modelo de
+   * 1ª pessoa: os braços passam a se debater presos na seda em vez de seguirem
+   * balançando como se nada estivesse acontecendo.
+   */
+  setWebStruggle(pose: WebStrugglePose | null): void {
+    this.webStruggle = pose && pose.bound01 > 0.001 ? pose : null;
+  }
+
   private updateQuickActionAnimation(dt: number): void {
     if (!this.activeQuickKind) {
+      if (this.applyWebStruggleLeftArm(dt)) return;
       this.quickRootGroup.visible = false;
       this.leftAstronautArm.setInUse(false);
       return;
@@ -1543,6 +1558,90 @@ export class DoomFlashlight {
   }
 
   /**
+   * Braço esquerdo em 1ª pessoa lutando contra a seda: a mão sobe até o peito,
+   * agarra os fios e puxa a cada apertada, abrindo no contragolpe.
+   *
+   * @returns true quando o braço foi posado pela luta (o chamador não mexe mais).
+   */
+  private applyWebStruggleLeftArm(dt: number): boolean {
+    const pose = this.webStruggle;
+    if (!pose || pose.bound01 <= 0.001) return false;
+    if (this.knockoutDropActive) return false;
+
+    this.webStruggleClock += dt;
+    const b = pose.bound01;
+    const yank = pose.yank * b;
+    const strain = Math.max(0, Math.min(1, pose.strain01)) * b;
+    const breath = pose.breath * b;
+    const tremor = pose.tremor * b;
+    const sway = pose.sway * b;
+
+    this.quickRootGroup.visible = true;
+    this.leftAstronautArm.setInUse(true);
+    this.quickAnimGroup.rotation.set(0, 0, 0);
+    // Encolhe a entrada conforme o corpo é imobilizado (sem estalar).
+    const ease = b * b * (3 - 2 * b);
+
+    this.quickRootGroup.position.set(
+      (-0.3 - strain * 0.02 + tremor * 0.006) * this.handSign,
+      -0.3 + ease * 0.07 + strain * 0.035 + breath * 0.006,
+      0.045 - strain * 0.02 + yank * 0.02
+    );
+
+    // Ombro: o braço cruza o peito e arranca para cima no puxão.
+    this.leftAstronautArm.shoulderPivot.rotation.set(
+      0.82 + ease * 0.22 + yank * 0.3 + breath * 0.02,
+      -0.34 - strain * 0.1 + sway * 0.03,
+      0.26 + strain * 0.14 + tremor * 0.05
+    );
+    // Cotovelo: dobra ao segurar a seda e estica no arranco.
+    this.leftAstronautArm.elbowPivot.rotation.set(
+      1.12 - yank * 0.34 + strain * 0.12,
+      -0.22 - strain * 0.12,
+      0.3 + strain * 0.1 + tremor * 0.06
+    );
+    // Punho: mão fechada no fio, torcendo para arrancá-lo.
+    this.leftAstronautArm.wristPivot.rotation.set(
+      -0.18 - yank * 0.22,
+      0.3 - strain * 0.22,
+      -0.16 + sway * 0.06 + tremor * 0.08
+    );
+    // Mão fecha no puxão e abre quando a seda devolve o braço.
+    this.leftAstronautArm.setGripPose(
+      yank > 0.12 || strain > 0.45 ? 'claw' : 'sprawled'
+    );
+    return true;
+  }
+
+  /**
+   * Aplica a luta contra a teia no braço direito (lanterna): a seda arrasta o
+   * antebraço para baixo e para dentro, e cada puxão levanta o conjunto antes
+   * do contragolpe.
+   */
+  private applyWebStruggleRightArm(): void {
+    const pose = this.webStruggle;
+    if (!pose || pose.bound01 <= 0.001) return;
+    const b = pose.bound01;
+    const yank = pose.yank * b;
+    const strain = Math.max(0, Math.min(1, pose.strain01)) * b;
+    const breath = pose.breath * b;
+    const tremor = pose.tremor * b;
+    const sway = pose.sway * b;
+
+    // Seda puxando o braço para baixo e contra o tronco...
+    this.rootGroup.position.x += (-0.07 * this.handSign + tremor * 0.005) * b;
+    this.rootGroup.position.y +=
+      (-0.09 - strain * 0.025 + yank * 0.05 + breath * 0.004) * b;
+    this.rootGroup.position.z += (0.085 - yank * 0.03) * b;
+
+    // ... e derrubando o foco do feixe junto com o antebraço preso.
+    this.animGroup.rotation.x += (0.26 + strain * 0.1 - yank * 0.18) * b;
+    this.animGroup.rotation.z +=
+      (-0.2 - strain * 0.08 + tremor * 0.06) * this.handSign * b;
+    this.animGroup.rotation.y += sway * 0.02 * b;
+  }
+
+  /**
    * Atualiza a animação de saque/guarda da lanterna no Braço Direito do Astronauta,
    * o clique físico do botão + polegar EVA e qualquer animação do Braço Esquerdo do Astronauta.
    */
@@ -1665,6 +1764,8 @@ export class DoomFlashlight {
       stowedYaw + (heldYaw - stowedYaw) * eased + this.swayX * 1.5,
       stowedRoll + (heldRoll - stowedRoll) * eased
     );
+
+    this.applyWebStruggleRightArm();
 
     return {
       beamIntensity,

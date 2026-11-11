@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { computeAdaptiveVerticalFov } from './DoomTouchControls';
+import type { WebStrugglePose } from './DoomWebStruggle';
 
 /**
  * ============================================================================
@@ -315,6 +316,8 @@ export class DoomShotgunViewmodel {
   private swayX = 0;
   private swayY = 0;
   private handSign: 1 | -1 = 1;
+  /** Pose da luta contra a teia (null = solto). */
+  private webStruggle: WebStrugglePose | null = null;
 
 
   constructor(aspect: number) {
@@ -940,6 +943,8 @@ export class DoomShotgunViewmodel {
       lowered * 0.5 - this.recoilPitch * 0.05 - slide * 0.16 * this.handSign
     );
 
+    this.applyWebStruggle();
+
     // Bombeamento: a bomba recua e volta (0.62s no total)
     const pumpPhase = this.pumpTimer > 0 ? 1 - this.pumpTimer / 0.62 : 1;
     let pumpOffset = 0;
@@ -984,6 +989,31 @@ export class DoomShotgunViewmodel {
    * Estado da lanterna de apoio presa sob o cano: acompanha o feixe principal
    * (e a bateria) sem precisar de uma lanterna empunhada.
    */
+  /**
+   * Braços presos pela seda: a escopeta pesa para baixo e para dentro, e cada
+   * arranco do operador levanta a arma antes do contragolpe.
+   */
+  setWebStruggle(pose: WebStrugglePose | null): void {
+    this.webStruggle = pose && pose.bound01 > 0.001 ? pose : null;
+  }
+
+  private applyWebStruggle(): void {
+    const pose = this.webStruggle;
+    if (!pose) return;
+    const b = pose.bound01;
+    const yank = pose.yank * b;
+    const strain = Math.max(0, Math.min(1, pose.strain01)) * b;
+    const breath = pose.breath * b;
+    const tremor = pose.tremor * b;
+    this.rootGroup.position.x += (-0.05 * this.handSign + tremor * 0.004) * b;
+    this.rootGroup.position.y +=
+      (-0.065 - strain * 0.02 + Math.max(0, yank) * 0.04 + breath * 0.004) * b;
+    this.rootGroup.position.z += (0.05 - yank * 0.02) * b;
+    this.rootGroup.rotation.x += (0.18 + strain * 0.07 - yank * 0.12) * b;
+    this.rootGroup.rotation.z +=
+      (-0.14 - strain * 0.05 + tremor * 0.05) * this.handSign * b;
+  }
+
   setMountedFlashlight(on: boolean, dim = false): void {
     this.mountedLightOn = on;
     this.mountedLightDim = dim;

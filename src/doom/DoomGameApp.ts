@@ -86,6 +86,7 @@ import {
   SpiderCinematicMode,
 } from './DoomSpider';
 import { DoomSpiderWebManager } from './DoomSpiderWebs';
+import { computeWebDanger, WebStruggleState } from './DoomWebStruggle';
 import {
   boostPlayerStamina,
   canPlayerSlideWithStamina,
@@ -386,6 +387,9 @@ export class DoomGameApp {
   private lanternBattery = 100;
   private playerBleeding = false;
   private cameraShake = 0;
+  /** Luta do jogador local contra a teia (alimenta câmera, braços e seda). */
+  private readonly webStruggle = new WebStruggleState();
+  private webStruggleDanger = 0;
 
   // Estado da animação cinemática de Ataque / Ragdoll Desmaiado / Tentáculos Puxando / Teia / Morte Permanente
   private activeSequence: ActiveHorrorSequence = 'NONE';
@@ -3833,6 +3837,38 @@ export class DoomGameApp {
 
     const hasKnife = this.inventory.hasItem('rusty_knife');
 
+    // Luta contra a teia: o perigo vem da Aranha (perto e caçando) e da
+    // contagem para a devoração no casulo; apertar/manter o botão dá o puxão.
+    const spiderPlanarDist = Math.hypot(
+      this.spider.position.x - this.position.x,
+      this.spider.position.z - this.position.z
+    );
+    this.webStruggleDanger = computeWebDanger({
+      spiderDistance: spiderPlanarDist,
+      spiderHunting: this.spider.isChasingOrAlert && !this.spider.isStunned,
+      devourSecondsLeft: this.cocoonDevourTimerSec,
+      devourMaxSeconds: this.cocoonDevourMaxSec,
+    });
+    const struggleHeld =
+      !overlayInputLocked &&
+      (this.keys.has('KeyE') ||
+        this.keys.has('Space') ||
+        this.keys.has('KeyW') ||
+        this.keys.has('KeyA') ||
+        this.keys.has('KeyS') ||
+        this.keys.has('KeyD') ||
+        this.touchControls.getMoveVector().magnitude > 0.25);
+    const webStrugglePose = this.webStruggle.step({
+      ensnared:
+        this.webManager.isPlayerEnsnared && this.activeSequence === 'NONE',
+      strugglePressed,
+      struggleHeld,
+      hasKnife,
+      danger01: this.webStruggleDanger,
+      dt,
+    });
+    this.flashlight.setWebStruggle(webStrugglePose);
+
     const webState = this.webManager.update(
       dt,
       this.position,
@@ -3851,7 +3887,8 @@ export class DoomGameApp {
           trapPos.z,
           this.position
         );
-      }
+      },
+      webStrugglePose
     );
     if (strugglePressed && this.webManager.isPlayerEnsnared) {
       this.sound.playStruggleEffort();
@@ -4126,6 +4163,10 @@ export class DoomGameApp {
       this.slideState.slideAmount
     );
 
+    // Preso na teia: as armas também são arrastadas pela seda (nada de seguir
+    // firme na mão como se o operador estivesse livre).
+    this.shotgun.setWebStruggle(webStrugglePose);
+    this.taser.setWebStruggle(webStrugglePose);
     this.shotgun.update(dt, this.bobPhase, planarSpeed, this.slideState.slideAmount);
     this.taser.update(dt, this.bobPhase, planarSpeed, this.slideState.slideAmount);
 
@@ -4908,6 +4949,8 @@ export class DoomGameApp {
         this.walkieTalkieActive &&
         this.inventory.hasItem('field_walkie_talkie'),
       trappedInWeb: this.webManager.isPlayerEnsnared,
+      webStruggle01: this.webStruggle.current.effort01,
+      webDanger01: this.webStruggleDanger,
       bleeding: this.playerBleeding,
       crouching: this.wasCrouching,
       beingChased: this.spider.isChasingOrAlert,
@@ -4941,8 +4984,14 @@ export class DoomGameApp {
     const currentEyeHeight =
       baseCrouchEye + (this.slideEyeHeight - baseCrouchEye) * slideAmt;
 
-    // Impulso dinâmico sutil de FOV durante o deslize no chão
-    this.setCameraFov(this.settingsStore.value.fov + slideAmt * 5.5);
+    // Impulso dinâmico sutil de FOV durante o deslize no chão (+ a seda
+    // fechando o campo de visão enquanto o operador está amarrado).
+    const webBound = this.webStruggle.current.bound01;
+    const webStrain =
+      Math.max(0, Math.min(1, this.webStruggle.current.strain01)) * webBound;
+    this.setCameraFov(
+      this.settingsStore.value.fov + slideAmt * 5.5 - webBound * 3.4 + webStrain * 2.6
+    );
 
     const shakeScale = this.settingsStore.value.screenShakeIntensity / 100;
     const shakeX =
@@ -4959,15 +5008,40 @@ export class DoomGameApp {
       this.playerHealth < 26 ? Math.sin(this.elapsed * 2.1) * 0.016 : 0;
     const slideTilt = -0.058 * slideAmt;
 
+    // Luta contra a teia: o capacete tomba, afunda no casulo e é sacudido a
+    // cada arranco — tudo proporcional ao quanto o operador está preso.
+    const web = this.webStruggle.current;
+    let webPitch = 0;
+    let webYaw = 0;
+    let webRoll = 0;
+    let webLift = 0;
+    let webForward = 0;
+    let webSide = 0;
+    if (webBound > 0.001) {
+      const yank = web.yank * webBound;
+      const breath = web.breath * webBound;
+      const tremor = web.tremor * webBound;
+      const sway = web.sway * webBound;
+      webPitch = -0.05 * webStrain + 0.055 * yank + breath * 0.007 + tremor * 0.005;
+      webYaw = sway * 0.014 + tremor * 0.01;
+      webRoll = sway * 0.02 + tremor * 0.014 + yank * 0.022;
+      webLift = -0.055 - webStrain * 0.03 + Math.max(0, yank) * 0.05 + breath * 0.005;
+      // A seda segura o tronco; no arranco o corpo avança e volta esticado.
+      webForward = 0.03 * webBound - yank * 0.07;
+      webSide = sway * 0.02;
+    }
+
+    const sinYaw = Math.sin(this.yaw);
+    const cosYaw = Math.cos(this.yaw);
     this.camera.position.set(
-      this.position.x + shakeX,
-      currentEyeHeight + bobOffset + this.staminaChestHeaveY + shakeY,
-      this.position.z
+      this.position.x + shakeX - sinYaw * webForward + cosYaw * webSide,
+      currentEyeHeight + bobOffset + this.staminaChestHeaveY + shakeY + webLift,
+      this.position.z - cosYaw * webForward - sinYaw * webSide
     );
     const euler = new THREE.Euler(
-      this.pitch + this.staminaBreathPitch,
-      this.yaw,
-      woundedSway + slideTilt,
+      this.pitch + this.staminaBreathPitch + webPitch,
+      this.yaw + webYaw,
+      woundedSway + slideTilt + webRoll,
       'YXZ'
     );
     this.camera.quaternion.setFromEuler(euler);

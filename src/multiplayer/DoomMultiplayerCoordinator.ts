@@ -14,6 +14,7 @@ import {
 } from '../doom/DoomMazeBuilder';
 import { RadarAllyBlip } from '../doom/DoomRadar';
 import { isWalkableArenaCell } from '../doom/DoomRooms';
+import { computeWebDanger, WebStruggleState } from '../doom/DoomWebStruggle';
 import { DoomSharedUniforms } from '../doom/DoomShader';
 import {
   MAX_SHOTGUN_PART_SLOTS,
@@ -91,6 +92,10 @@ interface RemoteAllyEntity {
   lastAfkNoticeMs: number;
   joinedAtWallMs: number;
   lastSeenMs: number;
+  /** Luta do aliado contra a teia (animada localmente, igual à do jogador). */
+  webStruggle: WebStruggleState;
+  /** Contagem até o próximo arranco do aliado preso (s). */
+  webStruggleTimer: number;
   /** Coreografia de dança em cena do aliado (replicada pela rede) */
   danceId: DoomDanceId | null;
   /** Tempo da coreografia do aliado em segundos */
@@ -1710,6 +1715,38 @@ export class DoomMultiplayerCoordinator {
           ally.currentYaw
         );
       } else {
+        // Aliado amarrado: a luta é animada localmente e cresce com o perigo
+        // (Aranha perto + contagem de devoração), sem depender da rede.
+        const allyTrapped = ally.ensnared || ally.cocoonLocked || ally.inSequence;
+        const allyDanger = computeWebDanger({
+          spiderDistance: Math.hypot(
+            spiderSnapshot.x - ally.currentPos.x,
+            spiderSnapshot.z - ally.currentPos.z
+          ),
+          spiderHunting: true,
+          devourSecondsLeft: ally.cocoonLocked ? ally.devourSecondsLeft : 0,
+          devourMaxSeconds: ally.cocoonLocked ? 45 : 0,
+        });
+        let allyPressed = false;
+        if (allyTrapped && !isBeingDragged) {
+          ally.webStruggleTimer -= dt;
+          if (ally.webStruggleTimer <= 0) {
+            ally.webStruggleTimer = 0.95 - 0.55 * allyDanger;
+            allyPressed = true;
+          }
+        } else {
+          ally.webStruggleTimer = 0;
+        }
+        const allyStruggle = ally.webStruggle.step({
+          ensnared: allyTrapped && !isBeingDragged,
+          strugglePressed: allyPressed,
+          struggleHeld: false,
+          hasKnife: false,
+          danger01: allyDanger,
+          impulseScale01: 0.3 + 0.7 * allyDanger,
+          dt,
+        });
+
         ally.astronaut.updateThirdPersonAlly(
           ally.currentPos,
           ally.currentYaw,
@@ -1718,12 +1755,13 @@ export class DoomMultiplayerCoordinator {
           effectiveSpeed,
           ally.crouch,
           ally.flashlightOn,
-          ally.ensnared || ally.cocoonLocked || ally.inSequence,
+          allyTrapped,
           ally.afk,
           isBeingDragged,
           isBeingDragged ? ally.abductionSpiderPos : null,
           dt,
-          ally.slide
+          ally.slide,
+          isBeingDragged ? null : allyStruggle
         );
         if (ally.heldWeapon && !ally.afk && !ally.ensnared && !ally.cocoonLocked && !ally.inSequence && !isBeingDragged) {
           ally.astronaut.applyThirdPersonHeldWeapon(ally.heldWeapon);
@@ -2079,6 +2117,8 @@ export class DoomMultiplayerCoordinator {
         lastSeenMs: performance.now(),
         danceId: isDoomDanceId(pkt.danceId) ? pkt.danceId : null,
         danceTime: Number.isFinite(pkt.danceTime) ? (pkt.danceTime ?? 0) : 0,
+        webStruggle: new WebStruggleState(),
+        webStruggleTimer: 0,
       };
       this.allies.set(pkt.id, ent);
       this.voiceChat.ensurePeer(pkt.id);

@@ -53,6 +53,10 @@ export interface PlayerVitalsSnapshot {
   radarActive?: boolean;
   walkieActive?: boolean;
   trappedInWeb: boolean;
+  /** 0..1 — esforço de luta contra a teia (0 = parado, 1 = arrancando). */
+  webStruggle01?: number;
+  /** 0..1 — perigo (Aranha perto / contagem de devoração baixa). */
+  webDanger01?: number;
   bleeding: boolean;
   crouching: boolean;
   beingChased: boolean;
@@ -856,7 +860,8 @@ export function renderFirstPersonWebOverlay(
   snareAmount: number,
   cocoonAmount: number,
   ripProgress: number,
-  elapsedSec: number
+  elapsedSec: number,
+  struggle01 = 0
 ): void {
   const W = 384;
   const H = 240;
@@ -918,8 +923,10 @@ export function renderFirstPersonWebOverlay(
     }
   }
 
-  // Vibração viva de tensão enquanto o jogador força os fios
-  const vibAmp = ripProgress > 0 ? 2.4 : 0.75;
+  // Vibração viva de tensão: quase parada quando só espera, chicoteando quando
+  // o operador força os fios (e mais ainda no instante em que eles se rompem).
+  const vibAmp =
+    ripProgress > 0 ? 2.4 : 0.45 + 2.1 * Math.max(0, Math.min(1, struggle01));
 
   /**
    * Rasteriza um fio orgânico curvo (Bézier quadrática) com sombra 1px, variação fibrosa,
@@ -1473,6 +1480,8 @@ export class DoomInventory {
   private hubPausedHidden = false;
 
   private webSnareAmount = 0;
+  /** Esforço atual da luta contra a teia (0..1), usado no redesenho da seda. */
+  private webStruggleEffort = 0;
   private webCocoonAmount = 0;
   private webRipStartMs = -1;
   private webRipSnareSnapshot = 0;
@@ -2146,12 +2155,21 @@ export class DoomInventory {
     if (!force && tick === this.lastWebDrawTick) return;
     this.lastWebDrawTick = tick;
 
+    // Pulsação viva: a malha aperta e alivia no ritmo do esforço (e do pânico).
+    const pulseHz = 0.55 + 2.4 * this.webStruggleEffort;
+    const pulse =
+      this.webStruggleEffort > 0.02
+        ? Math.sin((nowMs / 1000) * pulseHz * Math.PI * 2) *
+          (0.03 + 0.05 * this.webStruggleEffort)
+        : 0;
+
     renderFirstPersonWebOverlay(
       this.webOverlayCtx,
-      activeSnare,
+      Math.min(1, activeSnare * (1 + pulse)),
       activeCocoon,
       Math.max(0, ripProgress),
-      nowMs / 1000
+      nowMs / 1000,
+      this.webStruggleEffort
     );
   }
 
@@ -2687,7 +2705,14 @@ export class DoomInventory {
     this.bloodVignetteEl.style.opacity = bloodOpacity.toFixed(3);
 
     const prevTrapped = this.webSnareAmount > 0.1;
-    this.webSnareAmount = snapshot.trappedInWeb ? 0.94 : 0;
+    // A seda na tela respira com a luta: fechada e parada quando o operador
+    // só espera, tremendo e quase opaca quando ele arranca os fios.
+    const struggle = Math.max(0, Math.min(1, snapshot.webStruggle01 ?? 0));
+    const danger = Math.max(0, Math.min(1, snapshot.webDanger01 ?? 0));
+    this.webStruggleEffort = struggle;
+    this.webSnareAmount = snapshot.trappedInWeb
+      ? 0.66 + 0.3 * Math.min(1, struggle + danger * 0.45)
+      : 0;
     if (prevTrapped && !snapshot.trappedInWeb && this.webRipStartMs < 0) {
       this.triggerWebSnapRip();
     } else {
