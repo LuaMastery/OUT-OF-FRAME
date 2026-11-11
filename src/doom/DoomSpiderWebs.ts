@@ -633,6 +633,9 @@ export class DoomSpiderWebManager {
       alphaTest: 0.45,
       doubleSided: true,
       emissiveBoost: 0.03,
+      // Teia é quase transparente: sombrear demais apagaria a seda.
+      shading: 0.45,
+      occlusion: 0,
     });
 
     this.sheetWebMat = createDoomPropMaterial(
@@ -643,6 +646,8 @@ export class DoomSpiderWebManager {
         alphaTest: 0.45,
         doubleSided: true,
         emissiveBoost: 0.03,
+        shading: 0.45,
+        occlusion: 0,
       }
     );
 

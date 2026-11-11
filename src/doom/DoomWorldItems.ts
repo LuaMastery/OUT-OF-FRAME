@@ -8,6 +8,11 @@ import {
 import { DoomInventory } from './DoomInventory';
 import { gridCellToWorld } from './DoomMazeBuilder';
 import { applyMetricBoxUvs } from './DoomObstacles';
+import {
+  createDoomShadowDecalTexture,
+  PropContactShadow,
+  PropLightingProbe,
+} from './DoomPropShadows';
 import { ProbableEquipmentSignal } from './DoomRadar';
 import { getThemedRoomByKeyItemId } from './DoomRooms';
 import { createDoomPropMaterial, DoomSharedUniforms } from './DoomShader';
@@ -59,6 +64,14 @@ export interface ActiveMagnesiumFlare {
   flameMesh: THREE.Object3D;
   remainingSec: number;
   maxSec: number;
+}
+
+/** Sombra projetada de um caixote sobre a superfície em que ele está apoiado. */
+interface CrateShadowRig {
+  readonly shadow: PropContactShadow;
+  readonly worldX: number;
+  readonly worldY: number;
+  readonly worldZ: number;
 }
 
 /**
@@ -166,6 +179,14 @@ export class DoomWorldItems {
   private readonly matFlameMid: THREE.MeshBasicMaterial;
   private readonly matFlameCore: THREE.MeshBasicMaterial;
 
+  // Sombras projetadas dos caixotes: mancha de contato + projeção da luz
+  // dominante da arena (e do feixe da lanterna) sobre a superfície de apoio.
+  private readonly shadowDecalTexture: THREE.DataTexture;
+  private readonly crateShadows: CrateShadowRig[] = [];
+  private readonly lightProbe = new PropLightingProbe();
+  private readonly lightScratch: { position: THREE.Vector3; intensity: number }[] = [];
+  private readonly probeTarget = new THREE.Vector3();
+
   constructor(
     scene: THREE.Scene,
     sharedUniforms: DoomSharedUniforms,
@@ -174,6 +195,7 @@ export class DoomWorldItems {
     this.arenaLayout = getOrCreateSceneArenaLayout(scene, explicitArenaLayout);
     this.sharedUniforms = sharedUniforms;
     this.shotgunMaterials = createShotgunPickupMaterials(sharedUniforms);
+    this.shadowDecalTexture = createDoomShadowDecalTexture();
     this.root.name = 'DoomWorldItems';
     scene.add(this.root);
 
@@ -196,7 +218,7 @@ export class DoomWorldItems {
         }
       }),
       sharedUniforms,
-      { baseLight: 0.52 }
+      { baseLight: 0.52, occlusion: 0.32 }
     );
 
     // 2. Ferro escuro rebitado para cantoneiras e bases
@@ -212,7 +234,7 @@ export class DoomWorldItems {
         }
       }),
       sharedUniforms,
-      { baseLight: 0.5, doubleSided: true }
+      { baseLight: 0.5, doubleSided: true, specular: 0.22 }
     );
 
     // Aço escovado limpo (para grampos, argolas de chaveiro, etc., sem manchas de ferrugem)
@@ -228,7 +250,7 @@ export class DoomWorldItems {
         }
       }),
       sharedUniforms,
-      { baseLight: 0.64, emissiveBoost: 0.08 }
+      { baseLight: 0.64, emissiveBoost: 0.08, specular: 0.5 }
     );
 
     // 3. Gaze médica: trama lateral + espiral concêntrica do topo + cinta de papel com cruz médica
@@ -436,7 +458,12 @@ export class DoomWorldItems {
         }
       }),
       sharedUniforms,
-      { baseLight: 0.66, emissiveBoost: 0.09, doubleSided: true }
+      {
+        baseLight: 0.66,
+        emissiveBoost: 0.09,
+        doubleSided: true,
+        specular: 0.6,
+      }
     );
 
     // Plaqueta metálica gravada da Chave da Ala B
@@ -679,6 +706,28 @@ export class DoomWorldItems {
       crate.add(itemMesh);
 
       this.root.add(group);
+
+      // Sombra de contato + projeção da luz dominante sobre o topo do
+      // engradado em que o caixote está apoiado (o decalque fica contido na
+      // superfície para nunca pairar no vazio).
+      const crateShadow = new PropContactShadow(this.shadowDecalTexture, {
+        halfX: 0.26,
+        halfZ: 0.21,
+        height: 0.2,
+        yaw: p.crateYaw,
+        ambientOpacity: 0.3,
+        litOpacity: 0.72,
+        maxLength: 0.1,
+        surfaceLift: 0.006,
+      });
+      group.add(crateShadow.object);
+      this.crateShadows.push({
+        shadow: crateShadow,
+        worldX: wx,
+        worldY: p.baseY + 0.1,
+        worldZ: wz,
+      });
+
       this.pickups.push({
         id: `pickup-${idx}`,
         itemId: p.itemId,
@@ -1739,6 +1788,61 @@ export class DoomWorldItems {
       });
     }
     return signals;
+  }
+
+  /**
+   * Reposiciona e reajusta as sombras dos caixotes usando exatamente as luzes
+   * que o shader está usando neste frame (arandelas/plafons, sinalizadores de
+   * magnésio e o feixe da própria lanterna).
+   *
+   * Deve rodar uma vez por frame, DEPOIS de o jogo terminar de preencher
+   * `uLightPositions/uLightIntensities/uFlashlight*` — assim a mancha escura
+   * aponta para longe da luz que está de fato iluminando o caixote.
+   */
+  updatePropShadows(dt: number): void {
+    if (!this.crateShadows.length) return;
+
+    const positions = this.sharedUniforms.uLightPositions.value;
+    const intensities = this.sharedUniforms.uLightIntensities.value;
+    const count = Math.max(
+      0,
+      Math.min(this.sharedUniforms.uLightCount.value, positions.length)
+    );
+    while (this.lightScratch.length < count) {
+      this.lightScratch.push({ position: new THREE.Vector3(), intensity: 0 });
+    }
+    this.lightScratch.length = count;
+    for (let i = 0; i < count; i++) {
+      const slot = this.lightScratch[i];
+      slot.position.copy(positions[i]);
+      slot.intensity = intensities[i];
+    }
+
+    const flashIntensity = this.sharedUniforms.uFlashlightIntensity.value;
+    const beam =
+      flashIntensity > 0.01
+        ? {
+            position: this.sharedUniforms.uFlashlightPos.value,
+            intensity: flashIntensity,
+            direction: this.sharedUniforms.uFlashlightDir.value,
+            coneCos: 0.78,
+          }
+        : null;
+
+    const blend = 1 - Math.exp(-9 * Math.max(0, dt));
+    for (let i = 0; i < this.crateShadows.length; i++) {
+      const rig = this.crateShadows[i];
+      this.probeTarget.set(rig.worldX, rig.worldY, rig.worldZ);
+      this.lightProbe.sample(this.probeTarget, this.lightScratch, beam);
+      rig.shadow.update(
+        this.lightProbe.level,
+        this.lightProbe.dirX,
+        this.lightProbe.dirZ,
+        this.lightProbe.lightY,
+        this.lightProbe.distance,
+        blend
+      );
+    }
   }
 
   /**

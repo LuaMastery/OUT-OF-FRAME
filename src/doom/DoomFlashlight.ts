@@ -158,6 +158,18 @@ export class DoomFlashlight {
   private readonly reflectorMaterial: THREE.MeshLambertMaterial;
   private readonly bulbMaterial: THREE.MeshBasicMaterial;
 
+  // Luzes da cena em 1ª pessoa: seguem a iluminação do mundo (nível + direção
+  // da lâmpada dominante) para a lanterna não ficar com brilho constante.
+  private readonly ambientLight: THREE.AmbientLight;
+  private readonly keyLight: THREE.DirectionalLight;
+  private readonly rimLight: THREE.DirectionalLight;
+  private readonly targetLightDir = new THREE.Vector3(-0.65, 1.25, 0.95).normalize();
+  private readonly currentLightDir = new THREE.Vector3(-0.65, 1.25, 0.95).normalize();
+  private targetLightLevel = 0.45;
+  private currentLightLevel = 0.45;
+  /** Vazamento da lâmpada acesa sobre o próprio modelo (lanterna, aro e luva). */
+  private readonly selfGlowLight: THREE.PointLight;
+
   // Grupo de ação rápida em 1ª pessoa (atalhos [1], [2], [3] e uso de objetos)
   private readonly quickRootGroup = new THREE.Group();
   private readonly quickAnimGroup = new THREE.Group();
@@ -205,12 +217,15 @@ export class DoomFlashlight {
     );
 
     // Iluminação direcional calibrada sem estourar o albedo (>1.0) para preservar 100% da Camuflagem Astronáutica no COLORMAP!
-    const ambient = new THREE.AmbientLight(0x88909e, 0.48);
-    const keyLight = new THREE.DirectionalLight(0xfff1d6, 0.88);
-    keyLight.position.set(-0.65, 1.25, 0.95);
-    const rimLight = new THREE.DirectionalLight(0x6e7d94, 0.38);
-    rimLight.position.set(0.85, -0.35, 0.35);
-    this.viewScene.add(ambient, keyLight, rimLight);
+    // As três luzes são guardadas em campos porque agora elas REAGEM ao mundo:
+    // perto de uma arandela a lanterna clareia e recebe a luz na direção
+    // daquela lâmpada; no breu ela apaga junto com o cenário.
+    this.ambientLight = new THREE.AmbientLight(0x88909e, 0.48);
+    this.keyLight = new THREE.DirectionalLight(0xfff1d6, 0.88);
+    this.keyLight.position.set(-0.65, 1.25, 0.95);
+    this.rimLight = new THREE.DirectionalLight(0x6e7d94, 0.38);
+    this.rimLight.position.set(0.85, -0.35, 0.35);
+    this.viewScene.add(this.ambientLight, this.keyLight, this.rimLight);
 
     const astroMats = createAstronautMaterials();
     const bodyTex = createFlashlightBodyTexture();
@@ -336,6 +351,14 @@ export class DoomFlashlight {
     );
     bulb.position.z = -0.166;
     model.add(bulb);
+
+    // Vazamento da própria lâmpada: banha o refletor, o aro e a luva do
+    // astronauta quando a lanterna está acesa (o feixe em si continua sendo
+    // desenhado pelo shader da arena).
+    this.selfGlowLight = new THREE.PointLight(0xffe4ae, 0, 0.6, 2);
+    this.selfGlowLight.position.set(0, 0, -0.186);
+    this.selfGlowLight.castShadow = false;
+    model.add(this.selfGlowLight);
 
     // F) BRAÇO DIREITO DO ASTRONAUTA (`AstronautRightArm`) COM ANATOMIA CORRIGIDA:
     // - Sem braço superior dobrando em V na frente da lente (`includeUpperArm: false`);
@@ -896,6 +919,103 @@ export class DoomFlashlight {
     this.quickRootGroup.add(this.quickAnimGroup);
     this.quickRootGroup.visible = false;
     this.viewScene.add(this.quickRootGroup);
+
+    this.configureViewmodelShadows();
+  }
+
+  /**
+   * Sombra real no modelo de 1ª pessoa: a luz principal projeta a silhueta do
+   * cabeçote e do tubo sobre a luva e o antebraço, então a lanterna deixa de
+   * parecer chapada quando o jogador entra embaixo de uma lâmpada.
+   *
+   * Só a cena do viewmodel projeta sombra — o labirinto continua sendo
+   * desenhado inteiro pelo shader DOOM, sem custo extra.
+   */
+  private configureViewmodelShadows(): void {
+    this.keyLight.castShadow = true;
+    this.keyLight.shadow.mapSize.set(512, 512);
+    const shadowCam = this.keyLight.shadow.camera;
+    shadowCam.left = -0.62;
+    shadowCam.right = 0.62;
+    shadowCam.top = 0.62;
+    shadowCam.bottom = -0.62;
+    shadowCam.near = 0.3;
+    shadowCam.far = 5.0;
+    shadowCam.updateProjectionMatrix();
+    this.keyLight.shadow.bias = -0.0009;
+    this.keyLight.shadow.normalBias = 0.005;
+    this.keyLight.shadow.radius = 2.5;
+
+    // Materiais `MeshBasicMaterial` (lente acesa, faísca do sinalizador) não
+    // recebem luz: participar da sombra só criaria manchas sem sentido.
+    this.viewScene.traverse((obj) => {
+      const mesh = obj as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      const mat = mesh.material as THREE.Material | THREE.Material[];
+      const list = Array.isArray(mat) ? mat : [mat];
+      const lit = list.some(
+        (m) => (m as THREE.MeshLambertMaterial).isMeshLambertMaterial
+      );
+      if (!lit) return;
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+    });
+  }
+
+  /**
+   * Reaproxima as luzes da cena em 1ª pessoa da iluminação que o jogador está
+   * recebendo do mundo: perto de uma lâmpada a lanterna (e a luva que a segura)
+   * fica iluminada; longe de tudo, ela afunda no escuro junto com o cenário.
+   */
+  private applyLightingToViewmodel(dt: number): void {
+    const smooth = 1 - Math.exp(-6 * Math.max(0, dt));
+    this.currentLightLevel +=
+      (this.targetLightLevel - this.currentLightLevel) * smooth;
+    this.currentLightDir.lerp(this.targetLightDir, smooth);
+    if (this.currentLightDir.lengthSq() < 1e-8) {
+      this.currentLightDir.set(0, 0.6, 0.8).normalize();
+    }
+    this.currentLightDir.normalize();
+
+    const lit = Math.max(0, Math.min(1.6, this.currentLightLevel));
+    this.ambientLight.intensity = 0.26 + lit * 0.6;
+    this.keyLight.intensity = 0.34 + lit * 1.12;
+    this.rimLight.intensity = 0.16 + lit * 0.4;
+
+    // A luz principal entra pela direção da lâmpada dominante (em espaço de
+    // câmera) e a luz de contorno recorta a silhueta pelo lado oposto.
+    this.keyLight.position
+      .copy(this.currentLightDir)
+      .multiplyScalar(2.2);
+    this.rimLight.position.set(
+      -this.currentLightDir.x * 1.5 - 0.35,
+      -this.currentLightDir.y * 1.1 - 0.3,
+      -this.currentLightDir.z * 1.5 + 0.4
+    );
+    this.keyLight.target.position.set(0, 0, 0);
+    this.keyLight.target.updateMatrixWorld();
+  }
+
+  /**
+   * Informa à lanterna a iluminação que o jogador está recebendo do mundo,
+   * para o modelo em 1ª pessoa clarear perto das lâmpadas e escurecer no breu.
+   *
+   * @param level soma das contribuições das luzes sobre o jogador (0 = breu).
+   * @param dirX/dirY/dirZ vetor (já em espaço de câmera) apontando do jogador
+   * para a lâmpada dominante — a luz principal entra por ele, então o lado da
+   * lanterna voltado para a lâmpada fica claro e o oposto entra na sombra.
+   */
+  applyWorldLighting(
+    level: number,
+    dirX: number,
+    dirY: number,
+    dirZ: number
+  ): void {
+    this.targetLightLevel = Math.max(0, Math.min(1.6, level));
+    const len = Math.hypot(dirX, dirY, dirZ);
+    if (len > 0.0001) {
+      this.targetLightDir.set(dirX / len, dirY / len, dirZ / len);
+    }
   }
 
   setAspect(aspect: number): void {
@@ -1434,6 +1554,7 @@ export class DoomFlashlight {
     aimPitchOffset: number;
   } {
     this.updateQuickActionAnimation(dt);
+    this.applyLightingToViewmodel(dt);
 
     const speed = this.equipped ? 3.2 : 3.7;
     if (this.equipped && this.equipProgress < 1) {
@@ -1487,6 +1608,8 @@ export class DoomFlashlight {
       this.reflectorMaterial.color.setHex(0x4b5059);
       this.lensMaterial.color.setHex(0x232730);
     }
+    // A lâmpada acesa ilumina o próprio modelo de dentro para fora.
+    this.selfGlowLight.intensity = beamIntensity * 0.85;
 
     const t = this.equipProgress;
     const c1 = 1.45;

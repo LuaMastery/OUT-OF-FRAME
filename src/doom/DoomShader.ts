@@ -253,12 +253,25 @@ export function createDoomPropMaterial(
     doubleSided?: boolean;
     emissiveBoost?: number;
     tint?: THREE.Color;
+    /**
+     * Quanto da luz segue a orientação da face (0 = plano e chapado como antes,
+     * 1 = sombreado realista: a face virada para a lâmpada clareia e a oposta
+     * entra na sombra).
+     */
+    shading?: number;
+    /** Escurecimento das faces viradas para baixo (oclusão de contato do próprio objeto). */
+    occlusion?: number;
+    /** Brilho especular (Blinn-Phong) de metal polido sob a lanterna/lâmpadas. */
+    specular?: number;
   }
 ): THREE.ShaderMaterial {
   const baseLight = options?.baseLight ?? 0.34;
   const alphaTest = options?.alphaTest ?? 0.0;
   const emissiveBoost = options?.emissiveBoost ?? 0.0;
   const tint = options?.tint ?? new THREE.Color(1, 1, 1);
+  const shading = Math.max(0, Math.min(1, options?.shading ?? 1));
+  const occlusion = Math.max(0, Math.min(1, options?.occlusion ?? 0.24));
+  const specular = Math.max(0, Math.min(1, options?.specular ?? 0));
 
   return new THREE.ShaderMaterial({
     side: options?.doubleSided ? THREE.DoubleSide : THREE.FrontSide,
@@ -269,6 +282,9 @@ export function createDoomPropMaterial(
       uAlphaTest: { value: alphaTest },
       uEmissiveBoost: { value: emissiveBoost },
       uTint: { value: tint },
+      uShading: { value: shading },
+      uOcclusion: { value: occlusion },
+      uSpecular: { value: specular },
       uLightPositions: shared.uLightPositions,
       uLightIntensities: shared.uLightIntensities,
       uLightCount: shared.uLightCount,
@@ -300,6 +316,9 @@ export function createDoomPropMaterial(
       uniform float uAlphaTest;
       uniform float uEmissiveBoost;
       uniform vec3 uTint;
+      uniform float uShading;
+      uniform float uOcclusion;
+      uniform float uSpecular;
       uniform vec3 uLightPositions[MAX_LIGHTS];
       uniform float uLightIntensities[MAX_LIGHTS];
       uniform int uLightCount;
@@ -318,34 +337,81 @@ export function createDoomPropMaterial(
           discard;
         }
 
+        // Normal voltada para quem olha: em material de face dupla a face de
+        // trás inverte a normal para continuar sendo sombreada corretamente.
+        vec3 normal = normalize(vWorldNormal);
+        if (!gl_FrontFacing) {
+          normal = -normal;
+        }
+
+        // Auto-oclusão: faces viradas para baixo ficam na sombra do próprio
+        // objeto (a barriga do caixote nunca vê o teto, por exemplo).
+        float selfOcclusion = mix(
+          1.0,
+          clamp(normal.y * 0.45 + 0.55, 0.0, 1.0),
+          uOcclusion
+        );
+
+        vec3 viewDir = normalize(cameraPosition - vWorldPos);
+
         float lampLight = 0.0;
+        float specLight = 0.0;
         for (int i = 0; i < MAX_LIGHTS; i++) {
           if (i >= uLightCount) break;
-          float d = distance(vWorldPos, uLightPositions[i]);
+          vec3 toLight = uLightPositions[i] - vWorldPos;
+          float d = length(toLight);
+          vec3 lightDir = toLight / max(d, 0.0001);
           float atten = clamp(1.0 - d / 9.2, 0.0, 1.0);
-          lampLight += atten * atten * uLightIntensities[i];
+          atten *= atten;
+
+          // Termo difuso: a face virada para a lâmpada clareia, a oposta entra
+          // na sombra. Sem esse termo (uShading = 0) o objeto fica chapado.
+          float diffuse = clamp(dot(normal, lightDir) * 0.78 + 0.22, 0.0, 1.0);
+          lampLight += atten * uLightIntensities[i] * mix(1.0, diffuse, uShading);
+
+          vec3 halfVec = normalize(lightDir + viewDir);
+          specLight += atten * uLightIntensities[i] * pow(max(dot(normal, halfVec), 0.0), 26.0);
         }
-        float sectorLight = clamp(uBaseLight + lampLight, 0.08, 1.05);
+        float sectorLight = clamp(
+          uBaseLight * selfOcclusion + lampLight,
+          0.06,
+          1.05
+        );
 
         float nearVis = clamp((3.6 - vViewDist) * 0.045, 0.0, 0.16);
         float distFalloff = clamp(1.06 - vViewDist * 0.044, 0.0, 1.0);
 
         float flashContribution = 0.0;
+        float flashSpec = 0.0;
         if (uFlashlightIntensity > 0.01) {
+          vec3 beamDir = normalize(uFlashlightDir);
           vec3 toFrag = vWorldPos - uFlashlightPos;
           float flashDist = length(toFrag);
           vec3 fragDir = toFrag / max(0.0001, flashDist);
-          float cosCone = dot(fragDir, normalize(uFlashlightDir));
+          float cosCone = dot(fragDir, beamDir);
 
           float coreSpot = smoothstep(0.92, 0.985, cosCone);
           float outerHalo = smoothstep(0.75, 0.93, cosCone) * 0.46;
           float distAtten = clamp(1.0 - flashDist / 23.0, 0.0, 1.0);
 
+          // O feixe só ilumina o que está de frente para ele: de costas, a face
+          // fica na própria sombra em vez de brilhar através do objeto.
+          float facing = clamp(-dot(normal, beamDir) * 0.8 + 0.2, 0.0, 1.0);
+
           flashContribution =
             (coreSpot + outerHalo) *
             distAtten *
             uFlashlightIntensity *
-            1.02;
+            1.02 *
+            mix(1.0, facing, uShading);
+
+          vec3 flashHalf = normalize(viewDir - beamDir);
+          flashSpec =
+            (coreSpot + outerHalo) *
+            distAtten *
+            uFlashlightIntensity *
+            pow(max(dot(normal, flashHalf), 0.0), 34.0) *
+            1.7;
         }
 
         float rawShade = clamp(
@@ -360,6 +426,9 @@ export function createDoomPropMaterial(
           float warmMix = clamp((flashContribution + lampLight * 0.6) * 0.45, 0.0, 0.3);
           shaded *= mix(vec3(1.0), vec3(1.07, 1.02, 0.90), warmMix);
         }
+
+        // Realce especular de metal polido (apenas quando uSpecular > 0).
+        shaded += vec3(1.0, 0.98, 0.92) * (specLight + flashSpec) * uSpecular;
 
         gl_FragColor = vec4(clamp(shaded, 0.0, 1.0), 1.0);
       }

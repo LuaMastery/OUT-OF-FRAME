@@ -622,6 +622,10 @@ export class DoomGameApp {
     this.renderer.setPixelRatio(1);
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.setClearColor(0x000000, 1);
+    // Sombra real só existe na cena do viewmodel (lanterna/mãos em 1ª pessoa):
+    // o labirinto é desenhado inteiro pelos shaders DOOM e não projeta sombra.
+    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
     const aspect =
       Math.max(1, window.innerWidth) / Math.max(1, window.innerHeight);
@@ -4596,6 +4600,7 @@ export class DoomGameApp {
       beamIntensity > 0.05
     );
     this.updateFlickeringLightsAndAudio();
+    this.worldItems.updatePropShadows(dt);
   }
 
   private updateSurvivalVitals(
@@ -4974,6 +4979,10 @@ export class DoomGameApp {
     d2: number;
   }> = [];
 
+  /** Direção (espaço de câmera) da lâmpada que mais ilumina o jogador. */
+  private readonly viewmodelLightDir = new THREE.Vector3();
+  private readonly cameraInverseQuat = new THREE.Quaternion();
+
   private updateFlickeringLightsAndAudio(): void {
     const listenerPos = this.spectatorMode ? this.camera.position : this.position;
     let nearestLamp: THREE.Vector3 | null = null;
@@ -5109,6 +5118,44 @@ export class DoomGameApp {
       totalLights++;
     }
     this.sharedUniforms.uLightCount.value = totalLights;
+
+    // Quanta luz está chegando ao jogador e de onde ela vem. O modelo em 1ª
+    // pessoa (lanterna e mãos) usa isso para ficar iluminado perto das
+    // arandelas/plafons e afundar no escuro junto com o cenário.
+    let playerLight = 0;
+    let bestPlayerLight = 0;
+    let lampDirX = 0;
+    let lampDirY = 0.5;
+    let lampDirZ = 0.5;
+    for (let i = 0; i < totalLights; i++) {
+      const lp = this.sharedUniforms.uLightPositions.value[i];
+      const li = this.sharedUniforms.uLightIntensities.value[i];
+      const dx = lp.x - listenerPos.x;
+      const dy = lp.y - listenerPos.y;
+      const dz = lp.z - listenerPos.z;
+      const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      const atten = Math.max(0, Math.min(1, 1 - d / 9.2));
+      const contribution = atten * atten * li;
+      playerLight += contribution;
+      if (contribution > bestPlayerLight) {
+        bestPlayerLight = contribution;
+        const len = Math.max(d, 0.0001);
+        lampDirX = dx / len;
+        lampDirY = dy / len;
+        lampDirZ = dz / len;
+      }
+    }
+    this.viewmodelLightDir
+      .set(lampDirX, lampDirY, lampDirZ)
+      .applyQuaternion(
+        this.cameraInverseQuat.copy(this.camera.quaternion).invert()
+      );
+    this.flashlight.applyWorldLighting(
+      playerLight,
+      this.viewmodelLightDir.x,
+      this.viewmodelLightDir.y,
+      this.viewmodelLightDir.z
+    );
 
     if (!(this.pauseMenu.open && !this.multiplayer)) {
       this.sound.updateSpatialLampAudio(
