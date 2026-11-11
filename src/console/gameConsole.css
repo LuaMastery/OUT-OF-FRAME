@@ -1,0 +1,419 @@
+/* ==========================================================================
+   CONSOLE DO JOGO
+   --------------------------------------------------------------------------
+   Painel de diagnóstico: mostra erros, avisos e a atividade do jogo ao vivo.
+   Segue a mesma linguagem do radar e do painel de desempenho — caixa escura,
+   borda dupla, fósforo verde — para não parecer um elemento intruso.
+   ========================================================================== */
+
+.oof-console {
+  position: fixed;
+  left: calc(12px + var(--safe-left, 0px));
+  right: calc(12px + var(--safe-right, 0px));
+  bottom: calc(12px + var(--safe-bottom, 0px));
+  z-index: 2147482000;
+  display: flex;
+  flex-direction: column;
+  height: min(46vh, 430px);
+  min-height: 220px;
+  background: linear-gradient(
+    180deg,
+    rgba(16, 20, 18, 0.97) 0%,
+    rgba(7, 10, 9, 0.98) 100%
+  );
+  border: 2px solid #35473e;
+  box-shadow:
+    inset 0 0 0 1px #090d0b,
+    0 14px 44px rgba(0, 0, 0, 0.8);
+  font-family: 'Geist Pixel', monospace;
+  color: #b9d3c6;
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: var(--cursor-default);
+}
+
+.oof-console[hidden] {
+  display: none;
+}
+
+/* --------------------------------------------------------------------------
+   Cabeçalho
+   -------------------------------------------------------------------------- */
+
+.oof-console__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 7px 9px 6px;
+  border-bottom: 1px solid rgba(130, 227, 180, 0.18);
+  background: rgba(130, 227, 180, 0.04);
+}
+
+.oof-console__title {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  color: #82e3b4;
+  text-shadow: 0 0 6px rgba(80, 228, 158, 0.35);
+  white-space: nowrap;
+}
+
+.oof-console__title i {
+  font-style: normal;
+  font-size: 8.5px;
+  font-weight: 400;
+  letter-spacing: 0.06em;
+  color: #5f7a6c;
+}
+
+.oof-console__counts {
+  display: flex;
+  gap: 4px;
+}
+
+.oof-console__count {
+  padding: 1px 5px;
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.oof-console__count[data-level='error'] {
+  color: #ff9a90;
+  background: #3a1a16;
+  border-color: #8a3a2c;
+}
+
+.oof-console__count[data-level='warn'] {
+  color: #ffe0a8;
+  background: #3a2a13;
+  border-color: #8a6a2c;
+}
+
+.oof-console__count[data-level='info'],
+.oof-console__count[data-level='system'] {
+  color: #9fd8bd;
+  background: #16281f;
+  border-color: #34513f;
+}
+
+.oof-console__count[data-level='debug'] {
+  color: #8d9a92;
+  background: #1c211f;
+  border-color: #3a443e;
+}
+
+.oof-console__spacer {
+  flex: 1 1 auto;
+}
+
+.oof-console__tools {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.oof-console__btn {
+  padding: 3px 7px;
+  font-family: inherit;
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #d6efe2;
+  background: #172b22;
+  border: 1px solid #3c6e57;
+  cursor: var(--cursor-pointer);
+}
+
+.oof-console__btn:hover {
+  background: #224234;
+  border-color: #66be96;
+}
+
+.oof-console__btn.is-on {
+  color: #0b1410;
+  background: #82e3b4;
+  border-color: #b6f2d3;
+}
+
+.oof-console__search {
+  width: 132px;
+  padding: 3px 6px;
+  font-family: inherit;
+  font-size: 9px;
+  color: #d6efe2;
+  background: #0c1411;
+  border: 1px solid #2f4a3c;
+  outline: none;
+}
+
+.oof-console__search::placeholder {
+  color: #4d6a5c;
+}
+
+.oof-console__search:focus {
+  border-color: #66be96;
+}
+
+/* --------------------------------------------------------------------------
+   Abas de canal
+   -------------------------------------------------------------------------- */
+
+.oof-console__channels {
+  display: flex;
+  gap: 3px;
+  flex-wrap: wrap;
+  padding: 5px 9px;
+  border-bottom: 1px solid rgba(130, 227, 180, 0.1);
+}
+
+.oof-console__chip {
+  padding: 2px 6px;
+  font-family: inherit;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #6f8a7c;
+  background: #101715;
+  border: 1px solid #2b3a32;
+  cursor: var(--cursor-pointer);
+}
+
+.oof-console__chip:hover {
+  color: #b9d3c6;
+  border-color: #4a6a58;
+}
+
+.oof-console__chip.is-on {
+  color: #0b1410;
+  background: #6cc79c;
+  border-color: #a5e7c6;
+}
+
+/* --------------------------------------------------------------------------
+   Corpo
+   -------------------------------------------------------------------------- */
+
+.oof-console__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 5px 0;
+  scrollbar-width: thin;
+  scrollbar-color: #3c6e57 #0a0f0d;
+}
+
+.oof-console__body::-webkit-scrollbar {
+  width: 9px;
+}
+
+.oof-console__body::-webkit-scrollbar-track {
+  background: #0a0f0d;
+}
+
+.oof-console__body::-webkit-scrollbar-thumb {
+  background: #34513f;
+  border: 2px solid #0a0f0d;
+}
+
+.oof-console__empty {
+  padding: 14px 10px;
+  font-size: 9.5px;
+  color: #4d6a5c;
+  text-align: center;
+}
+
+.oof-console__line {
+  display: flex;
+  gap: 7px;
+  padding: 1px 9px;
+  font-size: 9.5px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.oof-console__line:hover {
+  background: rgba(130, 227, 180, 0.05);
+}
+
+.oof-console__line[data-level='error'] {
+  color: #ffb3a8;
+  background: rgba(138, 58, 44, 0.14);
+}
+
+.oof-console__line[data-level='warn'] {
+  color: #ffe0a8;
+}
+
+.oof-console__line[data-level='system'] {
+  color: #a9e6ff;
+}
+
+.oof-console__line[data-level='debug'] {
+  color: #7d8f86;
+}
+
+.oof-console__time {
+  flex: 0 0 auto;
+  color: #4d6a5c;
+  font-variant-numeric: tabular-nums;
+}
+
+.oof-console__tag {
+  flex: 0 0 auto;
+  min-width: 30px;
+  font-weight: 700;
+  color: #5f7a6c;
+}
+
+.oof-console__line[data-level='error'] .oof-console__tag {
+  color: #ff9a90;
+}
+
+.oof-console__line[data-level='warn'] .oof-console__tag {
+  color: #f0b846;
+}
+
+.oof-console__chan {
+  flex: 0 0 auto;
+  min-width: 62px;
+  color: #46615a;
+}
+
+.oof-console__text {
+  flex: 1 1 auto;
+}
+
+.oof-console__body.is-single-line .oof-console__line {
+  white-space: pre;
+  overflow-x: auto;
+}
+
+.oof-console__repeat {
+  flex: 0 0 auto;
+  padding: 0 4px;
+  font-size: 8px;
+  color: #0b1410;
+  background: #6cc79c;
+  align-self: flex-start;
+}
+
+/* --------------------------------------------------------------------------
+   Rodapé / prompt
+   -------------------------------------------------------------------------- */
+
+.oof-console__foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 9px;
+  border-top: 1px solid rgba(130, 227, 180, 0.18);
+  background: rgba(130, 227, 180, 0.03);
+}
+
+.oof-console__prompt {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 700;
+  color: #82e3b4;
+}
+
+.oof-console__input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 3px 6px;
+  font-family: inherit;
+  font-size: 10px;
+  color: #eafff4;
+  background: #0c1411;
+  border: 1px solid #2f4a3c;
+  outline: none;
+  cursor: var(--cursor-text);
+}
+
+.oof-console__input:focus {
+  border-color: #66be96;
+}
+
+.oof-console__hint {
+  flex: 0 0 auto;
+  font-size: 8px;
+  color: #4d6a5c;
+  white-space: nowrap;
+}
+
+/* --------------------------------------------------------------------------
+   Pílula de erros (aparece só com o console fechado)
+   -------------------------------------------------------------------------- */
+
+.oof-console-pill {
+  position: fixed;
+  right: calc(14px + var(--safe-right, 0px));
+  bottom: calc(14px + var(--safe-bottom, 0px));
+  z-index: 2147481500;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: rgba(58, 26, 22, 0.94);
+  border: 1px solid #8a3a2c;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.6);
+  font-family: 'Geist Pixel', monospace;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #ffb3a8;
+  cursor: var(--cursor-pointer);
+  user-select: none;
+}
+
+.oof-console-pill[hidden] {
+  display: none;
+}
+
+.oof-console-pill i {
+  font-style: normal;
+  font-size: 11px;
+}
+
+.oof-console-pill:hover {
+  background: rgba(88, 36, 30, 0.96);
+  border-color: #c2553f;
+}
+
+/* --------------------------------------------------------------------------
+   Telas pequenas
+   -------------------------------------------------------------------------- */
+
+@media (max-width: 760px), (max-height: 520px) {
+  .oof-console {
+    left: calc(6px + var(--safe-left, 0px));
+    right: calc(6px + var(--safe-right, 0px));
+    bottom: calc(6px + var(--safe-bottom, 0px));
+    height: min(58vh, 360px);
+  }
+
+  .oof-console__search {
+    width: 92px;
+  }
+
+  .oof-console__line {
+    font-size: 8.5px;
+  }
+
+  .oof-console__chan {
+    min-width: 0;
+  }
+
+  .oof-console__hint {
+    display: none;
+  }
+}

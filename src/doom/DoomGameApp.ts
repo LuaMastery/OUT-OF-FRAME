@@ -55,6 +55,7 @@ import {
 } from './DoomMazeBuilder';
 import { DoomPauseMenu } from './DoomPauseMenu';
 import { resolveBrowserControlRelease } from './DoomPauseInput';
+import { getGameConsole, isGameConsoleOpen } from '../console/GameConsole';
 import { DoomRadar } from './DoomRadar';
 import {
   AstronautRagdoll,
@@ -384,6 +385,7 @@ export class DoomGameApp {
   private staminaChestHeaveY = 0;
   private staminaBreathPitch = 0;
   private readonly slideState = createInitialSlideState();
+  private spiderHuntingLogged = false;
 
   // Sinais vitais
   private playerHealth = 100;
@@ -1047,6 +1049,8 @@ export class DoomGameApp {
       }
     );
 
+    this.registerConsoleDiagnostics();
+
     this.unsubscribeSettings = this.settingsStore.subscribe((s) => {
       this.applySettings(s);
     });
@@ -1137,6 +1141,105 @@ export class DoomGameApp {
       );
       this.updateFlickeringLightsAndAudio();
     }
+  }
+
+  // ==========================================================================
+  // CONSOLE DE DIAGNÓSTICO
+  // ==========================================================================
+
+  /**
+   * Entrega ao console os dados ao vivo que os comandos mostram, devolve a
+   * trava do mouse quando o console fecha e registra a atividade da incursão.
+   */
+  private registerConsoleDiagnostics(): void {
+    const gameConsole = getGameConsole();
+
+    gameConsole.onVisibilityChange((open) => {
+      if (open || this.disposed) return;
+      // Só devolve a trava se o jogo estiver de fato na frente de tudo.
+      if (this.engaged && !this.pauseMenu.open && !this.inventory.open) {
+        this.requestCanvasPointerLockOnly();
+      }
+    });
+
+    gameConsole.registerInfoProvider('desempenho', () => {
+      const snap = this.lastPerfSnapshot;
+      if (!snap) return ['O ajuste automático ainda está calibrando (aquecimento).'];
+      const levers = this.perfGovernor.currentLevers;
+      return [
+        `Quadros por segundo: ${snap.fps.toFixed(1)} (alvo ${
+          this.settingsStore.value.targetFps > 0
+            ? `${this.settingsStore.value.targetFps} FPS`
+            : 'sem limite'
+        }, monitor ~${snap.estimatedRefreshHz} Hz)`,
+        `Tempo de quadro: mediana ${snap.frameMsMedian.toFixed(2)} ms · p95 ${snap.frameMsP95.toFixed(2)} ms · orçamento ${snap.budgetMs.toFixed(2)} ms`,
+        `JavaScript por quadro: ${snap.cpuMsMean.toFixed(2)} ms (${Math.round(
+          snap.cpuShare * 100
+        )}% do quadro) · gargalo: ${snap.bottleneck.toUpperCase()}`,
+        `Qualidade: degrau ${snap.step} (${snap.stepLabel}) · escala ${levers.renderScalePercent}% · ${levers.maxDynamicLights} luzes`,
+        `Ajuste automático: ${snap.status} · ${snap.drops} quedas e ${snap.raises} recuperações`,
+        `Sombras: ${levers.viewmodelShadowMap ? 'ligadas' : 'desligadas'} · contato ${levers.contactShadowHz} Hz · radar ${levers.radarHz} Hz`,
+        `Resolução interna: ${this.compositor.getResolution().width}×${this.compositor.getResolution().height}`,
+      ];
+    });
+
+    gameConsole.registerInfoProvider('jogo', () => {
+      const lines = [
+        `Fase: ${this.activeSequence} · engajado: ${this.engaged ? 'sim' : 'não'} · espectador: ${this.spectatorMode ? 'sim' : 'não'}`,
+        `Vida ${Math.round(this.playerHealth)}% · sanidade ${Math.round(
+          this.playerSanity
+        )}% · bateria da lanterna ${Math.round(this.lanternBattery)}%`,
+        `Posição: [${this.position.x.toFixed(1)}, ${this.position.z.toFixed(1)}] · tempo de incursão ${this.victoryElapsedSec.toFixed(1)} s`,
+        `Aranha: ${this.spider.isDead ? 'morta' : this.spider.isChasingOrAlert ? 'caçando' : 'patrulhando'}`,
+        `Inventário: ${this.inventory.open ? 'aberto' : 'fechado'} · pausa: ${this.pauseMenu.open ? 'aberta' : 'fechada'}`,
+      ];
+      return lines;
+    });
+
+    gameConsole.registerInfoProvider('webgl', () => {
+      const gl = this.renderer.getContext();
+      const info = this.renderer.info;
+      let gpu = 'não identificada';
+      try {
+        const ext = gl.getExtension('WEBGL_debug_renderer_info');
+        if (ext) {
+          gpu = String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) ?? 'não identificada');
+        }
+      } catch {
+        // Extensão bloqueada por privacidade: nome genérico basta.
+      }
+      return [
+        `Placa de vídeo: ${gpu}`,
+        `Desenhos por quadro: ${info.render.calls} · triângulos: ${info.render.triangles}`,
+        `Geometrias: ${info.memory.geometries} · texturas: ${info.memory.textures}`,
+        `Programas de shader: ${info.programs?.length ?? 0}`,
+        `Sombra real: ${this.renderer.shadowMap.enabled ? 'ligada' : 'desligada'}`,
+      ];
+    });
+
+    gameConsole.registerInfoProvider('rede', () => {
+      const mp = this.multiplayer;
+      if (!mp) return ['Sessão solo: sem conexão de sala.'];
+      return [
+        `Jogadores na sala: ${mp.rosterPlayerCount} de ${mp.totalRosterCount}`,
+        `Anfitrião: ${mp.isHost ? 'você' : mp.hostPlayerId} · seu id: ${mp.localPlayerId}`,
+        `Voz por proximidade: ${mp.isVoiceChatEnabled ? 'ativa' : 'inativa'} · efeito retro: ${
+          mp.isRetroVoiceEffectEnabled ? 'ligado' : 'desligado'
+        }`,
+        `Bate-papo de rádio: ${mp.isChatTyping ? 'digitando agora' : 'fechado'}`,
+      ];
+    });
+
+    gameConsole.registerInfoProvider('config', (term) => {
+      const settings = this.settingsStore.value as unknown as Record<string, unknown>;
+      const needle = term.trim().toLowerCase();
+      const keys = Object.keys(settings)
+        .filter((key) => key.toLowerCase().includes(needle))
+        .sort();
+      return keys.map((key) => `  ${key} = ${String(settings[key])}`);
+    });
+
+    gameConsole.info('jogo', 'Incursão criada — mundo montado e pronto.');
   }
 
   // ==========================================================================
@@ -1272,8 +1375,19 @@ export class DoomGameApp {
       });
       this.lastPerfSnapshot = snapshot;
       if (snapshot.leversRevision !== this.appliedLeversRevision) {
+        const previous = this.appliedLeversRevision;
         this.appliedLeversRevision = snapshot.leversRevision;
         this.applyPerfLevers(snapshot.levers);
+        // Só registra depois do primeiro ajuste, senão o console anunciaria a
+        // qualidade inicial como se fosse uma mudança.
+        if (previous >= 0) {
+          getGameConsole().info(
+            'desempenho',
+            `Qualidade em ${snapshot.stepLabel} (degrau ${snapshot.step}): escala ${
+              snapshot.levers.renderScalePercent
+            }% · ${snapshot.levers.maxDynamicLights} luzes · gargalo ${snapshot.bottleneck.toUpperCase()}`
+          );
+        }
       }
     }
 
@@ -1839,6 +1953,7 @@ export class DoomGameApp {
       window.clearTimeout(this.permadeathTimerId);
       this.permadeathTimerId = 0;
     }
+    getGameConsole().info('jogo', 'Fim de incursão — retornando ao Terminal.');
     this.sound.setWorldPaused(false);
     this.cocoonHudEl.classList.remove('is-visible', 'is-critical');
     this.leaveSpectatorMode();
@@ -1888,7 +2003,7 @@ export class DoomGameApp {
       engaged: this.engaged, disposed: this.disposed, paused: this.pauseMenu.open,
       inventoryOpen: this.inventory.open, gameOver: this.inventory.gameOverVisible,
       chatOpen: Boolean(this.multiplayer?.isChatTyping), danceMenuOpen: this.danceMenu.isOpen,
-      inSequence: this.activeSequence !== 'NONE',
+      inSequence: this.activeSequence !== 'NONE', consoleOpen: isGameConsoleOpen(),
       intentionalRelease: performance.now() <= this.suppressReleasePauseUntilMs,
       dancing: this.danceId !== null,
     });
@@ -1902,6 +2017,7 @@ export class DoomGameApp {
 
   private requestCanvasPointerLockOnly(): void {
     if (
+      isGameConsoleOpen() ||
       this.pauseMenu.open ||
       this.inventory.open ||
       this.inventory.gameOverVisible ||
@@ -1976,6 +2092,8 @@ export class DoomGameApp {
       'keydown',
       (e) => {
         if (!this.engaged || this.disposed) return;
+        // Com o console aberto as teclas pertencem a ele, não ao jogo.
+        if (isGameConsoleOpen()) return;
         this.registerUserActivity();
 
         // Enquanto o chat de rádio [T] está aberto: garante saída limpa em Esc/Enter
@@ -2717,6 +2835,7 @@ export class DoomGameApp {
   private showVictoryScreen(): void {
     if (this.victoryShown || this.disposed || this.activeSequence === 'DEAD_TERMINATED') return;
     this.victoryShown = true;
+    getGameConsole().info('jogo', 'Aranha destruída — vitória registrada.');
     this.sound.stopDungeonAtmosphere?.();
     this.sound.winSurvivors?.();
     this.shotgun.stow();
@@ -3709,8 +3828,25 @@ export class DoomGameApp {
     this.camera.quaternion.setFromEuler(euler);
   }
 
+  /** Só registra a mudança de humor da aranha, não cada quadro em que ela caça. */
+  private trackSpiderActivity(): void {
+    const hunting = this.spider.isDead ? false : this.spider.isChasingOrAlert;
+    if (hunting === this.spiderHuntingLogged) return;
+    this.spiderHuntingLogged = hunting;
+    getGameConsole().info(
+      'jogo',
+      hunting
+        ? 'A aranha percebeu o esquadrão e começou a caçar.'
+        : this.spider.isDead
+          ? 'A aranha caiu — a ameaça acabou.'
+          : 'A aranha perdeu o rastro e voltou a patrulhar.'
+    );
+  }
+
   private update(dt: number): void {
     if (!this.engaged || this.disposed) return;
+
+    this.trackSpiderActivity();
 
     const ambientCell = worldToGridCell(this.position.x, this.position.z);
     this.sound.setDoomAmbientZone(this.ambientZoneTracker.update(ambientCell.gx, ambientCell.gz, dt));
@@ -4543,6 +4679,7 @@ export class DoomGameApp {
       },
       (pickedItemId) => {
         pickedUpAnyItem = true;
+        getGameConsole().debug('jogo', `Item recolhido: ${pickedItemId}`);
         const pickedKind = Object.hasOwn(QUICK_ITEM_DURATIONS, pickedItemId) ? pickedItemId
           : ITEM_CATALOG[pickedItemId]?.kind;
         if (pickedKind && Object.hasOwn(QUICK_ITEM_DURATIONS, pickedKind) && pickedKind !== 'radar' && pickedKind !== 'walkie') {

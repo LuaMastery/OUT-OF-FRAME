@@ -6,6 +6,7 @@ import {
 } from '../multiplayer/MultiplayerService';
 import { CursorProximityFX } from './CursorProximityFX';
 import { TitleGameBackdrop } from './TitleGameBackdrop';
+import { CONSOLE_TOGGLE_CODE, isGameConsoleOpen } from '../console/GameConsole';
 import {
   createTitleParticleLayer,
   TITLE_PARTICLES_TOTAL_MS,
@@ -513,6 +514,8 @@ export class TerminalBootController {
         // Com a Central de Salas aberta, as teclas pertencem ao modal (inclusive
         // o Esc, que fecha só o modal e devolve a trilha ao volume normal).
         if (this.multiplayerModal?.visible) return;
+        // O console de diagnóstico tem prioridade sobre o menu de título.
+        if (isGameConsoleOpen() || e.code === CONSOLE_TOGGLE_CODE) return;
         const count = TITLE_MENU_ITEMS.length;
         // Qualquer tecla conclui a impressão do terminal antes de navegar.
         this.finishTitleIntro();

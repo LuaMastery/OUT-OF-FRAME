@@ -10,8 +10,14 @@ import { getLoadingScreen, nextPaint, settleFrames } from './doom/LoadingScreen'
 import { loadDoomSettings } from './doom/DoomSettings';
 import { SoundEngine } from './engine/audio/SoundEngine';
 import { acquireFullscreenAndKeyboardLock } from './engine/input/BrowserShortcutGuard';
+import { getGameConsole } from './console/GameConsole';
 import { ActiveRoomSession } from './multiplayer/MultiplayerService';
 import { TerminalBootController } from './terminal/TerminalBoot';
+
+// O console nasce antes de tudo o mais: a captura de erros precisa estar de
+// pé já durante o boot do terminal, senão justamente as falhas de inicialização
+// ficariam de fora do relatório.
+const gameConsole = getGameConsole();
 
 const appRoot = document.getElementById('app') as HTMLElement;
 const gameViewport = document.getElementById('game-viewport') as HTMLElement;
@@ -29,6 +35,7 @@ function replaceFreshWebglCanvas(): void {
 }
 
 function exitDoomToDesktop(): void {
+  gameConsole.info('geral', 'Retornando à área de trabalho do Terminal.');
   doomApp?.destroy();
   doomApp = null;
   replaceFreshWebglCanvas();
@@ -50,6 +57,9 @@ async function launchDoomSession(multiplayerSession?: ActiveRoomSession): Promis
   // usuário (o clique em INICIAR), então o navegador tem algo para desenhar
   // enquanto o labirinto é montado.
   loading.show();
+  gameConsole.info('jogo', multiplayerSession
+    ? `Iniciando incursão cooperativa na sala ${multiplayerSession.roomCode}.`
+    : 'Iniciando incursão solo.');
 
   try {
     await nextPaint(); // garante o primeiro frame da sobreposição
@@ -101,6 +111,7 @@ async function launchDoomSession(multiplayerSession?: ActiveRoomSession): Promis
     await loading.finish();
   } catch (error) {
     // Não deixa o jogador preso numa tela preta: avisa a falha e devolve o Terminal.
+    gameConsole.error('jogo', 'Falha ao carregar a incursão:', error);
     await loading.fail('Falha ao carregar a incursão', error);
     exitDoomToDesktop();
   }
@@ -121,4 +132,5 @@ function createTerminalController(skipBootToDesktop: boolean): void {
   }
 }
 
+gameConsole.info('geral', 'Console pronto — pressione ` (crase) para abrir.');
 createTerminalController(false);

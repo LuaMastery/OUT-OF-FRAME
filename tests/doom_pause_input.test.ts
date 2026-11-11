@@ -7,6 +7,12 @@ const gameplay: BrowserControlReleaseState = {
 };
 
 describe('Esc consumido pelo navegador', () => {
+  it('não pausa quando a liberação foi o console tomando o mouse', () => {
+    // Abrir o console solta o pointer lock de propósito; o jogo precisa
+    // continuar rodando por trás do painel.
+    expect(resolveBrowserControlRelease({ ...gameplay, consoleOpen: true })).toBe('ignore');
+  });
+
   it('pausa a exploração ao perder pointer lock ou tela cheia', () => {
     expect(resolveBrowserControlRelease(gameplay)).toBe('pause');
   });
@@ -16,7 +22,7 @@ describe('Esc consumido pelo navegador', () => {
   it.each([
     ['engaged', false], ['disposed', true], ['paused', true], ['inventoryOpen', true],
     ['gameOver', true], ['chatOpen', true], ['danceMenuOpen', true],
-    ['inSequence', true], ['intentionalRelease', true],
+    ['inSequence', true], ['intentionalRelease', true], ['consoleOpen', true],
   ] as const)('ignora liberação com %s = %s', (key, value) => {
     expect(resolveBrowserControlRelease({ ...gameplay, [key]: value })).toBe('ignore');
   });

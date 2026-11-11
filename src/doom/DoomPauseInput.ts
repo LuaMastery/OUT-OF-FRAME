@@ -10,10 +10,13 @@ export interface BrowserControlReleaseState {
   inSequence: boolean;
   intentionalRelease: boolean;
   dancing: boolean;
+  /** O console de diagnóstico está aberto (já tomou conta do mouse). */
+  consoleOpen?: boolean;
 }
 
 export function resolveBrowserControlRelease(state: BrowserControlReleaseState): 'ignore' | 'stop-dance' | 'pause' {
   if (!state.engaged || state.disposed || state.paused || state.inventoryOpen || state.gameOver ||
-      state.chatOpen || state.danceMenuOpen || state.inSequence || state.intentionalRelease) return 'ignore';
+      state.chatOpen || state.danceMenuOpen || state.inSequence || state.intentionalRelease ||
+      state.consoleOpen) return 'ignore';
   return state.dancing ? 'stop-dance' : 'pause';
 }
