@@ -74,8 +74,16 @@ export const SHOTGUN_METRICS = {
   pumpTravel: 0.085,
   /** Coronha. */
   stockRearZ: 0.475,
-  /** Âncora da mão direita (punho da coronha). */
-  gripAnchor: { y: -0.023, z: 0.225, pitchX: 0.346 },
+  /**
+   * Âncora da mão direita (punho da coronha).
+   *
+   * O eixo acompanha o centro real do punho — 12,5° abaixo do eixo da arma,
+   * que é a inclinação da linha média do perfil da coronha — e o ponto cai no
+   * meio do punho (z = 0,235), logo atrás do guarda-mato. Com o eixo antigo
+   * (19,8° e 5 mm mais baixo) a linha da mão saía da madeira antes do fim do
+   * punho e os dedos contornavam o vazio atrás dele.
+   */
+  gripAnchor: { y: -0.0121, z: 0.2362, pitchX: 0.218 },
   /** Âncora da mão esquerda (guarda-mão), em relação ao grupo da bomba. */
   pumpAnchor: { rollZ: 1.21 },
 } as const;
@@ -502,15 +510,15 @@ export function buildShotgunStock(mats: ShotgunMaterialSet): THREE.Group {
   // o punho de uma escopeta real é um punho torneado arredondado, não uma
   // chapa de lados retos — e é essa seção que a mão da luva contorna.
   const gripProfile: ReadonlyArray<readonly [number, number]> = [
-    [0.196, 0.018],
-    [0.196, -0.036],
-    [0.238, -0.046],
-    [0.286, -0.052],
-    [0.300, -0.048],
-    [0.282, -0.012],
-    [0.246, 0.014],
+    [0.196, 0.014],
+    [0.196, -0.028],
+    [0.238, -0.036],
+    [0.286, -0.042],
+    [0.300, -0.038],
+    [0.282, -0.004],
+    [0.246, 0.010],
   ];
-  add(extrudeProfile(gripProfile, 0.04, 0.012), mats.woodDark, [0, 0, 0]).name = 'GripWood';
+  add(extrudeProfile(gripProfile, 0.04, 0.007), mats.woodDark, [0, 0, 0]).name = 'GripWood';
   // Checagem: frisos cruzados um pouco mais largos que o punho, para marcar
   // a madeira sem virar uma chapa solta por cima dela.
   for (let i = 0; i < 6; i++) {
@@ -646,8 +654,22 @@ export interface ShotgunGloveMaterials {
 
 export interface ShotgunGloveOptions {
   side: 'right' | 'left';
-  /** Raio do tubo agarrado (cano, guarda-mão ou punho da coronha). */
+  /** Raio horizontal do tubo agarrado (cano, guarda-mão ou punho da coronha). */
   radius: number;
+  /**
+   * Raio vertical do tubo agarrado. Quando ausente, vale o horizontal.
+   *
+   * Importa porque nenhuma das duas pegadas é redonda: o punho da coronha
+   * tem 0,040 m de largura por ~0,056 m de altura e o guarda-mão é um oval
+   * mais alto que largo. Fechar a mão num círculo fazia os dedos afundarem
+   * na peça embaixo e flutuarem nas laterais — daí o contorno elíptico.
+   */
+  radiusY?: number;
+  /**
+   * Expoente do contorno: 2 fecha a mão numa elipse (guarda-mão oval) e
+   * valores altos (8) num retângulo de quinas arredondadas (punho da coronha).
+   */
+  wrapExponent?: number;
   /** Escala geral da mão (1 = luva do traje em escala real). */
   scale?: number;
   /** Direção do mangote no referencial da luva. */
@@ -667,13 +689,64 @@ export function buildShotgunGlove(
   const mirror = options.side === 'right' ? 1 : -1;
   const s = options.scale ?? 1;
   const R = options.radius;
+  const RY = options.radiusY ?? options.radius;
+  const N = Math.max(2, options.wrapExponent ?? 2);
   const fingerR = 0.0090 * s;
   const glove = new THREE.Group();
   glove.name = `ShotgunGlove_${options.side}`;
 
-  /** Ponto sobre a superfície do tubo: ângulo em rad, 0 = lado da palma. */
-  const surface = (angle: number, radial: number, z: number): THREE.Vector3 =>
-    new THREE.Vector3(mirror * radial * Math.cos(angle), -radial * Math.sin(angle), z);
+  /**
+   * Ponto a `extra` metros da superfície da peça, no ângulo dado
+   * (0 = lado da palma).
+   *
+   * O contorno é uma SUPERELIPSE inflada ao longo da própria normal: com
+   * expoente 2 ela é a elipse do guarda-mão, e com expoente alto ela vira o
+   * retângulo de quinas arredondadas que o punho da coronha realmente é
+   * (0,040 × 0,060 m). Fechar a mão num círculo — ou mesmo numa elipse —
+   * deixava os dedos cruzando a madeira nas quinas e soltos nas faces.
+   */
+  const surface = (angle: number, extra: number, z: number): THREE.Vector3 => {
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    const px = R * Math.sign(cos) * Math.abs(cos) ** (2 / N);
+    const py = -RY * Math.sign(sin) * Math.abs(sin) ** (2 / N);
+    // Normal externa: gradiente de (|x|/R)^N + (|y|/RY)^N.
+    let nx = ((Math.abs(px) / R) ** (N - 1) * Math.sign(px)) / R;
+    let ny = ((Math.abs(py) / RY) ** (N - 1) * Math.sign(py)) / RY;
+    const len = Math.hypot(nx, ny) || 1;
+    nx /= len;
+    ny /= len;
+    return new THREE.Vector3(mirror * (px + nx * extra), py + ny * extra, z);
+  };
+
+  /**
+   * Ângulos que dividem o arco [de, até] em `parts` trechos de MESMO
+   * COMPRIMENTO. Com o contorno retangular, ângulos iguais amontoam as
+   * articulações nas quinas; distribuir por comprimento de arco espalha os
+   * nós do dedo como numa mão de verdade.
+   */
+  const spreadAngles = (from: number, to: number, parts: number): number[] => {
+    const steps = 96;
+    const lengths: number[] = [0];
+    let total = 0;
+    let prev = surface(from, 0, 0);
+    for (let i = 1; i <= steps; i++) {
+      const p = surface(from + ((to - from) * i) / steps, 0, 0);
+      total += Math.hypot(p.x - prev.x, p.y - prev.y);
+      lengths.push(total);
+      prev = p;
+    }
+    const out: number[] = [from];
+    for (let k = 1; k <= parts; k++) {
+      const target = (total * k) / parts;
+      let i = 1;
+      while (i < lengths.length && lengths[i] < target) i++;
+      const before = lengths[i - 1];
+      const span = lengths[i] - before || 1;
+      out.push(from + ((to - from) * (i - 1 + (target - before) / span)) / steps);
+    }
+    return out;
+  };
 
   // ---- Palma e dorso -------------------------------------------------------
   // Bloco achatado encostado no tubo do lado da palma: a face interna fica
@@ -682,7 +755,7 @@ export function buildShotgunGlove(
   // 0,076 m), achatada contra a peça agarrada.
   const palmThickness = 0.021 * s;
   const palm = new THREE.Mesh(new THREE.BoxGeometry(palmThickness * 2, 0.058 * s, 0.070 * s), mats.glove);
-  palm.position.set(mirror * (R + palmThickness), 0.006 * s, 0);
+  palm.position.copy(surface(0, palmThickness, 0.006 * s));
   palm.rotation.set(0, 0, mirror * 0.08);
   glove.add(palm);
   // Dorso da mão: mesmo bloco de borracha, sem almofada de outra cor — no
@@ -691,7 +764,7 @@ export function buildShotgunGlove(
     new THREE.BoxGeometry(palmThickness * 0.95, 0.052 * s, 0.064 * s),
     mats.glove
   );
-  back.position.set(mirror * (R + palmThickness * 1.9), 0.010 * s, 0.002);
+  back.position.copy(surface(0, palmThickness * 1.9, 0.010 * s));
   back.rotation.set(0, 0, mirror * 0.08);
   glove.add(back);
 
@@ -709,16 +782,15 @@ export function buildShotgunGlove(
   for (let f = 0; f < 4; f++) {
     const z = (f - 1.5) * fingerSpanZ;
     // A linha de centro dos dedos passa a um raio do dedo da superfície: o
-    // arco encosta na peça em vez de atravessá-la.
-    const radial = R + fingerR * 1.12;
+    // arco encosta na peça em vez de atravessá-la. O desconto ao longo do
+    // dedo acompanha o afinamento natural até a ponta.
     const seg = sweeps[f];
-    const joints = [surface(0.30, radial, z + mirror * 0.001)];
-    let angle = 0.3;
-    for (let i = 0; i < seg.length; i++) {
-      angle += seg[i];
-      const shrink = (i / seg.length) * fingerR * 0.45;
-      joints.push(surface(angle, radial - shrink, z - mirror * 0.0006 * (i + 1)));
-    }
+    // As juntas caem em pontos igualmente espaçados ao longo do contorno, não
+    // em ângulos iguais: é o que mantém as falanges do mesmo tamanho.
+    const angles = spreadAngles(0.3, 0.3 + seg.reduce((a, b) => a + b, 0), seg.length);
+    const joints = angles.map((angle, i) =>
+      surface(angle, fingerR * 1.12 - (i / seg.length) * fingerR * 0.45, z - mirror * 0.0006 * i)
+    );
     for (let i = 0; i < joints.length - 1; i++) {
       capsuleBetween(glove, joints[i], joints[i + 1], fingerR * (1 - i * 0.055), mats.glove);
     }
@@ -743,10 +815,12 @@ export function buildShotgunGlove(
   // Nasce na palma, sobe pelo dorso do tubo e desce do outro lado. Dois
   // segmentos, como o polegar do rig do traje.
   const thumbR = fingerR * 1.24;
-  const thumbA = surface(-0.45, R + thumbR * 1.3, -0.024 * s);
-  const thumbB = surface(-1.05, R + thumbR * 1.4, -0.038 * s);
-  const thumbC = surface(-1.65, R + thumbR * 1.3, -0.047 * s);
-  const thumbD = surface(-2.15, R + thumbR * 1.05, -0.052 * s);
+  const thumbAngles = spreadAngles(-0.45, -2.15, 3);
+  const thumbZ = [-0.024, -0.038, -0.047, -0.052];
+  const thumbPads = [thumbR * 1.3, thumbR * 1.4, thumbR * 1.3, thumbR * 1.05];
+  const [thumbA, thumbB, thumbC, thumbD] = thumbAngles.map((angle, i) =>
+    surface(angle, thumbPads[i], thumbZ[i] * s)
+  );
   capsuleBetween(glove, thumbA, thumbB, thumbR, mats.glove);
   capsuleBetween(glove, thumbB, thumbC, thumbR * 0.92, mats.glove);
   capsuleBetween(glove, thumbC, thumbD, thumbR * 0.8, mats.glove);
@@ -764,7 +838,7 @@ export function buildShotgunGlove(
     new THREE.Vector3(0, 1, 0),
     sleeveDir
   );
-  const wristStart = new THREE.Vector3(mirror * (R + palmThickness * 0.9), -0.024 * s, 0.030 * s);
+  const wristStart = surface(-0.35, palmThickness * 0.9, 0.030 * s);
   const wristEnd = wristStart.clone().addScaledVector(sleeveDir, 0.046 * s);
   capsuleBetween(glove, wristStart, wristEnd, 0.047 * s, mats.glove);
 

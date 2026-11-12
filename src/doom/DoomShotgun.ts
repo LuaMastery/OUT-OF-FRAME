@@ -267,10 +267,14 @@ export function formatShotgunAssemblyProgress(
 
 /** Enquadramento de 1ª pessoa: onde a arma e as mãos devem cair na tela. */
 const FIRST_PERSON_FIT = {
-  /** Direção do cano (do punho até a boca) no espaço da câmera. */
-  aim: new THREE.Vector3(-0.16, -0.04, -0.985),
+  /**
+   * Direção do cano (do punho até a boca) no espaço da câmera. O cano mergulha
+   * ~8° para baixo: é o que tira a boca do meio da tela e faz a arma ler como
+   * um peso apoiado no ombro, não como uma barra atravessando a mira.
+   */
+  aim: new THREE.Vector3(-0.16, -0.1427, -0.978),
   /** Onde a mão direita (punho da coronha) deve ficar, em metros. */
-  gripPoint: new THREE.Vector3(0.13, -0.105, -0.32),
+  gripPoint: new THREE.Vector3(0.13, -0.1406, -0.32),
   /** Rolagem da arma em torno do próprio eixo (rad). */
   roll: -0.05,
 } as const;
@@ -400,25 +404,33 @@ export class DoomShotgunViewmodel {
       cuff: astroMats.anodizedCrimson,
       sleeve: astroMats.astroCamo,
     };
-    // Mão direita no punho da coronha. O punho tem 0,040 m de largura, então
-    // a luva fecha num raio de 0,0195: a palma encosta na madeira em vez de
-    // ficar 3 mm solta no ar.
+    // Mão direita no punho da coronha. O punho não é redondo: tem 0,040 m de
+    // largura por ~0,056 m de altura na seção perpendicular ao eixo, então a
+    // luva fecha numa elipse com essas duas meias-medidas. Fechando num
+    // círculo, os dedos afundavam 8 mm na madeira embaixo e ficavam soltos nas
+    // laterais — a mão parecia atravessar o punho.
     model.gripAnchor.add(
       buildShotgunGlove(gloveMats, {
         side: 'right',
         radius: 0.0195,
+        radiusY: 0.0295,
+        // O punho é um retângulo de quinas arredondadas, não um tubo: com
+        // expoente 8 os dedos correm ao longo das faces em vez de cruzar as
+        // quinas.
+        wrapExponent: 8,
         scale: 0.98,
         sleeveDirection: new THREE.Vector3(0.34, -0.9, 0.26),
         sleeveLength: 0.05,
       })
     );
     // Mão esquerda no guarda-mão — viaja com a bomba. O guarda-mão é um oval
-    // (mais alto que largo), então a luva fecha no raio MÉDIO: assim os dedos
-    // encostam na parte de baixo (onde o oval é mais alto) em vez de flutuarem
-    // ao redor da peça.
+    // de 0,023 × 0,028 m (mais alto que largo): a luva fecha nesse mesmo oval,
+    // em vez de num círculo de raio médio que deixava os dedos cravados embaixo
+    // e folgados nas laterais.
     this.leftHandGroup = buildShotgunGlove(gloveMats, {
       side: 'left',
-      radius: (SHOTGUN_METRICS.foreEndHalfWidth + SHOTGUN_METRICS.foreEndHalfHeight) / 2,
+      radius: 0.027,
+      radiusY: 0.0235,
       scale: 1,
       sleeveDirection: new THREE.Vector3(0.4, -0.88, 0.26),
       sleeveLength: 0.2,
