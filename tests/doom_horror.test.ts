@@ -511,8 +511,8 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
     expect(spider.position.distanceTo(postPos)).toBeGreaterThan(0.35);
   });
 
-  it('corta armadilhas de teia e fios do ninho instantaneamente ao acionar o canivete pelo atalho rápido', () => {
-    expect(QUICK_SLOT_COUNT).toBe(3);
+  it('corta armadilhas de teia e fios do ninho instantaneamente ao acionar o canivete sacado do cinto', () => {
+    expect(QUICK_SLOT_COUNT).toBe(4);
     expect(ITEM_CATALOG.rusty_knife.usable).toBe(true);
 
     const scene = new THREE.Scene();
@@ -4493,11 +4493,11 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
         }
       );
 
-      // Coleta itens que preenchem automaticamente os atalhos [1], [2] e [3]!
+      // O que se recolhe entra sozinho no cinto, do [1] para o [4]!
       inv.addItem('rusty_knife', 1, true); // -> [1]
       inv.addItem('sterile_bandage', 2, true); // -> [2]
       inv.addItem('magnesium_flare', 1, true); // -> [3]
-      expect(inv.getQuickSlots()).toEqual([
+      expect(inv.getHotbarSlots().map((slot) => slot.itemId)).toEqual([
         'rusty_knife',
         'sterile_bandage',
         'magnesium_flare',
@@ -4513,7 +4513,7 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
       const gridEl = viewportEl.querySelector('[data-inv-grid]')!;
       const quickRowEl = viewportEl.querySelector('[data-quick-row]')!;
       expect(gridEl.children.length).toBe(20);
-      expect(quickRowEl.children.length).toBe(3);
+      expect(quickRowEl.children.length).toBe(4);
 
       const knifePocketNodeBefore = gridEl.children[1];
       const quickSlot0NodeBefore = quickRowEl.children[0];
@@ -4558,41 +4558,40 @@ describe('Labirinto, Ninho de Teia & Aranha Gigante Procedural (Evil Crawler)', 
       expect(hubQuick0After.classList.contains('selected')).toBe(true);
 
       // ----------------------------------------------------------------------
-      // PARTE 2: Rolinha do mouse + Botão Esquerdo aciona atalhos sem teclas 1, 2, 3!
+      // PARTE 2: o cinto SÓ troca o que está na mão — girar nunca gasta item
       // ----------------------------------------------------------------------
-      inv.clearWheelQuickSlotSelection();
-      expect(inv.hasWheelSelectedQuickSlot()).toBe(false);
+      // O primeiro item recolhido já vem para a mão (encaixe [1])
+      expect(inv.getHeldSlot()).toBe(0);
+      expect(inv.getHeldItem()?.itemId).toBe('rusty_knife');
 
-      // 1º giro da rolinha -> seleciona [1] Canivete oxidado
-      expect(inv.cycleQuickSlotSelection(1)).toBe(0);
-      expect(inv.hasWheelSelectedQuickSlot()).toBe(true);
-      expect(inv.isWheelSelectionRecent()).toBe(true);
-
-      // Clique com botão esquerdo -> usa imediatamente o Canivete sem apertar '1'!
-      expect(inv.useWheelSelectedQuickSlot()).toBe(true);
+      // Usar o item da mão aciona o canivete; a ferramenta continua no cinto
+      expect(inv.useHeldItem()).toBe(true);
       expect(knifeUsedCount).toBe(1);
-      // Ferramenta reutilizável permanece armada na janela ativa para cortar outra teia se clicar de novo
-      expect(inv.hasWheelSelectedQuickSlot()).toBe(true);
+      expect(inv.getHeldItem()?.itemId).toBe('rusty_knife');
 
-      // 2º giro da rolinha -> avança para [2] Rolo de gaze (×2)
-      expect(inv.cycleQuickSlotSelection(1)).toBe(1);
-      expect(inv.getSelectedQuickSlot()).toBe(1);
+      // 1º giro da rolinha -> [2] Rolo de gaze (×2). Só de girar, nada se gasta!
+      expect(inv.cycleHotbarSlot(1)).toBe(1);
+      expect(inv.getHeldSlot()).toBe(1);
+      expect(healUsedCount).toBe(0);
 
-      // Clique com botão esquerdo -> aplica 1 Rolo de gaze sem apertar '2' e desarma para não desperdiçar a 2ª unidade!
-      expect(inv.useWheelSelectedQuickSlot()).toBe(true);
+      // Usar consome UMA unidade; a outra continua no cinto
+      expect(inv.useHeldItem()).toBe(true);
       expect(healUsedCount).toBe(1);
-      expect(inv.hasWheelSelectedQuickSlot()).toBe(false);
-      expect(inv.useWheelSelectedQuickSlot()).toBe(false);
-      expect(healUsedCount).toBe(1);
+      expect(inv.getHeldItem()?.quantity).toBe(1);
 
-      // Girar para [3] Bastão de magnésio e cancelar com botão direito não consome o item!
-      inv.cycleQuickSlotSelection(1); // -> [1]
-      inv.cycleQuickSlotSelection(1); // -> [2]
-      expect(inv.cycleQuickSlotSelection(1)).toBe(2); // -> [3]
-      expect(inv.hasWheelSelectedQuickSlot()).toBe(true);
-      inv.clearWheelQuickSlotSelection();
-      expect(inv.hasWheelSelectedQuickSlot()).toBe(false);
+      // Gastar a última gaze esvazia o encaixe sem deixar fantasma na barra
+      expect(inv.useHeldItem()).toBe(true);
+      expect(inv.getHeldItem()).toBeNull();
+      expect(inv.hasItem('sterile_bandage')).toBe(false);
+
+      // 2º giro -> [3] Bastão de magnésio: SACAR não aciona o item
+      expect(inv.cycleHotbarSlot(1)).toBe(2);
       expect(flareUsedCount).toBe(0);
+
+      // [Q] não larga o que é essencial: o canivete fica na mão
+      inv.selectHotbarSlot(0);
+      expect(inv.dropHeldItem()).toBe(false);
+      expect(inv.getHeldItem()?.itemId).toBe('rusty_knife');
 
       // Montagem exige todas as peças e transforma os quatro itens em uma arma.
       const internals = inv as unknown as {

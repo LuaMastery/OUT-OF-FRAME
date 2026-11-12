@@ -173,7 +173,7 @@ export class DoomFlashlight {
   /** Tamanho atual do mapa de sombra do viewmodel (0 = sombra desligada). */
   private shadowMapSize = 512;
 
-  // Grupo de ação rápida em 1ª pessoa (atalhos [1], [2], [3] e uso de objetos)
+  // Grupo de ação rápida em 1ª pessoa (cinto [1]–[4] e uso de objetos)
   private readonly quickRootGroup = new THREE.Group();
   /** Pose da luta contra a teia (null = solto): alimenta braços e lanterna. */
   private webStruggle: WebStrugglePose | null = null;

@@ -149,6 +149,8 @@ function makeDetailedPixelTex(
 export class DoomWorldItems {
   private readonly root = new THREE.Group();
   private readonly pickups: WorldPickupInstance[] = [];
+  /** Contador de objetos largados pelo jogador (nomes únicos no mundo). */
+  private droppedItemCount = 0;
   private readonly activeFlares: ActiveMagnesiumFlare[] = [];
   private readonly arenaLayout: DoomArenaLayout;
   private readonly sharedUniforms: DoomSharedUniforms;
@@ -1640,6 +1642,55 @@ export class DoomWorldItems {
     }
 
     return holder;
+  }
+
+  /**
+   * Cria no chão um objeto LARGADO pelo jogador ([Q] no cinto).
+   *
+   * O item volta a existir no mundo como um pickup comum: aparece no radar,
+   * pode ser recolhido de volta com [E]/clique e continua contando como
+   * equipamento pendente enquanto ninguém pegar. Devolve false quando o item
+   * não tem modelo 3D conhecido.
+   */
+  spawnDroppedItem(
+    itemId: string,
+    worldX: number,
+    worldZ: number,
+    yaw: number
+  ): boolean {
+    let itemMesh: THREE.Object3D;
+    try {
+      itemMesh = this.buildItemMesh(itemId);
+    } catch {
+      return false;
+    }
+    if (!itemMesh) return false;
+
+    const group = new THREE.Group();
+    this.droppedItemCount += 1;
+    group.name = `Dropped_${itemId}_${this.droppedItemCount}`;
+    group.position.set(worldX, 0, worldZ);
+
+    itemMesh.rotation.y = yaw;
+    // Um pouco maior que o item dentro do caixote: largado no chão ele precisa
+    // chamar a atenção de quem volta correndo pelo corredor.
+    itemMesh.scale.setScalar(1.35);
+    group.add(itemMesh);
+    this.root.add(group);
+
+    this.pickups.push({
+      id: `dropped-${itemId}-${this.droppedItemCount}`,
+      itemId,
+      group,
+      itemMesh,
+      position: new THREE.Vector3(worldX, 0.06, worldZ),
+      cellWorldX: worldX,
+      cellWorldZ: worldZ,
+      radarJitterX: 0,
+      radarJitterZ: 0,
+      collected: false,
+    });
+    return true;
   }
 
   /**

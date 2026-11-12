@@ -1156,7 +1156,7 @@ export class DoomSpiderWebManager {
   }
 
   /**
-   * Golpe ativo com o Canivete Oxidado (ex.: via atalho rápido [1], [2] ou [3]):
+   * Golpe ativo com o Canivete Oxidado (ex.: sacado do cinto com [1]–[4]):
    * - Corta todos os fios IMEDIATAMENTE em Solo ou em armadilhas comuns;
    * - Em Casulo do Ninho Multiplayer (`lockedInMultiplayerCocoon`), os braços estão imobilizados na seda e só um amigo pode cortar!
    */

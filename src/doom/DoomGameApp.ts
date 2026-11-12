@@ -77,6 +77,7 @@ import {
   DoomRoomId,
   DoomSpecialRoomDoorController,
   getThemedRoomAtCell,
+  isWalkableArenaCell,
 } from './DoomRooms';
 import {
   DoomGameSettings,
@@ -768,6 +769,7 @@ export class DoomGameApp {
         return true;
       },
       onToggleShotgun: () => this.toggleShotgun(),
+      onDropHeldItem: (itemId) => this.dropHeldItemIntoWorld(itemId),
       onUseFlare: () => {
         if (this.webManager.isLockedInMultiplayerCocoon) {
           this.sound.playStruggleEffort();
@@ -939,7 +941,11 @@ export class DoomGameApp {
         }
       },
       onInteractPress: () => {
-        this.interactQueued = true;
+        // Mesma regra do [E] e do clique no celular: com item na mão e nada
+        // para interagir na mira, o botão USA o item.
+        if (!this.tryUseHeldItem()) {
+          this.interactQueued = true;
+        }
         this.struggleQueued = true;
       },
       onPushToTalkHoldChange: (held) => {
@@ -2300,33 +2306,22 @@ export class DoomGameApp {
           return;
         }
 
-        // Atalhos rápidos [1], [2], [3]: pega e usa o item imediatamente sem abrir o Tab!
-        if (
-          !e.repeat &&
-          (e.code === 'Digit1' ||
-            e.code === 'Numpad1' ||
-            e.code === 'Digit2' ||
-            e.code === 'Numpad2' ||
-            e.code === 'Digit3' ||
-            e.code === 'Numpad3')
-        ) {
-          // Usar um item cancela a coreografia (volta para a 1ª pessoa)
+        // Cinto [1]–[4]: SÓ troca o que está na mão (nunca gasta o item).
+        // Usar é com o clique esquerdo ou [E] — é o que evita beber um
+        // láudano por engano no meio de uma fuga.
+        const beltKey = /^(Digit|Numpad)([1-4])$/.exec(e.code);
+        if (beltKey && !e.repeat) {
+          // Sacar a escopeta cancela a coreografia (volta para a 1ª pessoa)
           if (this.danceId) {
             this.stopDance('action');
           }
-          const quickIdx =
-            e.code === 'Digit1' || e.code === 'Numpad1'
-              ? 0
-              : e.code === 'Digit2' || e.code === 'Numpad2'
-                ? 1
-                : 2;
-          this.inventory.useQuickSlot(quickIdx);
+          this.inventory.selectHotbarSlot(Number(beltKey[2]) - 1);
           return;
         }
 
-        // Tecla [Q]: aciona imediatamente o atalho destacado na HUB inferior
+        // Tecla [Q]: larga no chão o item da mão (volta a ser objeto pegável)
         if (e.code === 'KeyQ' && !e.repeat) {
-          this.inventory.useSelectedQuickSlot();
+          this.inventory.dropHeldItem();
           return;
         }
 
@@ -2436,7 +2431,7 @@ export class DoomGameApp {
       { capture: true, passive: false, signal: this.abortCtrl.signal }
     );
 
-    // Roda do mouse seleciona/percorre os atalhos [1]–[3] na HUB inferior, tornando-a bem visível!
+    // Roda do mouse troca o item de mão nos encaixes [1]–[4] do cinto, acordando a barra inferior!
     window.addEventListener(
       'wheel',
       (e) => {
@@ -2473,7 +2468,7 @@ export class DoomGameApp {
           0
             ? 1
             : -1;
-        this.inventory.cycleQuickSlotSelection(wheelDir);
+        this.inventory.cycleHotbarSlot(wheelDir);
       },
       { passive: true, signal: this.abortCtrl.signal }
     );
@@ -2604,24 +2599,18 @@ export class DoomGameApp {
         if (!this.pointerLocked || !document.fullscreenElement) {
           this.tryPointerLock(true);
         }
-        if (
-          e.button === 2 &&
-          this.inventory.hasWheelSelectedQuickSlot()
-        ) {
-          e.preventDefault();
-          this.inventory.clearWheelQuickSlotSelection();
-          return;
-        }
         if (e.button === 0) {
           if (this.shotgun.isEquipped && hadPointerLockBeforeClick) {
             this.fireShotgun();
             return;
           }
-          if (
-            this.inventory.hasWheelSelectedQuickSlot() &&
-            (hadPointerLockBeforeClick || this.inventory.isWheelSelectionRecent())
-          ) {
-            this.inventory.useWheelSelectedQuickSlot();
+          // Com algo na mão e nada interagível na mira, o clique USA o item
+          // (como no Lethal Company). Com algo na frente — item no chão,
+          // caixote, aliado preso — o clique continua INTERAGINDO, para não
+          // desperdiçar um curativo tentando pegar uma chave.
+          // O clique que só captura o mouse não gasta nada: usar o item exige
+          // que o ponteiro já estivesse preso, como no tiro da escopeta.
+          if (hadPointerLockBeforeClick && this.tryUseHeldItem()) {
             this.struggleQueued = true;
             this.isDragging = true;
             this.lastMouseX = e.clientX;
@@ -2897,6 +2886,115 @@ export class DoomGameApp {
       2200,
       `SINAL MARCADO · EXPIRA EM ${TACTICAL_PING_DURATION_SECONDS}s`
     );
+  }
+
+  /**
+   * Verdadeiro quando existe algo para INTERAGIR na mira (item no chão,
+   * caixote lacrado, porta trancada cuja chave você tem).
+   *
+   * É o que decide se o clique esquerdo e o [E] usam o item da mão ou
+   * interagem com o mundo: com algo na frente, interagir ganha sempre.
+   */
+  /**
+   * Usa o item da mão quando NÃO há nada para interagir na mira.
+   *
+   * Preso na teia, nunca: aí o comando é luta, e perder uma gaze tentando se
+   * soltar seria cruel. Devolve true quando o item foi usado, avisando quem
+   * chamou que não deve interagir.
+   */
+  private tryUseHeldItem(): boolean {
+    if (this.webManager.isPlayerEnsnared) return false;
+    const held = this.inventory.getHeldItem();
+    if (!held?.usable) return false;
+    if (this.hasInteractableInSight()) return false;
+    this.inventory.useHeldItem();
+    return true;
+  }
+
+  private hasInteractableInSight(): boolean {
+    if (this.webManager.isPlayerEnsnared) return false;
+    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(
+      this.camera.quaternion
+    );
+    if (
+      this.worldItems.hasLockedCrateInSight(
+        this.position,
+        this.camera.position,
+        forward
+      )
+    ) {
+      return true;
+    }
+    if (
+      this.worldItems.hasInteractableItemInSight(
+        this.position,
+        this.camera.position,
+        forward
+      )
+    ) {
+      return true;
+    }
+    if (
+      this.multiplayer?.hasTrappedAllyInRescueRange(
+        this.position,
+        this.spider.position,
+        this.inventory.hasItem('rusty_knife')
+      )
+    ) {
+      return true;
+    }
+    // Porta trancada de sala especial: com a chave na mão, interagir abre a
+    // porta — e isso tem de ganhar do clique que usa o item.
+    const door = this.specialRoomDoors.findNearbyLockedDoor(this.position, 3.05);
+    return Boolean(door && this.inventory.hasItem(door.keyItemId));
+  }
+
+  /**
+   * [Q] Solta o item da mão no chão, na frente do jogador.
+   *
+   * Procura o primeiro ponto LIVRE (na frente, depois nos lados, depois aos
+   * pés) para o objeto nunca surgir dentro de uma parede, de onde não haveria
+   * como pegá-lo de volta. Devolve false quando não há chão livre por perto —
+   * e aí o item fica no bolso.
+   */
+  private dropHeldItemIntoWorld(itemId: string): boolean {
+    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(
+      this.camera.quaternion
+    );
+    forward.y = 0;
+    if (forward.lengthSq() < 1e-6) return false;
+    forward.normalize();
+
+    // À frente, à direita, à esquerda e, por último, bem aos pés.
+    const right = new THREE.Vector3(-forward.z, 0, forward.x);
+    const candidates: THREE.Vector3[] = [
+      new THREE.Vector3(
+        this.position.x + forward.x * 0.85,
+        0,
+        this.position.z + forward.z * 0.85
+      ),
+      new THREE.Vector3(
+        this.position.x + right.x * 0.7,
+        0,
+        this.position.z + right.z * 0.7
+      ),
+      new THREE.Vector3(
+        this.position.x - right.x * 0.7,
+        0,
+        this.position.z - right.z * 0.7
+      ),
+      new THREE.Vector3(this.position.x, 0, this.position.z),
+    ];
+
+    for (const spot of candidates) {
+      const cell = worldToGridCell(spot.x, spot.z);
+      if (!isWalkableArenaCell(cell.gx, cell.gz, { ignoreRoomLocks: true })) {
+        continue;
+      }
+      const yaw = Math.atan2(-forward.x, -forward.z) + Math.random() * 0.7 - 0.35;
+      return this.worldItems.spawnDroppedItem(itemId, spot.x, spot.z, yaw);
+    }
+    return false;
   }
 
   private toggleShotgun(): void {

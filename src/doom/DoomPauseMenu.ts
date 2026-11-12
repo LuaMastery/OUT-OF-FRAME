@@ -197,11 +197,12 @@ export class DoomPauseMenu {
               </div>
 
               <div class="pause-ctrl-card">
-                <div class="pause-ctrl-title">Equipamentos & Atalhos</div>
+                <div class="pause-ctrl-title">Cinto & Equipamentos</div>
                 <div class="pause-ctrl-line"><span>Abrir Bolsos / Inventário</span><span class="pause-ctrl-key">Tab</span></div>
-                <div class="pause-ctrl-line"><span>Selecionar atalho rápido</span><span class="pause-ctrl-key">Rolinha do Mouse</span></div>
-                <div class="pause-ctrl-line"><span>Usar atalho destacado</span><span class="pause-ctrl-key">Botão Esq. / Q</span></div>
-                <div class="pause-ctrl-line"><span>Atalhos diretos</span><span class="pause-ctrl-key">1 · 2 · 3</span></div>
+                <div class="pause-ctrl-line"><span>Pegar item do cinto</span><span class="pause-ctrl-key">1 · 2 · 3 · 4</span></div>
+                <div class="pause-ctrl-line"><span>Trocar o que está na mão</span><span class="pause-ctrl-key">Rolinha do Mouse</span></div>
+                <div class="pause-ctrl-line"><span>Usar o item da mão</span><span class="pause-ctrl-key">Botão Esq. / E</span></div>
+                <div class="pause-ctrl-line"><span>Largar no chão</span><span class="pause-ctrl-key">Q</span></div>
                 <div class="pause-ctrl-line"><span>Lanterna / Radar / Zoom</span><span class="pause-ctrl-key">F · M · N</span></div>
               </div>
 

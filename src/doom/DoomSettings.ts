@@ -49,7 +49,7 @@ export interface DoomGameSettings {
   invertMouseY: boolean; // Inverter eixo Y vertical (padrão false)
   crouchMode: HoldOrToggleMode; // Segurar ou Alternar [Ctrl/C] (padrão 'hold')
   sprintMode: HoldOrToggleMode; // Segurar ou Alternar [Shift] (padrão 'hold')
-  invertWheelShortcuts: boolean; // Inverter direção da rolinha nos atalhos [1-3] (padrão false)
+  invertWheelShortcuts: boolean; // Inverter direção da rolinha ao trocar o item do cinto [1-4] (padrão false)
   touchLookSensitivity: number; // 40..200 % mobile (padrão 100)
 
   // 4. JOGABILIDADE & CÂMERA (4 opções)
@@ -449,7 +449,7 @@ export const DOOM_SETTINGS_DESCRIPTORS: ReadonlyArray<SettingControlSpec> = [
     category: 'controls',
     label: 'Inverter Rolinha nos Atalhos',
     description:
-      'Inverte a direção da roda do mouse ao percorrer os atalhos rápidos [1–3].',
+      'Inverte a direção da roda do mouse ao percorrer os encaixes do cinto [1–4].',
     kind: 'toggle',
     onLabel: 'Invertida',
     offLabel: 'Padrão',
@@ -521,7 +521,7 @@ export const DOOM_SETTINGS_DESCRIPTORS: ReadonlyArray<SettingControlSpec> = [
     category: 'interface',
     label: 'Opacidade da Barra de Atalhos',
     description:
-      'Transparência da HUB inferior [F / 1–3] quando está em repouso durante a exploração.',
+      'Transparência da barra inferior [F / 1–4] quando está em repouso durante a exploração.',
     kind: 'range',
     min: 15,
     max: 95,

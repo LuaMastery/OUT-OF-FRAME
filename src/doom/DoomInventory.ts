@@ -1,5 +1,18 @@
 import { getRequiredShotgunPartIds, SHOTGUN_ITEM_ID } from './DoomShotgun';
 import { getInventoryItemIcon } from './DoomInventoryIcons';
+import {
+  canDropHotbarItem,
+  createHotbarSlots,
+  cycleHotbarIndex,
+  formatHeldItemLabel,
+  goesToHotbarAutomatically,
+  hotbarIndexOfItem,
+  HOTBAR_SLOT_COUNT,
+  planHotbarPickup,
+  pruneHotbar,
+  resolveHotbarAfterItemGone,
+  swapHotbarSlots,
+} from './DoomHotbar';
 import { SoundEngine } from '../engine/audio/SoundEngine';
 import {
   CursorProximityFX,
@@ -41,6 +54,22 @@ export interface InventorySlotEntry {
   quantity: number;
 }
 
+/**
+ * Como um encaixe do cinto aparece para a interface (HUD, testes e toque).
+ * É uma FOTO do estado, nunca uma referência viva ao bolso.
+ */
+export interface HotbarSlotView {
+  /** 0..3 — posição no cinto (tecla = índice + 1). */
+  index: number;
+  itemId: string;
+  name: string;
+  kind: InventoryItemKind;
+  quantity: number;
+  usable: boolean;
+  /** Pode ser largado no chão com [Q]. */
+  droppable: boolean;
+}
+
 export interface PlayerVitalsSnapshot {
   /** 0..100 */
   health: number;
@@ -71,6 +100,12 @@ export interface DoomInventoryCallbacks {
   onUseBattery: (chargeAmount: number) => boolean;
   onUseFlare: () => boolean;
   onToggleShotgun?: () => void;
+  /**
+   * [Q] Larga no chão o item da mão.
+   * Devolve true somente quando o objeto realmente apareceu no mundo — se o
+   * chão estiver ocupado, o item continua no bolso.
+   */
+  onDropHeldItem?: (itemId: string) => boolean;
   onUseKnife: () => { cutWeb: boolean };
   onUseKey?: (itemId?: string) => boolean | void;
   onToggleRadar?: () => boolean;
@@ -86,6 +121,18 @@ export interface DoomInventoryCallbacks {
 }
 
 /** Textos do catálogo em atributos HTML, inclusive nomes com aspas (ex.: cano de 18"). */
+/** Primeiro bolso da grade que guarda o item informado (ou null). */
+function slotEntry(
+  slots: ReadonlyArray<InventorySlotEntry | null>,
+  itemId: string | null
+): InventorySlotEntry | null {
+  if (!itemId) return null;
+  const idx = slots.findIndex(
+    (s) => s !== null && s.def.id === itemId && s.quantity > 0
+  );
+  return idx >= 0 ? slots[idx] : null;
+}
+
 function escapeItemAttribute(value: string): string {
   return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
@@ -136,7 +183,8 @@ export function formatVictorySummary(info: VictorySummary = {}): {
 }
 
 const TOTAL_SLOTS = 20;
-export const QUICK_SLOT_COUNT = 3;
+/** Encaixes do cinto tático: teclas [1], [2], [3] e [4]. */
+export const QUICK_SLOT_COUNT = HOTBAR_SLOT_COUNT;
 
 export type ShortcutsHubVisibilityTier =
   | 'hidden'
@@ -1426,9 +1474,14 @@ export class DoomInventory {
   private slots: Array<InventorySlotEntry | null> = new Array(TOTAL_SLOTS).fill(
     null
   );
-  private quickSlots: Array<string | null> = new Array(QUICK_SLOT_COUNT).fill(
-    null
-  );
+  /**
+   * Cinto tático: quatro encaixes com o IDENTIFICADOR do item na mão.
+   * Os itens em si continuam morando nos bolsos da grade — o cinto só aponta
+   * para eles, então quantidade nunca se duplica.
+   */
+  private hotbar: Array<string | null> = createHotbarSlots();
+  /** Qual encaixe está na mão (de 0 a 3; sempre existe, mesmo vazio). */
+  private heldSlot = 0;
   private selectedIndex = 0;
   private hoveredIndex: number | null = null;
   private hoveredQuickSlotIndex: number | null = null;
@@ -1439,7 +1492,7 @@ export class DoomInventory {
   private animRafId = 0;
   private lastPlateTick = -1;
 
-  // Nós DOM persistentes dos 3 atalhos e 12 bolsos (jamais recriados sob o cursor para não disparar mouseenter repetido!)
+  // Nós DOM persistentes dos 4 encaixes do cinto e dos 20 bolsos (jamais recriados sob o cursor para não disparar mouseenter repetido!)
   private readonly quickSlotEls: HTMLDivElement[] = [];
   private readonly quickSlotSignatures: string[] = new Array(
     QUICK_SLOT_COUNT
@@ -1450,10 +1503,7 @@ export class DoomInventory {
   );
   private lastVitalsDomSignature = '';
 
-  // Estado da HUB minimizada de atalhos no centro inferior da tela
-  private selectedQuickSlot: number | null = null;
-  private wheelSelectionArmed = false;
-  private lastWheelSelectAtMs = 0;
+  // Estado da barra de atalhos no canto inferior da tela
   private triggeredHubSlotKey: string | null = null;
   private hubHovered = false;
   private hubActiveUntilMs = 0;
@@ -1796,35 +1846,30 @@ export class DoomInventory {
         this.callbacks.onVictoryExit?.();
       });
 
-    // Navegação por teclado e atribuição de atalhos [1–3] quando o inventário está aberto
+    // Navegação por teclado e organização do cinto [1–4] quando o inventário está aberto
     window.addEventListener(
       'keydown',
       (e) => {
         if (!this.isOpen || this.isGameOver) return;
 
-        // Teclas 1, 2, 3 atribuem o item sob o cursor (ou selecionado) ao atalho rápido correspondente!
-        if (
-          !e.repeat &&
-          (e.code === 'Digit1' ||
-            e.code === 'Numpad1' ||
-            e.code === 'Digit2' ||
-            e.code === 'Numpad2' ||
-            e.code === 'Digit3' ||
-            e.code === 'Numpad3')
-        ) {
+        // Teclas [1]–[4] colocam o item sob o cursor (ou selecionado) no encaixe do cinto!
+        const beltKey = /^(Digit|Numpad)([1-4])$/.exec(e.code);
+        if (!e.repeat && beltKey) {
           e.preventDefault();
-          const quickIdx =
-            e.code === 'Digit1' || e.code === 'Numpad1'
-              ? 0
-              : e.code === 'Digit2' || e.code === 'Numpad2'
-                ? 1
-                : 2;
+          const beltIdx = Number(beltKey[2]) - 1;
           const targetSlot =
             this.hoveredIndex !== null && this.slots[this.hoveredIndex]
               ? this.hoveredIndex
               : this.selectedIndex;
           this.selectedIndex = targetSlot;
-          this.toggleQuickSlotForSlot(targetSlot, quickIdx);
+          const target = this.slots[targetSlot];
+          if (target) {
+            this.toggleHotbarSlotForItem(target.def.id, beltIdx);
+          } else {
+            this.feedbackEl.textContent =
+              'Selecione um item nos bolsos antes de guardá-lo no cinto.';
+            this.sound.invalidInput();
+          }
           return;
         }
 
@@ -1934,8 +1979,6 @@ export class DoomInventory {
     this.hoveredHubQuickIndex = null;
     this.feedbackEl.textContent = '';
     if (next) {
-      this.wheelSelectionArmed = false;
-      this.selectedQuickSlot = null;
       this.overlayEl.classList.add('open');
       this.renderVitals(true);
       this.renderQuickSlots(true);
@@ -1952,10 +1995,10 @@ export class DoomInventory {
       }
       this.overlayEl.classList.remove('open');
       this.stopAnatomyLoop();
-      if (!silent && this.hasConfiguredShortcuts()) {
+      if (!silent && this.hasBeltItems()) {
         this.wakeShortcutsHub(
           3000,
-          'Atalhos configurados · rolinha + clique esq. ou [1–3]'
+          `Na mão: ${this.getHeldItem()?.name ?? 'nada'} · rolinha troca · [Q] larga`
         );
       }
     }
@@ -2170,20 +2213,60 @@ export class DoomInventory {
     return this.slots.reduce((sum, slot) => sum + (slot?.def.id === itemId ? slot.quantity : 0), 0);
   }
 
-  getQuickSlots(): readonly (string | null)[] {
-    return this.quickSlots;
+  /** Foto dos quatro encaixes do cinto (HUD, testes e controles de toque). */
+  getHotbarSlots(): readonly HotbarSlotView[] {
+    const views: HotbarSlotView[] = [];
+    for (let i = 0; i < HOTBAR_SLOT_COUNT; i++) {
+      const view = this.buildHotbarView(i, this.hotbar[i] ?? null);
+      if (view) views.push(view);
+    }
+    return views;
   }
 
-  getShortcutForItem(itemId: string): number {
-    return this.quickSlots.indexOf(itemId);
+  /** O que está na mão agora (null quando o encaixe está vazio). */
+  getHeldItem(): HotbarSlotView | null {
+    return this.getHotbarSlots().find((v) => v.index === this.heldSlot) ?? null;
   }
 
-  hasConfiguredShortcuts(): boolean {
-    return this.quickSlots.some((id) => id !== null);
+  /** Qual encaixe está selecionado (0..3). Um deles está sempre na mão. */
+  getHeldSlot(): number {
+    return this.heldSlot;
   }
 
-  getSelectedQuickSlot(): number | null {
-    return this.selectedQuickSlot;
+  hasBeltItems(): boolean {
+    return this.hotbar.some((id) => id !== null);
+  }
+
+  /** Em que encaixe do cinto um item está (-1 quando está só na mochila). */
+  getBeltIndexOfItem(itemId: string): number {
+    return hotbarIndexOfItem(this.hotbar, itemId);
+  }
+
+  /** Índice do bolso da grade onde o item do encaixe mora (-1 se não existe). */
+  private backpackIndexOfItem(itemId: string | null): number {
+    if (!itemId) return -1;
+    return this.slots.findIndex(
+      (s) => s !== null && s.def.id === itemId && s.quantity > 0
+    );
+  }
+
+  private buildHotbarView(
+    index: number,
+    itemId: string | null
+  ): HotbarSlotView | null {
+    if (!itemId) return null;
+    const slotIdx = this.backpackIndexOfItem(itemId);
+    const entry = slotIdx >= 0 ? this.slots[slotIdx] : null;
+    if (!entry) return null;
+    return {
+      index,
+      itemId: entry.def.id,
+      name: entry.def.name,
+      kind: entry.def.kind,
+      quantity: entry.quantity,
+      usable: entry.def.usable,
+      droppable: entry.def.droppable !== false,
+    };
   }
 
   /**
@@ -2204,8 +2287,7 @@ export class DoomInventory {
     this.hubDecayTimerId = window.setTimeout(() => {
       this.hubDecayTimerId = 0;
       if (!this.hubHovered && performance.now() >= this.hubActiveUntilMs - 16) {
-        this.selectedQuickSlot = null;
-        this.wheelSelectionArmed = false;
+        // A barra só escurece: o que está na mão CONTINUA na mão.
         this.hubActiveCaption = '';
         this.syncHubInteractiveClasses();
       }
@@ -2241,7 +2323,7 @@ export class DoomInventory {
     quickNodes.forEach((node) => {
       const el = node as HTMLElement;
       const q = Number(el.dataset.hubQuick ?? -1);
-      el.classList.toggle('selected', this.selectedQuickSlot === q);
+      el.classList.toggle('selected', this.heldSlot === q);
       el.classList.toggle('triggered', this.triggeredHubSlotKey === String(q));
     });
   }
@@ -2272,7 +2354,7 @@ export class DoomInventory {
       inventoryOpen: this.isOpen || this.hubPausedHidden,
       gameOver: this.isGameOver || this.isVictory,
       cinematicHidden: this.hubCinematicHidden,
-      hasConfiguredSlots: this.hasConfiguredShortcuts(),
+      hasConfiguredSlots: this.hasBeltItems(),
       isHovered: this.hubHovered,
       activeUntilMs: this.hubActiveUntilMs,
       nowMs: performance.now(),
@@ -2295,123 +2377,173 @@ export class DoomInventory {
     if (state.tier === 'active' && this.hubActiveCaption) {
       this.hubCaptionEl.textContent = this.hubActiveCaption;
       this.hubCaptionEl.className = 'hub-caption has-text';
-    } else if (state.tier === 'unconfigured') {
-      this.hubCaptionEl.textContent = '[Tab] configurar atalhos';
+    } else if (state.tier === 'unconfigured' && !this.hasBeltItems()) {
+      this.hubCaptionEl.textContent = '[Tab] abrir bolsos';
       this.hubCaptionEl.className = 'hub-caption has-hint';
     } else {
-      this.hubCaptionEl.textContent = '';
-      this.hubCaptionEl.className = 'hub-caption';
+      // A barra diz o que está na mão mesmo em repouso — é assim que se sabe
+      // o que vai acontecer quando você apertar o clique.
+      const held = this.getHeldItem();
+      this.hubCaptionEl.textContent = held
+        ? formatHeldItemLabel(held.name, held.quantity)
+        : '';
+      this.hubCaptionEl.className = held ? 'hub-caption has-held' : 'hub-caption';
     }
   }
 
   /**
-   * Seleciona/percorre os atalhos [1]–[3] na HUB inferior (ex.: pela roda do mouse)
-   * tornando a HUB imediatamente visível e mostrando o item selecionado sem gastá-lo!
+   * Coloca na mão o item de um encaixe do cinto (teclas [1]–[4]).
+   *
+   * Sacar NÃO gasta nada: ao contrário dos atalhos antigos, apertar [2] só
+   * troca o que você está segurando. O item é usado depois, com o clique
+   * esquerdo (ou [E]) — é o que evita beber um láudano por engano enquanto
+   * se corre da aranha.
+   *
+   * Equipamentos de tecla própria já reagem ao serem sacados: lanterna acende,
+   * radar e rádio ligam, e a escopeta vem para as mãos.
    */
-  cycleQuickSlotSelection(direction: 1 | -1): number {
-    if (this.selectedQuickSlot === null) {
-      this.selectedQuickSlot = direction > 0 ? 0 : QUICK_SLOT_COUNT - 1;
-    } else {
-      this.selectedQuickSlot =
-        (this.selectedQuickSlot + direction + QUICK_SLOT_COUNT) %
-        QUICK_SLOT_COUNT;
+  selectHotbarSlot(index: number): boolean {
+    if (index < 0 || index >= HOTBAR_SLOT_COUNT) return false;
+    this.heldSlot = index;
+    this.pulseHubSlotTrigger(String(index));
+
+    const itemId = this.hotbar[index] ?? null;
+    if (!itemId) {
+      this.sound.playInventorySelect(false);
+      this.renderShortcutsHub();
+      this.syncHubInteractiveClasses();
+      this.wakeShortcutsHub(2600, `[${index + 1}] encaixe vazio`);
+      return false;
     }
 
-    const q = this.selectedQuickSlot;
-    const itemId = this.quickSlots[q];
-    const slotIdx = itemId
-      ? this.slots.findIndex((s) => s !== null && s.def.id === itemId)
-      : -1;
-    const entry = slotIdx >= 0 ? this.slots[slotIdx] : null;
+    const slotIdx = this.backpackIndexOfItem(itemId);
+    if (slotIdx < 0) {
+      // O item sumiu do bolso (consumido por outra via): limpa o encaixe.
+      this.hotbar[index] = null;
+      this.renderShortcutsHub(true);
+      this.sound.invalidInput();
+      this.wakeShortcutsHub(2600, `[${index + 1}] esgotado`);
+      return false;
+    }
 
-    const caption = entry
-      ? `[${q + 1}] ${entry.def.name}${
-          entry.quantity > 1 ? ` ×${entry.quantity}` : ''
-        } · Clique Esq. p/ usar`
-      : `[${q + 1}] Vazio · aperte [Tab] p/ configurar`;
+    const def = this.slots[slotIdx]!.def;
+    if (def.kind === 'lantern') {
+      this.callbacks.onToggleFlashlightFromUI();
+    } else if (def.kind === 'radar') {
+      this.callbacks.onToggleRadar?.();
+    } else if (def.kind === 'walkie') {
+      this.callbacks.onToggleWalkieTalkie?.();
+    } else if (def.kind === 'shotgun') {
+      this.callbacks.onToggleShotgun?.();
+    }
 
-    this.wheelSelectionArmed = true;
-    this.lastWheelSelectAtMs = performance.now();
+    this.sound.playInventorySelect(true);
+    this.renderShortcutsHub();
+    this.syncHubInteractiveClasses();
+    const qty = this.slots[slotIdx]!.quantity;
+    this.wakeShortcutsHub(
+      3200,
+      `[${index + 1}] ${formatHeldItemLabel(def.name, qty)}`
+    );
+    return true;
+  }
+
+  /**
+   * Percorre os encaixes do cinto com a roda do mouse, em círculo.
+   *
+   * Ao contrário da roda antiga — que só destacava um atalho esperando um
+   * clique — aqui a roda TROCA o item de mão na hora, como no Lethal Company.
+   */
+  cycleHotbarSlot(direction: 1 | -1): number {
+    this.heldSlot = cycleHotbarIndex(this.heldSlot, direction);
+    const view = this.getHeldItem();
     this.sound.playInventorySelect(false);
     this.renderShortcutsHub();
     this.syncHubInteractiveClasses();
-    this.wakeShortcutsHub(6000, caption);
-    return q;
-  }
-
-  /**
-   * Verdadeiro quando o jogador destacou um atalho rápido [1–3] pela rolinha do mouse
-   * e pode acioná-lo diretamente clicando com o botão esquerdo!
-   */
-  hasWheelSelectedQuickSlot(): boolean {
-    return this.wheelSelectionArmed && this.selectedQuickSlot !== null;
-  }
-
-  /**
-   * Verdadeiro nos segundos imediatamente após girar a rolinha do mouse (útil caso Pointer Lock não esteja ativo).
-   */
-  isWheelSelectionRecent(windowMs = 6000): boolean {
-    return (
-      this.hasWheelSelectedQuickSlot() &&
-      performance.now() - this.lastWheelSelectAtMs <= windowMs
+    this.wakeShortcutsHub(
+      4200,
+      view
+        ? `[${this.heldSlot + 1}] ${formatHeldItemLabel(
+            view.name,
+            view.quantity
+          )} · clique p/ usar`
+        : `[${this.heldSlot + 1}] encaixe vazio`
     );
+    return this.heldSlot;
   }
 
-  /**
-   * Aciona o atalho [1–3] atualmente destacado pela rolinha do mouse ao clicar com o botão esquerdo,
-   * sem precisar apertar as teclas 1, 2 ou 3 no teclado!
-   */
-  useWheelSelectedQuickSlot(): boolean {
-    if (!this.wheelSelectionArmed || this.selectedQuickSlot === null) {
+  /** Usa o item que está na mão (clique esquerdo ou [E]). */
+  useHeldItem(): boolean {
+    const itemId = this.hotbar[this.heldSlot] ?? null;
+    if (!itemId) {
+      this.wakeShortcutsHub(2400, `[${this.heldSlot + 1}] mão vazia`);
+      this.sound.invalidInput();
       return false;
     }
-    const target = this.selectedQuickSlot;
-    const itemId = this.quickSlots[target];
-    const def = itemId ? ITEM_CATALOG[itemId] : undefined;
-    const isReusableTool = Boolean(
-      def &&
-        (def.kind === 'knife' ||
-          def.kind === 'lantern' ||
-          def.kind === 'radar' ||
-          def.kind === 'key')
-    );
 
-    const activated = this.useQuickSlot(target);
-
-    if (isReusableTool && activated) {
-      // Mantém ferramentas reutilizáveis (ex.: canivete) prontas enquanto a HUB estiver acesa
-      this.wheelSelectionArmed = true;
-      this.selectedQuickSlot = target;
-      this.lastWheelSelectAtMs = performance.now();
-    } else {
-      // Consumíveis (gaze, láudano, sinalizador, bateria) ou slots vazios desarmam após 1 clique para nunca desperdiçar carga!
-      this.wheelSelectionArmed = false;
-      this.selectedQuickSlot = null;
+    const slotIdx = this.backpackIndexOfItem(itemId);
+    if (slotIdx < 0) {
+      this.hotbar[this.heldSlot] = null;
+      this.renderShortcutsHub(true);
+      this.sound.invalidInput();
+      return false;
     }
-    this.syncHubInteractiveClasses();
-    return activated;
-  }
 
-  clearWheelQuickSlotSelection(): void {
-    this.wheelSelectionArmed = false;
-    this.selectedQuickSlot = null;
-    this.hubActiveCaption = '';
-    this.syncHubInteractiveClasses();
-    this.syncShortcutsHubVisibility();
+    const def = this.slots[slotIdx]!.def;
+    this.pulseHubSlotTrigger(String(this.heldSlot));
+    const used = this.activateSlotItem(slotIdx, true);
+    this.renderShortcutsHub(true);
+    this.wakeShortcutsHub(
+      3000,
+      used
+        ? `[${this.heldSlot + 1}] ${def.name}`
+        : `[${this.heldSlot + 1}] ${def.name} · sem efeito agora`
+    );
+    return used;
   }
 
   /**
-   * Usa o atalho atualmente destacado na HUB inferior (tecla [Q]), ou o atalho [1] por padrão.
+   * Larga no chão o item da mão ([Q]), como no Lethal Company.
+   *
+   * O objeto volta a existir no mundo e pode ser recolhido de novo. Só sai do
+   * bolso se o mundo confirmar que há espaço para ele, então nunca se perde um
+   * item largando-o contra uma parede.
    */
-  useSelectedQuickSlot(): boolean {
-    const target = this.selectedQuickSlot ?? 0;
-    const activated = this.useQuickSlot(target);
-    if (this.wheelSelectionArmed) {
-      this.wheelSelectionArmed = false;
-      this.selectedQuickSlot = null;
-      this.syncHubInteractiveClasses();
+  dropHeldItem(): boolean {
+    const itemId = this.hotbar[this.heldSlot] ?? null;
+    if (!itemId) {
+      this.wakeShortcutsHub(2400, `[${this.heldSlot + 1}] nada para largar`);
+      this.sound.invalidInput();
+      return false;
     }
-    return activated;
+
+    const slotIdx = this.backpackIndexOfItem(itemId);
+    if (slotIdx < 0) {
+      this.hotbar[this.heldSlot] = null;
+      this.renderShortcutsHub(true);
+      this.sound.invalidInput();
+      return false;
+    }
+
+    const def = this.slots[slotIdx]!.def;
+    if (!canDropHotbarItem(def)) {
+      this.sound.invalidInput();
+      this.wakeShortcutsHub(2800, `${def.name} não pode ser largado`);
+      return false;
+    }
+
+    const placed = this.callbacks.onDropHeldItem?.(def.id) ?? false;
+    if (!placed) {
+      this.sound.invalidInput();
+      this.wakeShortcutsHub(2800, 'sem espaço para largar aqui');
+      return false;
+    }
+
+    this.pulseHubSlotTrigger('Q');
+    this.consumeAt(slotIdx, 1);
+    this.sound.playInventorySelect(true);
+    this.wakeShortcutsHub(3200, `[Q] ${def.name} largado no chão`);
+    return true;
   }
 
   /**
@@ -2465,34 +2597,54 @@ export class DoomInventory {
   }
 
   /**
-   * Atribui (ou limpa) um item utilizável a um dos 3 atalhos rápidos [1], [2] ou [3].
-   * Caso o item já estivesse em outro atalho, troca de posição de forma limpa sem duplicar.
+   * Coloca (ou tira) um item de um encaixe do cinto pelo inventário [Tab].
+   *
+   * O cinto já é preenchido sozinho ao recolher; isto existe para o jogador
+   * ORGANIZAR a ordem como quiser (e para colocar no cinto algo que ficou só
+   * na mochila porque os quatro encaixes estavam cheios).
    */
-  assignQuickSlot(quickIndex: number, itemId: string | null): boolean {    if (quickIndex < 0 || quickIndex >= QUICK_SLOT_COUNT) return false;
+  assignHotbarSlot(beltIndex: number, itemId: string | null): boolean {
+    if (beltIndex < 0 || beltIndex >= HOTBAR_SLOT_COUNT) return false;
 
     if (itemId === null) {
-      this.quickSlots[quickIndex] = null;
-      if (this.isOpen) {
-        this.renderQuickSlots();
-        this.renderGrid();
-        this.renderInspector();
-      }
-      this.renderShortcutsHub(true);
-      this.syncShortcutsHubVisibility();
+      this.hotbar[beltIndex] = null;
+      this.refreshAfterBeltChange();
       return true;
     }
 
     const def = ITEM_CATALOG[itemId];
-    if (!def || !def.usable || !this.hasItem(itemId)) {
-      return false;
-    }
+    if (!def || !this.hasItem(itemId)) return false;
 
-    const prevIdx = this.quickSlots.indexOf(itemId);
-    if (prevIdx >= 0 && prevIdx !== quickIndex) {
-      this.quickSlots[prevIdx] = this.quickSlots[quickIndex];
+    const previous = hotbarIndexOfItem(this.hotbar, itemId);
+    if (previous >= 0 && previous !== beltIndex) {
+      // Já estava em outro encaixe: os dois trocam de lugar, sem duplicar.
+      this.hotbar = swapHotbarSlots(this.hotbar, previous, beltIndex);
+    } else {
+      this.hotbar[beltIndex] = itemId;
     }
-    this.quickSlots[quickIndex] = itemId;
+    this.refreshAfterBeltChange();
+    return true;
+  }
 
+  /** Tira ou coloca o item selecionado da mochila em um encaixe do cinto. */
+  toggleHotbarSlotForItem(itemId: string, beltIndex: number): boolean {
+    if (this.hotbar[beltIndex] === itemId) {
+      this.assignHotbarSlot(beltIndex, null);
+      this.feedbackEl.textContent = `Encaixe [${beltIndex + 1}] esvaziado.`;
+      this.sound.playInventorySelect(true);
+      return true;
+    }
+    const ok = this.assignHotbarSlot(beltIndex, itemId);
+    if (ok) {
+      const def = ITEM_CATALOG[itemId];
+      this.feedbackEl.textContent = `${def?.name ?? 'Item'} no encaixe [${beltIndex + 1}].`;
+      this.sound.playInventorySelect(true);
+    }
+    return ok;
+  }
+
+  /** Redesenha tudo que depende do cinto depois de uma mudança de encaixe. */
+  private refreshAfterBeltChange(): void {
     if (this.isOpen) {
       this.renderQuickSlots();
       this.renderGrid();
@@ -2500,101 +2652,30 @@ export class DoomInventory {
     }
     this.renderShortcutsHub(true);
     this.syncShortcutsHubVisibility();
-    return true;
-  }
-
-  toggleQuickSlotForSlot(slotIndex: number, quickIndex: number): boolean {
-    const entry = this.slots[slotIndex];
-    if (!entry) {
-      this.feedbackEl.textContent =
-        'Selecione um item nos bolsos antes de definir um atalho.';
-      this.sound.invalidInput();
-      return false;
-    }
-    if (!entry.def.usable) {
-      this.feedbackEl.textContent =
-        'Este objeto não pode ser usado por atalho rápido.';
-      this.sound.invalidInput();
-      return false;
-    }
-
-    if (this.quickSlots[quickIndex] === entry.def.id) {
-      this.assignQuickSlot(quickIndex, null);
-      this.feedbackEl.textContent = `${entry.def.name} removido do atalho [${quickIndex + 1}].`;
-      this.sound.playInventorySelect(true);
-      return true;
-    }
-
-    this.assignQuickSlot(quickIndex, entry.def.id);
-    this.feedbackEl.textContent = `${entry.def.name} atribuído ao atalho [${quickIndex + 1}].`;
-    this.sound.playInventorySelect(true);
-    return true;
   }
 
   /**
-   * Aciona imediatamente o item vinculado ao atalho [1], [2] ou [3] durante o jogo
-   * (sem precisar abrir o Tab!). Ex.: saca o canivete e corta a teia na hora!
+   * Guarda o item recolhido no PRIMEIRO ENCAIXE LIVRE do cinto.
+   *
+   * É o "pegar e já estar na mão" do Lethal Company: nada de abrir o [Tab]
+   * para configurar atalho. Quando os quatro encaixes estão ocupados, o item
+   * fica só na mochila e a barra avisa — o jogador organiza depois, se quiser.
+   *
+   * Devolve o encaixe ocupado ou -1.
    */
-  useQuickSlot(quickIndex: number): boolean {
-    if (quickIndex < 0 || quickIndex >= QUICK_SLOT_COUNT) return false;
-    this.selectedQuickSlot = quickIndex;
-    this.pulseHubSlotTrigger(String(quickIndex));
-
-    const itemId = this.quickSlots[quickIndex];
-    if (!itemId) {
-      this.wakeShortcutsHub(
-        2800,
-        `[${quickIndex + 1}] Vazio · aperte [Tab] p/ atribuir`
-      );
-      this.sound.invalidInput();
-      return false;
+  private autoPlaceOnHotbar(def: InventoryItemDef): number {
+    const beltIdx = planHotbarPickup(this.hotbar, def);
+    if (beltIdx >= 0) {
+      this.hotbar[beltIdx] = def.id;
+      // Se a mão estava vazia, o que acabou de chegar já vem para a mão.
+      if (this.hotbar[this.heldSlot] === null) this.heldSlot = beltIdx;
     }
-
-    const slotIdx = this.slots.findIndex(
-      (s) => s !== null && s.def.id === itemId && s.quantity > 0
-    );
-    if (slotIdx < 0) {
-      this.quickSlots[quickIndex] = null;
-      this.renderShortcutsHub(true);
-      this.wakeShortcutsHub(
-        2800,
-        `[${quickIndex + 1}] Esgotado · aperte [Tab] p/ atribuir`
-      );
-      this.sound.invalidInput();
-      return false;
-    }
-
-    const itemName = this.slots[slotIdx]!.def.name;
-    const activated = this.activateSlotItem(slotIdx, true);
-    this.renderShortcutsHub(true);
-    this.wakeShortcutsHub(
-      3000,
-      activated
-        ? `[${quickIndex + 1}] ${itemName}`
-        : `[${quickIndex + 1}] ${itemName} · sem efeito agora`
-    );
-    return activated;
+    return beltIdx;
   }
 
-  private autoBindQuickSlotIfAvailable(def: InventoryItemDef): void {
-    // Auto-preenche atalhos livres com suprimentos/ferramentas de emergência (faca, gaze, etc.)
-    // Lanterna [F] e Radar [M] já possuem seus próprios botões dedicados na HUB!
-    if (
-      !def.usable ||
-      def.kind === 'lantern' ||
-      def.kind === 'key' ||
-      def.kind === 'radar' ||
-      def.kind === 'walkie' ||
-      def.kind === 'shotgun_part' ||
-      def.kind === 'shotgun'
-    ) {
-      return;
-    }
-    if (this.quickSlots.includes(def.id)) return;
-    const freeQuick = this.quickSlots.findIndex((q) => q === null);
-    if (freeQuick >= 0) {
-      this.quickSlots[freeQuick] = def.id;
-    }
+  /** Texto de aviso quando o item cabe no cinto mas o cinto está cheio. */
+  private beltFullNotice(def: InventoryItemDef): string {
+    return `${def.name} guardado na mochila · cinto cheio · [Tab] p/ organizar`;
   }
 
   addItem(itemId: string, amount = 1, silent = false): boolean {
@@ -2607,16 +2688,16 @@ export class DoomInventory {
       );
       if (existingIdx >= 0) {
         this.slots[existingIdx]!.quantity += amount;
-        this.autoBindQuickSlotIfAvailable(def);
+        this.autoPlaceOnHotbar(def);
         this.renderShortcutsHub(true);
         if (!silent) {
           this.triggerPickupGlint();
           this.sound.playItemPickup();
-          const boundIdx = this.getShortcutForItem(def.id);
-          if (boundIdx >= 0) {
+          const beltIdx = this.getBeltIndexOfItem(def.id);
+          if (beltIdx >= 0) {
             this.wakeShortcutsHub(
               3200,
-              `[${boundIdx + 1}] ${def.name} ×${this.slots[existingIdx]!.quantity}`
+              `[${beltIdx + 1}] ${def.name} ×${this.slots[existingIdx]!.quantity}`
             );
           }
         }
@@ -2638,18 +2719,17 @@ export class DoomInventory {
     if (this.slots[this.selectedIndex] === null) {
       this.selectedIndex = freeIdx;
     }
-    this.autoBindQuickSlotIfAvailable(def);
+    const beltIdx = this.autoPlaceOnHotbar(def);
     this.renderShortcutsHub(true);
     this.syncShortcutsHubVisibility();
 
     if (!silent) {
       this.triggerPickupGlint();
       this.sound.playItemPickup();
-      const boundIdx = this.getShortcutForItem(def.id);
-      if (boundIdx >= 0) {
+      if (beltIdx >= 0) {
         this.wakeShortcutsHub(
           3400,
-          `[${boundIdx + 1}] ${def.name} pronto no atalho`
+          `[${beltIdx + 1}] ${def.name} · na mão`
         );
       } else if (def.kind === 'radar') {
         this.wakeShortcutsHub(3600, '[M] Radar topográfico disponível');
@@ -2660,6 +2740,9 @@ export class DoomInventory {
         );
       } else if (def.kind === 'key') {
         this.wakeShortcutsHub(3600, `${def.name} coletada`);
+      } else if (goesToHotbarAutomatically(def)) {
+        // Cabe no cinto, mas o cinto está cheio: vai para a mochila.
+        this.wakeShortcutsHub(3600, this.beltFullNotice(def));
       }
     }
     if (this.isOpen) {
@@ -2813,11 +2896,16 @@ export class DoomInventory {
    * Cria os 3 elementos de atalho rápido (.inv-quick-slot) UMA ÚNICA VEZ com listeners estáveis,
    * eliminando completamente a recriação de DOM a 60fps que disparava mouseenter em loop!
    */
+  /**
+   * Cria os QUATRO encaixes do cinto (.inv-quick-slot) UMA ÚNICA VEZ com
+   * listeners estáveis, eliminando a recriação de DOM a 60fps que disparava
+   * mouseenter em loop!
+   */
   private initQuickSlotElements(): void {
     this.quickRowEl.innerHTML = '';
     this.quickSlotEls.length = 0;
 
-    for (let q = 0; q < QUICK_SLOT_COUNT; q++) {
+    for (let q = 0; q < HOTBAR_SLOT_COUNT; q++) {
       const cell = document.createElement('div');
       cell.className = 'inv-quick-slot';
       cell.dataset.quickIndex = String(q);
@@ -2835,40 +2923,34 @@ export class DoomInventory {
       });
 
       cell.addEventListener('click', () => {
-        const itemId = this.quickSlots[q];
-        const slotIdx = itemId
-          ? this.slots.findIndex((s) => s !== null && s.def.id === itemId)
-          : -1;
-        const currentSelected = this.slots[this.selectedIndex];
-        if (currentSelected && currentSelected.def.usable) {
-          if (this.quickSlots[q] === currentSelected.def.id) {
-            this.toggleQuickSlotForSlot(this.selectedIndex, q);
-          } else {
-            this.assignQuickSlot(q, currentSelected.def.id);
-            this.feedbackEl.textContent = `${currentSelected.def.name} atribuído ao atalho [${q + 1}].`;
+        const current = this.slots[this.selectedIndex];
+        if (!current) {
+          // Encaixe sem item selecionado: só destaca o bolso que já está nele.
+          const itemId = this.hotbar[q];
+          const slotIdx = this.backpackIndexOfItem(itemId);
+          if (slotIdx >= 0) {
+            this.selectedIndex = slotIdx;
             this.sound.playInventorySelect(true);
+            this.renderGrid();
+            this.renderInspector();
+          } else {
+            this.feedbackEl.textContent =
+              'Selecione um item nos bolsos para guardar neste encaixe.';
+            this.sound.invalidInput();
           }
           return;
         }
-
-        if (slotIdx >= 0) {
-          this.selectedIndex = slotIdx;
-          this.feedbackEl.textContent = '';
-          this.sound.playInventorySelect(true);
-          this.renderGrid();
-          this.renderInspector();
-        } else {
-          this.feedbackEl.textContent =
-            'Selecione um item utilizável nos bolsos para colocar neste atalho.';
-          this.sound.invalidInput();
-        }
+        // Com um item selecionado, o clique guarda (ou troca) o encaixe.
+        this.toggleHotbarSlotForItem(current.def.id, q);
+        this.renderGrid();
+        this.renderInspector();
       });
 
       cell.addEventListener('contextmenu', (e) => {
         e.preventDefault();
-        if (this.quickSlots[q] !== null) {
-          this.assignQuickSlot(q, null);
-          this.feedbackEl.textContent = `Atalho [${q + 1}] limpo.`;
+        if (this.hotbar[q] !== null) {
+          this.assignHotbarSlot(q, null);
+          this.feedbackEl.textContent = `Encaixe [${q + 1}] esvaziado.`;
           this.sound.playInventorySelect(true);
         }
       });
@@ -2878,25 +2960,28 @@ export class DoomInventory {
     }
   }
 
+  /** Desenha os quatro encaixes do cinto dentro do inventário [Tab]. */
   private renderQuickSlots(force = false): void {
-    for (let q = 0; q < QUICK_SLOT_COUNT; q++) {
+    for (let q = 0; q < HOTBAR_SLOT_COUNT; q++) {
       const cell = this.quickSlotEls[q];
       if (!cell) continue;
 
-      const itemId = this.quickSlots[q];
-      const slotIdx = itemId
-        ? this.slots.findIndex((s) => s !== null && s.def.id === itemId)
-        : -1;
-      const entry = slotIdx >= 0 ? this.slots[slotIdx] : null;
-      const sig = entry ? `${entry.def.id}:${entry.quantity}` : '-';
+      const itemId = this.hotbar[q] ?? null;
+      const entry = slotEntry(this.slots, itemId);
+      const isHeld = this.heldSlot === q;
+      const sig = `${entry ? `${entry.def.id}:${entry.quantity}` : '-'}|${
+        isHeld ? 1 : 0
+      }`;
 
       if (!force && this.quickSlotSignatures[q] === sig) continue;
       this.quickSlotSignatures[q] = sig;
 
-      cell.className = `inv-quick-slot${entry ? ' bound' : ''}`;
+      cell.className = `inv-quick-slot${entry ? ' bound' : ''}${
+        isHeld ? ' held' : ''
+      }`;
       if (entry) {
         const iconSrc = getInventoryItemIcon(entry.def);
-        cell.title = `[${q + 1}] ${entry.def.name} — clique para vincular item selecionado | botão direito para limpar`;
+        cell.title = `[${q + 1}] ${entry.def.name} — clique para trocar por outro item | botão direito para esvaziar`;
         cell.innerHTML = `
           <span class="inv-quick-key">[${q + 1}]</span>
           <img class="inv-slot-sprite" src="${iconSrc}" alt="${escapeItemAttribute(entry.def.name)}" />
@@ -2907,7 +2992,7 @@ export class DoomInventory {
           }
         `;
       } else {
-        cell.title = `Atalho [${q + 1}] vazio — clique para vincular o item selecionado`;
+        cell.title = `Encaixe [${q + 1}] vazio — selecione um item nos bolsos e clique aqui`;
         cell.innerHTML = `
           <span class="inv-quick-key">[${q + 1}]</span>
           <span class="inv-quick-empty-mark">—</span>
@@ -2994,7 +3079,7 @@ export class DoomInventory {
               Boolean(this.latestVitals.walkieActive)) ||
             entry.def.kind === 'knife')
       );
-      const boundShortcut = entry ? this.getShortcutForItem(entry.def.id) : -1;
+      const boundShortcut = entry ? this.getBeltIndexOfItem(entry.def.id) : -1;
 
       const sig = entry
         ? `${entry.def.id}|${entry.quantity}|${isSelected ? 1 : 0}|${boundShortcut}|${
@@ -3059,7 +3144,7 @@ export class DoomInventory {
     }
 
     const { def } = entry;
-    const boundShortcut = this.getShortcutForItem(def.id);
+    const boundShortcut = this.getBeltIndexOfItem(def.id);
     this.examineFigureEl.innerHTML = `<img src="${getInventoryItemIcon(def)}" alt="${escapeItemAttribute(def.name)}" />`;
     const qtySuffix = entry.quantity > 1 ? `  (×${entry.quantity})` : '';
     const hkSuffix = boundShortcut >= 0 ? `  · [${boundShortcut + 1}]` : '';
@@ -3074,22 +3159,24 @@ export class DoomInventory {
     }
 
     if (def.usable) {
-      // Seletor rápido de atalhos [1] [2] [3] diretamente na inspeção
+      // Seletor rápido dos encaixes do cinto [1] [2] [3] [4] na inspeção
       const hkWrap = document.createElement('div');
       hkWrap.className = 'inv-shortcut-assign';
       const hkLabel = document.createElement('span');
       hkLabel.className = 'inv-shortcut-label';
-      hkLabel.textContent = 'Atalho:';
+      hkLabel.textContent = 'Cinto:';
       hkWrap.appendChild(hkLabel);
 
-      for (let q = 0; q < QUICK_SLOT_COUNT; q++) {
+      for (let q = 0; q < HOTBAR_SLOT_COUNT; q++) {
         const hkBtn = document.createElement('button');
         hkBtn.type = 'button';
         hkBtn.className = `inv-hk-btn${boundShortcut === q ? ' active' : ''}`;
         hkBtn.textContent = `[${q + 1}]`;
-        hkBtn.title = `Vincular ${def.name} à tecla ${q + 1}`;
+        hkBtn.title = `Guardar ${def.name} no encaixe ${q + 1}`;
         hkBtn.addEventListener('click', () => {
-          this.toggleQuickSlotForSlot(this.selectedIndex, q);
+          this.toggleHotbarSlotForItem(def.id, q);
+          this.renderGrid();
+          this.renderInspector();
         });
         hkWrap.appendChild(hkBtn);
       }
@@ -3148,6 +3235,8 @@ export class DoomInventory {
       }
       // Remover todas as peças libera espaço antes de adicionar a arma montada.
       for (const id of availableParts) this.consumeItemById(id);
+      // As peças podiam estar no cinto: nada de deixar encaixe fantasma.
+      this.syncHotbarWithBackpack();
       this.addItem(SHOTGUN_ITEM_ID, 1, true);
       this.feedbackEl.textContent = 'Shotgun montada! Procure cartuchos e pressione [H] para equipar.';
       this.wakeShortcutsHub(6000, 'SHOTGUN MONTADA · PROCURE CARTUCHOS · [H] EQUIPAR');
@@ -3308,18 +3397,16 @@ export class DoomInventory {
     const lanternOn = Boolean(this.latestVitals.flashlightEquipped) && bat > 0.5;
 
     const quickSigParts: string[] = [];
-    for (let q = 0; q < QUICK_SLOT_COUNT; q++) {
-      const id = this.quickSlots[q];
-      const slotIdx = id
-        ? this.slots.findIndex((s) => s !== null && s.def.id === id)
-        : -1;
-      const qty = slotIdx >= 0 ? this.slots[slotIdx]!.quantity : 0;
-      quickSigParts.push(`${id ?? '-'}:${qty}`);
+    for (let q = 0; q < HOTBAR_SLOT_COUNT; q++) {
+      const id = this.hotbar[q] ?? null;
+      const entry = slotEntry(this.slots, id);
+      quickSigParts.push(`${id ?? '-'}:${entry?.quantity ?? 0}`);
     }
+    const heldSig = `${this.heldSlot}|${quickSigParts.join(',')}`;
 
     const sig = `${lanternOn ? 1 : 0}|${litFive}|${lowBat ? 1 : 0}|${
       hasRadar ? 1 : 0
-    }|${radarOn ? 1 : 0}|${hasWalkie ? 1 : 0}|${walkieOn ? 1 : 0}|${quickSigParts.join(',')}`;
+    }|${radarOn ? 1 : 0}|${hasWalkie ? 1 : 0}|${walkieOn ? 1 : 0}|${heldSig}`;
 
     if (!force && sig === this.lastHubRenderSignature) {
       this.syncHubInteractiveClasses();
@@ -3428,30 +3515,27 @@ export class DoomInventory {
       this.hubBarEl.appendChild(walkieCell);
     }
 
-    // Separador vertical tático entre equipamentos fixos e atalhos configuráveis [1–3]
+    // Separador vertical entre os equipamentos de tecla própria e o cinto [1–4]
     const sep = document.createElement('div');
     sep.className = 'hub-sep';
     this.hubBarEl.appendChild(sep);
 
-    // 3. Atalhos rápidos configuráveis [1], [2], [3]
-    for (let q = 0; q < QUICK_SLOT_COUNT; q++) {
-      const itemId = this.quickSlots[q];
-      const slotIdx = itemId
-        ? this.slots.findIndex((s) => s !== null && s.def.id === itemId)
-        : -1;
-      const entry = slotIdx >= 0 ? this.slots[slotIdx] : null;
-      const isSelected = this.selectedQuickSlot === q;
+    // 3. Cinto tático [1], [2], [3], [4] — o que está na mão fica destacado
+    for (let q = 0; q < HOTBAR_SLOT_COUNT; q++) {
+      const itemId = this.hotbar[q] ?? null;
+      const entry = slotEntry(this.slots, itemId);
+      const isHeld = this.heldSlot === q;
       const isTriggered = this.triggeredHubSlotKey === String(q);
 
       const cell = document.createElement('div');
       cell.className = `hub-slot${entry ? ' bound' : ''}${
-        isSelected ? ' selected' : ''
+        isHeld ? ' selected' : ''
       }${isTriggered ? ' triggered' : ''}`;
       cell.dataset.hubQuick = String(q);
 
       if (entry) {
         const iconSrc = getInventoryItemIcon(entry.def);
-        cell.title = `[${q + 1}] ${entry.def.name} — aperte ${q + 1} ou clique para usar`;
+        cell.title = `[${q + 1}] ${entry.def.name} — aperte ${q + 1} para pegar, clique para usar, [Q] para largar`;
         cell.innerHTML = `
           <span class="hub-slot-key">[${q + 1}]</span>
           <img class="hub-slot-sprite" src="${iconSrc}" alt="${escapeItemAttribute(entry.def.name)}" />
@@ -3462,7 +3546,7 @@ export class DoomInventory {
           }
         `;
       } else {
-        cell.title = `Atalho [${q + 1}] vazio — abra [Tab] para atribuir`;
+        cell.title = `Encaixe [${q + 1}] vazio`;
         cell.innerHTML = `
           <span class="hub-slot-key">[${q + 1}]</span>
           <span class="hub-slot-empty">—</span>
@@ -3472,15 +3556,12 @@ export class DoomInventory {
       cell.addEventListener('mouseenter', () => {
         if (this.hoveredHubQuickIndex === q) return;
         this.hoveredHubQuickIndex = q;
-        this.selectedQuickSlot = q;
         this.syncHubInteractiveClasses();
         this.wakeShortcutsHub(
           3000,
           entry
-            ? `[${q + 1}] ${entry.def.name}${
-                entry.quantity > 1 ? ` ×${entry.quantity}` : ''
-              }`
-            : `[${q + 1}] Vazio · aperte [Tab] p/ configurar`
+            ? `[${q + 1}] ${formatHeldItemLabel(entry.def.name, entry.quantity)}`
+            : `[${q + 1}] vazio`
         );
       });
 
@@ -3492,10 +3573,11 @@ export class DoomInventory {
 
       cell.addEventListener('click', (e) => {
         e.stopPropagation();
-        if (entry) {
-          this.useQuickSlot(q);
+        // Clique no encaixe coloca o item na mão; clique no que já está na mão usa.
+        if (isHeld) {
+          this.useHeldItem();
         } else {
-          this.callbacks.onOpenRequest?.();
+          this.selectHotbarSlot(q);
         }
       });
 
@@ -3506,10 +3588,10 @@ export class DoomInventory {
     const tabBtn = document.createElement('button');
     tabBtn.type = 'button';
     tabBtn.className = 'hub-tab-btn';
-    tabBtn.title = 'Abrir inventário e configurar atalhos [Tab]';
+    tabBtn.title = 'Abrir bolsos e organizar o cinto [Tab]';
     tabBtn.innerHTML = `<span>[Tab]</span><span>bolsos</span>`;
     tabBtn.addEventListener('mouseenter', () => {
-      this.wakeShortcutsHub(2600, '[Tab] Abrir bolsos e configurar atalhos [1–3]');
+      this.wakeShortcutsHub(2600, '[Tab] Abrir bolsos e organizar o cinto [1–4]');
     });
     tabBtn.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -3527,6 +3609,14 @@ export class DoomInventory {
     return true;
   }
 
+  /**
+   * Chama `pruneHotbar` depois de qualquer saída em massa de itens (montar a
+   * arma consome as quatro peças de uma vez, e elas podem estar no cinto).
+   */
+  syncHotbarWithBackpack(): void {
+    this.hotbar = pruneHotbar(this.hotbar, (itemId) => this.hasItem(itemId));
+  }
+
   private consumeAt(slotIndex: number, count: number): void {
     const entry = this.slots[slotIndex];
     if (!entry) return;
@@ -3534,13 +3624,13 @@ export class DoomInventory {
     entry.quantity -= count;
     if (entry.quantity <= 0) {
       this.slots[slotIndex] = null;
-      if (!this.hasItem(itemId)) {
-        for (let q = 0; q < QUICK_SLOT_COUNT; q++) {
-          if (this.quickSlots[q] === itemId) {
-            this.quickSlots[q] = null;
-          }
-        }
-      }
+      // O encaixe do cinto só esvazia se NÃO sobrou outra pilha do item na
+      // mochila; sobrando, ele passa a apontar para ela sozinho.
+      this.hotbar = resolveHotbarAfterItemGone(
+        this.hotbar,
+        this.slots.map((s) => (s ? s.def.id : null)),
+        itemId
+      );
       const nextFilled = this.slots.findIndex((s) => s !== null);
       if (nextFilled >= 0) this.selectedIndex = nextFilled;
     }
