@@ -4,10 +4,14 @@ import './terminal/terminal.css';
 import './doom/inventory.css';
 import './doom/loading.css';
 import './doom/pause.css';
+import './doom/saves.css';
+import './doom/tutorial.css';
 import './multiplayer/multiplayer.css';
 import { DoomGameApp } from './doom/DoomGameApp';
 import { getLoadingScreen, nextPaint, settleFrames } from './doom/LoadingScreen';
 import { loadDoomSettings } from './doom/DoomSettings';
+import { DoomSaveMenu, SaveMenuSelection } from './doom/DoomSaveMenu';
+import { getBrowserSaveStorage } from './doom/DoomSaveSlots';
 import { SoundEngine } from './engine/audio/SoundEngine';
 import { acquireFullscreenAndKeyboardLock } from './engine/input/BrowserShortcutGuard';
 import { getGameConsole } from './console/GameConsole';
@@ -24,6 +28,33 @@ const gameViewport = document.getElementById('game-viewport') as HTMLElement;
 
 const soundEngine = new SoundEngine();
 let doomApp: DoomGameApp | null = null;
+
+/** Terminal vivo no momento — destruído quando a partida começa de verdade. */
+let activeTerminal: TerminalBootController | null = null;
+
+/** Onde os cinco saves moram (no navegador, ou na memória se ele bloquear). */
+const saveStorage = getBrowserSaveStorage();
+
+/**
+ * Menu de saves: aparece ao apertar INICIAR.
+ *
+ * É criado uma vez e reaberto quantas vezes for preciso, relendo os slots a
+ * cada abertura para refletir o que acabou de ser gravado.
+ */
+const saveMenu = new DoomSaveMenu(appRoot, {
+  sound: soundEngine,
+  storage: saveStorage,
+  onStart: (selection: SaveMenuSelection) => {
+    // Escolheu um slot: agora sim o terminal sai de cena e a incursão sobe.
+    activeTerminal?.destroy(false);
+    activeTerminal = null;
+    void launchDoomSession(undefined, selection);
+  },
+  onClose: () => {
+    activeTerminal?.setExternalModalOpen(false);
+    activeTerminal?.resumeTitleAfterModal();
+  },
+});
 
 function replaceFreshWebglCanvas(): void {
   const oldCanvas = document.getElementById('webgl-canvas');
@@ -50,7 +81,10 @@ function exitDoomToDesktop(): void {
  * para ele pintar o progresso. Sem isso o construtor de `DoomGameApp`
  * engoliria a thread inteira e o jogador veria uma tela preta congelada.
  */
-async function launchDoomSession(multiplayerSession?: ActiveRoomSession): Promise<void> {
+async function launchDoomSession(
+  multiplayerSession?: ActiveRoomSession,
+  saveSelection?: SaveMenuSelection
+): Promise<void> {
   const loading = getLoadingScreen();
 
   // A tela entra antes de qualquer trabalho, ainda dentro do mesmo gesto do
@@ -93,9 +127,19 @@ async function launchDoomSession(multiplayerSession?: ActiveRoomSession): Promis
       },
       multiplayerSession,
       () => {
-        // Reiniciar incursão a partir do Menu de Pausa: recria o labirinto com novo spawn e loot!
-        void launchDoomSession(undefined);
-      }
+        // Reiniciar incursão a partir do Menu de Pausa: recria o labirinto com
+        // novo spawn e loot, no MESMO slot. O modo vira 'new' porque o mundo
+        // é outro — continuar aqui recarregaria a incursão abandonada.
+        void launchDoomSession(
+          undefined,
+          saveSelection
+            ? { slot: saveSelection.slot, mode: 'new', forceTutorial: false }
+            : undefined
+        );
+      },
+      saveSelection
+        ? { storage: saveStorage, selection: saveSelection }
+        : undefined
     );
     loading.step('CONSTRUINDO O LABIRINTO', 0.55);
     loading.step('ESPAÇANDO O ESPÓLIO', 0.7);
@@ -123,7 +167,13 @@ function createTerminalController(skipBootToDesktop: boolean): void {
     onLaunchImmediateGesture: (multiplayerSession?: ActiveRoomSession) => {
       void launchDoomSession(multiplayerSession);
     },
+    onOpenSaveMenu: () => {
+      // O terminal para de ler o teclado enquanto a lista está aberta.
+      activeTerminal?.setExternalModalOpen(true);
+      saveMenu.open();
+    },
   });
+  activeTerminal = terminal;
 
   if (skipBootToDesktop) {
     terminal.startAtDesktop();

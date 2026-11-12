@@ -47,6 +47,7 @@ import { DoomInventory, ITEM_CATALOG } from './DoomInventory';
 import { QUICK_ITEM_DURATIONS, QuickHandheldKind } from './DoomItemAction';
 import {
   buildDoomLabyrinth,
+  gridCellToWorld,
   DoomLightSource,
   evaluateDoomLightFlicker,
   isStoneSectorWorld,
@@ -85,6 +86,17 @@ import {
   resolutionPresetToHeight,
   viewmodelShadowMapSize,
 } from './DoomSettings';
+import {
+  clearSaveSlot,
+  DoomSavePayload,
+  hasAnySave,
+  readSaveSlot,
+  SAVE_FORMAT_VERSION,
+  writeSaveSlot,
+  type SaveStorageLike,
+} from './DoomSaveSlots';
+import { SaveMenuSelection } from './DoomSaveMenu';
+import { DoomTutorial, TUTORIAL_SPAWN_CELL } from './DoomTutorial';
 import {
   createDoomSharedUniforms,
   DoomRetroCompositor,
@@ -173,6 +185,19 @@ export interface SlideStepResult {
   overrideVelocity: boolean;
   outVelX: number;
   outVelZ: number;
+}
+
+/**
+ * Como a incursão se liga a um slot de save.
+ *
+ * O jogo inteiro funciona sem isso (`undefined`) — é o caso do multiplayer,
+ * onde o mundo é compartilhado e não faria sentido um jogador gravar o estado
+ * dos outros. Quando presente, o slot é o dono da partida: é nele que o
+ * progresso é gravado e é dele que o mundo renasce.
+ */
+export interface DoomSaveSessionOptions {
+  storage: SaveStorageLike;
+  selection: SaveMenuSelection;
 }
 
 /**
@@ -489,14 +514,66 @@ export class DoomGameApp {
 
   private readonly abortCtrl = new AbortController();
 
+  // ── Progresso gravado ────────────────────────────────────────────────────
+  /** Onde gravar. `null` = incursão avulsa (multijogador), sem save. */
+  private readonly saveStorage: SaveStorageLike | null = null;
+  /** Em qual slot (0..4). `-1` = sem slot. */
+  private readonly saveSlot: number = -1;
+  /** Este slot grava em disco? (Só quem foi escolhido no menu de saves.) */
+  private readonly saveEnabled: boolean;
+  /** Conta quantas incursões este slot já perdeu; sobrevive às mortes. */
+  private saveRunDeaths = 0;
+  /** Último segundo em que o save foi gravado automaticamente. */
+  private lastAutosaveSec = 0;
+  /** Aviso temporário de "progresso salvo" no canto da tela. */
+  private readonly saveToastEl: HTMLElement;
+  private saveToastHideAtMs = 0;
+  /** Quando este save nasceu — preservado entre gravações. */
+  private saveCreatedAt = 0;
+  /** Nome do setor/sala atual, para a lista de saves. */
+  private currentSectorLabel = 'ESCLUSA NOROESTE';
+
+  // ── Sala de orientação (tutorial de quem nunca jogou) ────────────────────
+  private tutorial: DoomTutorial | null = null;
+  /** Enquanto true, a aranha fica onde está e a sala está lacrada. */
+  private tutorialActive = false;
+  /** Conta os quadros em que o item da mão foi usado/largado (evento de 1 quadro). */
+  private usedHeldItemSignal = false;
+  private droppedHeldItemSignal = false;
+  /**
+   * A incursão terminou (morte ou vitória) e o slot já foi zerado.
+   *
+   * Sem esta trava o `destroy()` — que roda logo depois da morte — gravaria
+   * a incursão morta de volta por cima do slot recém-limpo.
+   */
+  private saveConsumedByRunEnd = false;
+
   constructor(
     private readonly sound: SoundEngine,
     private readonly onPermanentDeathExit?: () => void,
     initialMultiplayerSession?: ActiveRoomSession,
-    private readonly onRestartRequested?: () => void
+    private readonly onRestartRequested?: () => void,
+    saveSession?: DoomSaveSessionOptions
   ) {
     this.viewportEl = document.getElementById('game-viewport') as HTMLElement;
     this.canvas = document.getElementById('webgl-canvas') as HTMLCanvasElement;
+
+    // ── Liga a partida ao slot de save escolhido no menu ───────────────────
+    // Multijogador nunca grava: o mundo é compartilhado com outras pessoas e
+    // deixar um cliente reescrever o progresso dos outros seria errado.
+    const soloSave = saveSession && !initialMultiplayerSession ? saveSession : null;
+    this.saveStorage = soloSave?.storage ?? null;
+    this.saveSlot = soloSave ? soloSave.selection.slot : -1;
+    this.saveEnabled = soloSave !== null;
+
+    // Só tentamos CONTINUAR quando o jogador pediu para continuar. Começar um
+    // jogo novo ignora o que havia no slot — mas mantém a contagem de mortes,
+    // que é a única coisa que sobrevive a uma morte neste slot.
+    const loadedSave =
+      soloSave && soloSave.selection.mode === 'continue'
+        ? readSaveSlot(soloSave.storage, soloSave.selection.slot)
+        : null;
+    this.saveRunDeaths = loadedSave?.run.deaths ?? this.readPreviousDeaths(soloSave);
 
     this.localAfkBannerEl = document.createElement('div');
     this.localAfkBannerEl.className = 'oof-local-afk-banner hidden';
@@ -675,7 +752,15 @@ export class DoomGameApp {
                 1
             ),
           }
-        : {}
+        : loadedSave
+          ? {
+              // CONTINUAR: o mundo renasce exatamente igual porque a semente é
+              // a mesma. Só o que o jogador mudou é reaplicado depois.
+              worldSeed: loadedSave.worldSeed,
+              playerSeed: loadedSave.playerSeed,
+              shotgunPartSlots: loadedSave.shotgunPartSlots,
+            }
+          : {}
     );
 
     this.arenaLayout = arenaLayout;
@@ -1032,19 +1117,25 @@ export class DoomGameApp {
           if (this.onRestartRequested) {
             this.onRestartRequested();
           } else {
-            this.finalizePermanentDeath();
+            this.exitToDesktopVoluntarily();
           }
         },
+        onSaveProgressRequest: () => this.persistSave(true),
         onExitToDesktopRequest: () => {
+          // Sair pela própria vontade NÃO é morte: o progresso fica gravado.
+          // (Morrer continua apagando a incursão — é o combinado do jogo.)
           this.sound.setWorldPaused(false);
           this.pauseMenu.setOpen(false, 'main', true);
           this.inventory.setPauseMenuHidden(false);
-          this.finalizePermanentDeath();
+          this.exitToDesktopVoluntarily();
         },
       }
     );
     this.pauseMenu.setHudSuppressed(true);
     this.pauseMenu.setMultiplayerMode(Boolean(initialMultiplayerSession));
+    this.pauseMenu.setSaveSlotLabel(
+      this.saveEnabled ? `SAVE ${this.saveSlot + 1}` : null
+    );
     this.perfHud = new DoomPerfHud(this.viewportEl);
     this.perfGovernor = new DoomPerfGovernor(
       this.buildBasePerfLevers(this.settingsStore.value),
@@ -1079,6 +1170,61 @@ export class DoomGameApp {
       },
       { signal: this.abortCtrl.signal }
     );
+
+    // ── Aviso de "progresso salvo" ───────────────────────────────────────
+    this.saveToastEl = document.createElement('div');
+    this.saveToastEl.id = 'doom-save-toast';
+    this.saveToastEl.className = 'oof-save-toast';
+    this.viewportEl.appendChild(this.saveToastEl);
+
+    // ── Sala de orientação: só para quem nunca salvou nada ────────────────
+    // Um save existente significa que o jogador já conhece os comandos. A
+    // caixa "refazer o tutorial" no menu de saves força o caminho inverso.
+    const wantsTutorial =
+      soloSave !== null &&
+      soloSave.selection.mode === 'new' &&
+      (soloSave.selection.forceTutorial || !hasAnySave(soloSave.storage));
+    if (wantsTutorial) {
+      this.tutorialActive = true;
+      this.tutorial = new DoomTutorial(
+        this.scene,
+        this.sharedUniforms,
+        textures,
+        this.colliders,
+        this.viewportEl
+      );
+      for (const source of this.tutorial.collectLightSources()) {
+        this.lights.push(source);
+        this.prevLightDimState.push(false);
+      }
+      const spawn = gridCellToWorld(
+        TUTORIAL_SPAWN_CELL.gx,
+        TUTORIAL_SPAWN_CELL.gz
+      );
+      this.position.set(spawn.x, this.position.y, spawn.z);
+      this.yaw = Math.PI / 2; // olhando para oeste, de cara para a porta
+      this.pitch = 0;
+      // Bateria pela metade e um sinalizador no chão: duas coisas concretas
+      // para o tutorial ensinar a USAR, sem precisar que o jogador se fira.
+      this.lanternBattery = 68;
+      this.worldItems.spawnDroppedItem(
+        'magnesium_flare',
+        spawn.x + 2.3,
+        spawn.z - 1.7,
+        0.4
+      );
+    }
+
+    // ── Devolve o estado gravado por cima do mundo recém-criado ───────────
+    if (loadedSave) {
+      this.applyLoadedSave(loadedSave);
+    } else if (this.saveEnabled) {
+      // Incursão nova: grava na hora. É o que faz o tutorial não voltar na
+      // próxima vez que o jogador abrir o menu — o slot deixa de estar vazio.
+      this.saveCreatedAt = Date.now();
+      this.lastAutosaveSec = 0;
+      this.persistSave(false);
+    }
 
     this.syncCamera(0);
     this.bindInput();
@@ -1953,12 +2099,228 @@ export class DoomGameApp {
     this.updateFlickeringLightsAndAudio();
   }
 
+  /* ==========================================================================
+     PROGRESSO GRAVADO — CINCO SLOTS DE INCURSÃO
+     ========================================================================== */
+
+  /**
+   * Quantas incursões este slot já perdeu.
+   *
+   * Ler de novo pode parecer redundante (o save já foi lido no construtor),
+   * mas cobre o caso de COMEÇAR UM JOGO NOVO por cima de um save antigo: aí
+   * não há save carregado, e a contagem de mortes do slot precisa sobreviver
+   * — é a única coisa neste jogo que sobrevive a uma morte.
+   */
+  private readPreviousDeaths(soloSave: DoomSaveSessionOptions | null): number {
+    if (!soloSave) return 0;
+    return readSaveSlot(soloSave.storage, soloSave.selection.slot)?.run.deaths ?? 0;
+  }
+
+  /**
+   * Fotografa a incursão inteira.
+   *
+   * O labirinto não entra: ele é reconstruído pela semente na leitura. O que
+   * entra é só o que o jogador tem, onde está e o que mudou no mundo.
+   */
+  private captureSaveState(): DoomSavePayload {
+    const world = this.worldItems.exportWorldProgressState();
+    const inv = this.inventory.exportInventoryState();
+    const now = Date.now();
+
+    return {
+      version: SAVE_FORMAT_VERSION,
+      worldSeed: this.arenaLayout.worldSeed,
+      playerSeed: this.arenaLayout.playerSeed,
+      shotgunPartSlots: this.arenaLayout.shotgunPartSlotCount,
+      player: {
+        x: this.position.x,
+        y: this.position.y,
+        z: this.position.z,
+        yaw: this.yaw,
+        pitch: this.pitch,
+      },
+      vitals: {
+        health: this.playerHealth,
+        sanity: this.playerSanity,
+        battery: this.lanternBattery,
+        bleeding: this.playerBleeding,
+        stamina: this.staminaState.stamina,
+      },
+      inventory: {
+        slots: inv.slots,
+        hotbar: inv.hotbar,
+        heldSlot: inv.heldSlot,
+      },
+      world: {
+        collectedPickupIds: world.collectedPickupIds,
+        openedCrateIndices: world.openedCrateIndices,
+        droppedItems: world.droppedItems,
+      },
+      unlockedRoomIds: this.specialRoomDoors.doors
+        .filter((door) => door.unlocked)
+        .map((door) => door.room.id),
+      gear: {
+        flashlightOn: this.flashlight.isEquipped,
+        radarOn: this.radar.isActive,
+        walkieOn: this.walkieTalkieActive,
+        shotgunEquipped: this.shotgun.isEquipped,
+      },
+      run: {
+        elapsedSec: this.elapsed,
+        deaths: this.saveRunDeaths,
+        sector: this.currentSectorLabel,
+      },
+      meta: {
+        createdAt: this.saveCreatedAt || now,
+        updatedAt: now,
+      },
+    };
+  }
+
+  /**
+   * Grava o slot. Devolve `false` quando o navegador recusa.
+   *
+   * Falhar aqui não pode derrubar o jogo: o jogador continua jogando e apenas
+   * fica sabendo que o progresso não foi para o disco.
+   */
+  private persistSave(showToast = false): boolean {
+    if (!this.saveEnabled || !this.saveStorage || this.saveSlot < 0) return false;
+    if (this.disposed || this.saveConsumedByRunEnd) return false;
+
+    const payload = this.captureSaveState();
+    const result = writeSaveSlot(this.saveStorage, this.saveSlot, payload);
+    if (!result.ok) {
+      getGameConsole().error(
+        'jogo',
+        `Não foi possível gravar o save ${this.saveSlot + 1}: ${result.error ?? 'erro desconhecido'}`
+      );
+      if (showToast) this.showSaveToast(result.error ?? 'Falha ao salvar', true);
+      return false;
+    }
+
+    this.lastAutosaveSec = this.elapsed;
+    if (showToast) {
+      this.showSaveToast(`PROGRESSO SALVO · SAVE ${this.saveSlot + 1}`, false);
+    }
+    return true;
+  }
+
+  /** Mostra um aviso curto no canto da tela. */
+  private showSaveToast(message: string, isError: boolean): void {
+    this.saveToastEl.textContent = message;
+    this.saveToastEl.classList.toggle('is-error', isError);
+    this.saveToastEl.classList.add('is-visible');
+    this.saveToastHideAtMs = performance.now() + (isError ? 4200 : 2600);
+  }
+
+  private updateSaveToast(nowMs: number): void {
+    if (!this.saveToastHideAtMs) return;
+    if (nowMs < this.saveToastHideAtMs) return;
+    this.saveToastHideAtMs = 0;
+    this.saveToastEl.classList.remove('is-visible');
+  }
+
+  /**
+   * Devolve ao mundo o estado que estava gravado.
+   *
+   * Roda depois de o labirinto ser montado com as sementes do save: o mundo
+   * volta a ser o mesmo e, por cima dele, reaplicamos só o que o jogador
+   * havia mudado.
+   */
+  private applyLoadedSave(save: DoomSavePayload): void {
+    this.position.set(save.player.x, save.player.y, save.player.z);
+    this.yaw = save.player.yaw;
+    this.pitch = save.player.pitch;
+
+    this.playerHealth = save.vitals.health;
+    this.playerSanity = save.vitals.sanity;
+    this.lanternBattery = save.vitals.battery;
+    this.playerBleeding = save.vitals.bleeding;
+    this.staminaState.stamina = save.vitals.stamina;
+
+    this.inventory.importInventoryState(save.inventory);
+    this.worldItems.importWorldProgressState(save.world);
+
+    for (const roomId of save.unlockedRoomIds) {
+      this.specialRoomDoors.unlockRoom(roomId as DoomRoomId);
+    }
+
+    // Equipamentos: só ligamos o que estava ligado, sem disparar som de
+    // "equipar" — carregar um save não deve soar como uma ação do jogador.
+    if (save.gear.flashlightOn && !this.flashlight.isEquipped) {
+      this.flashlight.toggle();
+    }
+    if (save.gear.radarOn && !this.radar.isActive) this.radar.toggleActive();
+    if (save.gear.walkieOn) this.walkieTalkieActive = true;
+    if (save.gear.shotgunEquipped && !this.shotgun.isEquipped) {
+      this.shotgun.equip();
+    }
+
+    this.elapsed = save.run.elapsedSec;
+    this.saveCreatedAt = save.meta.createdAt;
+    this.lastAutosaveSec = this.elapsed;
+
+    this.radar.markExploredAtWorld(this.position.x, this.position.z);
+    this.syncInventoryVitals();
+  }
+
+  /** Gravação automática: a cada tanto, e sempre que algo importante muda. */
+  private maybeAutosave(): void {
+    if (!this.saveEnabled) return;
+    // Durante a sala de orientação nada se perde, então não vale gravar.
+    if (this.tutorialActive) return;
+    if (this.elapsed - this.lastAutosaveSec < 45) return;
+    this.persistSave(false);
+  }
+
+  /**
+   * Fim de incursão: a morte encerra o mundo, mas o SLOT continua existindo.
+   *
+   * A incursão é perdida (é assim que o jogo funciona), e o slot renasce
+   * vazio com a contagem de mortes aumentada. Assim o tutorial não volta —
+   * o jogo já sabe que você é veterano — e o jogador não perde o histórico.
+   */
+  private resetSaveSlotAfterRunEnd(): void {
+    if (!this.saveEnabled || !this.saveStorage || this.saveSlot < 0) return;
+    const previous = readSaveSlot(this.saveStorage, this.saveSlot);
+    this.saveRunDeaths = (previous?.run.deaths ?? this.saveRunDeaths) + 1;
+    clearSaveSlot(this.saveStorage, this.saveSlot);
+    // Trava a regravação: a partir daqui o slot está zerado até o jogador
+    // escolher "continuar" ou "recomeçar" de novo no menu de saves.
+    this.saveConsumedByRunEnd = true;
+    // Recomeça o cronômetro do autosave para o próximo ciclo não gravar
+    // imediatamente em cima do que acabou de ser apagado.
+    this.lastAutosaveSec = this.elapsed;
+  }
+
+  /**
+   * Saída voluntária para o terminal.
+   *
+   * Faz o mesmo trajeto da morte (devolve o controle, some com o HUD de
+   * casulo) mas SEM zerar o slot: quem sai pelo próprio pé conserva a
+   * incursão. O `destroy()` grava em seguida.
+   */
+  private exitToDesktopVoluntarily(): void {
+    if (this.disposed) return;
+    if (this.permadeathTimerId) {
+      window.clearTimeout(this.permadeathTimerId);
+      this.permadeathTimerId = 0;
+    }
+    getGameConsole().info('jogo', 'Voltando ao Terminal — progresso gravado.');
+    this.sound.setWorldPaused(false);
+    this.cocoonHudEl.classList.remove('is-visible', 'is-critical');
+    this.leaveSpectatorMode();
+    this.onPermanentDeathExit?.();
+  }
+
   private finalizePermanentDeath(): void {
     if (this.disposed) return;
     if (this.permadeathTimerId) {
       window.clearTimeout(this.permadeathTimerId);
       this.permadeathTimerId = 0;
     }
+    // A incursão acabou: o slot sobrevive, a incursão não.
+    this.resetSaveSlotAfterRunEnd();
     getGameConsole().info('jogo', 'Fim de incursão — retornando ao Terminal.');
     this.sound.setWorldPaused(false);
     this.cocoonHudEl.classList.remove('is-visible', 'is-critical');
@@ -2141,6 +2503,16 @@ export class DoomGameApp {
           }
         }
         this.sound.unlock();
+
+        // Sala de orientação: [ENTER] passa adiante quando a lição empacou.
+        // É a saída de emergência — ninguém fica trancado por não ter
+        // entendido um passo.
+        if (this.tutorialActive && e.code === 'Enter' && !e.repeat) {
+          e.preventDefault();
+          e.stopPropagation();
+          this.tutorial?.skipLesson();
+          return;
+        }
 
         if (this.spectatorMode) {
           if (e.code === 'ArrowRight' || e.code === 'KeyD') {
@@ -2992,7 +3364,14 @@ export class DoomGameApp {
         continue;
       }
       const yaw = Math.atan2(-forward.x, -forward.z) + Math.random() * 0.7 - 0.35;
-      return this.worldItems.spawnDroppedItem(itemId, spot.x, spot.z, yaw);
+      const spawned = this.worldItems.spawnDroppedItem(
+        itemId,
+        spot.x,
+        spot.z,
+        yaw
+      );
+      if (spawned) this.droppedHeldItemSignal = true;
+      return spawned;
     }
     return false;
   }
@@ -4668,6 +5047,13 @@ export class DoomGameApp {
         this.position,
         this.yaw
       );
+    } else if (this.tutorialActive) {
+      // Sala de orientação: a aranha fica no Ninho, quieta. Ensinar os
+      // comandos com oito pernas vindo pelo corredor não ensina nada.
+      spiderOut = {
+        cameraShakeAmount: 0,
+        playerDistance: this.position.distanceTo(this.spider.position),
+      };
     } else {
       spiderOut = this.spider.update(
         dt,
@@ -4910,6 +5296,14 @@ export class DoomGameApp {
         this.roomBannerHideAtSec = this.elapsed + 3.1;
       }
     }
+    // O setor aparece na lista de saves, então precisa dizer ONDE o jogador
+    // parou mesmo fora das salas temáticas — e o labirinto tem dois grandes
+    // setores, o técnico e as catacumbas de pedra.
+    this.currentSectorLabel = curThemedRoom
+      ? curThemedRoom.name
+      : isStoneSectorWorld(this.position.x, this.position.z)
+        ? 'CATACUMBAS DE PEDRA'
+        : 'LABIRINTO TÉCNICO';
     const shouldShowRoomBanner =
       this.engaged &&
       !this.pauseMenu.open &&
@@ -5014,6 +5408,42 @@ export class DoomGameApp {
         .applyEuler(beamEuler)
         .normalize();
     }
+
+    // ── Sala de orientação ───────────────────────────────────────────────
+    if (this.tutorial) {
+      this.tutorial.update(
+        {
+          dt,
+          planarSpeed,
+          sprinting,
+          crouching: isCrouching || isSliding,
+          flashlightOn: beamIntensity > 0.05,
+          inventoryOpen: this.inventory.open,
+          hasHeldItem: this.inventory.getHeldItem() !== null,
+          carriedItemCount: this.inventory.getTotalItemCount(),
+          usedHeldItemThisFrame: this.usedHeldItemSignal,
+          droppedHeldItemThisFrame: this.droppedHeldItemSignal,
+        },
+        this.position
+      );
+      // Os sinais de uso/largar valem por UM quadro: consumidos aqui.
+      this.usedHeldItemSignal = false;
+      this.droppedHeldItemSignal = false;
+      if (this.tutorial.isFinished && this.tutorialActive) {
+        this.tutorialActive = false;
+        getGameConsole().info(
+          'jogo',
+          'Orientação concluída — comportas liberadas. Boa incursão.'
+        );
+        // Acabou de aprender: grava na hora, para o save já nascer com o
+        // jogador orientado e dentro do labirinto.
+        this.persistSave(true);
+      }
+    }
+
+    // ── Progresso gravado ─────────────────────────────────────────────────
+    this.updateSaveToast(performance.now());
+    this.maybeAutosave();
 
     this.updateSurvivalVitals(
       dt,
@@ -5688,11 +6118,19 @@ export class DoomGameApp {
 
   destroy(): void {
     if (this.disposed) return;
+
+    // Sair da incursão pelo menu de pausa NÃO é morte: o que o jogador fez
+    // fica gravado. (Na morte, quem cuida do slot é `finalizePermanentDeath`,
+    // que roda antes de chegar aqui e apaga a incursão de propósito.)
+    if (this.saveEnabled) this.persistSave(false);
+
     this.disposed = true;
     if (this.permadeathTimerId) {
       window.clearTimeout(this.permadeathTimerId);
       this.permadeathTimerId = 0;
     }
+    this.tutorial?.dispose();
+    this.tutorial = null;
     cancelAnimationFrame(this.rafId);
     this.abortCtrl.abort();
     this.unsubscribeSettings?.();
@@ -5704,6 +6142,7 @@ export class DoomGameApp {
     this.roomBannerEl.remove();
     this.doorLockPromptEl.remove();
     this.cocoonHudEl.remove();
+    this.saveToastEl.remove();
     this.spectatorHudEl.remove();
     this.danceHudEl.remove();
     this.shotgunObjectiveEl.remove();

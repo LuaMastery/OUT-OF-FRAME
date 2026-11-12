@@ -31,6 +31,13 @@ export interface TerminalBootOptions {
    * abrindo o ambiente 3D sem modais extras.
    */
   onLaunchImmediateGesture: (multiplayerSession?: ActiveRoomSession) => void;
+  /**
+   * Acionado por INICIAR no menu principal: abre a seleção de saves.
+   *
+   * O terminal fica VIVO enquanto a lista está aberta — o jogador pode desistir
+   * e voltar. Quem destrói o terminal é o início da partida, lá na escolha.
+   */
+  onOpenSaveMenu: () => void;
 }
 
 type DesktopItemId = 'out_of_frame' | 'terminal' | 'notas' | 'desligar';
@@ -91,6 +98,8 @@ export class TerminalBootController {
   private zoomLayerEl!: HTMLElement;
   private proximityFx: CursorProximityFX | null = null;
   private multiplayerModal: MultiplayerMenuModal | null = null;
+  /** Um modal criado fora do terminal tomou o teclado (lista de saves). */
+  private externalModalOpen = false;
 
   private hiddenInputEl!: HTMLInputElement;
   private typedSpanEl: HTMLElement | null = null;
@@ -432,7 +441,9 @@ export class TerminalBootController {
 
     // Teclado global para navegar na Área de Trabalho ou na Interface Binária
     this.boundKeyCapture = (e: KeyboardEvent) => {
-      if (this.multiplayerModal?.visible) {
+      // Qualquer modal à frente do menu (salas multiplayer, lista de saves)
+      // assume o teclado: o terminal fica surdo até ele fechar.
+      if (this.multiplayerModal?.visible || this.externalModalOpen) {
         return;
       }
       this.sound.unlock();
@@ -1390,6 +1401,29 @@ export class TerminalBootController {
     });
   }
 
+  /**
+   * Marca que um modal de fora do terminal está aberto (a lista de saves).
+   *
+   * Enquanto estiver aberto, o terminal para de interpretar Enter, setas e
+   * Escape como comandos do MENU principal — do contrário escolher um slot
+   * com o teclado também dispararia a opção do menu atrás dele.
+   */
+  setExternalModalOpen(open: boolean): void {
+    this.externalModalOpen = open;
+  }
+
+  /**
+   * Devolve o menu principal ao normal depois de um modal (saves, salas).
+   *
+   * Só faz algo se o terminal ainda estiver na tela de título — se a partida
+   * já começou, não há menu para restaurar.
+   */
+  resumeTitleAfterModal(): void {
+    if (this.phase !== 'title_menu') return;
+    this.sound.unduckTitleTheme();
+    this.mainMenuButtons[this.menuIndex]?.focus({ preventScroll: true });
+  }
+
   private syncMainMenuSelection(focus = false): void {
     this.mainMenuButtons.forEach((button, index) => {
       const selected = index === this.menuIndex;
@@ -1403,11 +1437,16 @@ export class TerminalBootController {
     this.sound.stopBootBed(0.4);
     // A trilha da tela inicial só termina quando o menu realmente sai de cena:
     // indo para a partida, voltando à área de trabalho ou no fade do fim.
-    if (this.menuIndex !== 1) this.sound.stopTitlePad(0.8);
+    // INICIAR e MULTIPLAYER apenas a ABAFAM, porque o jogador ainda pode
+    // voltar ao menu e a trilha precisa continuar de onde estava.
+    if (this.menuIndex !== 1 && this.menuIndex !== 0) {
+      this.sound.stopTitlePad(0.8);
+    }
     if (this.menuIndex === 0) {
-      // INICIAR (Modo Solo) — mantém o SoundEngine vivo para crossfade contínuo com o Labirinto DOOM!
-      this.destroy(false);
-      this.options.onLaunchImmediateGesture();
+      // INICIAR (Modo Solo) — mostra os cinco slots de save. A partida só
+      // começa de verdade quando o jogador escolhe um deles.
+      this.sound.duckTitleTheme(0.34, 0.45);
+      this.options.onOpenSaveMenu();
     } else if (this.menuIndex === 1) {
       // MULTIPLAYER — abre a Central de Salas, Servidores, Número da Sala e Senha!
       let urlRoom = '';

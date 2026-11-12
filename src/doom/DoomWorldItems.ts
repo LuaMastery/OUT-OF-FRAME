@@ -1809,6 +1809,126 @@ export class DoomWorldItems {
   }
 
   /**
+   * Fotografa o que o jogador MUDOU no mundo, para o save.
+   *
+   * O labirinto em si não entra: ele renasce igual a partir da semente. O que
+   * importa guardar é só o que difere do mundo recém-gerado — o que já foi
+   * recolhido, quais caixotes já foram forçados e o que está largado no chão.
+   *
+   * Objetos largados são o caso mais delicado: eles NÃO existem no layout
+   * original, então precisam ser recriados na leitura.
+   */
+  exportWorldProgressState(): {
+    collectedPickupIds: string[];
+    openedCrateIndices: number[];
+    droppedItems: Array<{
+      id: string;
+      itemId: string;
+      x: number;
+      z: number;
+      yaw: number;
+    }>;
+  } {
+    const collectedPickupIds: string[] = [];
+    const openedCrateIndices: number[] = [];
+    const droppedItems: Array<{
+      id: string;
+      itemId: string;
+      x: number;
+      z: number;
+      yaw: number;
+    }> = [];
+
+    for (let i = 0; i < this.pickups.length; i++) {
+      const p = this.pickups[i];
+      const isDropped = p.id.startsWith('dropped-');
+      if (isDropped) {
+        // Largados que ainda estão no chão: renascem como objeto pegável.
+        if (!p.collected) {
+          droppedItems.push({
+            id: p.id,
+            itemId: p.itemId,
+            x: p.position.x,
+            z: p.position.z,
+            yaw: p.itemMesh.rotation.y,
+          });
+        }
+        continue;
+      }
+      if (p.collected) collectedPickupIds.push(p.id);
+      // Um caixote conta como aberto assim que a tampa começou a subir —
+      // assim o jogador não volta para um caixote entreaberto e travado.
+      if (p.crate && (p.crate.open || p.crate.openProgress > 0)) {
+        openedCrateIndices.push(i);
+      }
+    }
+
+    return { collectedPickupIds, openedCrateIndices, droppedItems };
+  }
+
+  /**
+   * Devolve ao mundo o estado que o jogador tinha deixado.
+   *
+   * Roda depois de o labirinto ser reconstruído pela semente: primeiro
+   * escondemos o que já foi recolhido, depois escancaramos os caixotes que já
+   * tinham sido abertos e, por fim, recriamos no chão o que estava largado.
+   */
+  importWorldProgressState(state: {
+    collectedPickupIds?: ReadonlyArray<string>;
+    openedCrateIndices?: ReadonlyArray<number>;
+    droppedItems?: ReadonlyArray<{
+      id?: string;
+      itemId?: string;
+      x?: number;
+      z?: number;
+      yaw?: number;
+    }>;
+  }): void {
+    const collected = new Set(state.collectedPickupIds ?? []);
+    const opened = new Set(state.openedCrateIndices ?? []);
+
+    for (let i = 0; i < this.pickups.length; i++) {
+      const p = this.pickups[i];
+
+      if (collected.has(p.id) && !p.id.startsWith('dropped-')) {
+        p.collected = true;
+        p.itemMesh.visible = false;
+      }
+
+      if (opened.has(i) && p.crate) {
+        // Abre de supetão, sem animação: a tampa já devia estar aberta quando
+        // o jogador saiu, então não faz sentido vê-la abrindo de novo.
+        p.crate.open = true;
+        p.crate.openProgress = 1;
+        p.crate.lidVelocity = 0;
+        p.crate.lid.rotation.x = CRATE_LID_OPEN_ROTATION;
+        p.itemMesh.visible = !p.collected;
+        p.itemMesh.position.y = p.restY ?? p.itemMesh.position.y;
+      }
+    }
+
+    // Objetos largados são SUBSTITUÍDOS, nunca somados: o save é a verdade
+    // sobre o que está no chão. Sem isto, reaplicar um save por cima de um
+    // mundo que já tem objetos largados deixaria tudo duplicado.
+    for (let i = this.pickups.length - 1; i >= 0; i--) {
+      const p = this.pickups[i];
+      if (!p.id.startsWith('dropped-')) continue;
+      p.group.removeFromParent();
+      this.pickups.splice(i, 1);
+    }
+
+    for (const entry of state.droppedItems ?? []) {
+      if (!entry.itemId) continue;
+      this.spawnDroppedItem(
+        entry.itemId,
+        entry.x ?? 0,
+        entry.z ?? 0,
+        entry.yaw ?? 0
+      );
+    }
+  }
+
+  /**
    * Retorna os pontos prováveis de varredura eletromagnética para todos os equipamentos ainda não coletados.
    */
   getUncollectedEquipmentSignals(): ProbableEquipmentSignal[] {

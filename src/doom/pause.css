@@ -875,3 +875,24 @@
   letter-spacing: 0.04em;
 }
 
+
+/* ── Caixa "Save" da sessão e botão de salvar progresso ──────────────────── */
+
+/* A quinta caixa ocupa a linha inteira: a grade é de duas colunas e um
+   punhado de estatísticas ímpar deixa um buraco feio no painel. */
+.pause-quick-stats .pause-stat-box:last-child {
+  grid-column: 1 / -1;
+}
+
+.pause-quick-stats .pause-stat-box:last-child .pause-stat-v {
+  color: #ffca63;
+}
+
+.pause-menu-btn.is-disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+.pause-btn-hint.is-error {
+  color: #ff8a72 !important;
+}

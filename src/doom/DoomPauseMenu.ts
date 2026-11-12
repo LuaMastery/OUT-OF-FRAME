@@ -18,6 +18,11 @@ export type SettingsTabFilter = 'all' | SettingsCategoryId;
 
 export interface DoomPauseMenuCallbacks {
   onPauseOpened: () => void;
+  /**
+   * Pedido explícito de gravar o progresso no slot da incursão.
+   * Devolve `false` quando não deu (cota cheia, slot sem save).
+   */
+  onSaveProgressRequest?: () => boolean;
   onPauseClosed?: () => void;
   onResumeRequest: (fromPointerGesture?: boolean) => void;
   onToggleFullscreen: () => void;
@@ -44,6 +49,8 @@ export class DoomPauseMenu {
   private readonly statResEl: HTMLElement;
   private readonly statFovEl: HTMLElement;
   private readonly statVolEl: HTMLElement;
+  private readonly statSaveEl: HTMLElement;
+  private readonly saveHintEl: HTMLElement;
 
   private readonly restartBtnEl: HTMLButtonElement;
   private readonly restartHintEl: HTMLSpanElement;
@@ -120,6 +127,10 @@ export class DoomPauseMenu {
                   <span>▶ Continuar Jogo</span>
                   <span class="pause-btn-hint">[Esc / P]</span>
                 </button>
+                <button type="button" class="pause-menu-btn" data-pause-action="save-progress">
+                  <span>💾 Salvar Progresso</span>
+                  <span class="pause-btn-hint" data-save-hint>no slot da incursão</span>
+                </button>
                 <button type="button" class="pause-menu-btn" data-pause-action="open-settings">
                   <span>⚙ Configurações</span>
                   <span class="pause-btn-hint">${DOOM_SETTINGS_DESCRIPTORS.length} opções</span>
@@ -163,6 +174,10 @@ export class DoomPauseMenu {
                   <div class="pause-stat-box">
                     <span class="pause-stat-k">Volume Geral</span>
                     <span class="pause-stat-v" data-stat-vol>82%</span>
+                  </div>
+                  <div class="pause-stat-box">
+                    <span class="pause-stat-k">Save</span>
+                    <span class="pause-stat-v" data-stat-save>avulso</span>
                   </div>
                 </div>
               </aside>
@@ -259,6 +274,12 @@ export class DoomPauseMenu {
     ) as HTMLElement;
     this.statVolEl = this.overlayEl.querySelector(
       '[data-stat-vol]'
+    ) as HTMLElement;
+    this.statSaveEl = this.overlayEl.querySelector(
+      '[data-stat-save]'
+    ) as HTMLElement;
+    this.saveHintEl = this.overlayEl.querySelector(
+      '[data-save-hint]'
     ) as HTMLElement;
 
     this.restartBtnEl = this.overlayEl.querySelector(
@@ -424,6 +445,24 @@ export class DoomPauseMenu {
     this.controlsViewEl.classList.toggle('active', view === 'controls');
   }
 
+  /**
+   * Mostra em qual slot esta incursão está sendo gravada.
+   *
+   * Incursões avulsas (multijogador) aparecem como "avulso" e o botão de
+   * salvar fica desabilitado — não existe slot para gravar.
+   */
+  setSaveSlotLabel(label: string | null): void {
+    this.statSaveEl.textContent = label ?? 'avulso';
+    const btn = this.overlayEl.querySelector(
+      '[data-pause-action="save-progress"]'
+    ) as HTMLButtonElement | null;
+    if (btn) {
+      btn.disabled = label === null;
+      btn.classList.toggle('is-disabled', label === null);
+    }
+    if (label === null) this.saveHintEl.textContent = 'sem slot nesta sessão';
+  }
+
   private bindHoverSound(el: HTMLElement, id: string): void {
     el.addEventListener('mouseenter', () => {
       if (this.hoveredButtonId === id) return;
@@ -488,6 +527,22 @@ export class DoomPauseMenu {
     this.bindHoverSound(resumeBtn, 'pause-resume');
     resumeBtn.addEventListener('click', () => {
       this.callbacks.onResumeRequest(true);
+    });
+
+    const saveProgressBtn = this.overlayEl.querySelector(
+      '[data-pause-action="save-progress"]'
+    ) as HTMLButtonElement;
+    this.bindHoverSound(saveProgressBtn, 'pause-settings');
+    saveProgressBtn.addEventListener('click', () => {
+      const ok = this.callbacks.onSaveProgressRequest?.() ?? false;
+      this.sound.playInventorySelect(true);
+      this.saveHintEl.textContent = ok ? 'salvo agora' : 'falhou — tente de novo';
+      this.saveHintEl.classList.toggle('is-error', !ok);
+      // O texto volta sozinho para não parecer um erro permanente.
+      window.setTimeout(() => {
+        this.saveHintEl.textContent = 'no slot da incursão';
+        this.saveHintEl.classList.remove('is-error');
+      }, 2600);
     });
 
     const openSettingsBtn = this.overlayEl.querySelector(

@@ -3617,6 +3617,79 @@ export class DoomInventory {
     this.hotbar = pruneHotbar(this.hotbar, (itemId) => this.hasItem(itemId));
   }
 
+  /** Soma tudo que o jogador carrega, contando as pilhas. */
+  getTotalItemCount(): number {
+    return this.slots.reduce((sum, entry) => sum + (entry?.quantity ?? 0), 0);
+  }
+
+  /**
+   * Fotografa os bolsos e o cinto para o save.
+   *
+   * Só ids e quantidades entram: a definição do item mora no catálogo e é
+   * reconstruída na leitura. Assim um save não engorda com texto repetido e
+   * continua valendo se a descrição de um item mudar.
+   */
+  exportInventoryState(): {
+    slots: Array<{ id: string; quantity: number } | null>;
+    hotbar: Array<string | null>;
+    heldSlot: number;
+  } {
+    return {
+      slots: this.slots.map((entry) =>
+        entry ? { id: entry.def.id, quantity: entry.quantity } : null
+      ),
+      hotbar: [...this.hotbar],
+      heldSlot: this.heldSlot,
+    };
+  }
+
+  /**
+   * Restaura bolsos e cinto a partir de um save.
+   *
+   * É uma SUBSTITUIÇÃO completa, não uma soma: o que estava na mochila antes
+   * deixa de existir. Isso é de propósito — carregar um save é voltar no
+   * tempo, e somar inventários deixaria itens duplicados.
+   *
+   * Itens que não existem mais no catálogo (de uma versão antiga do jogo) são
+   * esquecidos em silêncio, e qualquer referência órfã no cinto é limpa no
+   * final por `syncHotbarWithBackpack`.
+   */
+  importInventoryState(state: {
+    slots: ReadonlyArray<{ id: string; quantity: number } | null>;
+    hotbar: ReadonlyArray<string | null>;
+    heldSlot: number;
+  }): void {
+    this.slots = new Array(TOTAL_SLOTS).fill(null);
+    const incoming = state.slots ?? [];
+    for (let i = 0; i < TOTAL_SLOTS && i < incoming.length; i++) {
+      const entry = incoming[i];
+      if (!entry) continue;
+      const def = ITEM_CATALOG[entry.id];
+      if (!def) continue;
+      const quantity = Math.max(1, Math.floor(entry.quantity) || 1);
+      this.slots[i] = { def, quantity };
+    }
+
+    // O cinto aponta para referências dos bolsos: copiamos os quatro encaixes
+    // e deixamos a poda tirar o que ficou órfão.
+    const incomingBelt = state.hotbar ?? [];
+    this.hotbar = [null, null, null, null].map((_, i) => {
+      const id = incomingBelt[i];
+      return typeof id === 'string' && this.hasItem(id) ? id : null;
+    });
+    this.heldSlot = Math.min(3, Math.max(0, Math.round(state.heldSlot ?? 0)));
+    this.syncHotbarWithBackpack();
+
+    const firstFilled = this.slots.findIndex((s) => s !== null);
+    this.selectedIndex = firstFilled >= 0 ? firstFilled : 0;
+
+    this.renderQuickSlots();
+    this.renderGrid();
+    this.renderInspector();
+    this.renderShortcutsHub(true);
+    this.syncShortcutsHubVisibility();
+  }
+
   private consumeAt(slotIndex: number, count: number): void {
     const entry = this.slots[slotIndex];
     if (!entry) return;
